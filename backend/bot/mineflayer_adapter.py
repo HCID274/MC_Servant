@@ -73,7 +73,7 @@ class MineflayerBot(IBotController):
             "username": self._username,
             "checkTimeoutInterval": 600000,
             "auth": "offline",
-            "version": "1.19.2",
+            "version": "1.20.6",
         })
         
         # 加载插件

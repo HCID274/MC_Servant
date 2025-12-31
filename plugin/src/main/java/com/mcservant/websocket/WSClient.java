@@ -100,6 +100,11 @@ public class WSClient implements IWebSocketClient {
             public void onClosed(@NotNull WebSocket webSocket, int code, @NotNull String reason) {
                 connected.set(false);
                 logger.info("WebSocket closed: " + code + " - " + reason);
+                
+                // 非正常关闭时尝试重连（1000 是正常关闭码）
+                if (code != 1000) {
+                    scheduleReconnect();
+                }
             }
 
             @Override
