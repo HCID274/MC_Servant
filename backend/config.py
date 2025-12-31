@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # 日志级别
     log_level: str = "INFO"
     
+    # LLM 配置 (OpenAI Compatible API - 通义千问)
+    openai_api_key: str = ""  # DashScope API Key (格式: sk-xxxxxxxx)
+    openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    openai_model: str = "qwen-flash"  # 默认使用 qwen-flash (速度快、成本低)
+    
     class Config:
         env_prefix = "MC_SERVANT_"
         env_file = ".env"

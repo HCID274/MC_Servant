@@ -32,9 +32,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 全局 Bot 管理器
+# 全局管理器
 bot_manager: Optional[BotManager] = None
 message_router: Optional[MessageRouter] = None
+llm_client = None  # LLM 客户端 (Optional)
 
 
 @asynccontextmanager
@@ -43,7 +44,24 @@ async def lifespan(app: FastAPI):
     global bot_manager, message_router
     
     # 启动时初始化
+    global llm_client
     logger.info("Initializing MC_Servant Backend...")
+    
+    # 初始化 LLM 客户端 (如果配置了 API Key)
+    if settings.openai_api_key:
+        try:
+            from llm.qwen_client import QwenClient
+            llm_client = QwenClient(
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url,
+                model=settings.openai_model,
+            )
+            logger.info(f"LLM client initialized: {settings.openai_model}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize LLM client: {e}")
+            llm_client = None
+    else:
+        logger.info("LLM not configured (no API key), using fallback intent recognition")
     
     bot_manager = BotManager(
         mc_host=settings.mc_host,
@@ -56,8 +74,8 @@ async def lifespan(app: FastAPI):
         default_bot = await bot_manager.spawn_bot(settings.bot_username)
         logger.info(f"Default bot spawned: {settings.bot_username}")
         
-        # 初始化消息路由器
-        message_router = MessageRouter(default_bot)
+        # 初始化消息路由器 (with LLM client if available)
+        message_router = MessageRouter(default_bot, llm_client)
     except Exception as e:
         logger.warning(f"Failed to spawn default bot: {e}")
         logger.info("Will try to spawn bot when Java plugin connects")
@@ -81,7 +99,7 @@ async def lifespan(app: FastAPI):
             async def get_position(self):
                 return (0.0, 64.0, 0.0)
         
-        message_router = MessageRouter(MockBot())
+        message_router = MessageRouter(MockBot(), llm_client)
     
     logger.info(f"WebSocket server ready on ws://{settings.ws_host}:{settings.ws_port}")
     

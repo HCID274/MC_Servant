@@ -9,3 +9,6 @@ websockets>=12.0
 # Mineflayer 集成 (需要 Node.js 环境)
 javascript>=1.1.0
 
+# LLM (OpenAI Compatible API - 通义千问)
+openai>=1.0.0
+
