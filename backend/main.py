@@ -36,15 +36,15 @@ logger = logging.getLogger(__name__)
 bot_manager: Optional[BotManager] = None
 message_router: Optional[MessageRouter] = None
 llm_client = None  # LLM 客户端 (Optional)
+state_machine = None  # 状态机 (Optional)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global bot_manager, message_router
+    global bot_manager, message_router, llm_client, state_machine
     
     # 启动时初始化
-    global llm_client
     logger.info("Initializing MC_Servant Backend...")
     
     # 初始化 LLM 客户端 (如果配置了 API Key)
@@ -74,8 +74,28 @@ async def lifespan(app: FastAPI):
         default_bot = await bot_manager.spawn_bot(settings.bot_username)
         logger.info(f"Default bot spawned: {settings.bot_username}")
         
-        # 初始化消息路由器 (with LLM client if available)
-        message_router = MessageRouter(default_bot, llm_client)
+        # 初始化状态机
+        from pathlib import Path
+        from state.machine import StateMachine
+        from state.config import BotConfig
+        
+        config_path = Path("data/bot_config.json")
+        
+        # 加载或创建配置，确保 bot_name 是真实的 Bot 用户名
+        bot_config = BotConfig.load(config_path)
+        bot_config.bot_name = default_bot.username  # 使用真实的 Bot 名称
+        bot_config.save(config_path)
+        
+        state_machine = StateMachine(
+            config=bot_config,
+            config_path=config_path,
+            llm_client=llm_client,
+            bot_controller=default_bot,
+        )
+        logger.info(f"State machine initialized: state={state_machine.current_state.name}, bot={bot_config.bot_name}")
+        
+        # 初始化消息路由器 (with LLM client and state machine)
+        message_router = MessageRouter(default_bot, llm_client, state_machine, bot_manager)
     except Exception as e:
         logger.warning(f"Failed to spawn default bot: {e}")
         logger.info("Will try to spawn bot when Java plugin connects")
@@ -99,7 +119,20 @@ async def lifespan(app: FastAPI):
             async def get_position(self):
                 return (0.0, 64.0, 0.0)
         
-        message_router = MessageRouter(MockBot(), llm_client)
+        # 初始化状态机 (with MockBot)
+        from pathlib import Path
+        from state.machine import StateMachine
+        
+        mock_bot = MockBot()
+        config_path = Path("data/bot_config.json")
+        state_machine = StateMachine(
+            config_path=config_path,
+            llm_client=llm_client,
+            bot_controller=mock_bot,
+        )
+        logger.info(f"State machine initialized (MockBot): state={state_machine.current_state.name}")
+        
+        message_router = MessageRouter(mock_bot, llm_client, state_machine, bot_manager)
     
     logger.info(f"WebSocket server ready on ws://{settings.ws_host}:{settings.ws_port}")
     
@@ -135,6 +168,14 @@ async def list_bots():
     if bot_manager:
         return {"bots": bot_manager.list_bots()}
     return {"bots": []}
+
+
+@app.get("/state")
+async def get_state():
+    """获取状态机状态（调试用）"""
+    if state_machine:
+        return state_machine.get_status()
+    return {"error": "State machine not initialized"}
 
 
 @app.websocket("/ws/{client_id}")

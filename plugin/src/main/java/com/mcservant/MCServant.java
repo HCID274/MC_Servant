@@ -1,6 +1,7 @@
 package com.mcservant;
 
 import com.mcservant.commands.ServantCommands;
+import com.mcservant.listener.PlayerInteractListener;
 import com.mcservant.websocket.IWebSocketClient;
 import com.mcservant.websocket.WSClient;
 import com.mcservant.websocket.MessageHandler;
@@ -63,6 +64,9 @@ public class MCServant extends JavaPlugin {
         
         // 初始化命令
         initCommands();
+        
+        // 注册监听器
+        initListeners();
 
         logger.info("MC_Servant 插件已启用! (v" + getDescription().getVersion() + ")");
     }
@@ -100,6 +104,14 @@ public class MCServant extends JavaPlugin {
     private void initCommands() {
         ServantCommands.register();
         logger.info("命令模块已加载");
+    }
+    
+    /**
+     * 初始化监听器模块
+     */
+    private void initListeners() {
+        getServer().getPluginManager().registerEvents(new PlayerInteractListener(), this);
+        logger.info("监听器模块已加载");
     }
 }
 

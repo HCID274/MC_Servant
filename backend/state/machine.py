@@ -1,0 +1,250 @@
+# State Machine
+# 状态机主体 - Bot 的行为总控
+
+import logging
+from pathlib import Path
+from typing import Optional, Dict, Any, TYPE_CHECKING
+
+from .interfaces import IState, IStateMachine, StateResult
+from .events import Event, EventType
+from .context import RuntimeContext
+from .config import BotConfig, DEFAULT_CONFIG_PATH
+from .permission import PermissionGate, PermissionResult
+from .states import UnclaimedState, IdleState
+
+if TYPE_CHECKING:
+    from ..llm.interfaces import ILLMClient
+    from ..bot.interfaces import IBotController
+
+logger = logging.getLogger(__name__)
+
+
+class StateMachine(IStateMachine):
+    """
+    状态机 - Bot 的行为总控
+    
+    职责：
+    - 管理当前状态和状态转换
+    - 集成权限校验 (PermissionGate)
+    - 协调 LLM 和 BotController
+    - 持久化 BotConfig
+    """
+    
+    def __init__(
+        self,
+        config: Optional[BotConfig] = None,
+        config_path: Optional[Path] = None,
+        llm_client: Optional["ILLMClient"] = None,
+        bot_controller: Optional["IBotController"] = None,
+    ):
+        """
+        初始化状态机
+        
+        Args:
+            config: Bot 配置（如果提供则使用，否则从文件加载）
+            config_path: 配置文件路径（默认 data/bot_config.json）
+            llm_client: LLM 客户端
+            bot_controller: Bot 控制器
+        """
+        # 配置路径
+        self._config_path = config_path or DEFAULT_CONFIG_PATH
+        
+        # 加载或使用提供的配置
+        if config:
+            self._config = config
+        else:
+            self._config = BotConfig.load(self._config_path)
+        
+        # 运行时上下文
+        self._context = RuntimeContext()
+        
+        # 依赖注入
+        self._llm = llm_client
+        self._bot = bot_controller
+        
+        # 权限校验器
+        self._permission_gate = PermissionGate()
+        
+        # 初始化状态（根据配置决定）
+        self._current_state: IState = self._get_initial_state()
+        
+        logger.info(
+            f"StateMachine initialized: state={self._current_state.name}, "
+            f"owner={self._config.owner_name or 'None'}"
+        )
+    
+    def _get_initial_state(self) -> IState:
+        """根据配置决定初始状态"""
+        if self._config.is_claimed:
+            return IdleState(self._llm)
+        else:
+            return UnclaimedState(self._llm)
+    
+    @property
+    def current_state(self) -> IState:
+        return self._current_state
+    
+    @property
+    def config(self) -> BotConfig:
+        return self._config
+    
+    @property
+    def context(self) -> RuntimeContext:
+        return self._context
+    
+    async def process(self, event: Event) -> Optional[Dict[str, Any]]:
+        """
+        处理事件 - 完整的处理管道
+        
+        流程：
+        1. 权限校验
+        2. 委托给当前状态处理
+        3. 状态转换（如果需要）
+        4. 更新配置（如 CLAIM/RELEASE）
+        5. 持久化配置
+        6. 执行动作（如果需要）
+        7. 构建响应
+        
+        Args:
+            event: 输入事件
+            
+        Returns:
+            响应消息字典
+        """
+        logger.debug(f"Processing event: {event} in state: {self._current_state.name}")
+        
+        # 1. 权限校验
+        perm_result = self._permission_gate.check(
+            event, 
+            self._config, 
+            self._current_state.name
+        )
+        
+        if not perm_result.allowed:
+            logger.info(f"Permission denied: {perm_result.reason}")
+            return self._build_response(
+                StateResult(response=perm_result.rejection_message),
+                hologram_text=None,
+            )
+        
+        # 2. 特殊事件处理（在状态处理之前）
+        await self._handle_special_events(event)
+        
+        # 3. 委托给当前状态处理
+        result = await self._current_state.handle_event(event, self._context)
+        
+        # 4. 状态转换
+        hologram_text = None
+        if result.next_state:
+            await self._current_state.on_exit(self._context)
+            self._current_state = result.next_state
+            hologram_text = await self._current_state.on_enter(self._context)
+            logger.info(f"State transition: -> {self._current_state.name}")
+        
+        # 使用状态返回的 hologram_text 覆盖（如果有）
+        if result.hologram_text:
+            hologram_text = result.hologram_text
+        
+        # 5. 持久化配置（如果有变更）
+        self._save_config_if_needed(event)
+        
+        # 6. 执行动作（如果需要）
+        if result.action and self._bot:
+            await self._execute_action(result.action)
+        
+        # 7. 构建响应
+        return self._build_response(result, hologram_text)
+    
+    async def _handle_special_events(self, event: Event) -> None:
+        """
+        处理特殊事件（修改配置）
+        
+        这些事件需要在状态处理之前更新 BotConfig
+        """
+        if event.type == EventType.CLAIM:
+            # 认领 Bot
+            player_uuid = event.source_player_uuid or event.source_player
+            self._config.claim(player_uuid, event.source_player)
+            
+        elif event.type == EventType.RELEASE:
+            # 释放 Bot
+            self._config.release()
+    
+    def _save_config_if_needed(self, event: Event) -> None:
+        """需要时保存配置到文件"""
+        # 这些事件会修改配置，需要持久化
+        if event.type in (EventType.CLAIM, EventType.RELEASE):
+            self._config.save(self._config_path)
+            logger.debug(f"Config saved to {self._config_path}")
+    
+    async def _execute_action(self, action: Dict[str, Any]) -> None:
+        """执行动作"""
+        if not self._bot:
+            logger.warning("No bot controller, skipping action")
+            return
+        
+        action_type = action.get("type")
+        
+        try:
+            if action_type == "jump":
+                await self._bot.jump()
+            elif action_type == "wave":
+                # 挥手（暂未实现，用跳跃代替）
+                await self._bot.jump()
+            elif action_type == "celebrate":
+                # 庆祝（跳几下）
+                for _ in range(3):
+                    await self._bot.jump()
+            elif action_type == "start_task":
+                # 开始任务（由 TaskExecutor 处理，这里只是标记）
+                logger.info("Task started signal sent")
+            else:
+                logger.warning(f"Unknown action type: {action_type}")
+        except Exception as e:
+            logger.error(f"Action execution failed: {e}")
+    
+    def _build_response(
+        self, 
+        result: StateResult, 
+        hologram_text: Optional[str]
+    ) -> Dict[str, Any]:
+        """构建响应消息"""
+        response = {
+            "type": "npc_response",
+            "npc": self._config.bot_name,
+            "state": self._current_state.name,
+        }
+        
+        if result.response:
+            response["content"] = result.response
+        
+        if hologram_text:
+            response["hologram_text"] = hologram_text
+        
+        if result.action:
+            response["action"] = result.action.get("type")
+        
+        return response
+    
+    # ==================== 便捷方法 ====================
+    
+    def get_status(self) -> Dict[str, Any]:
+        """获取当前状态摘要"""
+        return {
+            "state": self._current_state.name,
+            "owner": self._config.owner_name,
+            "is_claimed": self._config.is_claimed,
+            "current_task": str(self._context.current_task) if self._context.current_task else None,
+            "hologram": self._config.get_display_status(),
+        }
+    
+    async def force_state(self, state: IState) -> None:
+        """
+        强制切换状态（调试用）
+        
+        跳过正常的事件处理流程
+        """
+        await self._current_state.on_exit(self._context)
+        self._current_state = state
+        await self._current_state.on_enter(self._context)
+        logger.warning(f"Forced state transition to: {state.name}")

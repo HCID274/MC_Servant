@@ -6,12 +6,13 @@ import logging
 
 from protocol import (
     MessageType, PlayerMessage, NpcResponse, BotCommand, 
-    BotStatus, Heartbeat, parse_message
+    BotStatus, Heartbeat, ServantCommandMessage, parse_message
 )
 
 if TYPE_CHECKING:
-    from bot.interfaces import IBotController
+    from bot.interfaces import IBotController, IBotManager
     from llm.interfaces import ILLMClient
+    from state.machine import StateMachine
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class PlayerMessageHandler(IMessageHandler):
     
     职责：
     - 解析玩家意图 (使用 LLM)
+    - 委托给状态机处理 (如果启用)
     - 调用 Bot 执行动作
     - 返回 NPC 响应
     """
@@ -51,9 +53,11 @@ class PlayerMessageHandler(IMessageHandler):
         self, 
         bot_controller: "IBotController",
         llm_client: Optional["ILLMClient"] = None,
+        state_machine: Optional["StateMachine"] = None,
     ):
         self._bot = bot_controller
         self._llm = llm_client
+        self._fsm = state_machine  # 状态机（可选）
         self._intent_recognizer = None
         
         # 延迟初始化意图识别器
@@ -61,6 +65,9 @@ class PlayerMessageHandler(IMessageHandler):
             from llm.intent import IntentRecognizer
             self._intent_recognizer = IntentRecognizer(llm_client)
             logger.info("LLM-based intent recognition enabled")
+        
+        if state_machine:
+            logger.info("State machine enabled for message handling")
     
     async def handle(self, data: dict) -> Optional[dict]:
         """处理玩家消息"""
@@ -72,7 +79,11 @@ class PlayerMessageHandler(IMessageHandler):
             if msg.content.lower() == "hello":
                 return await self._handle_hello(msg)
             
-            # LLM 意图识别
+            # 优先使用状态机处理（如果启用）
+            if self._fsm and self._intent_recognizer:
+                return await self._handle_with_state_machine(msg)
+            
+            # LLM 意图识别（无状态机时的处理）
             if self._intent_recognizer:
                 return await self._handle_with_llm(msg)
             
@@ -82,6 +93,50 @@ class PlayerMessageHandler(IMessageHandler):
         except Exception as e:
             logger.error(f"Error handling player message: {e}")
             return None
+    
+    async def _handle_with_state_machine(self, msg: PlayerMessage) -> Optional[dict]:
+        """
+        使用状态机处理消息 (推荐路径)
+        
+        流程:
+        1. 意图识别
+        2. 构造事件
+        3. 委托给状态机
+        """
+        from llm.intent import Intent
+        from state.events import Event, EventType, intent_to_event_type
+        
+        # 1. 意图识别
+        intent, metadata = await self._intent_recognizer.recognize(msg.content)
+        logger.info(f"Intent: {intent.value}, metadata: {metadata}")
+        
+        # 2. 构造事件
+        event_type = intent_to_event_type(intent.value)
+        
+        # 注意：CLAIM 和 RELEASE 应该通过 /servant claim 等命令触发
+        # 不在这里处理，由 Java 插件发送 command 类型消息
+        
+        event = Event(
+            type=event_type,
+            source_player=msg.player,
+            source_player_uuid=getattr(msg, 'player_uuid', None),  # 如果有 UUID
+            payload={
+                "intent": intent.value,
+                "raw_input": msg.content,
+                "entities": metadata.get("entities", {}),
+                "confidence": metadata.get("confidence", 0),
+            }
+        )
+        
+        # 3. 委托给状态机
+        response = await self._fsm.process(event)
+        
+        # 4. 如果状态机返回响应，添加必要字段
+        if response:
+            response.setdefault("target_player", msg.player)
+            response.setdefault("type", "npc_response")
+        
+        return response
     
     def _get_bot_name(self) -> str:
         """获取当前 Bot 名称"""
@@ -254,6 +309,156 @@ class HeartbeatHandler(IMessageHandler):
         return Heartbeat(timestamp=int(time.time())).model_dump()
 
 
+class ServantCommandHandler(IMessageHandler):
+    """
+    处理系统命令 (claim/release/list)
+    
+    职责：
+    - 验证 target_bot 参数
+    - 委托给状态机处理 claim/release
+    - 查询 BotManager 处理 list
+    """
+    
+    def __init__(
+        self,
+        bot_manager: Optional["IBotManager"] = None,
+        state_machine: Optional["StateMachine"] = None,
+    ):
+        self._bot_manager = bot_manager
+        self._fsm = state_machine
+    
+    async def handle(self, data: dict) -> Optional[dict]:
+        """处理系统命令"""
+        try:
+            msg = ServantCommandMessage.model_validate(data)
+            command = msg.command.lower()
+            
+            # 清理 target_bot (去掉 @ 前缀)
+            bot_name = msg.target_bot.lstrip('@') if msg.target_bot else None
+            
+            logger.info(f"ServantCommand: {command} from {msg.player}, target={bot_name}")
+            
+            if command == "claim":
+                return await self._handle_claim(msg.player, msg.player_uuid, bot_name)
+            elif command == "release":
+                return await self._handle_release(msg.player, msg.player_uuid, bot_name)
+            elif command == "list":
+                return await self._handle_list(msg.player, msg.player_uuid)
+            else:
+                return self._error_response(f"未知命令: {command}")
+                
+        except Exception as e:
+            logger.error(f"Error handling servant command: {e}")
+            return self._error_response(str(e))
+    
+    async def _handle_claim(self, player: str, player_uuid: Optional[str], bot_name: Optional[str]) -> dict:
+        """处理 claim 命令"""
+        # 验证 target_bot
+        if not bot_name:
+            return self._error_response("请指定要认领的女仆，例如: /servant claim @Alice")
+        
+        if not self._fsm:
+            return self._error_response("后端状态机未初始化")
+        
+        # 构造 CLAIM 事件
+        from state.events import Event, EventType
+        event = Event(
+            type=EventType.CLAIM,
+            source_player=player,
+            source_player_uuid=player_uuid,
+            payload={"target_bot": bot_name}
+        )
+        
+        # 委托给状态机处理
+        response = await self._fsm.process(event)
+        
+        if response:
+            response.setdefault("target_player", player)
+            return response
+        
+        return {
+            "type": "npc_response",
+            "target_player": player,
+            "content": f"✅ 认领成功！{bot_name} 现在是你的女仆了~",
+            "npc": bot_name,
+        }
+    
+    async def _handle_release(self, player: str, player_uuid: Optional[str], bot_name: Optional[str]) -> dict:
+        """处理 release 命令"""
+        # 验证 target_bot
+        if not bot_name:
+            return self._error_response("请指定要释放的女仆，例如: /servant release @Alice")
+        
+        if not self._fsm:
+            return self._error_response("后端状态机未初始化")
+        
+        # 构造 RELEASE 事件
+        from state.events import Event, EventType
+        event = Event(
+            type=EventType.RELEASE,
+            source_player=player,
+            source_player_uuid=player_uuid,
+            payload={"target_bot": bot_name}
+        )
+        
+        # 委托给状态机处理
+        response = await self._fsm.process(event)
+        
+        if response:
+            response.setdefault("target_player", player)
+            return response
+        
+        return {
+            "type": "npc_response",
+            "target_player": player,
+            "content": f"✅ 已释放 {bot_name}，她现在自由了~",
+            "npc": bot_name,
+        }
+    
+    async def _handle_list(self, player: str, player_uuid: Optional[str]) -> dict:
+        """处理 list 命令 - 列出玩家拥有的所有 Bot"""
+        owned_bots = []
+        
+        # 遍历 BotManager 中的所有 Bot
+        if self._bot_manager:
+            for bot_name in self._bot_manager.list_bots():
+                # 获取 Bot 的状态机/配置
+                # 注意：当前架构只有一个全局 FSM，未来需要每个 Bot 独立 FSM
+                if self._fsm and self._fsm.config.owner_uuid == player_uuid:
+                    owned_bots.append({
+                        "name": self._fsm.config.bot_name,
+                        "state": self._fsm.current_state.name,
+                    })
+        elif self._fsm:
+            # 降级：只检查当前 FSM
+            if self._fsm.config.owner_uuid == player_uuid:
+                owned_bots.append({
+                    "name": self._fsm.config.bot_name,
+                    "state": self._fsm.current_state.name,
+                })
+        
+        if owned_bots:
+            bot_list = "\n".join([f"  • {b['name']} ({b['state']})" for b in owned_bots])
+            content = f"📋 你的女仆列表:\n{bot_list}"
+        else:
+            content = "📋 你还没有认领任何女仆。使用 /servant claim @名字 来认领~"
+        
+        return {
+            "type": "npc_response",
+            "target_player": player,
+            "content": content,
+            "npc": "System",
+        }
+    
+    def _error_response(self, message: str) -> dict:
+        """构建错误响应"""
+        return {
+            "type": "error",
+            "code": "servant_command_error",
+            "message": message,
+        }
+
+
 class MessageRouter:
     """
     消息路由器
@@ -265,10 +470,17 @@ class MessageRouter:
         self, 
         bot_controller: "IBotController",
         llm_client: Optional["ILLMClient"] = None,
+        state_machine: Optional["StateMachine"] = None,
+        bot_manager: Optional["IBotManager"] = None,
     ):
         self._handlers: dict[MessageType, IMessageHandler] = {
-            MessageType.PLAYER_MESSAGE: PlayerMessageHandler(bot_controller, llm_client),
+            MessageType.PLAYER_MESSAGE: PlayerMessageHandler(
+                bot_controller, llm_client, state_machine
+            ),
             MessageType.HEARTBEAT: HeartbeatHandler(),
+            MessageType.SERVANT_COMMAND: ServantCommandHandler(
+                bot_manager, state_machine
+            ),
         }
     
     async def route(self, data: dict) -> Optional[dict]:

@@ -20,6 +20,9 @@ class MessageType(str, Enum):
     # 双向
     HEARTBEAT = "heartbeat"             # 心跳
     ERROR = "error"                     # 错误
+    
+    # 系统命令 (Java → Python)
+    SERVANT_COMMAND = "servant_command" # 认领/释放/列表
 
 
 class PlayerMessage(BaseModel):
@@ -70,6 +73,19 @@ class ErrorMessage(BaseModel):
     message: str
 
 
+class ServantCommandMessage(BaseModel):
+    """系统命令消息 (Java → Python)
+    
+    用于 claim/release/list 等管理命令
+    """
+    type: MessageType = MessageType.SERVANT_COMMAND
+    player: str
+    player_uuid: Optional[str] = None
+    command: str  # "claim" | "release" | "list"
+    target_bot: Optional[str] = None  # 目标 Bot 名称
+    timestamp: int
+
+
 # 消息类型到模型的映射
 MESSAGE_MODELS = {
     MessageType.PLAYER_MESSAGE: PlayerMessage,
@@ -78,6 +94,7 @@ MESSAGE_MODELS = {
     MessageType.BOT_STATUS: BotStatus,
     MessageType.HEARTBEAT: Heartbeat,
     MessageType.ERROR: ErrorMessage,
+    MessageType.SERVANT_COMMAND: ServantCommandMessage,
 }
 
 
