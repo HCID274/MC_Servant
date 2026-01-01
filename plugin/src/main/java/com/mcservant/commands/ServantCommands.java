@@ -12,13 +12,13 @@ import org.bukkit.entity.Player;
 /**
  * Servant 命令注册器
  * 
- * <p>命令结构：
+ * <p>命令结构（@bot 可选，省略时自动选择默认女仆）：
  * <ul>
- *   <li>/servant claim [@bot] - 认领女仆</li>
- *   <li>/servant release [@bot] - 释放女仆</li>
+ *   <li>/servant [@bot] claim - 认领女仆</li>
+ *   <li>/servant [@bot] release - 释放女仆</li>
  *   <li>/servant list - 列出我的女仆</li>
  *   <li>/servant status - 查看连接状态</li>
- *   <li>/svs <message> [@bot] - 发送自由文本到 LLM</li>
+ *   <li>/svs [@bot] <message> - 发送自由文本到 LLM</li>
  * </ul>
  * </p>
  */
@@ -40,10 +40,10 @@ public final class ServantCommands {
     }
 
     /**
-     * 注册主命令 /servant <action> [@bot]
+     * 注册主命令 /servant [@bot] <action>
      */
     private static void registerMainCommand() {
-        // /servant <action> - 无参数的快捷操作
+        // /servant <action> - 无目标的快捷操作 (使用默认 Bot)
         new CommandAPICommand("servant")
             .withArguments(
                 new StringArgument("action")
@@ -55,20 +55,26 @@ public final class ServantCommands {
             })
             .register();
         
-        // /servant <action> <target> - 带目标的操作
+        // /servant <target_or_action> <action_or_empty> - 带目标或消息的操作
         new CommandAPICommand("servant")
             .withArguments(
-                new StringArgument("action")
-                    .replaceSuggestions(ArgumentSuggestions.strings(QUICK_ACTIONS)),
-                new GreedyStringArgument("target")
+                new StringArgument("first"),
+                new GreedyStringArgument("rest")
             )
             .executesPlayer((player, args) -> {
-                String action = (String) args.get("action");
-                String target = (String) args.get("target");
+                String first = (String) args.get("first");
+                String rest = (String) args.get("rest");
                 
-                // 解析 @botName
-                String botName = parseTargetBot(target);
-                handleQuickAction(player, action, botName);
+                // 检查第一个参数是否是 @botName
+                if (first.startsWith("@") && first.length() > 1) {
+                    String botName = first.substring(1);
+                    String action = rest.trim().split(" ")[0]; // 取第一个词作为action
+                    handleQuickAction(player, action, botName);
+                } else {
+                    // 第一个参数是 action，rest 是 @target (兼容旧格式)
+                    String botName = parseTargetBot(rest);
+                    handleQuickAction(player, first, botName);
+                }
             })
             .register();
     }
@@ -201,9 +207,9 @@ public final class ServantCommands {
     }
     
     /**
-     * 解析消息末尾的 @botName
+     * 解析消息开头的 @botName
      * 
-     * @param rawMessage 原始消息如 "帮我盖房子 @Alice"
+     * @param rawMessage 原始消息如 "@Alice 帮我盖房子" 或 "帮我盖房子"
      * @return ParsedMessage 包含消息和目标 Bot
      */
     private static ParsedMessage parseMessageWithTarget(String rawMessage) {
@@ -211,20 +217,23 @@ public final class ServantCommands {
             return new ParsedMessage("", null);
         }
         
-        // 查找最后一个空格后的 @xxx
         String trimmed = rawMessage.trim();
-        int lastSpace = trimmed.lastIndexOf(' ');
         
-        if (lastSpace > 0) {
-            String lastPart = trimmed.substring(lastSpace + 1);
-            if (lastPart.startsWith("@") && lastPart.length() > 1) {
-                String message = trimmed.substring(0, lastSpace).trim();
-                String targetBot = lastPart.substring(1);
+        // 检查是否以 @ 开头
+        if (trimmed.startsWith("@")) {
+            // 查找第一个空格，分离 @name 和消息
+            int spaceIdx = trimmed.indexOf(' ');
+            if (spaceIdx > 1) {
+                String targetBot = trimmed.substring(1, spaceIdx);  // 提取 name (去掉@)
+                String message = trimmed.substring(spaceIdx + 1).trim();  // 剩余消息
                 return new ParsedMessage(message, targetBot);
+            } else {
+                // 只有 @name，没有消息
+                return new ParsedMessage("", trimmed.substring(1));
             }
         }
         
-        // 没有 @target，整个都是消息
+        // 没有 @，整个都是消息，targetBot = null (使用默认)
         return new ParsedMessage(trimmed, null);
     }
     

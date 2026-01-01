@@ -3,6 +3,10 @@ package com.mcservant.gui;
 import com.alibaba.fastjson2.JSONObject;
 import com.mcservant.MCServant;
 import com.mcservant.websocket.IWebSocketClient;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
@@ -21,8 +25,8 @@ import java.util.List;
  * 女仆管理 GUI 菜单
  * 
  * 9格菜单布局:
- * [对话] [任务] [状态]
- * [设置] [释放] [空]
+ * [对话] [状态] [设置]
+ * [释放] [空]   [空]
  */
 public class ServantMenuGUI implements InventoryHolder, Listener {
     
@@ -32,10 +36,9 @@ public class ServantMenuGUI implements InventoryHolder, Listener {
     
     // 菜单项位置
     private static final int SLOT_CHAT = 0;
-    private static final int SLOT_TASK = 1;
-    private static final int SLOT_STATUS = 2;
-    private static final int SLOT_SETTINGS = 3;
-    private static final int SLOT_RELEASE = 4;
+    private static final int SLOT_STATUS = 1;
+    private static final int SLOT_SETTINGS = 2;
+    private static final int SLOT_RELEASE = 3;
     
     public ServantMenuGUI(Player owner, String botName) {
         this.owner = owner;
@@ -46,20 +49,12 @@ public class ServantMenuGUI implements InventoryHolder, Listener {
     }
     
     private void initializeItems() {
-        // 对话
+        // 对话 (包含对话和下达任务，由 LLM 自动区分)
         inventory.setItem(SLOT_CHAT, createItem(
             Material.WRITABLE_BOOK,
-            "§a💬 对话",
-            "§7点击打开聊天输入",
-            "§7输入 /svs <消息> 与女仆对话"
-        ));
-        
-        // 任务
-        inventory.setItem(SLOT_TASK, createItem(
-            Material.GOLDEN_PICKAXE,
-            "§e🔨 下达任务",
-            "§7让女仆执行任务",
-            "§7例: 帮我盖房子、去挖矿"
+            "§a💬 对话 / 下达任务",
+            "§7点击与女仆对话或下达任务",
+            "§7由 AI 自动理解你的意图"
         ));
         
         // 状态
@@ -124,12 +119,21 @@ public class ServantMenuGUI implements InventoryHolder, Listener {
         switch (slot) {
             case SLOT_CHAT -> {
                 player.closeInventory();
-                player.sendMessage("§a[" + botName + "] §f请使用 §e/svs <消息>§f 与我对话~");
-            }
-            case SLOT_TASK -> {
-                player.closeInventory();
-                player.sendMessage("§a[" + botName + "] §f请告诉我你想让我做什么？");
-                player.sendMessage("§7例: /svs 帮我盖一个小木屋");
+                
+                // 构建预填命令
+                String commandSuggestion = "/svs @" + botName + " ";
+                
+                // 使用 Adventure API 构建可点击消息
+                Component message = Component.text()
+                    .append(Component.text("[MC_Servant] ", NamedTextColor.GOLD))
+                    .append(Component.text("点击此处与 ", NamedTextColor.GREEN))
+                    .append(Component.text(botName, NamedTextColor.YELLOW))
+                    .append(Component.text(" 对话", NamedTextColor.GREEN))
+                    .clickEvent(ClickEvent.suggestCommand(commandSuggestion))
+                    .hoverEvent(HoverEvent.showText(Component.text("点击自动填入命令，然后输入你想说的话", NamedTextColor.GRAY)))
+                    .build();
+                
+                player.sendMessage(message);
             }
             case SLOT_STATUS -> {
                 player.closeInventory();
