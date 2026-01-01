@@ -31,6 +31,19 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     openai_model: str = "qwen-flash"  # 默认使用 qwen-flash (速度快、成本低)
     
+    # PostgreSQL 数据库配置
+    db_host: str = "localhost"
+    db_port: int = 5432
+    db_user: str = "postgres"
+    db_password: str = ""  # 从环境变量加载
+    db_name: str = "mc_servant"
+    db_echo: bool = False  # 是否打印 SQL 语句
+    
+    @property
+    def database_url(self) -> str:
+        """构建 asyncpg 连接 URL"""
+        return f"postgresql+asyncpg://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
+    
     class Config:
         env_prefix = "MC_SERVANT_"
         env_file = ".env"

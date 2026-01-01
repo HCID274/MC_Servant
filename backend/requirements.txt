@@ -12,3 +12,8 @@ javascript>=1.1.0
 # LLM (OpenAI Compatible API - 通义千问)
 openai>=1.0.0
 
+# Database (PostgreSQL + Async ORM)
+asyncpg>=0.29.0
+sqlalchemy[asyncio]>=2.0.0
+alembic>=1.14.0
+greenlet>=3.0.0
