@@ -69,6 +69,21 @@ class IContextRepository(ABC):
     ) -> None:
         """记录压缩操作"""
         pass
+    
+    @abstractmethod
+    async def get_bot_personality(self, bot_name: str) -> str:
+        """获取 Bot 的人格设定"""
+        pass
+    
+    @abstractmethod
+    async def update_bot_personality(self, bot_name: str, personality: str) -> None:
+        """更新 Bot 的人格设定"""
+        pass
+    
+    @abstractmethod
+    async def get_recent_contexts(self, limit: int = 10) -> list:
+        """获取最近活跃的上下文（用于预加载）"""
+        pass
 
 
 # ============================================================
@@ -237,3 +252,48 @@ class ContextRepository(IContextRepository):
             logger.debug(f"Created new bot: {name}")
         
         return bot
+    
+    async def get_bot_personality(self, bot_name: str) -> str:
+        """获取 Bot 的人格设定"""
+        stmt = select(Bot).where(Bot.name == bot_name)
+        result = await self._session.execute(stmt)
+        bot = result.scalar_one_or_none()
+        
+        if bot and bot.personality:
+            return bot.personality
+        return ""
+    
+    async def update_bot_personality(self, bot_name: str, personality: str) -> None:
+        """更新 Bot 的人格设定"""
+        stmt = select(Bot).where(Bot.name == bot_name)
+        result = await self._session.execute(stmt)
+        bot = result.scalar_one_or_none()
+        
+        if bot:
+            bot.personality = personality
+            bot.updated_at = datetime.utcnow()
+            await self._session.flush()
+            logger.info(f"Updated personality for {bot_name}")
+        else:
+            # 如果 Bot 不存在，创建新的
+            new_bot = Bot(name=bot_name, personality=personality)
+            self._session.add(new_bot)
+            await self._session.flush()
+            logger.info(f"Created new bot with personality: {bot_name}")
+    
+    async def get_recent_contexts(self, limit: int = 10) -> list[ConversationContext]:
+        """
+        获取最近活跃的上下文（用于预加载）
+        
+        按 updated_at 降序排列，返回最近活跃的记录
+        """
+        from sqlalchemy import desc
+        
+        stmt = (
+            select(ConversationContext)
+            .order_by(desc(ConversationContext.updated_at))
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+

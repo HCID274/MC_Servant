@@ -89,6 +89,26 @@ class IContextManager(ABC):
         pass
     
     @abstractmethod
+    async def build_chat_context(
+        self, 
+        player_uuid: str, 
+        bot_name: str,
+        player_name: str = "",
+    ):
+        """
+        构建完整的聊天上下文
+        
+        Returns:
+            ChatContextResult: 包含消息列表、token 估算和记忆快照
+        """
+        pass
+    
+    @abstractmethod
+    async def preload_contexts(self, limit: int = 10) -> None:
+        """预加载最近活跃的上下文到缓存"""
+        pass
+    
+    @abstractmethod
     async def start_worker(self) -> None:
         """启动后台压缩 Worker"""
         pass
@@ -111,12 +131,14 @@ class ContextManager(IContextManager):
     - LRU 内存缓存 + 数据库双写
     - 细粒度锁保证并发安全
     - 异步压缩队列避免阻塞
+    - Bot 个性化注入
     """
     
     def __init__(
         self,
         llm_client: Optional[ILLMClient] = None,
         compressor: Optional[IMemoryCompressor] = None,
+        personality_provider = None,  # IPersonalityProvider
     ):
         """
         初始化上下文管理器
@@ -124,9 +146,11 @@ class ContextManager(IContextManager):
         Args:
             llm_client: LLM 客户端（用于压缩）
             compressor: 自定义压缩器（可选，默认创建 MemoryCompressor）
+            personality_provider: 人格提供者（可选，用于 build_chat_context）
         """
         self._llm = llm_client
         self._compressor = compressor or (MemoryCompressor(llm_client) if llm_client else None)
+        self._personality = personality_provider
         
         # LRU 缓存: key -> CachedContext
         self._cache: OrderedDict[str, CachedContext] = OrderedDict()
@@ -581,3 +605,131 @@ class ContextManager(IContextManager):
                 await self._persist_buffer(ctx)
                 
                 logger.warning(f"Snapshot restored for {key}")
+    
+    # ==================== Phase 4 新增方法 ====================
+    
+    async def build_chat_context(
+        self, 
+        player_uuid: str, 
+        bot_name: str,
+        player_name: str = "",
+    ):
+        """
+        构建完整的聊天上下文
+        
+        整合人格设定、核心记忆、情景记忆和对话历史
+        
+        Returns:
+            ChatContextResult: 包含消息列表、token 估算和记忆快照
+        """
+        from .personality import ChatContextResult, estimate_tokens
+        
+        key = self._get_key(player_uuid, bot_name)
+        ctx = self._cache.get(key)
+        
+        if not ctx:
+            # 尝试从数据库加载
+            ctx = await self._load_from_db(player_uuid, player_name or player_uuid, bot_name)
+            if not ctx:
+                # 返回空的上下文结果
+                return ChatContextResult(
+                    messages=[],
+                    token_count=0,
+                    memory_snapshot="",
+                    personality_used="",
+                    memory_depth="none",
+                )
+        
+        messages = []
+        memory_parts = []
+        personality_text = ""
+        
+        # 1. 构建 System Prompt（人格 + 记忆）
+        if self._personality:
+            system_prompt = await self._personality.build_system_prompt(
+                bot_name=bot_name,
+                core_memory=ctx.core_memory,
+                episodic_memory=ctx.episodic_memory,
+                player_name=player_name,
+            )
+            personality_text = await self._personality.get_personality(bot_name)
+        else:
+            # 降级：使用简单的 System Prompt
+            system_prompt = f"你是 {bot_name}，一个 Minecraft 猫娘女仆助手。"
+            if ctx.core_memory:
+                system_prompt += f"\n\n## 核心记忆\n{ctx.core_memory}"
+            if ctx.episodic_memory:
+                system_prompt += f"\n\n## 近期经历\n{ctx.episodic_memory[-1000:]}"
+        
+        messages.append({"role": "system", "content": system_prompt})
+        
+        # 2. 添加 L0 对话历史
+        messages.extend(ctx.raw_buffer)
+        
+        # 3. 构建记忆快照（用于调试）
+        if ctx.core_memory:
+            memory_parts.append(f"[L2 核心记忆]\n{ctx.core_memory}")
+        if ctx.episodic_memory:
+            memory_parts.append(f"[L1 情景记忆]\n{ctx.episodic_memory[:500]}...")
+        memory_parts.append(f"[L0 对话缓冲] {len(ctx.raw_buffer)} 条消息")
+        
+        memory_snapshot = "\n---\n".join(memory_parts)
+        
+        # 4. 估算 Token 数
+        total_text = system_prompt + "".join(m.get("content", "") for m in ctx.raw_buffer)
+        token_count = estimate_tokens(total_text)
+        
+        # 5. 确定记忆深度
+        if ctx.core_memory:
+            depth = "deep"
+        elif ctx.episodic_memory:
+            depth = "standard"
+        else:
+            depth = "fast"
+        
+        return ChatContextResult(
+            messages=messages,
+            token_count=token_count,
+            memory_snapshot=memory_snapshot,
+            personality_used=personality_text,
+            memory_depth=depth,
+        )
+    
+    async def preload_contexts(self, limit: int = 10) -> None:
+        """
+        预加载最近活跃的上下文到缓存
+        
+        在服务启动时调用，减少首次对话的延迟
+        """
+        from db.database import db
+        from db.context_repository import ContextRepository
+        
+        try:
+            async with db.session() as session:
+                repo = ContextRepository(session)
+                recent_contexts = await repo.get_recent_contexts(limit)
+                
+                for db_ctx in recent_contexts:
+                    # 需要获取 player_uuid 和 bot_name
+                    # 这里需要查询关联的 Player 和 Bot
+                    player = db_ctx.player
+                    bot = db_ctx.bot
+                    
+                    if player and bot:
+                        key = self._get_key(player.uuid, bot.name)
+                        
+                        if key not in self._cache:
+                            self._cache[key] = CachedContext(
+                                ctx_id=db_ctx.id,
+                                player_uuid=player.uuid,
+                                bot_name=bot.name,
+                                raw_buffer=list(db_ctx.raw_buffer) if db_ctx.raw_buffer else [],
+                                episodic_memory=db_ctx.episodic_memory or "",
+                                core_memory=db_ctx.core_memory or "",
+                            )
+                
+                logger.info(f"Preloaded {len(recent_contexts)} contexts")
+                
+        except Exception as e:
+            logger.warning(f"Failed to preload contexts: {e}")
+

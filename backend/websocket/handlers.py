@@ -232,8 +232,12 @@ class PlayerMessageHandler(IMessageHandler):
             action = "cancel_task"
             
         else:  # CHAT or UNKNOWN
-            # 使用 LLM 生成闲聊回复
-            content = await self._generate_chat_response(msg.content, msg.player)
+            # 使用 LLM 生成闲聊回复（集成记忆系统）
+            content = await self._generate_chat_response(
+                msg.content, 
+                msg.player,
+                player_uuid=player_uuid,
+            )
             hologram = "💬"
             action = "chat"
         
@@ -262,32 +266,65 @@ class PlayerMessageHandler(IMessageHandler):
         )
         return response.model_dump()
     
-    async def _generate_chat_response(self, user_input: str, player_name: str) -> str:
-        """使用 LLM 生成闲聊回复"""
+    async def _generate_chat_response(
+        self, 
+        user_input: str, 
+        player_name: str,
+        player_uuid: str = None,
+    ) -> str:
+        """
+        使用 LLM 生成闲聊回复
+        
+        集成分层记忆系统：使用 build_chat_context 构建完整上下文
+        """
         if not self._llm:
             return f"你好呀 {player_name}~"
         
         try:
-            messages = [
-                {
-                    "role": "system",
-                    "content": f"""你是 Minecraft 游戏中的一个可爱猫娘助手。
-你的名字是 {self._get_bot_name()}。
+            bot_name = self._get_bot_name()
+            player_uuid = player_uuid or player_name
+            
+            # 使用 ContextManager 构建完整上下文（人格 + 记忆）
+            if self._ctx_manager:
+                ctx_result = await self._ctx_manager.build_chat_context(
+                    player_uuid=player_uuid,
+                    bot_name=bot_name,
+                    player_name=player_name,
+                )
+                
+                # 使用构建好的消息列表
+                messages = ctx_result.messages.copy()
+                messages.append({"role": "user", "content": user_input})
+                
+                # 记录调试信息
+                logger.debug(
+                    f"Chat context built: tokens≈{ctx_result.token_count}, "
+                    f"depth={ctx_result.memory_depth}"
+                )
+                if ctx_result.memory_snapshot:
+                    logger.debug(f"Memory snapshot:\n{ctx_result.memory_snapshot[:200]}...")
+            else:
+                # 降级：使用硬编码的 System Prompt
+                messages = [
+                    {
+                        "role": "system",
+                        "content": f"""你是 Minecraft 游戏中的一个可爱猫娘助手。
+你的名字是 {bot_name}。
 你正在和玩家 {player_name} 聊天。
 
 回复要求：
 - 保持可爱、友好的语气
-- 回复简短（不超过50字）
+- 回复简短（不超过80字）
 - 可以使用表情符号
 - 每句话结尾必须加一个喵~
 - 如果玩家问你能做什么，告诉他们你可以帮忙建造、挖矿、种田、守卫"""
-                },
-                {"role": "user", "content": user_input}
-            ]
+                    },
+                    {"role": "user", "content": user_input}
+                ]
             
             response = await self._llm.chat(
                 messages=messages,
-                max_tokens=100,
+                max_tokens=150,
                 temperature=0.8,
             )
             return response.strip()
