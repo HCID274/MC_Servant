@@ -344,6 +344,8 @@ class ServantCommandHandler(IMessageHandler):
                 return await self._handle_release(msg.player, msg.player_uuid, bot_name)
             elif command == "list":
                 return await self._handle_list(msg.player, msg.player_uuid)
+            elif command == "status":
+                return await self._handle_status(msg.player, msg.player_uuid, bot_name)
             else:
                 return self._error_response(f"未知命令: {command}")
                 
@@ -353,12 +355,13 @@ class ServantCommandHandler(IMessageHandler):
     
     async def _handle_claim(self, player: str, player_uuid: Optional[str], bot_name: Optional[str]) -> dict:
         """处理 claim 命令"""
-        # 验证 target_bot
-        if not bot_name:
-            return self._error_response("请指定要认领的女仆，例如: /servant claim @Alice")
-        
         if not self._fsm:
             return self._error_response("后端状态机未初始化")
+        
+        # 如果没指定 target_bot，使用当前 Bot
+        if not bot_name:
+            bot_name = self._fsm.config.bot_name
+            logger.info(f"No target specified, using default bot: {bot_name}")
         
         # 构造 CLAIM 事件
         from state.events import Event, EventType
@@ -385,12 +388,13 @@ class ServantCommandHandler(IMessageHandler):
     
     async def _handle_release(self, player: str, player_uuid: Optional[str], bot_name: Optional[str]) -> dict:
         """处理 release 命令"""
-        # 验证 target_bot
-        if not bot_name:
-            return self._error_response("请指定要释放的女仆，例如: /servant release @Alice")
-        
         if not self._fsm:
             return self._error_response("后端状态机未初始化")
+        
+        # 如果没指定 target_bot，使用当前 Bot
+        if not bot_name:
+            bot_name = self._fsm.config.bot_name
+            logger.info(f"No target specified, using default bot: {bot_name}")
         
         # 构造 RELEASE 事件
         from state.events import Event, EventType
@@ -419,19 +423,30 @@ class ServantCommandHandler(IMessageHandler):
         """处理 list 命令 - 列出玩家拥有的所有 Bot"""
         owned_bots = []
         
+        def is_owner(config) -> bool:
+            """检查玩家是否是主人 (匹配 UUID 或 玩家名)"""
+            if config.owner_uuid == player_uuid:
+                return True
+            if config.owner_name == player:
+                return True
+            # 兼容：owner_uuid 可能存的是玩家名
+            if config.owner_uuid == player:
+                return True
+            return False
+        
         # 遍历 BotManager 中的所有 Bot
         if self._bot_manager:
             for bot_name in self._bot_manager.list_bots():
                 # 获取 Bot 的状态机/配置
                 # 注意：当前架构只有一个全局 FSM，未来需要每个 Bot 独立 FSM
-                if self._fsm and self._fsm.config.owner_uuid == player_uuid:
+                if self._fsm and is_owner(self._fsm.config):
                     owned_bots.append({
                         "name": self._fsm.config.bot_name,
                         "state": self._fsm.current_state.name,
                     })
         elif self._fsm:
             # 降级：只检查当前 FSM
-            if self._fsm.config.owner_uuid == player_uuid:
+            if is_owner(self._fsm.config):
                 owned_bots.append({
                     "name": self._fsm.config.bot_name,
                     "state": self._fsm.current_state.name,
@@ -448,6 +463,49 @@ class ServantCommandHandler(IMessageHandler):
             "target_player": player,
             "content": content,
             "npc": "System",
+        }
+    
+    async def _handle_status(self, player: str, player_uuid: Optional[str], bot_name: Optional[str]) -> dict:
+        """处理 status 命令 - 查询 Bot 状态"""
+        if not self._fsm:
+            return self._error_response("后端状态机未初始化")
+        
+        # 如果没指定 target_bot，使用当前 Bot
+        if not bot_name:
+            bot_name = self._fsm.config.bot_name
+        
+        # 获取状态信息
+        status = self._fsm.get_status()
+        state = status.get("state", "unknown")
+        owner = status.get("owner", "无")
+        is_claimed = status.get("is_claimed", False)
+        
+        # 尝试获取位置
+        position_str = "未知"
+        if self._fsm._bot:
+            try:
+                pos = await self._fsm._bot.get_position()
+                if pos:
+                    position_str = f"({pos[0]:.0f}, {pos[1]:.0f}, {pos[2]:.0f})"
+            except Exception:
+                pass
+        
+        # 构建状态消息
+        lines = [
+            f"📊 {bot_name} 的状态:",
+            f"  • 状态: {state}",
+            f"  • 位置: {position_str}",
+            f"  • 主人: {owner if is_claimed else '无主'}",
+        ]
+        
+        if status.get("current_task"):
+            lines.append(f"  • 当前任务: {status['current_task']}")
+        
+        return {
+            "type": "npc_response",
+            "target_player": player,
+            "content": "\n".join(lines),
+            "npc": bot_name,
         }
     
     def _error_response(self, message: str) -> dict:

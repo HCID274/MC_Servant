@@ -65,19 +65,31 @@ class BotConfig(BaseModel):
         self.claimed_at = None
         logger.info(f"Bot {self.bot_name} released by {old_owner}")
     
-    def is_owner(self, player_uuid: Optional[str]) -> bool:
+    def is_owner(self, player_uuid: Optional[str], player_name: Optional[str] = None) -> bool:
         """
         检查玩家是否是主人
         
         Args:
             player_uuid: 玩家 UUID
+            player_name: 玩家名称 (可选，用于兼容匹配)
             
         Returns:
             True 如果是主人
         """
         if not self.is_claimed:
             return False
-        return self.owner_uuid == player_uuid
+        
+        # 匹配 UUID
+        if player_uuid and self.owner_uuid == player_uuid:
+            return True
+        
+        # 匹配玩家名 (兼容 owner_uuid 存的是玩家名的情况)
+        if player_name and self.owner_name == player_name:
+            return True
+        if player_name and self.owner_uuid == player_name:
+            return True
+        
+        return False
     
     def save(self, path: Path) -> None:
         """

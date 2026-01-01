@@ -81,8 +81,8 @@ class PermissionGate(IPermissionGate):
         Returns:
             PermissionResult
         """
-        # 判断是否是主人
-        is_owner = config.is_owner(event.source_player_uuid)
+        # 判断是否是主人 (传入 UUID 和玩家名，兼容两种匹配方式)
+        is_owner = config.is_owner(event.source_player_uuid, event.source_player)
         
         # 特殊情况 1: CLAIM 事件
         if event.type == EventType.CLAIM:
