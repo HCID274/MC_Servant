@@ -37,15 +37,24 @@ bot_manager: Optional[BotManager] = None
 message_router: Optional[MessageRouter] = None
 llm_client = None  # LLM 客户端 (Optional)
 state_machine = None  # 状态机 (Optional)
+context_manager = None  # 记忆上下文管理器 (Optional)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global bot_manager, message_router, llm_client, state_machine
+    global bot_manager, message_router, llm_client, state_machine, context_manager
     
     # 启动时初始化
     logger.info("Initializing MC_Servant Backend...")
+    
+    # 初始化数据库连接
+    try:
+        from db.database import db
+        await db.init(settings.database_url, echo=settings.db_echo)
+        logger.info("Database initialized")
+    except Exception as e:
+        logger.warning(f"Database initialization failed (memory mode): {e}")
     
     # 初始化 LLM 客户端 (如果配置了 API Key)
     if settings.openai_api_key:
@@ -57,6 +66,12 @@ async def lifespan(app: FastAPI):
                 model=settings.openai_model,
             )
             logger.info(f"LLM client initialized: {settings.openai_model}")
+            
+            # 初始化 ContextManager (需要 LLM 客户端)
+            from llm.context_manager import ContextManager
+            context_manager = ContextManager(llm_client=llm_client)
+            await context_manager.start_worker()
+            logger.info("ContextManager initialized with compression worker")
         except Exception as e:
             logger.warning(f"Failed to initialize LLM client: {e}")
             llm_client = None
@@ -94,8 +109,8 @@ async def lifespan(app: FastAPI):
         )
         logger.info(f"State machine initialized: state={state_machine.current_state.name}, bot={bot_config.bot_name}")
         
-        # 初始化消息路由器 (with LLM client and state machine)
-        message_router = MessageRouter(default_bot, llm_client, state_machine, bot_manager)
+        # 初始化消息路由器 (with LLM client, state machine, and context manager)
+        message_router = MessageRouter(default_bot, llm_client, state_machine, bot_manager, context_manager)
     except Exception as e:
         logger.warning(f"Failed to spawn default bot: {e}")
         logger.info("Will try to spawn bot when Java plugin connects")
@@ -132,7 +147,7 @@ async def lifespan(app: FastAPI):
         )
         logger.info(f"State machine initialized (MockBot): state={state_machine.current_state.name}")
         
-        message_router = MessageRouter(mock_bot, llm_client, state_machine, bot_manager)
+        message_router = MessageRouter(mock_bot, llm_client, state_machine, bot_manager, context_manager)
     
     logger.info(f"WebSocket server ready on ws://{settings.ws_host}:{settings.ws_port}")
     
@@ -140,6 +155,20 @@ async def lifespan(app: FastAPI):
     
     # 关闭时清理
     logger.info("Shutting down MC_Servant Backend...")
+    
+    # 停止 ContextManager Worker
+    if context_manager:
+        await context_manager.stop_worker()
+        logger.info("ContextManager worker stopped")
+    
+    # 关闭数据库连接
+    try:
+        from db.database import db
+        await db.close()
+        logger.info("Database connection closed")
+    except:
+        pass
+    
     if bot_manager:
         await bot_manager.shutdown()
 

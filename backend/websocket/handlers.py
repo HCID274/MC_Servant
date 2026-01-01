@@ -54,10 +54,12 @@ class PlayerMessageHandler(IMessageHandler):
         bot_controller: "IBotController",
         llm_client: Optional["ILLMClient"] = None,
         state_machine: Optional["StateMachine"] = None,
+        context_manager = None,  # IContextManager
     ):
         self._bot = bot_controller
         self._llm = llm_client
         self._fsm = state_machine  # 状态机（可选）
+        self._ctx_manager = context_manager  # 记忆上下文管理器（可选）
         self._intent_recognizer = None
         
         # 延迟初始化意图识别器
@@ -68,6 +70,9 @@ class PlayerMessageHandler(IMessageHandler):
         
         if state_machine:
             logger.info("State machine enabled for message handling")
+        
+        if context_manager:
+            logger.info("Context manager enabled for memory persistence")
     
     async def handle(self, data: dict) -> Optional[dict]:
         """处理玩家消息"""
@@ -163,6 +168,23 @@ class PlayerMessageHandler(IMessageHandler):
         """使用 LLM 处理消息"""
         from llm.intent import Intent
         
+        # 获取玩家 UUID (如果有)
+        player_uuid = getattr(msg, 'player_uuid', None) or msg.player
+        bot_name = self._get_bot_name()
+        
+        # 记录用户消息到记忆系统
+        if self._ctx_manager:
+            try:
+                await self._ctx_manager.add_message(
+                    player_uuid=player_uuid,
+                    player_name=msg.player,
+                    bot_name=bot_name,
+                    role="user",
+                    content=msg.content,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record user message: {e}")
+        
         # 识别意图
         intent, metadata = await self._intent_recognizer.recognize(msg.content)
         confidence = metadata.get("confidence", 0)
@@ -217,6 +239,19 @@ class PlayerMessageHandler(IMessageHandler):
         
         # 注意：不在这里调用 self._bot.chat()
         # Java 插件会通过 WebSocket 响应来显示消息，避免重复
+        
+        # 记录助手回复到记忆系统
+        if self._ctx_manager:
+            try:
+                await self._ctx_manager.add_message(
+                    player_uuid=player_uuid,
+                    player_name=msg.player,
+                    bot_name=bot_name,
+                    role="assistant",
+                    content=content,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record assistant message: {e}")
         
         response = NpcResponse(
             npc=self._get_bot_name(),
@@ -530,10 +565,11 @@ class MessageRouter:
         llm_client: Optional["ILLMClient"] = None,
         state_machine: Optional["StateMachine"] = None,
         bot_manager: Optional["IBotManager"] = None,
+        context_manager = None,  # IContextManager
     ):
         self._handlers: dict[MessageType, IMessageHandler] = {
             MessageType.PLAYER_MESSAGE: PlayerMessageHandler(
-                bot_controller, llm_client, state_machine
+                bot_controller, llm_client, state_machine, context_manager
             ),
             MessageType.HEARTBEAT: HeartbeatHandler(),
             MessageType.SERVANT_COMMAND: ServantCommandHandler(
