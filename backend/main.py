@@ -40,6 +40,8 @@ llm_client = None  # LLM 客户端 (Optional)
 state_machine = None  # 状态机 (Optional)
 context_manager = None  # 记忆上下文管理器 (Optional)
 lifecycle_manager = None  # 生命周期管理器 (Optional)
+player_repo = None  # 玩家数据仓库 (Optional)
+bot_repo = None  # Bot 数据仓库 (Optional)
 
 
 @asynccontextmanager
@@ -55,6 +57,13 @@ async def lifespan(app: FastAPI):
         from db.database import db
         await db.init(settings.database_url, echo=settings.db_echo)
         logger.info("Database initialized")
+        
+        # 初始化数据仓库
+        from db.player_repository import PlayerRepository
+        from db.bot_repository import BotRepository
+        player_repo = PlayerRepository()
+        bot_repo = BotRepository()
+        logger.info("Data repositories initialized")
     except Exception as e:
         logger.warning(f"Database initialization failed (memory mode): {e}")
     
@@ -120,8 +129,29 @@ async def lifespan(app: FastAPI):
         )
         logger.info("Lifecycle manager initialized")
         
-        # 初始化消息路由器 (with LLM client, state machine, and context manager)
-        message_router = MessageRouter(default_bot, llm_client, state_machine, bot_manager, context_manager)
+        # 确保 Bot 存在于数据库中
+        if bot_repo:
+            try:
+                await bot_repo.upsert(
+                    name=default_bot.username,
+                    personality=bot_config.personality if hasattr(bot_config, 'personality') else "",
+                    auto_spawn=True
+                )
+                logger.info(f"Bot '{default_bot.username}' synced to database")
+            except Exception as e:
+                logger.warning(f"Failed to sync bot to database: {e}")
+        
+        # 初始化消息路由器 (with LLM client, state machine, context manager, and repositories)
+        message_router = MessageRouter(
+            bot_controller=default_bot,
+            llm_client=llm_client,
+            state_machine=state_machine,
+            bot_manager=bot_manager,
+            context_manager=context_manager,
+            player_repo=player_repo,
+            bot_repo=bot_repo,
+            lifecycle_manager=lifecycle_manager,
+        )
     except Exception as e:
         logger.warning(f"Failed to spawn default bot: {e}")
         logger.info("Will try to spawn bot when Java plugin connects")
@@ -158,7 +188,16 @@ async def lifespan(app: FastAPI):
         )
         logger.info(f"State machine initialized (MockBot): state={state_machine.current_state.name}")
         
-        message_router = MessageRouter(mock_bot, llm_client, state_machine, bot_manager, context_manager)
+        message_router = MessageRouter(
+            bot_controller=mock_bot,
+            llm_client=llm_client,
+            state_machine=state_machine,
+            bot_manager=bot_manager,
+            context_manager=context_manager,
+            player_repo=player_repo,
+            bot_repo=bot_repo,
+            lifecycle_manager=lifecycle_manager,
+        )
     
     logger.info(f"WebSocket server ready on ws://{settings.ws_host}:{settings.ws_port}")
     
@@ -230,6 +269,9 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     # Init Sync: 连接后立即发送 Bot 名称列表
     await send_init_config(websocket)
     
+    # Cold Start Sync: 请求 Java 端发送当前在线玩家列表
+    await send_request_sync(websocket)
+    
     try:
         while True:
             # 接收消息
@@ -246,7 +288,16 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     await handle_bot_spawned(message, client_id)
                     continue
                 elif msg_type in ("player_join", "player_quit"):
+                    # 生命周期管理器处理 (Bot 上下线逻辑)
                     await handle_player_event(message, client_id)
+                    # player_quit 还需要更新数据库，继续到 MessageRouter
+                    if msg_type == "player_quit" and message_router:
+                        await message_router.route(message)
+                    continue
+                elif msg_type in ("player_login", "init_sync"):
+                    # 数据库同步处理 (通过 MessageRouter)
+                    if message_router:
+                        await message_router.route(message)
                     continue
                 elif msg_type == "online_players_sync":
                     await handle_online_players_sync(message, client_id)
@@ -299,6 +350,20 @@ async def send_init_config(websocket: WebSocket):
     
     await websocket.send_text(json.dumps(init_msg))
     logger.info(f"[Init Sync] Sent bot_names: {bot_names}")
+
+
+async def send_request_sync(websocket: WebSocket):
+    """发送同步请求给 Java 插件 (Cold Start Sync)"""
+    import time
+    
+    # 请求 Java 端发送当前在线玩家列表
+    request_msg = {
+        "type": "request_sync",
+        "timestamp": int(time.time())
+    }
+    
+    await websocket.send_text(json.dumps(request_msg))
+    logger.info("[Cold Start] Sent request_sync to Java")
 
 
 async def handle_bot_spawned(message: dict, client_id: str):

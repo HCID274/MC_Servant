@@ -8,12 +8,25 @@
 # - conversation_contexts: 每个玩家-Bot 对的独立记忆 (L0/L1/L2)
 # - compression_logs: LLM 压缩操作日志 (可追溯)
 
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from sqlalchemy import String, Text, Integer, DateTime, ForeignKey
+from sqlalchemy import String, Text, Integer, DateTime, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+# 北京时区 (UTC+8)
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def beijing_now() -> datetime:
+    """
+    获取当前北京时间 (无时区信息)
+    
+    返回 naive datetime 以兼容 TIMESTAMP WITHOUT TIME ZONE 列类型
+    """
+    return datetime.now(BEIJING_TZ).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -32,9 +45,14 @@ class Player(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     uuid: Mapped[str] = mapped_column(String(36), unique=True, index=True, comment="Minecraft UUID")
     name: Mapped[str] = mapped_column(String(16), comment="当前游戏名")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    # 在线状态 (v2 新增)
+    is_online: Mapped[bool] = mapped_column(Boolean, default=False, comment="当前是否在线")
+    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="最后登录时间")
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=beijing_now, onupdate=beijing_now
     )
     
     # 关系
@@ -43,24 +61,32 @@ class Player(Base):
     )
     
     def __repr__(self) -> str:
-        return f"<Player(uuid={self.uuid}, name={self.name})>"
+        return f"<Player(uuid={self.uuid}, name={self.name}, online={self.is_online})>"
 
 
 class Bot(Base):
     """
     Bot 表 - 记录 NPC 助手信息
     
-    每个 Bot 有独立的人格设定，可以被多个玩家认领
+    每个 Bot 有独立的人格设定，可以被玩家认领
+    设计原则：简单的接口，深度的功能
     """
     __tablename__ = "bots"
     
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(32), unique=True, index=True, comment="Bot 名称")
     personality: Mapped[str] = mapped_column(Text, default="", comment="人格设定 (System Prompt)")
-    owner_uuid: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, comment="当前主人 UUID")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    # 所有权信息 (v2 新增 owner_name, skin_url, claimed_at, auto_spawn)
+    owner_uuid: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True, comment="当前主人 UUID")
+    owner_name: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, comment="当前主人名称")
+    skin_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="皮肤 URL")
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="认领时间")
+    auto_spawn: Mapped[bool] = mapped_column(Boolean, default=True, comment="主人上线时自动生成")
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=beijing_now, onupdate=beijing_now
     )
     
     # 关系
@@ -68,8 +94,13 @@ class Bot(Base):
         back_populates="bot", cascade="all, delete-orphan"
     )
     
+    @property
+    def is_claimed(self) -> bool:
+        """Bot 是否已被认领"""
+        return self.owner_uuid is not None
+    
     def __repr__(self) -> str:
-        return f"<Bot(name={self.name}, owner={self.owner_uuid})>"
+        return f"<Bot(name={self.name}, owner={self.owner_name})>"
 
 
 class ConversationContext(Base):
@@ -98,9 +129,9 @@ class ConversationContext(Base):
     core_memory: Mapped[str] = mapped_column(Text, default="", comment="L2 核心记忆")
     
     # 元数据
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=beijing_now, onupdate=beijing_now
     )
     last_compressed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     compression_count: Mapped[int] = mapped_column(Integer, default=0, comment="压缩次数")
@@ -150,7 +181,7 @@ class CompressionLog(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, comment="输出 Token 数")
     before_snapshot: Mapped[str] = mapped_column(Text, comment="压缩前内容快照")
     after_snapshot: Mapped[str] = mapped_column(Text, comment="压缩后内容")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
     
     # 关系
     context: Mapped["ConversationContext"] = relationship(back_populates="compression_logs")

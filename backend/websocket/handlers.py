@@ -104,12 +104,31 @@ class PlayerMessageHandler(IMessageHandler):
         使用状态机处理消息 (推荐路径)
         
         流程:
-        1. 意图识别
-        2. 构造事件
-        3. 委托给状态机
+        1. 记录用户消息到上下文
+        2. 意图识别
+        3. 构造事件
+        4. 委托给状态机
+        5. 记录助手响应到上下文
         """
         from llm.intent import Intent
         from state.events import Event, EventType, intent_to_event_type
+        
+        # 获取玩家 UUID 和 Bot 名称
+        player_uuid = getattr(msg, 'player_uuid', None) or msg.player
+        bot_name = self._get_bot_name()
+        
+        # 0. 记录用户消息到记忆系统
+        if self._ctx_manager:
+            try:
+                await self._ctx_manager.add_message(
+                    player_uuid=player_uuid,
+                    player_name=msg.player,
+                    bot_name=bot_name,
+                    role="user",
+                    content=msg.content,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record user message: {e}")
         
         # 1. 意图识别
         intent, metadata = await self._intent_recognizer.recognize(msg.content)
@@ -140,6 +159,20 @@ class PlayerMessageHandler(IMessageHandler):
         if response:
             response.setdefault("target_player", msg.player)
             response.setdefault("type", "npc_response")
+            
+            # 5. 记录助手响应到记忆系统
+            if self._ctx_manager:
+                try:
+                    response_content = response.get("content", "")
+                    await self._ctx_manager.add_message(
+                        player_uuid=player_uuid,
+                        player_name=msg.player,
+                        bot_name=bot_name,
+                        role="assistant",
+                        content=response_content,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record assistant message: {e}")
         
         return response
     
@@ -396,6 +429,7 @@ class ServantCommandHandler(IMessageHandler):
     职责：
     - 验证 target_bot 参数
     - 委托给状态机处理 claim/release
+    - 同步到数据库
     - 查询 BotManager 处理 list
     """
     
@@ -403,9 +437,11 @@ class ServantCommandHandler(IMessageHandler):
         self,
         bot_manager: Optional["IBotManager"] = None,
         state_machine: Optional["StateMachine"] = None,
+        bot_repo = None,  # IBotRepository
     ):
         self._bot_manager = bot_manager
         self._fsm = state_machine
+        self._bot_repo = bot_repo
     
     async def handle(self, data: dict) -> Optional[dict]:
         """处理系统命令"""
@@ -455,6 +491,14 @@ class ServantCommandHandler(IMessageHandler):
         # 委托给状态机处理
         response = await self._fsm.process(event)
         
+        # 同步到数据库
+        if self._bot_repo:
+            try:
+                await self._bot_repo.claim(bot_name, player_uuid or player, player)
+                logger.info(f"[DB] Bot '{bot_name}' claimed by {player}")
+            except Exception as e:
+                logger.error(f"[DB] Failed to sync claim: {e}")
+        
         if response:
             response.setdefault("target_player", player)
             return response
@@ -487,6 +531,14 @@ class ServantCommandHandler(IMessageHandler):
         
         # 委托给状态机处理
         response = await self._fsm.process(event)
+        
+        # 同步到数据库
+        if self._bot_repo:
+            try:
+                await self._bot_repo.release(bot_name)
+                logger.info(f"[DB] Bot '{bot_name}' released")
+            except Exception as e:
+                logger.error(f"[DB] Failed to sync release: {e}")
         
         if response:
             response.setdefault("target_player", player)
@@ -597,6 +649,164 @@ class ServantCommandHandler(IMessageHandler):
         }
 
 
+class PlayerLoginHandler(IMessageHandler):
+    """
+    处理玩家登录 (AuthMe 验证通过后)
+    
+    职责：
+    - 更新数据库玩家在线状态
+    - 触发 Bot 上线逻辑
+    
+    设计原则：依赖抽象而非具体
+    """
+    
+    def __init__(
+        self,
+        player_repo = None,  # IPlayerRepository
+        bot_repo = None,     # IBotRepository
+        lifecycle_manager = None,  # BotLifecycleManager
+    ):
+        self._player_repo = player_repo
+        self._bot_repo = bot_repo
+        self._lifecycle = lifecycle_manager
+    
+    async def handle(self, data: dict) -> Optional[dict]:
+        """处理玩家登录消息"""
+        uuid = data.get("player_uuid")
+        name = data.get("player")
+        
+        if not uuid or not name:
+            logger.warning(f"player_login missing uuid or name: {data}")
+            return None
+        
+        logger.info(f"[PlayerLogin] {name} ({uuid})")
+        
+        # 1. 更新数据库 is_online = True
+        if self._player_repo:
+            try:
+                await self._player_repo.set_online(uuid, name)
+                logger.debug(f"[PlayerLogin] DB updated: {name} is_online=True")
+            except Exception as e:
+                logger.error(f"[PlayerLogin] DB update failed: {e}")
+        
+        # 2. 触发 Bot 生成逻辑
+        if self._lifecycle:
+            try:
+                await self._lifecycle.on_player_event(
+                    event_type="player_join",
+                    player=name,
+                    player_uuid=uuid,
+                )
+            except Exception as e:
+                logger.error(f"[PlayerLogin] Lifecycle event failed: {e}")
+        
+        return None
+
+
+class PlayerQuitHandler(IMessageHandler):
+    """
+    处理玩家退出 (AuthMe 登出或断开连接)
+    
+    职责：
+    - 更新数据库玩家离线状态
+    - 触发 Bot 下线倒计时
+    """
+    
+    def __init__(
+        self,
+        player_repo = None,  # IPlayerRepository
+        lifecycle_manager = None,  # BotLifecycleManager
+    ):
+        self._player_repo = player_repo
+        self._lifecycle = lifecycle_manager
+    
+    async def handle(self, data: dict) -> Optional[dict]:
+        """处理玩家退出消息"""
+        uuid = data.get("player_uuid")
+        name = data.get("player")
+        
+        if not uuid:
+            logger.warning(f"player_quit missing uuid: {data}")
+            return None
+        
+        logger.info(f"[PlayerQuit] {name} ({uuid})")
+        
+        # 1. 更新数据库 is_online = False
+        if self._player_repo:
+            try:
+                await self._player_repo.set_offline(uuid)
+                logger.debug(f"[PlayerQuit] DB updated: {uuid} is_online=False")
+            except Exception as e:
+                logger.error(f"[PlayerQuit] DB update failed: {e}")
+        
+        # 2. 触发 Bot 下线流程 (10h 倒计时)
+        if self._lifecycle:
+            try:
+                await self._lifecycle.on_player_event(
+                    event_type="player_quit",
+                    player=name,
+                    player_uuid=uuid,
+                )
+            except Exception as e:
+                logger.error(f"[PlayerQuit] Lifecycle event failed: {e}")
+        
+        return None
+
+
+class InitSyncHandler(IMessageHandler):
+    """
+    处理初始化同步 (Cold Start Sync)
+    
+    职责：
+    - 批量更新数据库玩家在线状态
+    - 触发 Bot 生成逻辑
+    
+    触发时机：
+    - Python 后端重启后发送 request_sync
+    - Java 端响应 init_sync 包含在线玩家列表
+    """
+    
+    def __init__(
+        self,
+        player_repo = None,  # IPlayerRepository
+        lifecycle_manager = None,  # BotLifecycleManager
+    ):
+        self._player_repo = player_repo
+        self._lifecycle = lifecycle_manager
+    
+    async def handle(self, data: dict) -> Optional[dict]:
+        """处理初始化同步消息"""
+        players = data.get("players", [])
+        use_authme = data.get("use_authme", False)
+        
+        logger.info(f"[InitSync] Received {len(players)} players (AuthMe={use_authme})")
+        
+        # 1. 先将所有玩家标记为离线
+        if self._player_repo:
+            try:
+                count = await self._player_repo.set_all_offline()
+                logger.debug(f"[InitSync] Reset {count} players to offline")
+            except Exception as e:
+                logger.error(f"[InitSync] Reset offline failed: {e}")
+        
+        # 2. 批量更新在线玩家
+        if self._player_repo:
+            for p in players:
+                try:
+                    await self._player_repo.set_online(p["uuid"], p["name"])
+                except Exception as e:
+                    logger.error(f"[InitSync] Failed to set online: {p}: {e}")
+        
+        # 3. 触发 Bot 生成逻辑
+        if self._lifecycle:
+            try:
+                await self._lifecycle.handle_online_players_sync(players)
+            except Exception as e:
+                logger.error(f"[InitSync] Lifecycle sync failed: {e}")
+        
+        return None
+
+
 class MessageRouter:
     """
     消息路由器
@@ -611,6 +821,9 @@ class MessageRouter:
         state_machine: Optional["StateMachine"] = None,
         bot_manager: Optional["IBotManager"] = None,
         context_manager = None,  # IContextManager
+        player_repo = None,  # IPlayerRepository
+        bot_repo = None,  # IBotRepository
+        lifecycle_manager = None,  # BotLifecycleManager
     ):
         self._handlers: dict[MessageType, IMessageHandler] = {
             MessageType.PLAYER_MESSAGE: PlayerMessageHandler(
@@ -618,14 +831,36 @@ class MessageRouter:
             ),
             MessageType.HEARTBEAT: HeartbeatHandler(),
             MessageType.SERVANT_COMMAND: ServantCommandHandler(
-                bot_manager, state_machine
+                bot_manager, state_machine, bot_repo
             ),
         }
+        
+        # 添加新的处理器（数据库同步相关）
+        self._player_login_handler = PlayerLoginHandler(
+            player_repo, bot_repo, lifecycle_manager
+        )
+        self._player_quit_handler = PlayerQuitHandler(
+            player_repo, lifecycle_manager
+        )
+        self._init_sync_handler = InitSyncHandler(
+            player_repo, lifecycle_manager
+        )
     
     async def route(self, data: dict) -> Optional[dict]:
         """路由消息到对应处理器"""
+        msg_type_str = data.get("type")
+        
+        # 处理新增的消息类型（不在 MessageType 枚举中）
+        if msg_type_str == "player_login":
+            return await self._player_login_handler.handle(data)
+        elif msg_type_str == "player_quit":
+            return await self._player_quit_handler.handle(data)
+        elif msg_type_str == "init_sync":
+            return await self._init_sync_handler.handle(data)
+        
+        # 处理原有消息类型
         try:
-            msg_type = MessageType(data.get("type"))
+            msg_type = MessageType(msg_type_str)
             handler = self._handlers.get(msg_type)
             
             if handler:
@@ -637,3 +872,4 @@ class MessageRouter:
         except Exception as e:
             logger.error(f"Error routing message: {e}")
             return None
+

@@ -38,6 +38,7 @@ public class MessageHandler implements IWebSocketClient.MessageCallback {
             
             switch (type) {
                 case "init_config" -> handleInitConfig(json);
+                case "request_sync" -> handleRequestSync(json);
                 case "npc_response" -> handleNpcResponse(json);
                 case "bot_status" -> handleBotStatus(json);
                 case "hologram_update" -> handleHologramUpdate(json);
@@ -76,6 +77,65 @@ public class MessageHandler implements IWebSocketClient.MessageCallback {
         }
         
         logger.info("[Init Sync] Registered " + botNames.size() + " bots: " + botNames);
+    }
+    
+    /**
+     * 处理 Python 后端的同步请求 (Cold Start Sync)
+     * 
+     * <p>Python 后端重启后发送，请求当前在线玩家列表</p>
+     * <p>只返回已通过 AuthMe 验证的玩家</p>
+     */
+    private void handleRequestSync(JSONObject json) {
+        logger.info("[Request Sync] Python backend requesting sync");
+        
+        // 收集在线玩家
+        JSONArray players = new JSONArray();
+        
+        // 尝试使用 AuthMe API
+        boolean useAuthMe = false;
+        try {
+            Class<?> authMeClass = Class.forName("fr.xephi.authme.api.v3.AuthMeApi");
+            Object authMeApi = authMeClass.getMethod("getInstance").invoke(null);
+            
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                boolean isAuthenticated = (boolean) authMeClass
+                    .getMethod("isAuthenticated", Player.class)
+                    .invoke(authMeApi, p);
+                
+                if (isAuthenticated) {
+                    JSONObject playerInfo = new JSONObject();
+                    playerInfo.put("name", p.getName());
+                    playerInfo.put("uuid", p.getUniqueId().toString());
+                    players.add(playerInfo);
+                }
+            }
+            useAuthMe = true;
+        } catch (Exception e) {
+            // AuthMe 不可用，回退到全部在线玩家
+            logger.warning("[Request Sync] AuthMe API not available, using all online players");
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                JSONObject playerInfo = new JSONObject();
+                playerInfo.put("name", p.getName());
+                playerInfo.put("uuid", p.getUniqueId().toString());
+                players.add(playerInfo);
+            }
+        }
+        
+        // 构建 init_sync 响应
+        JSONObject response = new JSONObject();
+        response.put("type", "init_sync");
+        response.put("players", players);
+        response.put("use_authme", useAuthMe);
+        response.put("timestamp", System.currentTimeMillis() / 1000);
+        
+        // 发送响应
+        IWebSocketClient ws = MCServant.getInstance().getWsClient();
+        if (ws != null && ws.isConnected()) {
+            ws.send(response.toJSONString());
+            logger.info("[Request Sync] Sent " + players.size() + " authenticated players");
+        } else {
+            logger.warning("[Request Sync] WebSocket not connected");
+        }
     }
     
     /**

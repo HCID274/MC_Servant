@@ -3,6 +3,7 @@ package com.mcservant;
 import com.mcservant.commands.ServantCommands;
 import com.mcservant.hologram.HologramManager;
 import com.mcservant.hologram.IHologramService;
+import com.mcservant.listener.AuthMeListener;
 import com.mcservant.listener.PlayerConnectionListener;
 import com.mcservant.listener.PlayerInteractListener;
 import com.mcservant.registry.BotRegistry;
@@ -149,6 +150,19 @@ public class MCServant extends JavaPlugin {
     private void initListeners() {
         getServer().getPluginManager().registerEvents(new PlayerInteractListener(), this);
         getServer().getPluginManager().registerEvents(new PlayerConnectionListener(), this);
+        
+        // AuthMe 集成 (可选)
+        try {
+            if (getServer().getPluginManager().getPlugin("AuthMe") != null) {
+                getServer().getPluginManager().registerEvents(new AuthMeListener(), this);
+                logger.info("AuthMe 集成已启用");
+            } else {
+                logger.warning("AuthMe 未安装，使用 PlayerJoinEvent 替代");
+            }
+        } catch (NoClassDefFoundError e) {
+            logger.warning("AuthMe API 不可用: " + e.getMessage());
+        }
+        
         logger.info("监听器模块已加载");
     }
     
