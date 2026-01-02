@@ -24,6 +24,7 @@ from websocket.connection_manager import manager
 from websocket.handlers import MessageRouter
 from bot.mineflayer_adapter import BotManager
 from protocol import NpcResponse, MessageType
+from bot.lifecycle_manager import BotLifecycleManager
 
 # 配置日志
 logging.basicConfig(
@@ -38,12 +39,13 @@ message_router: Optional[MessageRouter] = None
 llm_client = None  # LLM 客户端 (Optional)
 state_machine = None  # 状态机 (Optional)
 context_manager = None  # 记忆上下文管理器 (Optional)
+lifecycle_manager = None  # 生命周期管理器 (Optional)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global bot_manager, message_router, llm_client, state_machine, context_manager
+    global bot_manager, message_router, llm_client, state_machine, context_manager, lifecycle_manager
     
     # 启动时初始化
     logger.info("Initializing MC_Servant Backend...")
@@ -108,6 +110,15 @@ async def lifespan(app: FastAPI):
             bot_controller=default_bot,
         )
         logger.info(f"State machine initialized: state={state_machine.current_state.name}, bot={bot_config.bot_name}")
+        
+        # 初始化生命周期管理器
+        lifecycle_manager = BotLifecycleManager(
+            bot_manager=bot_manager,
+            config_path=config_path,
+            ws_manager=manager,
+            timeout_hours=10.0  # 主人离线后 10h 下线
+        )
+        logger.info("Lifecycle manager initialized")
         
         # 初始化消息路由器 (with LLM client, state machine, and context manager)
         message_router = MessageRouter(default_bot, llm_client, state_machine, bot_manager, context_manager)
@@ -235,7 +246,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     await handle_bot_spawned(message, client_id)
                     continue
                 elif msg_type in ("player_join", "player_quit"):
-                    await handle_player_event(message)
+                    await handle_player_event(message, client_id)
+                    continue
+                elif msg_type == "online_players_sync":
+                    await handle_online_players_sync(message, client_id)
                     continue
                 
                 # 路由到处理器
@@ -307,13 +321,52 @@ async def handle_bot_spawned(message: dict, client_id: str):
     logger.info(f"Sent hologram_update for {bot_name}")
 
 
-async def handle_player_event(message: dict):
-    """处理玩家上下线事件 (为 Phase 2 预留)"""
+async def handle_player_event(message: dict, client_id: str):
+    """处理玩家上下线事件 - 转发给生命周期管理器"""
     msg_type = message.get("type")
     player = message.get("player")
+    player_uuid = message.get("player_uuid")
     
-    # Phase 2 将在这里实现 Owner 检测和 Bot 生命周期逻辑
     logger.debug(f"Player event: {msg_type} - {player}")
+    
+    if lifecycle_manager:
+        await lifecycle_manager.on_player_event(
+            event_type=msg_type,
+            player=player,
+            player_uuid=player_uuid,
+            client_id=client_id
+        )
+
+
+async def handle_online_players_sync(message: dict, client_id: str):
+    """处理初始化同步时的在线玩家列表 (解决 Python 重启问题)"""
+    players = message.get("players", [])
+    logger.info(f"[Init Sync] Received {len(players)} online players")
+    
+    # 获取当前在线的 Bot 列表
+    current_bots = []
+    if bot_manager:
+        current_bots = bot_manager.list_bots()
+    
+    # 为所有在线的 Bot 发送全息更新 (无论 owner 状态)
+    for player_info in players:
+        name = player_info.get("name", player_info.get("player"))
+        if name in current_bots:
+            logger.info(f"[Init Sync] Sending hologram update for bot: {name}")
+            hologram_msg = {
+                "type": "hologram_update",
+                "npc": name,
+                "hologram_text": "💤 待命中",
+                "identity_line": None
+            }
+            await manager.send_personal(json.dumps(hologram_msg), client_id)
+    
+    # 同时处理 lifecycle 逻辑 (owner 相关)
+    if lifecycle_manager:
+        await lifecycle_manager.handle_online_players_sync(
+            players=players,
+            client_id=client_id
+        )
 
 
 if __name__ == "__main__":

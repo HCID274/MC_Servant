@@ -217,6 +217,39 @@ class BotManager(IBotManager):
         else:
             raise RuntimeError(f"Failed to spawn bot: {name}")
     
+    async def spawn_bot_with_retry(
+        self, 
+        name: str, 
+        max_retries: int = 5,
+        base_delay: float = 5.0
+    ) -> Optional[IBotController]:
+        """
+        带指数退避重试的 Bot 生成
+        
+        重试间隔: 5s -> 10s -> 20s -> 40s -> 80s
+        
+        Args:
+            name: Bot 用户名
+            max_retries: 最大重试次数 (默认 5)
+            base_delay: 基础延迟秒数 (默认 5s)
+            
+        Returns:
+            成功返回 Bot 实例，失败返回 None
+        """
+        for attempt in range(max_retries):
+            try:
+                return await self.spawn_bot(name)
+            except Exception as e:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    f"Spawn failed (attempt {attempt + 1}/{max_retries}), "
+                    f"retrying in {delay}s: {e}"
+                )
+                await asyncio.sleep(delay)
+        
+        logger.error(f"Failed to spawn {name} after {max_retries} attempts")
+        return None
+    
     async def remove_bot(self, name: str) -> bool:
         """移除 Bot"""
         bot = self._bots.pop(name, None)

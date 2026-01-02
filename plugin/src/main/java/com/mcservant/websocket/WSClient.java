@@ -1,7 +1,11 @@
 package com.mcservant.websocket;
 
+import com.alibaba.fastjson2.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
 import com.mcservant.MCServant;
 import okhttp3.*;
+import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -76,6 +80,9 @@ public class WSClient implements IWebSocketClient {
                 connected.set(true);
                 reconnectAttempts.set(0);
                 logger.info("WebSocket connected to: " + serverUrl);
+                
+                // 发送当前在线玩家列表 (解决 Python 重启后错过 join 事件的问题)
+                sendOnlinePlayersList();
             }
 
             @Override
@@ -177,5 +184,35 @@ public class WSClient implements IWebSocketClient {
     @Override
     public void setMessageCallback(MessageCallback callback) {
         this.messageCallback = callback;
+    }
+    
+    /**
+     * 发送当前在线玩家列表到 Python 后端
+     * 
+     * <p>解决问题：Python 后端重启后，主人已在线但错过了 player_join 事件</p>
+     */
+    private void sendOnlinePlayersList() {
+        // 必须在主线程获取玩家列表
+        MCServant.getInstance().getServer().getScheduler().runTask(
+            MCServant.getInstance(),
+            () -> {
+                JSONArray players = new JSONArray();
+                
+                for (Player player : Bukkit.getOnlinePlayers()) {
+                    JSONObject playerInfo = new JSONObject();
+                    playerInfo.put("name", player.getName());
+                    playerInfo.put("uuid", player.getUniqueId().toString());
+                    players.add(playerInfo);
+                }
+                
+                JSONObject message = new JSONObject();
+                message.put("type", "online_players_sync");
+                message.put("players", players);
+                message.put("timestamp", System.currentTimeMillis() / 1000);
+                
+                send(message.toJSONString());
+                logger.info("[Init Sync] Sent " + players.size() + " online players to Python");
+            }
+        );
     }
 }
