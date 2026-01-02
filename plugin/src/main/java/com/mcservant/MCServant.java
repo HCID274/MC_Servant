@@ -1,7 +1,12 @@
 package com.mcservant;
 
 import com.mcservant.commands.ServantCommands;
+import com.mcservant.hologram.HologramManager;
+import com.mcservant.hologram.IHologramService;
+import com.mcservant.listener.PlayerConnectionListener;
 import com.mcservant.listener.PlayerInteractListener;
+import com.mcservant.registry.BotRegistry;
+import com.mcservant.registry.IBotRegistry;
 import com.mcservant.websocket.IWebSocketClient;
 import com.mcservant.websocket.WSClient;
 import com.mcservant.websocket.MessageHandler;
@@ -30,6 +35,12 @@ public class MCServant extends JavaPlugin {
     // WebSocket 客户端
     private IWebSocketClient wsClient;
     
+    // 全息管理器
+    private IHologramService hologramManager;
+    
+    // Bot 注册表
+    private IBotRegistry botRegistry;
+    
     // 配置
     private static final String WS_URL = "ws://localhost:8765/ws/plugin";
 
@@ -53,12 +64,32 @@ public class MCServant extends JavaPlugin {
     public IWebSocketClient getWsClient() {
         return wsClient;
     }
+    
+    /**
+     * 获取全息管理器
+     */
+    public IHologramService getHologramManager() {
+        return hologramManager;
+    }
+    
+    /**
+     * 获取 Bot 注册表
+     */
+    public IBotRegistry getBotRegistry() {
+        return botRegistry;
+    }
 
     @Override
     public void onEnable() {
         instance = this;
         logger = getLogger();
+        
+        // 初始化 Bot 注册表
+        botRegistry = new BotRegistry();
 
+        // 初始化全息管理器
+        initHolograms();
+        
         // 初始化 WebSocket
         initWebSocket();
         
@@ -73,6 +104,12 @@ public class MCServant extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        // 清理全息
+        if (hologramManager != null) {
+            hologramManager.removeAll();
+            hologramManager = null;
+        }
+        
         // 关闭 WebSocket 连接
         if (wsClient != null) {
             wsClient.disconnect();
@@ -111,7 +148,21 @@ public class MCServant extends JavaPlugin {
      */
     private void initListeners() {
         getServer().getPluginManager().registerEvents(new PlayerInteractListener(), this);
+        getServer().getPluginManager().registerEvents(new PlayerConnectionListener(), this);
         logger.info("监听器模块已加载");
+    }
+    
+    /**
+     * 初始化全息管理模块
+     */
+    private void initHolograms() {
+        try {
+            hologramManager = new HologramManager(this);
+            logger.info("全息管理模块已加载");
+        } catch (NoClassDefFoundError e) {
+            logger.warning("DecentHolograms 插件未安装，全息功能已禁用");
+            hologramManager = null;
+        }
     }
 }
 

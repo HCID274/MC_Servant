@@ -216,6 +216,9 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     """
     await manager.connect(websocket, client_id)
     
+    # Init Sync: 连接后立即发送 Bot 名称列表
+    await send_init_config(websocket)
+    
     try:
         while True:
             # 接收消息
@@ -225,6 +228,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             try:
                 # 解析 JSON
                 message = json.loads(data)
+                msg_type = message.get("type")
+                
+                # 特殊事件处理
+                if msg_type == "bot_spawned":
+                    await handle_bot_spawned(message, client_id)
+                    continue
+                elif msg_type in ("player_join", "player_quit"):
+                    await handle_player_event(message)
+                    continue
                 
                 # 路由到处理器
                 if message_router:
@@ -251,6 +263,57 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     except Exception as e:
         logger.error(f"WebSocket error for {client_id}: {e}")
         await manager.disconnect(client_id)
+
+
+async def send_init_config(websocket: WebSocket):
+    """发送初始化配置给 Java 插件"""
+    import time
+    
+    # 等待 Java 客户端完全准备好
+    await asyncio.sleep(0.5)
+    
+    # 收集所有 Bot 名称
+    bot_names = []
+    if bot_manager:
+        bot_names = bot_manager.list_bots()
+    
+    init_msg = {
+        "type": "init_config",
+        "bot_names": bot_names,
+        "timestamp": int(time.time())
+    }
+    
+    await websocket.send_text(json.dumps(init_msg))
+    logger.info(f"[Init Sync] Sent bot_names: {bot_names}")
+
+
+async def handle_bot_spawned(message: dict, client_id: str):
+    """处理 Bot 登录事件 - 创建全息"""
+    bot_name = message.get("player")
+    if not bot_name:
+        return
+    
+    logger.info(f"Bot spawned: {bot_name}")
+    
+    # 发送 hologram_update 创建全息
+    hologram_msg = {
+        "type": "hologram_update",
+        "npc": bot_name,
+        "hologram_text": "💤 待命中",
+        "identity_line": None  # 使用默认
+    }
+    
+    await manager.send_personal(json.dumps(hologram_msg), client_id)
+    logger.info(f"Sent hologram_update for {bot_name}")
+
+
+async def handle_player_event(message: dict):
+    """处理玩家上下线事件 (为 Phase 2 预留)"""
+    msg_type = message.get("type")
+    player = message.get("player")
+    
+    # Phase 2 将在这里实现 Owner 检测和 Bot 生命周期逻辑
+    logger.debug(f"Player event: {msg_type} - {player}")
 
 
 if __name__ == "__main__":

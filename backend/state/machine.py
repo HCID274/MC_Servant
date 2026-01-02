@@ -209,6 +209,9 @@ class StateMachine(IStateMachine):
         hologram_text: Optional[str]
     ) -> Dict[str, Any]:
         """构建响应消息"""
+        # DEBUG: 打印构建响应时的关键信息
+        logger.info(f"[DEBUG] _build_response: bot_name='{self._config.bot_name}', hologram_text='{hologram_text}'")
+        
         response = {
             "type": "npc_response",
             "npc": self._config.bot_name,

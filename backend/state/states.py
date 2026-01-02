@@ -48,6 +48,7 @@ class UnclaimedState(IState):
         elif event.type == EventType.CHAT:
             return StateResult(
                 response="你好呀~ 我现在还没有主人，你可以输入「认领」把我带回家哦~",
+                hologram_text="👋",
             )
         
         elif event.type == EventType.QUERY:
@@ -115,7 +116,9 @@ class IdleState(IState):
         elif event.type == EventType.CHAT:
             # 闲聊
             response = await self._generate_chat_response(event, context)
-            return StateResult(response=response)
+            # 截取前60个字符显示在全息上
+            short_msg = response[:60] + "..." if len(response) > 60 else response
+            return StateResult(response=response, hologram_text=f"💬 {short_msg}")
         
         elif event.type == EventType.QUERY:
             duration = context.get_state_duration()
@@ -202,6 +205,7 @@ class PlanningState(IState):
             # 规划中，简短回复
             return StateResult(
                 response="等一下喵，我正在想方案呢...",
+                hologram_text="💭 思考中...",
             )
         
         elif event.type == EventType.QUERY:
@@ -274,8 +278,9 @@ class WorkingState(IState):
                 progress = task.progress * 100
                 return StateResult(
                     response=f"忙着呢~ 进度 {progress:.0f}%，等会儿再聊喵~",
+                    hologram_text="🔨 工作中",
                 )
-            return StateResult(response="忙着呢喵~")
+            return StateResult(response="忙着呢喵~", hologram_text="🔨 工作中")
         
         elif event.type == EventType.QUERY:
             task = context.current_task

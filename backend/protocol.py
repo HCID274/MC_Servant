@@ -16,6 +16,7 @@ class MessageType(str, Enum):
     NPC_RESPONSE = "npc_response"       # NPC 回复
     BOT_COMMAND = "bot_command"         # Bot 动作指令
     BOT_STATUS = "bot_status"           # Bot 状态更新
+    HOLOGRAM_UPDATE = "hologram_update" # 主动推送全息更新
     
     # 双向
     HEARTBEAT = "heartbeat"             # 心跳
@@ -86,12 +87,24 @@ class ServantCommandMessage(BaseModel):
     timestamp: int
 
 
+class HologramUpdate(BaseModel):
+    """全息更新消息 (Python → Java)
+    
+    主动推送 Bot 头顶全息状态变化
+    """
+    type: MessageType = MessageType.HOLOGRAM_UPDATE
+    npc: str
+    hologram_text: str
+    identity_line: Optional[str] = None  # 可选更新身份行
+
+
 # 消息类型到模型的映射
 MESSAGE_MODELS = {
     MessageType.PLAYER_MESSAGE: PlayerMessage,
     MessageType.NPC_RESPONSE: NpcResponse,
     MessageType.BOT_COMMAND: BotCommand,
     MessageType.BOT_STATUS: BotStatus,
+    MessageType.HOLOGRAM_UPDATE: HologramUpdate,
     MessageType.HEARTBEAT: Heartbeat,
     MessageType.ERROR: ErrorMessage,
     MessageType.SERVANT_COMMAND: ServantCommandMessage,

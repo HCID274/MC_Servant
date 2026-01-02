@@ -155,8 +155,12 @@ class PlayerMessageHandler(IMessageHandler):
         await self._bot.jump()
         await self._bot.chat("Ciallo~~~~")
         
+        bot_name = self._get_bot_name()
+        # DEBUG: 打印响应信息
+        logger.info(f"[DEBUG] _handle_hello: building response, npc='{bot_name}', hologram='💖'")
+        
         response = NpcResponse(
-            npc=self._get_bot_name(),
+            npc=bot_name,
             target_player=msg.player,
             content="Ciallo~~~~",
             hologram_text="💖",
@@ -257,8 +261,12 @@ class PlayerMessageHandler(IMessageHandler):
             except Exception as e:
                 logger.warning(f"Failed to record assistant message: {e}")
         
+        bot_name = self._get_bot_name()
+        # DEBUG: 打印构建的响应信息
+        logger.info(f"[DEBUG] _handle_with_llm: building response, npc='{bot_name}', hologram='{hologram}', action='{action}'")
+        
         response = NpcResponse(
-            npc=self._get_bot_name(),
+            npc=bot_name,
             target_player=msg.player,
             content=content,
             hologram_text=hologram,
