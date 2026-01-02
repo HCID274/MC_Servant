@@ -47,7 +47,7 @@ bot_repo = None  # Bot 数据仓库 (Optional)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global bot_manager, message_router, llm_client, state_machine, context_manager, lifecycle_manager
+    global bot_manager, message_router, llm_client, state_machine, context_manager, lifecycle_manager, player_repo, bot_repo
     
     # 启动时初始化
     logger.info("Initializing MC_Servant Backend...")
