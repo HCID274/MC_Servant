@@ -41,6 +41,7 @@ class NpcResponse(BaseModel):
     npc: str
     target_player: str
     content: str
+    segments: Optional[list[str]] = None  # 分段显示内容
     hologram_text: Optional[str] = None
     action: Optional[str] = None
 

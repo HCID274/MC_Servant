@@ -9,6 +9,8 @@ import com.mcservant.registry.IBotRegistry;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.logging.Logger;
 
 /**
@@ -41,6 +43,7 @@ public class MessageHandler implements IWebSocketClient.MessageCallback {
                 case "request_sync" -> handleRequestSync(json);
                 case "npc_response" -> handleNpcResponse(json);
                 case "bot_status" -> handleBotStatus(json);
+                case "bot_owner_update" -> handleBotOwnerUpdate(json);
                 case "hologram_update" -> handleHologramUpdate(json);
                 case "heartbeat" -> handleHeartbeat(json);
                 case "error" -> handleError(json);
@@ -56,7 +59,7 @@ public class MessageHandler implements IWebSocketClient.MessageCallback {
     /**
      * 处理初始化配置 (Init Sync)
      * 
-     * <p>Python 连接后发送，包含 Bot 名称列表</p>
+     * <p>Python 连接后发送，包含 Bot 名称列表和 owner 信息</p>
      */
     private void handleInitConfig(JSONObject json) {
         JSONArray botNames = json.getJSONArray("bot_names");
@@ -71,9 +74,23 @@ public class MessageHandler implements IWebSocketClient.MessageCallback {
             return;
         }
         
+        // 1. 注册所有 Bot
         registry.clear();
         for (int i = 0; i < botNames.size(); i++) {
             registry.registerBot(botNames.getString(i));
+        }
+        
+        // 2. 同步 owner 信息（从数据库）
+        JSONArray botOwners = json.getJSONArray("bot_owners");
+        if (botOwners != null && !botOwners.isEmpty()) {
+            for (int i = 0; i < botOwners.size(); i++) {
+                JSONObject ownerInfo = botOwners.getJSONObject(i);
+                String botName = ownerInfo.getString("bot_name");
+                String ownerUuid = ownerInfo.getString("owner_uuid");
+                String ownerName = ownerInfo.getString("owner_name");
+                registry.setOwner(botName, ownerUuid, ownerName);
+            }
+            logger.info("[Init Sync] Synced " + botOwners.size() + " bot owners from database");
         }
         
         logger.info("[Init Sync] Registered " + botNames.size() + " bots: " + botNames);
@@ -145,40 +162,42 @@ public class MessageHandler implements IWebSocketClient.MessageCallback {
         String npc = json.getString("npc");
         String targetPlayer = json.getString("target_player");
         String content = json.getString("content");
-        String hologramText = json.getString("hologram_text");
+        JSONArray segmentsArray = json.getJSONArray("segments");
+        String hologramText = json.getString("hologram_text");  // 兼容旧协议
         String action = json.getString("action");
         
-        // DEBUG: 打印解析后的关键字段
-        logger.info(String.format("[DEBUG] handleNpcResponse: npc='%s', hologram='%s', target='%s'", 
-            npc, hologramText, targetPlayer));
-        logger.info(String.format("NPC %s -> %s: %s", npc, targetPlayer, content));
+        logger.info(String.format("NPC %s -> %s: %s", npc, targetPlayer, 
+            content != null ? content.substring(0, Math.min(50, content.length())) : "null"));
         
         // 向目标玩家发送消息
-        if (targetPlayer != null) {
+        if (targetPlayer != null && content != null) {
             Player player = Bukkit.getPlayer(targetPlayer);
             if (player != null && player.isOnline()) {
                 player.sendMessage("§a[" + npc + "] §f" + content);
-            } else {
-                logger.info(String.format("[DEBUG] Target player '%s' not found or offline", targetPlayer));
             }
         }
         
         // 更新全息显示 (线程安全调度)
-        if (hologramText != null) {
-            logger.info(String.format("[DEBUG] 准备更新全息: npc='%s', text='%s'", npc, hologramText));
-            // 必须切回主线程调用 Bukkit/DHAPI
-            Bukkit.getScheduler().runTask(MCServant.getInstance(), () -> {
-                IHologramService hm = MCServant.getInstance().getHologramManager();
-                if (hm != null) {
-                    logger.info(String.format("[DEBUG] 调用 HologramManager.updateHologram('%s', '%s')", npc, hologramText));
-                    hm.updateHologram(npc, hologramText);
-                } else {
-                    logger.warning("[DEBUG] HologramManager is null!");
+        Bukkit.getScheduler().runTask(MCServant.getInstance(), () -> {
+            IHologramService hm = MCServant.getInstance().getHologramManager();
+            if (hm == null) {
+                logger.warning("HologramManager is null!");
+                return;
+            }
+            
+            // 优先使用新协议 segments
+            if (segmentsArray != null && !segmentsArray.isEmpty()) {
+                List<String> segments = new ArrayList<>();
+                for (int i = 0; i < segmentsArray.size(); i++) {
+                    segments.add(segmentsArray.getString(i));
                 }
-            });
-        } else {
-            logger.info("[DEBUG] hologramText is null, skipping hologram update");
-        }
+                hm.startChatSegments(npc, segments);
+                logger.info("Using segments for hologram: " + segments.size() + " parts");
+            } else if (hologramText != null) {
+                // 兼容旧协议
+                hm.updateHologram(npc, hologramText);
+            }
+        });
     }
     
     /**
@@ -218,6 +237,38 @@ public class MessageHandler implements IWebSocketClient.MessageCallback {
         String status = json.getString("status");
         
         logger.info(String.format("Bot %s status: %s", npc, status));
+        
+        // 更新全息状态（不打断说话）
+        Bukkit.getScheduler().runTask(MCServant.getInstance(), () -> {
+            IHologramService hm = MCServant.getInstance().getHologramManager();
+            if (hm != null) {
+                hm.updateHologramStatus(npc, status);
+            }
+        });
+    }
+    
+    /**
+     * 处理 Bot 所有权更新 (Claim/Release 后 Python 推送)
+     */
+    private void handleBotOwnerUpdate(JSONObject json) {
+        String botName = json.getString("bot_name");
+        String ownerUuid = json.getString("owner_uuid");
+        String ownerName = json.getString("owner_name");
+        
+        logger.info(String.format("[Sync] Bot owner update: %s -> %s (%s)", botName, ownerName, ownerUuid));
+        
+        IBotRegistry registry = MCServant.getInstance().getBotRegistry();
+        if (registry != null) {
+            registry.setOwner(botName, ownerUuid, ownerName);
+        }
+        
+        // 同步更新全息身份行
+        Bukkit.getScheduler().runTask(MCServant.getInstance(), () -> {
+            IHologramService hm = MCServant.getInstance().getHologramManager();
+            if (hm != null) {
+                hm.setIdentity(botName, ownerName);
+            }
+        });
     }
     
     /**

@@ -1,6 +1,9 @@
 package com.mcservant.listener;
 
+import com.mcservant.MCServant;
+import com.mcservant.gui.ClaimMenuGUI;
 import com.mcservant.gui.ServantMenuGUI;
+import com.mcservant.registry.IBotRegistry;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -12,13 +15,9 @@ import org.bukkit.inventory.EquipmentSlot;
 /**
  * 玩家交互监听器
  * 
- * 监听右键 NPC 事件，打开管理 GUI
+ * <p>监听右键 NPC 事件，根据所有权打开不同 GUI</p>
  */
 public class PlayerInteractListener implements Listener {
-    
-    // Bot 玩家名 (后续可配置化)
-    // TODO: 从配置文件读取，支持多个 Bot
-    private static final String BOT_USERNAME = "MCServant_Bot";
     
     @EventHandler
     public void onPlayerInteractEntity(PlayerInteractEntityEvent event) {
@@ -32,9 +31,26 @@ public class PlayerInteractListener implements Listener {
         
         // 检查是否是 Bot
         if (target instanceof Player botPlayer) {
-            if (isBotPlayer(botPlayer.getName())) {
+            String botName = botPlayer.getName();
+            IBotRegistry registry = MCServant.getInstance().getBotRegistry();
+            
+            if (registry != null && registry.isBot(botName)) {
                 event.setCancelled(true);
-                openServantMenu(player, botPlayer.getName());
+                
+                String ownerUuid = registry.getOwnerUuid(botName);
+                String playerUuid = player.getUniqueId().toString();
+                
+                if (ownerUuid == null || ownerUuid.isEmpty()) {
+                    // 无主 Bot → 打开认领菜单
+                    new ClaimMenuGUI(player, botName).open();
+                } else if (ownerUuid.equals(playerUuid)) {
+                    // 是主人 → 打开管理菜单
+                    new ServantMenuGUI(player, botName).open();
+                } else {
+                    // 不是主人 → 提示
+                    String ownerName = registry.getOwnerName(botName);
+                    player.sendMessage("§e[MC_Servant] §f这是 §6" + ownerName + " §f的女仆");
+                }
             }
         }
     }
@@ -43,22 +59,11 @@ public class PlayerInteractListener implements Listener {
     public void onInventoryClick(InventoryClickEvent event) {
         if (event.getInventory().getHolder() instanceof ServantMenuGUI gui) {
             gui.handleClick(event);
+        } else if (event.getInventory().getHolder() instanceof ClaimMenuGUI gui) {
+            event.setCancelled(true);
+            if (event.getWhoClicked() instanceof Player clicker) {
+                gui.handleClick(event.getSlot(), clicker);
+            }
         }
-    }
-    
-    /**
-     * 检查是否是 Bot 玩家
-     */
-    private boolean isBotPlayer(String playerName) {
-        // TODO: 从后端获取所有 Bot 列表进行匹配
-        return BOT_USERNAME.equalsIgnoreCase(playerName);
-    }
-    
-    /**
-     * 打开女仆管理菜单
-     */
-    private void openServantMenu(Player player, String botName) {
-        ServantMenuGUI gui = new ServantMenuGUI(player, botName);
-        gui.open();
     }
 }

@@ -19,20 +19,14 @@ import java.util.logging.Logger;
 /**
  * 全息显示管理器 - DecentHolograms API 封装
  * 
- * <p>设计原则：
+ * <p>布局结构（从上到下）：</p>
  * <ul>
- *   <li>线程安全：所有 Bukkit/DHAPI 操作调度回主线程</li>
- *   <li>动态映射：通过 Bot 名称动态管理全息</li>
- *   <li>双行显示：Line 0 身份 + Line 1 状态</li>
+ *   <li>Line 0: 聊天内容第一行</li>
+ *   <li>Line 1: 聊天内容第二行</li>
+ *   <li>Line 2: ID 显示 (固定)</li>
  * </ul>
- * </p>
  * 
- * <p>技术参数：
- * <ul>
- *   <li>跟随频率：2 ticks (0.1秒)</li>
- *   <li>高度偏移：Y + 2.3</li>
- * </ul>
- * </p>
+ * <p>分段展示：每 5 秒切换一个 segment，说话时状态更新只缓存不打断</p>
  */
 public class HologramManager implements IHologramService {
     
@@ -44,8 +38,8 @@ public class HologramManager implements IHologramService {
     /** 隐藏名牌的记分板 Team 名称 */
     private static final String HIDE_NAMETAG_TEAM = "mcservant_hide";
     
-    /** 高度偏移 (超过 ID 名牌高度) */
-    private static final double HEIGHT_OFFSET = 2.5;
+    /** 高度偏移 (提高原点让 ID 行在头顶) */
+    private static final double HEIGHT_OFFSET = 2.9;
     
     /** 跟随任务间隔 (ticks) */
     private static final int FOLLOW_INTERVAL_TICKS = 5;
@@ -53,14 +47,26 @@ public class HologramManager implements IHologramService {
     /** 每行最大字符数 */
     private static final int LINE_WIDTH = 25;
     
-    /** 最大状态行数 (Line 0 是身份，从 Line 1 开始是状态) */
-    private static final int MAX_STATUS_LINES = 4;
+    /** 最大聊天行数 */
+    private static final int MAX_CHAT_LINES = 2;
+    
+    /** 分段展示间隔 (5秒 = 100 ticks) */
+    private static final int SEGMENT_DURATION_TICKS = 100;
     
     /** 默认状态文本 */
     private static final String DEFAULT_STATUS = "§7待命中...";
     
     /** Bot 名称 -> 全息实例映射 */
     private final Map<String, Hologram> holograms = new ConcurrentHashMap<>();
+    
+    /** Bot 名称 -> 当前说话任务 */
+    private final Map<String, BukkitTask> chatTasks = new ConcurrentHashMap<>();
+    
+    /** Bot 名称 -> 当前分段索引 */
+    private final Map<String, Integer> segmentIndex = new ConcurrentHashMap<>();
+    
+    /** Bot 名称 -> 缓存的状态文本 (分段结束后恢复) */
+    private final Map<String, String> cachedStatus = new ConcurrentHashMap<>();
     
     /** 跟随任务 */
     private BukkitTask followTask;
@@ -71,7 +77,7 @@ public class HologramManager implements IHologramService {
     public HologramManager(MCServant plugin) {
         this.plugin = plugin;
         startFollowTask();
-        logger.info("HologramManager initialized (interval: " + FOLLOW_INTERVAL_TICKS + " ticks)");
+        logger.info("HologramManager initialized (interval: " + FOLLOW_INTERVAL_TICKS + " ticks, layout: chat-above-id)");
     }
     
     @Override
@@ -82,6 +88,123 @@ public class HologramManager implements IHologramService {
             return;
         }
         
+        String text = (statusText != null && !statusText.isEmpty()) ? statusText : DEFAULT_STATUS;
+        cachedStatus.put(botName, text);
+        
+        // 如果正在说话，不打断
+        if (chatTasks.containsKey(botName)) {
+            return;
+        }
+        
+        updateChatLines(botName, text);
+    }
+    
+    @Override
+    public void updateHologramStatus(String botName, String statusText) {
+        // 确保在主线程执行
+        if (!Bukkit.isPrimaryThread()) {
+            Bukkit.getScheduler().runTask(plugin, () -> updateHologramStatus(botName, statusText));
+            return;
+        }
+        
+        String text = (statusText != null && !statusText.isEmpty()) ? statusText : DEFAULT_STATUS;
+        
+        // 1. 更新缓存
+        cachedStatus.put(botName, text);
+        
+        // 2. 如果正在说话，不打断，等说完自动读取缓存
+        if (chatTasks.containsKey(botName)) {
+            logger.fine("Status cached during speech: " + botName + " -> " + text);
+            return;
+        }
+        
+        // 3. 没在说话，直接更新显示
+        updateChatLines(botName, text);
+    }
+    
+    @Override
+    public void startChatSegments(String botName, List<String> segments) {
+        // 确保在主线程执行
+        if (!Bukkit.isPrimaryThread()) {
+            Bukkit.getScheduler().runTask(plugin, () -> startChatSegments(botName, segments));
+            return;
+        }
+        
+        // 取消旧任务
+        BukkitTask oldTask = chatTasks.remove(botName);
+        if (oldTask != null) {
+            oldTask.cancel();
+        }
+        
+        if (segments == null || segments.isEmpty()) {
+            String status = cachedStatus.getOrDefault(botName, DEFAULT_STATUS);
+            updateChatLines(botName, status);
+            return;
+        }
+        
+        // 复制列表避免外部修改影响
+        final List<String> segmentsCopy = new ArrayList<>(segments);
+        final int totalSegments = segmentsCopy.size();
+        
+        segmentIndex.put(botName, 0);
+        
+        // 立即显示第一段
+        updateChatLines(botName, segmentsCopy.get(0));
+        logger.info("Chat segments started: " + botName + " (" + totalSegments + " segments)");
+        
+        if (totalSegments == 1) {
+            // 只有一段，5秒后恢复状态
+            scheduleResetTask(botName);
+            return;
+        }
+        
+        // 多段内容，启动定时切换
+        BukkitTask task = Bukkit.getScheduler().runTaskTimer(plugin, new Runnable() {
+            @Override
+            public void run() {
+                int currentIdx = segmentIndex.getOrDefault(botName, 0);
+                int nextIdx = currentIdx + 1;
+                
+                if (nextIdx >= totalSegments) {
+                    // 最后一段已展示完毕，取消当前任务并恢复状态
+                    BukkitTask currentTask = chatTasks.remove(botName);
+                    if (currentTask != null) {
+                        currentTask.cancel();
+                    }
+                    segmentIndex.remove(botName);
+                    scheduleResetTask(botName);
+                    return;
+                }
+                
+                // 显示下一段
+                segmentIndex.put(botName, nextIdx);
+                updateChatLines(botName, segmentsCopy.get(nextIdx));
+                logger.info("Segment " + (nextIdx + 1) + "/" + totalSegments + " for " + botName);
+            }
+        }, SEGMENT_DURATION_TICKS, SEGMENT_DURATION_TICKS);
+        
+        chatTasks.put(botName, task);
+    }
+    
+    /**
+     * 分段展示结束后恢复缓存状态
+     */
+    private void scheduleResetTask(String botName) {
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            // 如果此时又开始了新的说话任务，不要覆盖
+            if (chatTasks.containsKey(botName)) {
+                return;
+            }
+            String status = cachedStatus.getOrDefault(botName, DEFAULT_STATUS);
+            updateChatLines(botName, status);
+            logger.fine("Chat ended, restored status: " + botName + " -> " + status);
+        }, SEGMENT_DURATION_TICKS);
+    }
+    
+    /**
+     * 更新聊天行 (Line 0-1)
+     */
+    private void updateChatLines(String botName, String text) {
         try {
             Hologram hologram = holograms.get(botName);
             
@@ -92,34 +215,24 @@ public class HologramManager implements IHologramService {
                 }
             }
             
-            String text = (statusText != null && !statusText.isEmpty()) ? statusText : DEFAULT_STATUS;
-            
-            // 分割文本为多行
+            // 分割文本为最多 2 行
             List<String> lines = wrapText(text);
             
-            // 获取当前全息行数 (通过 HologramPage)
+            // 确保有 3 行结构
             int currentLineCount = hologram.getPage(0).getLines().size();
-            int neededLines = 1 + lines.size();  // 1 for identity + status lines
-            
-            // 调整全息行数
-            while (currentLineCount < neededLines) {
+            while (currentLineCount < 3) {
                 DHAPI.addHologramLine(hologram, "");
                 currentLineCount++;
             }
-            while (currentLineCount > neededLines) {
-                DHAPI.removeHologramLine(hologram, currentLineCount - 1);
-                currentLineCount--;
-            }
             
-            // 更新状态行 (Line 1, 2, 3...)
-            for (int i = 0; i < lines.size(); i++) {
-                DHAPI.setHologramLine(hologram, i + 1, lines.get(i));
-            }
+            // Line 0: 第一行聊天
+            DHAPI.setHologramLine(hologram, 0, lines.size() > 0 ? lines.get(0) : "");
+            // Line 1: 第二行聊天（可能为空）
+            DHAPI.setHologramLine(hologram, 1, lines.size() > 1 ? lines.get(1) : "");
+            // Line 2: ID 行由 setIdentity 管理，这里不动
             
-            logger.fine(String.format("Hologram updated: %s, %d lines", botName, neededLines));
         } catch (Exception e) {
-            logger.warning("Hologram update failed for " + botName + ": " + e.getMessage());
-            holograms.remove(botName);
+            logger.warning("Chat line update failed for " + botName + ": " + e.getMessage());
         }
     }
     
@@ -133,9 +246,9 @@ public class HologramManager implements IHologramService {
             return lines;
         }
         
-        // 按字符分割，不打断词语
+        // 按字符分割
         int start = 0;
-        while (start < text.length() && lines.size() < MAX_STATUS_LINES) {
+        while (start < text.length() && lines.size() < MAX_CHAT_LINES) {
             int end = Math.min(start + LINE_WIDTH, text.length());
             lines.add(text.substring(start, end));
             start = end;
@@ -162,10 +275,18 @@ public class HologramManager implements IHologramService {
         
         Hologram hologram = holograms.get(botName);
         if (hologram == null) {
-            return;
+            hologram = createHologramForBot(botName);
+            if (hologram == null) return;
         }
         
-        // 更新身份行 (Line 0)
+        // 确保有 3 行
+        int currentLineCount = hologram.getPage(0).getLines().size();
+        while (currentLineCount < 3) {
+            DHAPI.addHologramLine(hologram, "");
+            currentLineCount++;
+        }
+        
+        // 更新身份行 (Line 2)
         String identityLine;
         if (ownerName != null && !ownerName.isEmpty()) {
             identityLine = "§e<§6" + ownerName + "§e的女仆>";
@@ -173,7 +294,7 @@ public class HologramManager implements IHologramService {
             identityLine = "§7[ §b" + botName + " §7]";
         }
         
-        DHAPI.setHologramLine(hologram, 0, identityLine);
+        DHAPI.setHologramLine(hologram, 2, identityLine);
     }
     
     @Override
@@ -183,6 +304,16 @@ public class HologramManager implements IHologramService {
             Bukkit.getScheduler().runTask(plugin, () -> removeHologram(botName));
             return;
         }
+        
+        // 取消说话任务
+        BukkitTask task = chatTasks.remove(botName);
+        if (task != null) {
+            task.cancel();
+        }
+        
+        // 清理缓存
+        segmentIndex.remove(botName);
+        cachedStatus.remove(botName);
         
         Hologram hologram = holograms.remove(botName);
         if (hologram != null) {
@@ -205,6 +336,14 @@ public class HologramManager implements IHologramService {
             followTask = null;
         }
         
+        // 取消所有说话任务
+        for (BukkitTask task : chatTasks.values()) {
+            task.cancel();
+        }
+        chatTasks.clear();
+        segmentIndex.clear();
+        cachedStatus.clear();
+        
         // 删除所有全息
         for (Hologram hologram : holograms.values()) {
             hologram.delete();
@@ -226,21 +365,14 @@ public class HologramManager implements IHologramService {
      * @return 创建的全息实例，若玩家不在线则返回 null
      */
     private Hologram createHologramForBot(String botName) {
-        logger.info(String.format("[DEBUG] createHologramForBot('%s')", botName));
-        
         Player bot = Bukkit.getPlayer(botName);
         
-        logger.info("[DEBUG] 当前在线玩家: " + Bukkit.getOnlinePlayers().stream()
-            .map(Player::getName).toList());
-        
         if (bot == null || !bot.isOnline()) {
-            logger.warning(String.format("[DEBUG] 玩家 '%s' 不存在或离线", botName));
+            logger.fine("Player not found or offline: " + botName);
             return null;
         }
         
         try {
-            // 注意：名牌隐藏由 PlayerConnectionListener 在 join 时处理
-            
             Location loc = bot.getLocation().clone().add(0, HEIGHT_OFFSET, 0);
             String holoName = HOLOGRAM_PREFIX + botName;
             
@@ -250,16 +382,17 @@ public class HologramManager implements IHologramService {
             
             Hologram hologram = DHAPI.createHologram(holoName, loc, false);
             
-            // 添加初始行
-            DHAPI.addHologramLine(hologram, "§7[ §b" + botName + " §7]");  // Line 0: 身份
-            DHAPI.addHologramLine(hologram, DEFAULT_STATUS);               // Line 1: 状态
+            // 创建 3 行结构 (chat-above-id 布局)
+            DHAPI.addHologramLine(hologram, "");                         // Line 0: 聊天行1
+            DHAPI.addHologramLine(hologram, DEFAULT_STATUS);             // Line 1: 聊天行2/状态
+            DHAPI.addHologramLine(hologram, "§7[ §b" + botName + " §7]"); // Line 2: ID
             
             holograms.put(botName, hologram);
-            logger.info(String.format("[DEBUG] 全息创建成功: %s", botName));
+            logger.info("Hologram created: " + botName + " (chat-above-id layout)");
             
             return hologram;
         } catch (Exception e) {
-            logger.warning("[DEBUG] 创建全息失败 for " + botName + ": " + e.getMessage());
+            logger.warning("Failed to create hologram for " + botName + ": " + e.getMessage());
             e.printStackTrace();
             return null;
         }
@@ -302,8 +435,6 @@ public class HologramManager implements IHologramService {
     
     /**
      * 启动全息跟随任务
-     * 
-     * <p>每 2 ticks 更新所有全息位置，跟随 Bot 移动</p>
      */
     private void startFollowTask() {
         followTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {

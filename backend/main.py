@@ -141,6 +141,10 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"Failed to sync bot to database: {e}")
         
+        # 创建 WebSocket 发送回调函数 (用于同步消息)
+        async def ws_send_func(msg: dict):
+            await manager.broadcast(json.dumps(msg, ensure_ascii=False))
+        
         # 初始化消息路由器 (with LLM client, state machine, context manager, and repositories)
         message_router = MessageRouter(
             bot_controller=default_bot,
@@ -151,6 +155,7 @@ async def lifespan(app: FastAPI):
             player_repo=player_repo,
             bot_repo=bot_repo,
             lifecycle_manager=lifecycle_manager,
+            ws_send_func=ws_send_func,
         )
     except Exception as e:
         logger.warning(f"Failed to spawn default bot: {e}")
@@ -188,6 +193,10 @@ async def lifespan(app: FastAPI):
         )
         logger.info(f"State machine initialized (MockBot): state={state_machine.current_state.name}")
         
+        # 创建 WebSocket 发送回调函数 (MockBot 模式)
+        async def ws_send_func(msg: dict):
+            await manager.broadcast(json.dumps(msg, ensure_ascii=False))
+        
         message_router = MessageRouter(
             bot_controller=mock_bot,
             llm_client=llm_client,
@@ -197,6 +206,7 @@ async def lifespan(app: FastAPI):
             player_repo=player_repo,
             bot_repo=bot_repo,
             lifecycle_manager=lifecycle_manager,
+            ws_send_func=ws_send_func,
         )
     
     logger.info(f"WebSocket server ready on ws://{settings.ws_host}:{settings.ws_port}")
@@ -331,7 +341,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
 
 async def send_init_config(websocket: WebSocket):
-    """发送初始化配置给 Java 插件"""
+    """发送初始化配置给 Java 插件（含 owner 同步）"""
     import time
     
     # 等待 Java 客户端完全准备好
@@ -342,14 +352,31 @@ async def send_init_config(websocket: WebSocket):
     if bot_manager:
         bot_names = bot_manager.list_bots()
     
+    # 从数据库获取 Bot 的 owner 信息
+    bot_owners = []
+    if bot_repo:
+        try:
+            bots = await bot_repo.get_all()
+            for bot in bots:
+                if bot.owner_uuid:
+                    bot_owners.append({
+                        "bot_name": bot.name,
+                        "owner_uuid": bot.owner_uuid,
+                        "owner_name": bot.owner_name,
+                    })
+            logger.info(f"[Init Sync] Found {len(bot_owners)} bots with owners in DB")
+        except Exception as e:
+            logger.warning(f"[Init Sync] Failed to get bot owners from DB: {e}")
+    
     init_msg = {
         "type": "init_config",
         "bot_names": bot_names,
+        "bot_owners": bot_owners,  # 新增：owner 数据同步
         "timestamp": int(time.time())
     }
     
     await websocket.send_text(json.dumps(init_msg))
-    logger.info(f"[Init Sync] Sent bot_names: {bot_names}")
+    logger.info(f"[Init Sync] Sent bot_names: {bot_names}, owners: {len(bot_owners)}")
 
 
 async def send_request_sync(websocket: WebSocket):

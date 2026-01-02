@@ -209,6 +209,8 @@ class StateMachine(IStateMachine):
         hologram_text: Optional[str]
     ) -> Dict[str, Any]:
         """构建响应消息"""
+        from websocket.handlers import split_to_segments
+        
         # DEBUG: 打印构建响应时的关键信息
         logger.info(f"[DEBUG] _build_response: bot_name='{self._config.bot_name}', hologram_text='{hologram_text}'")
         
@@ -220,6 +222,9 @@ class StateMachine(IStateMachine):
         
         if result.response:
             response["content"] = result.response
+            # 生成分段用于全息显示
+            response["segments"] = split_to_segments(result.response)
+            logger.info(f"[DEBUG] Generated {len(response['segments'])} segments for hologram")
         
         if hologram_text:
             response["hologram_text"] = hologram_text

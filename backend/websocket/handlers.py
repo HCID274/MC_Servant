@@ -1,8 +1,9 @@
 # WebSocket Message Handlers
 
 from abc import ABC, abstractmethod
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, List, TYPE_CHECKING
 import logging
+import re
 
 from protocol import (
     MessageType, PlayerMessage, NpcResponse, BotCommand, 
@@ -15,6 +16,64 @@ if TYPE_CHECKING:
     from state.machine import StateMachine
 
 logger = logging.getLogger(__name__)
+
+
+def split_to_segments(text: str, max_chars: int = 50) -> List[str]:
+    """
+    按语义切分文本用于全息分段显示
+    
+    - 优先在标点符号（中英文）处断开
+    - 单个片段超长时强制切分（兜底）
+    - 非首段开头加 '...'，非末段结尾加 '...'
+    
+    Args:
+        text: 原始文本
+        max_chars: 每段最大字符数
+        
+    Returns:
+        分段列表
+    """
+    if not text:
+        return []
+    
+    if len(text) <= max_chars:
+        return [text]
+    
+    # 1. 先按标点粗分（含中英文标点和换行）
+    raw_parts = re.split(r'([。！？；.!?\n])', text)
+    
+    segments = []
+    current = ""
+    
+    for part in raw_parts:
+        # 2. 如果当前 + 新片段超限，先保存当前
+        if len(current) + len(part) > max_chars:
+            if current:
+                segments.append(current)
+                current = ""
+            
+            # 3. 【兜底】单个 part 超长则强制切分
+            while len(part) > max_chars:
+                segments.append(part[:max_chars])
+                part = part[max_chars:]
+            
+            current = part
+        else:
+            current += part
+    
+    if current:
+        segments.append(current)
+    
+    # 4. 添加省略号标记
+    result = []
+    for i, seg in enumerate(segments):
+        if i > 0:
+            seg = "..." + seg
+        if i < len(segments) - 1:
+            seg = seg + "..."
+        result.append(seg)
+    
+    return result
 
 
 class IMessageHandler(ABC):
@@ -295,13 +354,17 @@ class PlayerMessageHandler(IMessageHandler):
                 logger.warning(f"Failed to record assistant message: {e}")
         
         bot_name = self._get_bot_name()
+        # 生成分段用于全息显示
+        segments = split_to_segments(content)
+        
         # DEBUG: 打印构建的响应信息
-        logger.info(f"[DEBUG] _handle_with_llm: building response, npc='{bot_name}', hologram='{hologram}', action='{action}'")
+        logger.info(f"[DEBUG] _handle_with_llm: building response, npc='{bot_name}', segments={len(segments)}, action='{action}'")
         
         response = NpcResponse(
             npc=bot_name,
             target_player=msg.player,
             content=content,
+            segments=segments,
             hologram_text=hologram,
             action=action
         )
@@ -430,6 +493,7 @@ class ServantCommandHandler(IMessageHandler):
     - 验证 target_bot 参数
     - 委托给状态机处理 claim/release
     - 同步到数据库
+    - 发送 bot_owner_update 同步到 Java
     - 查询 BotManager 处理 list
     """
     
@@ -438,10 +502,12 @@ class ServantCommandHandler(IMessageHandler):
         bot_manager: Optional["IBotManager"] = None,
         state_machine: Optional["StateMachine"] = None,
         bot_repo = None,  # IBotRepository
+        ws_send_func = None,  # async callback to send WebSocket messages
     ):
         self._bot_manager = bot_manager
         self._fsm = state_machine
         self._bot_repo = bot_repo
+        self._ws_send = ws_send_func
     
     async def handle(self, data: dict) -> Optional[dict]:
         """处理系统命令"""
@@ -499,6 +565,19 @@ class ServantCommandHandler(IMessageHandler):
             except Exception as e:
                 logger.error(f"[DB] Failed to sync claim: {e}")
         
+        # 发送 bot_owner_update 同步到 Java
+        if self._ws_send:
+            try:
+                await self._ws_send({
+                    "type": "bot_owner_update",
+                    "bot_name": bot_name,
+                    "owner_uuid": player_uuid or player,
+                    "owner_name": player,
+                })
+                logger.info(f"[Sync] Sent bot_owner_update for {bot_name} -> {player}")
+            except Exception as e:
+                logger.error(f"[Sync] Failed to send bot_owner_update: {e}")
+        
         if response:
             response.setdefault("target_player", player)
             return response
@@ -539,6 +618,19 @@ class ServantCommandHandler(IMessageHandler):
                 logger.info(f"[DB] Bot '{bot_name}' released")
             except Exception as e:
                 logger.error(f"[DB] Failed to sync release: {e}")
+        
+        # 发送 bot_owner_update 同步到 Java (清空所有权)
+        if self._ws_send:
+            try:
+                await self._ws_send({
+                    "type": "bot_owner_update",
+                    "bot_name": bot_name,
+                    "owner_uuid": None,
+                    "owner_name": None,
+                })
+                logger.info(f"[Sync] Sent bot_owner_update for {bot_name} -> (released)")
+            except Exception as e:
+                logger.error(f"[Sync] Failed to send bot_owner_update: {e}")
         
         if response:
             response.setdefault("target_player", player)
@@ -824,6 +916,7 @@ class MessageRouter:
         player_repo = None,  # IPlayerRepository
         bot_repo = None,  # IBotRepository
         lifecycle_manager = None,  # BotLifecycleManager
+        ws_send_func = None,  # async callback to send WebSocket messages
     ):
         self._handlers: dict[MessageType, IMessageHandler] = {
             MessageType.PLAYER_MESSAGE: PlayerMessageHandler(
@@ -831,7 +924,7 @@ class MessageRouter:
             ),
             MessageType.HEARTBEAT: HeartbeatHandler(),
             MessageType.SERVANT_COMMAND: ServantCommandHandler(
-                bot_manager, state_machine, bot_repo
+                bot_manager, state_machine, bot_repo, ws_send_func
             ),
         }
         

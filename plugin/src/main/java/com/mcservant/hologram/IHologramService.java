@@ -1,5 +1,7 @@
 package com.mcservant.hologram;
 
+import java.util.List;
+
 /**
  * 全息显示服务接口
  * 
@@ -17,6 +19,22 @@ public interface IHologramService {
      * @param statusText 状态文本 (如 "💭 思考中...")
      */
     void updateHologram(String botName, String statusText);
+    
+    /**
+     * 更新状态全息（说话时只更新缓存，不打断对话）
+     * 
+     * @param botName Bot 名称
+     * @param statusText 状态文本
+     */
+    void updateHologramStatus(String botName, String statusText);
+    
+    /**
+     * 开始分段展示对话内容
+     * 
+     * @param botName Bot 名称
+     * @param segments 分段内容列表
+     */
+    void startChatSegments(String botName, List<String> segments);
     
     /**
      * 设置 Bot 的身份行 (顶部固定行)
