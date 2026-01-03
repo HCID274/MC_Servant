@@ -1,8 +1,205 @@
 # Bot Controller Interfaces
 
 from abc import ABC, abstractmethod
-from typing import Tuple, Optional
+from dataclasses import dataclass
+from typing import Tuple, Optional, Any, List
+from enum import Enum
 
+
+# ============================================================================
+# Action System - Bot 动作执行能力 (Layer 2)
+# ============================================================================
+
+class ActionStatus(Enum):
+    """动作执行状态"""
+    SUCCESS = "success"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class ActionResult:
+    """
+    动作执行结果 - 统一的反馈结构
+    
+    所有动作都必须返回此结构，供 LLM 反思决策
+    
+    Attributes:
+        success: 是否成功
+        action: 执行的动作名
+        message: 人类可读的描述
+        status: 状态枚举
+        data: 返回数据 (格式由具体动作定义)
+        error_code: 错误码
+        duration_ms: 执行耗时
+        
+    Error Codes:
+        INVENTORY_FULL - 背包满了
+        TOOL_BROKEN - 工具损坏
+        TARGET_NOT_FOUND - 找不到目标
+        PATH_BLOCKED - 路径被阻挡
+        TIMEOUT - 超时
+        NO_TOOL - 没有合适工具
+        INSUFFICIENT_MATERIALS - 材料不足
+    """
+    success: bool
+    action: str
+    message: str
+    status: ActionStatus
+    data: Optional[Any] = None
+    error_code: Optional[str] = None
+    duration_ms: int = 0
+
+
+class IBotActions(ABC):
+    """
+    Bot 动作抽象接口 (Layer 2: Python Actions)
+    
+    设计原则：
+    - 简单的接口：方法参数使用语义化名称，不暴露坐标细节
+    - 深度的功能：内部封装寻路、工具选择、错误处理
+    - 依赖抽象：上层只依赖此接口，不依赖 Mineflayer 具体实现
+    
+    Target 格式约定：
+    - 坐标: "x,y,z" (如 "100,64,-200")
+    - 玩家: "@PlayerName" (如 "@HCID273")
+    """
+    
+    @abstractmethod
+    async def goto(self, target: str, timeout: float = 60.0) -> ActionResult:
+        """
+        导航到目标位置
+        
+        Args:
+            target: 目标 ("x,y,z" 或 "@PlayerName")
+            timeout: 超时时间 (秒)
+            
+        Returns:
+            ActionResult
+            data: {"arrived_at": [x, y, z]}
+        """
+        pass
+    
+    @abstractmethod
+    async def mine(self, block_type: str, count: int = 1, timeout: float = 120.0) -> ActionResult:
+        """
+        采集指定类型的方块
+        
+        自动处理: 寻找 → 导航 → 选工具 → 挖掘
+        
+        Args:
+            block_type: 方块类型 ID (如 "oak_log", "iron_ore")
+            count: 数量
+            timeout: 超时时间 (秒)
+            
+        Returns:
+            ActionResult
+            data: {"collected": {"oak_log": 3}, "location": [x, y, z]}
+        """
+        pass
+    
+    @abstractmethod
+    async def place(self, block_type: str, x: int, y: int, z: int, timeout: float = 10.0) -> ActionResult:
+        """
+        在指定位置放置方块
+        
+        Args:
+            block_type: 方块类型 ID
+            x, y, z: 目标坐标
+            timeout: 超时时间
+            
+        Returns:
+            ActionResult
+            data: {"placed_at": [x, y, z]}
+        """
+        pass
+    
+    @abstractmethod
+    async def craft(self, item_name: str, count: int = 1, timeout: float = 30.0) -> ActionResult:
+        """
+        合成物品
+        
+        自动处理: 查配方 → 检查材料 → 寻找工作台 (如需)
+        
+        Args:
+            item_name: 物品 ID (如 "oak_planks", "crafting_table")
+            count: 数量
+            timeout: 超时时间
+            
+        Returns:
+            ActionResult
+            data: {"crafted": {"oak_planks": 4}}
+        """
+        pass
+    
+    @abstractmethod
+    async def give(self, player_name: str, item_name: str, count: int = 1, timeout: float = 30.0) -> ActionResult:
+        """
+        将物品交给玩家
+        
+        Args:
+            player_name: 玩家名
+            item_name: 物品 ID
+            count: 数量
+            timeout: 超时时间
+            
+        Returns:
+            ActionResult
+            data: {"given": {"oak_log": 10}, "to": "PlayerName"}
+        """
+        pass
+    
+    @abstractmethod
+    async def equip(self, item_name: str, timeout: float = 5.0) -> ActionResult:
+        """
+        装备物品到手上
+        
+        Args:
+            item_name: 物品 ID
+            timeout: 超时时间
+            
+        Returns:
+            ActionResult
+            data: {"equipped": "diamond_pickaxe"}
+        """
+        pass
+    
+    @abstractmethod
+    async def scan(self, target_type: str, radius: int = 32) -> ActionResult:
+        """
+        扫描周围实体/方块
+        
+        Args:
+            target_type: 目标类型 (方块ID 或 "player", "mob", "item")
+            radius: 扫描半径 (格)
+            
+        Returns:
+            ActionResult
+            data: {"targets": [{"name": "iron_ore", "count": 3, "nearest": [x, y, z]}]}
+        """
+        pass
+    
+    @abstractmethod
+    def get_state(self) -> dict:
+        """
+        获取 Bot 当前状态 (同步方法)
+        
+        Returns:
+            {
+                "position": {"x": 100, "y": 64, "z": -200},
+                "health": 20.0,
+                "food": 20,
+                "inventory": {"oak_log": 64, "cobblestone": 128},
+                "equipped": "diamond_pickaxe" | None
+            }
+        """
+        pass
+
+
+# ============================================================================
+# Bot Controller - Bot 生命周期与基础控制 (已有)
+# ============================================================================
 
 class IBotController(ABC):
     """

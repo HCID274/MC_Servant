@@ -100,6 +100,8 @@ async def lifespan(app: FastAPI):
         default_bot = await bot_manager.spawn_bot(settings.bot_username)
         logger.info(f"Default bot spawned: {settings.bot_username}")
         
+        # Phase 1 Actions 验证完成，测试代码已删除
+        
         # 初始化状态机
         from pathlib import Path
         from state.machine import StateMachine

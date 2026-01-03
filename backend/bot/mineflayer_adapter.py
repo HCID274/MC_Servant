@@ -79,8 +79,39 @@ class MineflayerBot(IBotController):
         # 加载插件
         self._bot.loadPlugin(self._pathfinder.pathfinder)
         
+        # 加载额外插件 (collectblock, tool)
+        self._load_plugins()
+        
         # 注册事件处理器
         self._register_events()
+    
+    def _load_plugins(self):
+        """
+        加载 Mineflayer 插件 (collectblock, tool) 并配置 Movements
+        
+        在 Bot 初始化完成后调用，确保插件正确挂载
+        """
+        try:
+            # 加载 minecraft-data (用于方块/物品查询)
+            self._mcData = require('minecraft-data')(self._bot.version)
+            
+            # 加载 collectblock 插件 (自动采集)
+            collectblock = require('mineflayer-collectblock')
+            self._bot.loadPlugin(collectblock.plugin)
+            
+            # 加载 tool 插件 (自动选择工具)
+            tool_plugin = require('mineflayer-tool')
+            self._bot.loadPlugin(tool_plugin.plugin)
+            
+            # 配置寻路参数
+            movements = self._pathfinder.Movements(self._bot, self._mcData)
+            movements.canDig = True      # 允许挖掘障碍
+            movements.allowParkour = True  # 允许跑酷
+            self._bot.pathfinder.setMovements(movements)
+            
+            logger.info(f"Bot {self._username} plugins loaded: pathfinder, collectblock, tool")
+        except Exception as e:
+            logger.error(f"Failed to load plugins: {e}")
     
     def _register_events(self):
         """注册 Bot 事件处理器"""
