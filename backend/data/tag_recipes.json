@@ -1,0 +1,46 @@
+{
+  "_comment": "Minecraft Tag 等价物品组 - 用于 craft() 方法的 Tag 配方解析",
+  "_version": "1.20.6",
+  "_updated": "2026-01-03",
+
+  "planks": [
+    "oak_planks", "spruce_planks", "birch_planks", "jungle_planks",
+    "acacia_planks", "dark_oak_planks", "mangrove_planks", "cherry_planks",
+    "bamboo_planks", "crimson_planks", "warped_planks"
+  ],
+
+  "logs": [
+    "oak_log", "spruce_log", "birch_log", "jungle_log",
+    "acacia_log", "dark_oak_log", "mangrove_log", "cherry_log",
+    "crimson_stem", "warped_stem"
+  ],
+
+  "wooden_slabs": [
+    "oak_slab", "spruce_slab", "birch_slab", "jungle_slab",
+    "acacia_slab", "dark_oak_slab", "mangrove_slab", "cherry_slab",
+    "bamboo_slab", "crimson_slab", "warped_slab"
+  ],
+
+  "wool": [
+    "white_wool", "orange_wool", "magenta_wool", "light_blue_wool",
+    "yellow_wool", "lime_wool", "pink_wool", "gray_wool",
+    "light_gray_wool", "cyan_wool", "purple_wool", "blue_wool",
+    "brown_wool", "green_wool", "red_wool", "black_wool"
+  ],
+
+  "stone_tool_materials": [
+    "cobblestone", "blackstone", "cobbled_deepslate"
+  ],
+
+  "coals": [
+    "coal", "charcoal"
+  ],
+
+  "sand": [
+    "sand", "red_sand"
+  ],
+
+  "soul_fire_base_blocks": [
+    "soul_sand", "soul_soil"
+  ]
+}

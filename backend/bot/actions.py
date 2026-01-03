@@ -437,11 +437,18 @@ class MineflayerActions(IBotActions):
             )
     
     async def craft(self, item_name: str, count: int = 1, timeout: float = 30.0) -> ActionResult:
-        """合成物品"""
+        """
+        合成物品 (Tag-aware 版本)
+        
+        增强功能:
+        - 自动尝试所有配方变体
+        - Tag 等价材料匹配 (如 birch_planks 可替代 oak_planks 合成 stick)
+        - 返回详细的缺失材料信息
+        """
         start_time = time.time()
         
         try:
-            # 获取配方
+            # 获取物品信息
             item_info = self._mcData.itemsByName[item_name] if hasattr(self._mcData.itemsByName, item_name) else None
             if not item_info:
                 return ActionResult(
@@ -452,19 +459,23 @@ class MineflayerActions(IBotActions):
                     error_code="TARGET_NOT_FOUND"
                 )
             
-            # 尝试获取配方 (先用 recipesFor，失败则用 recipesAll)
-            recipes_proxy = self._bot.recipesFor(item_info.id)
-            recipes = list(recipes_proxy) if recipes_proxy else []
+            # 获取所有配方 (使用 recipesAll 获取完整列表)
+            all_recipes = []
+            try:
+                all_recipes_proxy = self._bot.recipesAll(item_info.id, None, None)
+                all_recipes = list(all_recipes_proxy) if all_recipes_proxy else []
+            except Exception as e:
+                logger.debug(f"recipesAll failed: {e}")
             
-            # 如果 recipesFor 没有结果，尝试 recipesAll (忽略当前库存)
-            if not recipes:
+            # 如果 recipesAll 失败，回退到 recipesFor
+            if not all_recipes:
                 try:
-                    all_recipes_proxy = self._bot.recipesAll(item_info.id, None, None)
-                    recipes = list(all_recipes_proxy) if all_recipes_proxy else []
+                    recipes_proxy = self._bot.recipesFor(item_info.id)
+                    all_recipes = list(recipes_proxy) if recipes_proxy else []
                 except:
                     pass
             
-            if not recipes:
+            if not all_recipes:
                 return ActionResult(
                     success=False,
                     action="craft",
@@ -473,12 +484,27 @@ class MineflayerActions(IBotActions):
                     error_code="TARGET_NOT_FOUND"
                 )
             
-            recipe = recipes[0]
+            # 获取当前背包状态
+            inventory = self._get_inventory_summary()
+            
+            # 尝试找到可执行的配方 (Tag-aware)
+            executable_recipe, missing_materials = self._find_executable_recipe(all_recipes, inventory, count)
+            
+            if not executable_recipe:
+                # 所有配方都不可行，返回详细的缺失材料信息
+                return ActionResult(
+                    success=False,
+                    action="craft",
+                    message=f"合成 {item_name} 材料不足: {missing_materials}",
+                    status=ActionStatus.FAILED,
+                    error_code="INSUFFICIENT_MATERIALS",
+                    data={"missing": missing_materials},
+                    duration_ms=int((time.time() - start_time) * 1000)
+                )
             
             # 检查是否需要工作台
             crafting_table = None
-            if recipe.requiresTable:
-                # 寻找附近的工作台
+            if executable_recipe.requiresTable:
                 ct_info = self._mcData.blocksByName["crafting_table"] if hasattr(self._mcData.blocksByName, "crafting_table") else None
                 if ct_info:
                     crafting_table = self._bot.findBlock({
@@ -499,7 +525,7 @@ class MineflayerActions(IBotActions):
             await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self._bot.craft(recipe, count, crafting_table)
+                    lambda: self._bot.craft(executable_recipe, count, crafting_table)
                 ),
                 timeout=timeout
             )
@@ -536,6 +562,110 @@ class MineflayerActions(IBotActions):
                 error_code=error_code,
                 duration_ms=int((time.time() - start_time) * 1000)
             )
+    
+    def _find_executable_recipe(
+        self, 
+        recipes: list, 
+        inventory: Dict[str, int],
+        craft_count: int = 1
+    ) -> tuple:
+        """
+        找到第一个可执行的配方 (Tag-aware)
+        
+        Args:
+            recipes: 配方列表
+            inventory: 当前背包 {item_name: count}
+            craft_count: 要合成的数量
+            
+        Returns:
+            (recipe, missing_materials)
+            - 成功: (recipe, {})
+            - 失败: (None, {material_name: required_count})
+        """
+        from bot.tag_resolver import get_tag_resolver
+        tag_resolver = get_tag_resolver()
+        
+        best_missing = {}  # 记录最接近成功的配方缺少什么
+        
+        for recipe in recipes:
+            required_materials = self._extract_recipe_materials(recipe)
+            if not required_materials:
+                continue
+            
+            # 检查每种材料是否有足够的等价物品
+            can_craft = True
+            recipe_missing = {}
+            
+            for material_id, required_count in required_materials.items():
+                # 将 ID 转换为物品名
+                material_name = self._get_item_name_by_id(material_id)
+                if not material_name:
+                    can_craft = False
+                    recipe_missing[f"id:{material_id}"] = required_count * craft_count
+                    continue
+                
+                # 使用 TagResolver 查找背包中的等价物品总数
+                available_count = tag_resolver.get_available_count(material_name, inventory)
+                needed = required_count * craft_count
+                
+                if available_count < needed:
+                    can_craft = False
+                    # 记录需要的 Tag 组名（更友好的提示）
+                    equivalents = tag_resolver.get_equivalents(material_name)
+                    tag_hint = material_name if len(equivalents) == 1 else f"{material_name} (或其他变体)"
+                    recipe_missing[tag_hint] = needed - available_count
+            
+            if can_craft:
+                return (recipe, {})
+            
+            # 记录最接近成功的配方
+            if not best_missing or len(recipe_missing) < len(best_missing):
+                best_missing = recipe_missing
+        
+        return (None, best_missing)
+    
+    def _extract_recipe_materials(self, recipe) -> Dict[int, int]:
+        """
+        从配方中提取所需材料
+        
+        Returns:
+            {item_id: required_count}
+        """
+        materials: Dict[int, int] = {}
+        
+        try:
+            # 处理 inShape (有形状配方)
+            if hasattr(recipe, 'inShape') and recipe.inShape:
+                for row in recipe.inShape:
+                    for cell in row:
+                        if cell and cell > 0:  # 有效的物品 ID
+                            materials[cell] = materials.get(cell, 0) + 1
+            
+            # 处理 ingredients (无形状配方)
+            if hasattr(recipe, 'ingredients') and recipe.ingredients:
+                for ingredient in recipe.ingredients:
+                    if ingredient and ingredient > 0:
+                        materials[ingredient] = materials.get(ingredient, 0) + 1
+            
+            # 处理 delta 格式 (某些配方使用 delta)
+            if hasattr(recipe, 'delta') and recipe.delta:
+                for delta_item in recipe.delta:
+                    if hasattr(delta_item, 'id') and hasattr(delta_item, 'count'):
+                        if delta_item.count < 0:  # 负数表示消耗
+                            materials[delta_item.id] = materials.get(delta_item.id, 0) + abs(delta_item.count)
+                            
+        except Exception as e:
+            logger.warning(f"Failed to extract recipe materials: {e}")
+        
+        return materials
+    
+    def _get_item_name_by_id(self, item_id: int) -> Optional[str]:
+        """根据物品 ID 获取物品名称"""
+        try:
+            item = self._mcData.items[item_id]
+            return item.name if item else None
+        except:
+            return None
     
     async def give(self, player_name: str, item_name: str, count: int = 1, timeout: float = 30.0) -> ActionResult:
         """将物品交给玩家"""
