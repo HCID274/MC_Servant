@@ -779,14 +779,23 @@ class MineflayerActions(IBotActions):
             )
     
     async def scan(self, target_type: str, radius: int = 32) -> ActionResult:
-        """扫描周围实体/方块"""
+        """
+        扫描周围实体/方块
+        
+        注意: 此方法是 IBotActions 的一部分，服务于 TaskExecutor/LLM 规划器。
+        返回 ActionResult，包含扫描到的目标摘要。
+        
+        与 perception/scanner.py 的 MineflayerScanner 区别:
+        - 此方法: 动作层，单一 target_type，返回 ActionResult
+        - MineflayerScanner: 感知层，多候选 ID，返回 List[ScanResult]
+        """
         start_time = time.time()
         
         try:
             targets = []
             
             if target_type == "player":
-                # 扫描玩家
+                # 扫描玩家 (内存操作，无需 executor)
                 for name, player in dict(self._bot.players).items():
                     if player.entity and name != self._bot.username:
                         pos = player.entity.position
@@ -800,7 +809,7 @@ class MineflayerActions(IBotActions):
                             })
             
             elif target_type in ("mob", "entity"):
-                # 扫描实体
+                # 扫描实体 (内存操作，无需 executor)
                 for entity_id, entity in dict(self._bot.entities).items():
                     if entity.type == "mob" or entity.type == "animal":
                         pos = entity.position
@@ -814,14 +823,18 @@ class MineflayerActions(IBotActions):
                             })
             
             else:
-                # 扫描方块
+                # 扫描方块 - 使用 executor 避免阻塞事件循环
                 block_info = self._mcData.blocksByName[target_type] if hasattr(self._mcData.blocksByName, target_type) else None
                 if block_info:
-                    blocks_proxy = self._bot.findBlocks({
-                        "matching": block_info.id,
-                        "maxDistance": radius,
-                        "count": 64
-                    })
+                    # findBlocks 可能涉及大量计算，放入线程池
+                    blocks_proxy = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self._bot.findBlocks({
+                            "matching": block_info.id,
+                            "maxDistance": radius,
+                            "count": 64
+                        })
+                    )
                     
                     # 将 JS Proxy 转换为 Python list
                     blocks = list(blocks_proxy) if blocks_proxy else []
@@ -945,7 +958,15 @@ class MineflayerActions(IBotActions):
             return False
     
     def _find_inventory_item(self, item_name: str):
-        """在背包中查找物品"""
+        """
+        在背包中查找物品对象 (内部辅助方法)
+        
+        用于动作执行: place(), give(), equip() 需要获取 Item 对象来操作
+        
+        与 perception/inventory.py 的 BotInventoryProvider.find_item() 区别:
+        - 此方法: 动作层内部辅助，服务于物品操作动作
+        - BotInventoryProvider: 感知层独立接口，服务于 EntityResolver
+        """
         try:
             items = self._bot.inventory.items()
             for item in items:
@@ -956,7 +977,15 @@ class MineflayerActions(IBotActions):
             return None
     
     def _get_inventory_summary(self) -> Dict[str, int]:
-        """获取背包摘要 (合并同类项)"""
+        """
+        获取背包摘要 (合并同类项) - 内部辅助方法
+        
+        用于: craft() 检查材料, get_state() 返回状态
+        
+        与 perception/inventory.py 的 BotInventoryProvider.get_items() 区别:
+        - 此方法: 动作层内部辅助，服务于合成/状态查询
+        - BotInventoryProvider: 感知层独立接口，服务于 EntityResolver 候选检查
+        """
         summary = {}
         try:
             items = self._bot.inventory.items()
