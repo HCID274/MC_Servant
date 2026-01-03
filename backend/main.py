@@ -513,10 +513,15 @@ async def handle_online_players_sync(message: dict, client_id: str):
 
 
 if __name__ == "__main__":
+    # 默认关闭热重载：
+    # - 采集/移动等“长动作”期间热重载会强制断开 websocket、kill mineflayer 进程，表现为“动了一下就不砍/不继续”
+    # - 需要开发热重载时，显式设置环境变量 MC_SERVANT_RELOAD=1
+    import os
+    reload_enabled = os.getenv("MC_SERVANT_RELOAD", "0") == "1"
     uvicorn.run(
         "main:app",
         host=settings.ws_host,
         port=settings.ws_port,
-        reload=True,
+        reload=reload_enabled,
         log_level=settings.log_level.lower()
     )

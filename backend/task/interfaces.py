@@ -230,7 +230,12 @@ class ITaskExecutor(ABC):
     """
     
     @abstractmethod
-    async def execute(self, task_description: str) -> TaskResult:
+    async def execute(
+        self,
+        task_description: str,
+        task_type: Optional[str] = None,
+        task_payload: Optional[Dict[str, Any]] = None,
+    ) -> TaskResult:
         """
         执行任务直到完成或失败
         
@@ -241,6 +246,8 @@ class ITaskExecutor(ABC):
         
         Args:
             task_description: 任务描述
+            task_type: 可选，来自意图识别/状态机的任务类型（如 "mine" / "build" / "goto"）
+            task_payload: 可选，状态机透传的原始事件 payload（可包含玩家坐标、实体信息等）
             
         Returns:
             TaskResult: 执行结果

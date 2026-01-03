@@ -493,6 +493,12 @@ class MineflayerActions(IBotActions):
             # 逐个挖掘原木（使用 collectblock 插件）
             collected = 0
             failed = 0
+
+            # collectBlock 在某些情况下会报：
+            # "Timeout: Took too long to decide path to goal!"
+            # 这通常不是“地形复杂”，而是寻路决策超时/卡住，需要 stop + 重试。
+            MAX_COLLECT_RETRIES = 3
+            COLLECT_WAIT_SEC = 35  # 单个原木最多等待（包含寻路/挖掘/拾取的延迟）
             
             for log_pos in tree_logs:
                 if time.time() - start_time > timeout:
@@ -514,63 +520,119 @@ class MineflayerActions(IBotActions):
                 # 使用 collectblock 插件挖掘（自动处理导航和工具选择）
                 try:
                     # 关键：不要把 Python 回调传给 JS（会触发桥接层 len(function) 并导致 Node uncaughtException）
-                    # 这里复用 mine() 里的成熟模式：无回调调用 collect()，在 Python 侧轮询 inventory 变化。
-                    inventory_before = self._get_inventory_count(first_log_type)
-                    last_inventory_check = inventory_before
+                    # 这里复用 mine() 里的成熟模式：无回调调用 collect()，在 Python 侧轮询 inventory/方块是否消失。
 
-                    # 尝试预先装备工具（collectBlock 也会处理，但这里提前做一次更稳）
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.get_event_loop().run_in_executor(
-                                None,
-                                lambda: self._bot.tool.equipForBlock(block)
-                            ),
-                            timeout=5.0
-                        )
-                    except Exception as e:
-                        logger.debug(f"[mine_tree] Auto-equip tool failed: {e}")
+                    last_err = None
+                    mined_this_log = False
 
-                    collect_done = False
-                    collect_error = None
-
-                    def do_collect():
-                        nonlocal collect_done, collect_error
+                    for attempt in range(1, MAX_COLLECT_RETRIES + 1):
+                        # 清理旧 goal，避免 pathfinder 因残留目标卡住
                         try:
-                            self._bot.collectBlock.collect(block)
-                            collect_done = True
-                        except Exception as e:
-                            collect_error = e
-
-                    import threading
-                    threading.Thread(target=do_collect, daemon=True).start()
-
-                    # 等待采集完成/进度（最多 20s），通过 inventory 增量来判断是否真正拿到物品
-                    collect_start = time.time()
-                    while (not collect_done) and collect_error is None and (time.time() - collect_start < 20):
-                        await asyncio.sleep(1.0)
-                        try:
-                            current_inventory = self._get_inventory_count(first_log_type)
-                            if current_inventory > last_inventory_check:
-                                last_inventory_check = current_inventory
+                            self._bot.pathfinder.stop()
                         except Exception:
                             pass
 
-                    inventory_after = self._get_inventory_count(first_log_type)
-                    actually_collected = inventory_after - inventory_before
+                        # 重试前先尝试靠近（GoalNear 比 collectBlock 的“找可挖点”更宽松）
+                        if attempt > 1:
+                            try:
+                                await self._navigate_to_block(x, y, z)
+                            except Exception:
+                                pass
 
-                    if collect_error is not None:
-                        logger.warning(f"[mine_tree] Collect error at ({x},{y},{z}): {collect_error}")
+                        inventory_before = self._get_inventory_count(first_log_type)
+                        last_inventory_check = inventory_before
+
+                        # 尝试预先装备工具（collectBlock 也会处理，但这里提前做一次更稳）
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.get_event_loop().run_in_executor(
+                                    None,
+                                    lambda: self._bot.tool.equipForBlock(block)
+                                ),
+                                timeout=5.0
+                            )
+                        except Exception as e:
+                            logger.debug(f"[mine_tree] Auto-equip tool failed: {e}")
+
+                        collect_done = False
+                        collect_error = None
+
+                        def do_collect():
+                            nonlocal collect_done, collect_error
+                            try:
+                                self._bot.collectBlock.collect(block)
+                                collect_done = True
+                            except Exception as e:
+                                collect_error = e
+
+                        import threading
+                        threading.Thread(target=do_collect, daemon=True).start()
+
+                        collect_start = time.time()
+                        while (not collect_done) and collect_error is None and (time.time() - collect_start < COLLECT_WAIT_SEC):
+                            await asyncio.sleep(1.0)
+                            # inventory 变化用于判断是否已有收益
+                            try:
+                                current_inventory = self._get_inventory_count(first_log_type)
+                                if current_inventory > last_inventory_check:
+                                    last_inventory_check = current_inventory
+                            except Exception:
+                                pass
+
+                        inventory_after = self._get_inventory_count(first_log_type)
+                        actually_collected = inventory_after - inventory_before
+
+                        # 再检查一下方块是否已经被挖掉（比“乐观 +1”更可靠）
+                        block_removed = False
+                        try:
+                            await asyncio.sleep(0.2)
+                            now_block = self._bot.blockAt(self._Vec3(x, y, z))
+                            if not now_block or now_block.name != first_log_type:
+                                block_removed = True
+                        except Exception:
+                            pass
+
+                        if collect_error is not None:
+                            last_err = collect_error
+                            err_str = str(collect_error)
+                            logger.warning(f"[mine_tree] Collect error at ({x},{y},{z}) attempt {attempt}/{MAX_COLLECT_RETRIES}: {collect_error}")
+
+                            # 针对典型超时：重试即可
+                            if ("Took to long to decide path" in err_str or "noPathListener" in err_str or "No path" in err_str) and attempt < MAX_COLLECT_RETRIES:
+                                await asyncio.sleep(0.5 * attempt)
+                                continue
+                            break
+
+                        if actually_collected > 0:
+                            collected += actually_collected
+                            mined_this_log = True
+                            break
+
+                        if block_removed:
+                            collected += 1
+                            mined_this_log = True
+                            break
+
+                        # collect_done 但没收益：可能拾取延迟/掉落在路上，再等一下；仍无变化则重试
+                        if collect_done:
+                            await asyncio.sleep(0.8)
+                            inv2 = self._get_inventory_count(first_log_type)
+                            if inv2 > inventory_after:
+                                collected += (inv2 - inventory_after)
+                                mined_this_log = True
+                                break
+
+                        last_err = "collect_timeout"
+                        if attempt < MAX_COLLECT_RETRIES:
+                            logger.warning(f"[mine_tree] Collect timeout at ({x},{y},{z}) attempt {attempt}/{MAX_COLLECT_RETRIES}, retrying...")
+                            await asyncio.sleep(0.5 * attempt)
+                            continue
+                        break
+
+                    if not mined_this_log:
                         failed += 1
-                    elif actually_collected > 0:
-                        collected += actually_collected
-                        logger.debug(f"[mine_tree] Collected +{actually_collected} logs at ({x},{y},{z}), total: {collected}")
-                    elif collect_done:
-                        # JS 端报告完成但 inventory 没变：给一次“乐观计数”，避免因拾取延迟被误判为失败
-                        collected += 1
-                        logger.debug(f"[mine_tree] Collect done but inventory unchanged at ({x},{y},{z}); optimistic +1, total: {collected}")
-                    else:
-                        logger.warning(f"[mine_tree] Collect timeout at ({x},{y},{z})")
-                        failed += 1
+                        if last_err is not None:
+                            logger.warning(f"[mine_tree] Failed to mine log at ({x},{y},{z}) after retries: {last_err}")
                         
                 except Exception as e:
                     logger.warning(f"[mine_tree] Failed to mine log at ({x},{y},{z}): {e}")

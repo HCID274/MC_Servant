@@ -4,7 +4,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 
 from .interfaces import StackTask, TaskStatus, IPrerequisiteResolver
 
@@ -44,7 +44,7 @@ class PrerequisiteResolver(IPrerequisiteResolver):
         self._tag_index = self._build_tag_index()
         logger.info(f"PrerequisiteResolver initialized with {len(self._rules.get('craftable_items', {}))} crafting rules")
     
-    def _load_rules(self, path: str | Path) -> Dict[str, Any]:
+    def _load_rules(self, path: Union[str, Path]) -> Dict[str, Any]:
         """加载规则库"""
         try:
             with open(path, 'r', encoding='utf-8') as f:

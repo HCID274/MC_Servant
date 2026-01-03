@@ -4,7 +4,7 @@
 import asyncio
 import logging
 import inspect
-from typing import Dict, Any, List, Optional, Callable, Awaitable, TYPE_CHECKING
+from typing import Dict, Any, List, Optional, Callable, Awaitable, TYPE_CHECKING, Tuple
 
 from .interfaces import (
     StackTask,
@@ -17,6 +17,7 @@ from .interfaces import (
     ITaskExecutor,
 )
 from .stack_planner import StackPlanner, StackOverflowError
+from .behavior_rules import BehaviorRules
 
 # 运行时导入 (测试时由 Mock 提供)
 try:
@@ -102,6 +103,8 @@ class TaskExecutor(ITaskExecutor):
         self._stack = StackPlanner()
         self._cancelled = False
         self._running = False
+        # Rulebook：将阈值/关键词/策略配置化，避免写死在 prompt/代码里
+        self._rules = BehaviorRules()
         
         logger.info("TaskExecutor initialized")
     
@@ -120,7 +123,12 @@ class TaskExecutor(ITaskExecutor):
         """当前栈深度"""
         return self._stack.depth
     
-    async def execute(self, task_description: str) -> TaskResult:
+    async def execute(
+        self,
+        task_description: str,
+        task_type: Optional[str] = None,
+        task_payload: Optional[Dict[str, Any]] = None,
+    ) -> TaskResult:
         """
         执行任务直到完成或失败 (顶层入口)
         
@@ -146,7 +154,7 @@ class TaskExecutor(ITaskExecutor):
         root_task = StackTask(
             name=task_description,
             goal=task_description,
-            context={"is_root": True},
+            context={"is_root": True, "task_type": task_type, "task_payload": task_payload or {}},
             status=TaskStatus.PENDING
         )
         
@@ -257,6 +265,10 @@ class TaskExecutor(ITaskExecutor):
         Returns:
             TaskResult: 任务执行结果
         """
+        # 对采集类任务启用“循环决策”（VillagerAgent 风格的 Observe→Act→Execute→Reflect）
+        if self._should_use_tick_loop(task):
+            return await self._execute_task_tick_loop(task)
+
         retries = 0
         completed_steps: List["ActionResult"] = []
         
@@ -372,6 +384,281 @@ class TaskExecutor(ITaskExecutor):
             task_description=task.goal,
             completed_steps=completed_steps,
             message="任务完成"
+        )
+
+    def _should_use_tick_loop(self, task: StackTask) -> bool:
+        """
+        是否启用 Tick Loop：
+        - 仅对“资源采集/非确定性”的任务启用（mine intent）
+        - 前置任务（prerequisite resolver 生成）暂时保持线性计划，避免影响面过大
+        """
+        ctx = task.context or {}
+        if ctx.get("source") == "prerequisite":
+            return False
+        task_type = ctx.get("task_type")
+        return task_type == "mine"
+
+    async def _execute_task_tick_loop(self, task: StackTask) -> TaskResult:
+        """
+        采集任务 Tick Loop：
+        每个 tick：
+        1) Observe：bot_state + last_scan + last_result + history
+        2) Act：LLM 只输出 1 个动作（或 done=true）
+        3) Execute：执行动作
+        4) Reflect：通过下一次 act() 的 done 或动作结果收敛
+        """
+        completed_steps: List["ActionResult"] = []
+        last_result: Optional["ActionResult"] = None
+        last_scan: Optional[dict] = None
+        # Inventory Delta completion（采集任务完成判据）
+        gather_item_id: Optional[str] = None
+        gather_target_count: Optional[int] = None
+        gather_start_count: Optional[int] = None
+
+        # 总体安全上限：避免卡死
+        max_ticks = 25
+        start_time = asyncio.get_event_loop().time()
+        overall_timeout = 180.0
+
+        tree_intent = ("树" in task.goal) and (("砍" in task.goal) or ("伐" in task.goal))
+        # 指代语：以“主人坐标”为参照系（而不是 bot 自己的位置）
+        owner_anchor_intent = self._rules.is_owner_anchor_intent(task.goal or "")
+        navigated_to_owner = False
+
+        for tick in range(1, max_ticks + 1):
+            if self._cancelled:
+                return TaskResult(
+                    success=False,
+                    task_description=task.goal,
+                    completed_steps=completed_steps,
+                    message="任务已取消"
+                )
+
+            if asyncio.get_event_loop().time() - start_time > overall_timeout:
+                return TaskResult(
+                    success=False,
+                    task_description=task.goal,
+                    completed_steps=completed_steps,
+                    failed_step=last_result,
+                    message="采集任务超时（Tick Loop）"
+                )
+
+            # Observe
+            bot_state = self._actions.get_state()
+            if self._owner_name:
+                bot_state["owner_name"] = self._owner_name
+                if self._owner_position:
+                    bot_state["owner_position"] = self._owner_position
+                elif hasattr(self._actions, 'get_player_position'):
+                    owner_pos = self._actions.get_player_position(self._owner_name)
+                    if owner_pos:
+                        bot_state["owner_position"] = owner_pos
+
+            if last_scan is not None:
+                bot_state["last_scan"] = last_scan
+            if last_result is not None:
+                bot_state["last_result"] = {
+                    "action": last_result.action,
+                    "success": last_result.success,
+                    "status": getattr(last_result.status, "value", str(last_result.status)),
+                    "message": last_result.message,
+                    "error_code": last_result.error_code,
+                    "data": last_result.data,
+                }
+
+            owner_pos = bot_state.get("owner_position")
+            has_owner_pos = isinstance(owner_pos, dict) and all(k in owner_pos for k in ("x", "y", "z"))
+
+            # 初始化 Inventory Delta（尽量不依赖 LLM 声明 done）
+            if tick == 1:
+                # 1) 优先从 task.context/task_payload 读取（未来 Decomposer 产出的 GatherTask 会走这条）
+                ctx = task.context or {}
+                gather_spec = ctx.get("gather") if isinstance(ctx, dict) else None
+                if isinstance(gather_spec, dict):
+                    gi = gather_spec.get("item_id") or gather_spec.get("block_id")
+                    gc = gather_spec.get("target_count")
+                    if isinstance(gi, str) and isinstance(gc, int) and gc > 0:
+                        gather_item_id, gather_target_count = gi, gc
+
+                # 2) 兼容旧 goal 形式：`mine <item_id> <count>`
+                if gather_item_id is None and isinstance(task.goal, str):
+                    parts = task.goal.strip().split()
+                    if len(parts) == 3 and parts[0].lower() == "mine":
+                        maybe_id = parts[1]
+                        try:
+                            maybe_count = int(parts[2])
+                        except Exception:
+                            maybe_count = None
+                        if isinstance(maybe_id, str) and isinstance(maybe_count, int) and maybe_count > 0:
+                            gather_item_id, gather_target_count = maybe_id, maybe_count
+
+                if gather_item_id and gather_target_count:
+                    inv = bot_state.get("inventory") if isinstance(bot_state, dict) else None
+                    if isinstance(inv, dict):
+                        gather_start_count = int(inv.get(gather_item_id, 0) or 0)
+
+            # 每 tick 检查 Inventory Delta 完成判据
+            if gather_item_id and gather_target_count and gather_start_count is not None:
+                inv = bot_state.get("inventory") if isinstance(bot_state, dict) else None
+                if isinstance(inv, dict):
+                    current = int(inv.get(gather_item_id, 0) or 0)
+                    if current >= gather_start_count + gather_target_count:
+                        return TaskResult(
+                            success=True,
+                            task_description=task.goal,
+                            completed_steps=completed_steps,
+                            message=f"采集完成：{gather_item_id} 增量达到 {gather_target_count}（{gather_start_count} -> {current}）",
+                        )
+
+            # --- 符号层强约束：用户说“我这边/我附近/离我最近”时，先到主人身边再做采集 ---
+            # 目的：把参照系固定在 owner_position，避免后续 tick 又以 bot 当前位置为原点导致“动了但没砍到你这边的树”。
+            if owner_anchor_intent and has_owner_pos and not navigated_to_owner:
+                bot_pos = (bot_state or {}).get("position") or {}
+                try:
+                    dx = float(bot_pos.get("x", 0)) - float(owner_pos["x"])
+                    dy = float(bot_pos.get("y", 0)) - float(owner_pos["y"])
+                    dz = float(bot_pos.get("z", 0)) - float(owner_pos["z"])
+                    dist2 = dx * dx + dy * dy + dz * dz
+                except Exception:
+                    dist2 = 999999.0
+
+                # 认为“已到身边”：<= N 格（配置化）
+                reached = float(self._rules.thresholds.goto_owner_reached_distance)
+                if dist2 <= reached * reached:
+                    navigated_to_owner = True
+                else:
+                    step = ActionStep(
+                        action="goto",
+                        params={"target": f'{int(owner_pos["x"])},{int(owner_pos["y"])},{int(owner_pos["z"])}'},
+                        description="先走到主人身边（以主人的坐标为参照系）",
+                    )
+                    done = False
+                    done_message = ""
+            # Fast Path：砍树类任务优先 mine_tree（并优先使用 owner_position 作为 near_position）
+            elif tree_intent and (tick == 1 or owner_anchor_intent):
+                sr = int(self._rules.thresholds.default_search_radius)
+                if has_owner_pos:
+                    step = ActionStep(
+                        action="mine_tree",
+                        params={"near_position": owner_pos, "search_radius": sr},
+                        description="砍掉主人附近的一棵树",
+                    )
+                else:
+                    step = ActionStep(
+                        action="mine_tree",
+                        params={"search_radius": sr},
+                        description="砍掉附近的一棵树",
+                    )
+                done = False
+                done_message = ""
+            # 混合参照系策略：采集类任务默认以 bot 为圆心扫描，但“扫不到且离主人太远”时，触发隐式回主人
+            elif (not owner_anchor_intent) and has_owner_pos and last_scan is not None:
+                try:
+                    targets = last_scan.get("targets") if isinstance(last_scan, dict) else None
+                    scan_empty = (not targets) or (isinstance(targets, list) and len(targets) == 0)
+                except Exception:
+                    scan_empty = False
+
+                if scan_empty:
+                    bot_pos = (bot_state or {}).get("position") or {}
+                    try:
+                        dx = float(bot_pos.get("x", 0)) - float(owner_pos["x"])
+                        dy = float(bot_pos.get("y", 0)) - float(owner_pos["y"])
+                        dz = float(bot_pos.get("z", 0)) - float(owner_pos["z"])
+                        dist2 = dx * dx + dy * dy + dz * dz
+                    except Exception:
+                        dist2 = 0.0
+
+                    # “离主人太远则回主人区域”阈值（配置化）
+                    fallback = float(self._rules.thresholds.owner_fallback_distance)
+                    if dist2 > (fallback * fallback):
+                        step = ActionStep(
+                            action="goto",
+                            params={"target": f'{int(owner_pos["x"])},{int(owner_pos["y"])},{int(owner_pos["z"])}'},
+                            description="扫描不到目标且离主人太远：先向主人区域移动（隐式子任务）",
+                        )
+                        done = False
+                        done_message = ""
+                    else:
+                        # 继续交给 LLM 决策
+                        try:
+                            step, done, done_message = await self._planner.act(
+                                task_description=task.goal,
+                                bot_state=bot_state,
+                                completed_steps=completed_steps[-8:],
+                            )
+                        except Exception as e:
+                            logger.error(f"Tick Loop act() failed: {e}")
+                            return TaskResult(
+                                success=False,
+                                task_description=task.goal,
+                                completed_steps=completed_steps,
+                                failed_step=last_result,
+                                message=f"决策失败: {str(e)}"
+                            )
+            else:
+                # Act（只产出一步）
+                try:
+                    step, done, done_message = await self._planner.act(
+                        task_description=task.goal,
+                        bot_state=bot_state,
+                        completed_steps=completed_steps[-8:],  # 只给最近几步，控 token
+                    )
+                except Exception as e:
+                    logger.error(f"Tick Loop act() failed: {e}")
+                    return TaskResult(
+                        success=False,
+                        task_description=task.goal,
+                        completed_steps=completed_steps,
+                        failed_step=last_result,
+                        message=f"决策失败: {str(e)}"
+                    )
+
+            if done:
+                return TaskResult(
+                    success=True,
+                    task_description=task.goal,
+                    completed_steps=completed_steps,
+                    message=done_message or "任务完成"
+                )
+
+            # 对采集类动作注入 owner_position 作为搜索原点（不依赖 LLM 理解“我这边”）
+            if owner_anchor_intent and has_owner_pos:
+                if step.action == "mine":
+                    step.params = step.params or {}
+                    step.params.setdefault("near_position", owner_pos)
+                    step.params.setdefault("search_radius", int(self._rules.thresholds.default_search_radius))
+                elif step.action == "mine_tree":
+                    step.params = step.params or {}
+                    step.params.setdefault("near_position", owner_pos)
+                    step.params.setdefault("search_radius", int(self._rules.thresholds.default_search_radius))
+
+            await self._report_progress(step.description or f"执行: {step.action} (tick {tick}/{max_ticks})")
+
+            # Execute
+            result = await self._execute_step(step)
+            last_result = result
+            if step.action == "goto" and result.success and owner_anchor_intent and has_owner_pos:
+                # goto 到主人附近成功后，认为参照系已对齐
+                navigated_to_owner = True
+
+            # 保存 scan 结果，供下一 tick 使用
+            if result.action == "scan" and result.success and isinstance(result.data, dict):
+                last_scan = result.data
+
+            # 收集历史
+            if result.success:
+                completed_steps.append(result)
+            else:
+                # 失败也记录一份，方便 LLM 在下一 tick 修正（但不计入 completed_steps）
+                logger.warning(f"[TickLoop] Step failed: {result.action} - {result.message}")
+
+        return TaskResult(
+            success=False,
+            task_description=task.goal,
+            completed_steps=completed_steps,
+            failed_step=last_result,
+            message="采集任务未在步数上限内完成（Tick Loop）"
         )
     
     async def _execute_step(self, step: ActionStep) -> "ActionResult":

@@ -367,8 +367,12 @@ class WorkingState(IState):
                 self._ctx.executor._owner_position = player_position
                 logger.info(f"[DEBUG] Set executor owner_position from Java: {player_position}")
             
-            # 执行任务
-            result = await self._ctx.executor.execute(task.description)
+            # 执行任务（透传 task_type / payload，用于“循环决策”等能力）
+            result = await self._ctx.executor.execute(
+                task.description,
+                task_type=getattr(task, "task_type", None),
+                task_payload=getattr(task, "params", None),
+            )
             
             # 触发结果事件
             if result.success:

@@ -3,7 +3,7 @@
 
 import json
 import logging
-from typing import Dict, Any, List, TYPE_CHECKING
+from typing import Dict, Any, List, TYPE_CHECKING, Tuple
 
 from .interfaces import (
     ActionPlan, 
@@ -95,6 +95,32 @@ Bot状态: owner_position: {"x":100,"y":64,"z":200}
 
 任务: "砍3个木头"
 输出: {"steps":[{"action":"mine","params":{"block_type":"oak_log","count":3},"description":"采集3个橡木原木"}],"estimated_time":45}
+"""
+
+ACT_SYSTEM_PROMPT = """你是 Minecraft 任务执行决策器（Tick Loop 模式）。
+你的目标：在“资源采集/非确定性环境”里，基于最新状态每次只决定下一步做什么。
+
+## 输入内容
+- task_description: 用户任务（自然语言）
+- bot_state: Bot 当前状态（可能包含 owner_position、last_scan、last_result 等）
+- completed_steps: 最近已完成动作（可能被截断）
+
+## 你每次只能输出一步（或声明已完成）
+可选动作（只从下面选 1 个）：mine_tree, mine, scan, goto, craft, equip, give
+
+## 决策规则（短而硬）
+1) **看不到目标就先 scan**：如果没有 last_scan 或 last_scan.targets 为空 → 先 scan。
+2) **看到目标就靠近/采集**：如果 last_scan 有 nearest 且 distance 很近（<=6）→ mine/mine_tree；远则 goto。
+3) **“砍树”优先 mine_tree**：任务语义是砍树/砍掉那棵树 → mine_tree（near_position 优先用 owner_position）。
+4) **“离我最近/我这边/旁边”**：near_position 以 owner_position 为准。
+5) **不要编坐标**：goto 必须用真实坐标 "x,y,z"。
+
+## 输出格式（纯 JSON）
+必须是以下结构之一：
+1) 继续执行：
+{"done": false, "step": {"action": "scan", "params": {"target_type": "oak_log", "radius": 32}, "description": "扫描附近木头"}}
+2) 已完成：
+{"done": true, "message": "已完成：已采集到需要的资源"}
 """
 
 REPLAN_SYSTEM_PROMPT = """你是 Minecraft 任务规划专家。之前的执行计划失败了，请根据错误信息重新规划。
@@ -252,14 +278,65 @@ class LLMTaskPlanner(ITaskPlanner):
                 steps=[],
                 estimated_time=0
             )
-        except Exception as e:
-            logger.error(f"LLM replan failed: {e}")
-            # 返回空计划
-            return ActionPlan(
-                task_description=task_description,
-                steps=[],
-                estimated_time=0
-            )
+
+    async def act(
+        self,
+        task_description: str,
+        bot_state: Dict[str, Any],
+        completed_steps: List["ActionResult"],
+    ) -> Tuple[ActionStep, bool, str]:
+        """
+        Tick Loop 决策：每次只产出 1 个 ActionStep，或 done=true。
+
+        Returns:
+            (step, done, message)
+        """
+        # 构建用户消息（尽量短，避免 token 爆炸）
+        user_message = json.dumps(
+            {
+                "task_description": task_description,
+                "bot_state": bot_state,
+                "completed_steps": [
+                    {
+                        "action": r.action,
+                        "success": r.success,
+                        "status": getattr(r.status, "value", str(r.status)),
+                        "message": r.message,
+                        "error_code": r.error_code,
+                        "data": r.data,
+                    }
+                    for r in completed_steps
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+        messages = [
+            {"role": "system", "content": ACT_SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ]
+
+        response = await self._llm.chat_json(
+            messages=messages,
+            max_tokens=512,
+            temperature=0.2,
+        )
+
+        if isinstance(response, dict) and response.get("done") is True:
+            msg = response.get("message", "任务完成")
+            # 返回一个占位 step（不会被执行），由上层根据 done 直接收敛
+            return ActionStep(action="scan", params={"target_type": "player", "radius": 1}, description="done"), True, msg
+
+        step_data = (response or {}).get("step") if isinstance(response, dict) else None
+        if not isinstance(step_data, dict):
+            raise ValueError(f"act() 输出格式错误: {response}")
+
+        step = ActionStep(
+            action=step_data.get("action", ""),
+            params=step_data.get("params", {}) or {},
+            description=step_data.get("description", "") or "",
+        )
+        return step, False, ""
     
     def _build_plan_message(self, task: str, bot_state: Dict[str, Any]) -> str:
         """构建规划请求消息"""
