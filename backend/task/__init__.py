@@ -21,23 +21,41 @@ from .llm_planner import LLMTaskPlanner
 from .executor import TaskExecutor
 from .decomposer import LLMTaskDecomposer
 from .runners import GatherRunner, LinearPlanRunner, RunnerRegistry
+from .behavior_rules import BehaviorRules, BehaviorThresholds
+from .recovery_interfaces import (
+    RecoveryLevel,
+    RecoveryActionType,
+    RecoveryDecision,
+    FailureContext,
+    IRecoveryCoordinator,
+    IRecoveryLogger,
+)
+from .recovery_coordinator import RecoveryCoordinator, create_recovery_coordinator
+from .recovery_logger import JsonRecoveryLogger, create_recovery_logger
 
 __all__ = [
     # Enums
     "TaskStatus",
     "TaskType",
+    "RecoveryLevel",
+    "RecoveryActionType",
     # Data Classes
     "StackTask", 
     "ActionStep",
     "ActionPlan",
     "TaskResult",
     "RunContext",
+    "RecoveryDecision",
+    "FailureContext",
+    "BehaviorThresholds",
     # Interfaces
     "ITaskPlanner",
     "IPrerequisiteResolver",
     "ITaskExecutor",
     "ITaskDecomposer",
     "ITaskRunner",
+    "IRecoveryCoordinator",
+    "IRecoveryLogger",
     # Implementations
     "StackPlanner",
     "StackOverflowError",
@@ -45,6 +63,12 @@ __all__ = [
     "LLMTaskPlanner",
     "TaskExecutor",
     "LLMTaskDecomposer",
+    "BehaviorRules",
+    "RecoveryCoordinator",
+    "JsonRecoveryLogger",
+    # Factory Functions
+    "create_recovery_coordinator",
+    "create_recovery_logger",
     # Runners
     "GatherRunner",
     "LinearPlanRunner",

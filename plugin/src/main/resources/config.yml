@@ -1,0 +1,3 @@
+websocket:
+  url: "ws://localhost:8765/ws/plugin"
+  access_token: "CHANGE_ME"

@@ -2,7 +2,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Union
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class BehaviorRules:
 
     设计目标：
     - 将确定性阈值/关键词/恢复策略配置化，避免写死在 prompt 或代码里
-    - 允许“默认值优先”的懒惰澄清策略
+    - 允许"默认值优先"的懒惰澄清策略
     """
 
     def __init__(self, path: Optional[Union[str, Path]] = None):
@@ -33,6 +33,9 @@ class BehaviorRules:
         self._raw: Dict[str, Any] = {}
         self.thresholds = BehaviorThresholds()
         self.deictic_anchor_keywords: List[str] = []
+        self._inline_tactics: Set[str] = set()
+        self._push_stack_strategies: Set[str] = set()
+        self._error_code_overrides: Dict[str, Dict[str, str]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -65,6 +68,21 @@ class BehaviorRules:
         else:
             self.deictic_anchor_keywords = []
 
+        # 加载策略分类
+        strat_class = self._raw.get("strategy_classification", {})
+        if isinstance(strat_class, dict):
+            inline = strat_class.get("inline_tactics", [])
+            self._inline_tactics = set(inline) if isinstance(inline, list) else set()
+            push = strat_class.get("push_stack_strategies", [])
+            self._push_stack_strategies = set(push) if isinstance(push, list) else set()
+
+        # 加载错误码覆盖
+        recovery = self._raw.get("recovery", {})
+        if isinstance(recovery, dict):
+            overrides = recovery.get("error_code_overrides", {})
+            if isinstance(overrides, dict):
+                self._error_code_overrides = overrides
+
     def is_owner_anchor_intent(self, text: str) -> bool:
         if not text:
             return False
@@ -73,4 +91,47 @@ class BehaviorRules:
                 return True
         return False
 
+    # ========================================================================
+    # Convenience Properties (直接访问阈值)
+    # ========================================================================
+
+    @property
+    def owner_fallback_distance(self) -> int:
+        return self.thresholds.owner_fallback_distance
+
+    @property
+    def goto_owner_reached_distance(self) -> int:
+        return self.thresholds.goto_owner_reached_distance
+
+    @property
+    def default_search_radius(self) -> int:
+        return self.thresholds.default_search_radius
+
+    @property
+    def default_gather_count(self) -> int:
+        return self.thresholds.default_gather_count
+
+    @property
+    def max_action_retries_l1(self) -> int:
+        return self.thresholds.max_action_retries_l1
+
+    @property
+    def max_l1_failures_before_l2(self) -> int:
+        return self.thresholds.max_l1_failures_before_unstuck_l2
+
+    # ========================================================================
+    # Strategy Classification
+    # ========================================================================
+
+    def is_inline_strategy(self, strategy_type: str) -> bool:
+        """判断策略是否应内联执行"""
+        return strategy_type in self._inline_tactics
+
+    def is_push_stack_strategy(self, strategy_type: str) -> bool:
+        """判断策略是否应压栈执行"""
+        return strategy_type in self._push_stack_strategies
+
+    def get_error_code_override(self, error_code: str) -> Optional[Dict[str, str]]:
+        """获取错误码的级别覆盖配置"""
+        return self._error_code_overrides.get(error_code)
 

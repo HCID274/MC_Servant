@@ -2,7 +2,7 @@
 
 from enum import Enum
 from typing import Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class MessageType(str, Enum):
@@ -55,7 +55,7 @@ class BotCommand(BaseModel):
     type: MessageType = MessageType.BOT_COMMAND
     npc: str
     command: str  # jump, chat, move_to, etc.
-    args: dict = {}
+    args: dict = Field(default_factory=dict)
 
 
 class BotStatus(BaseModel):

@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "version": 1,
+    "version": 2,
     "description": "行为规则库（Rule-Based Constraints）。用于将确定性常识/恢复策略下沉到符号层，减少 Prompt 幻觉，提高鲁棒性。",
     "note": "本文件为 Phase 3/4 的落地起点：先定义数据结构，再逐步让 Executor/Resolver 消费这些规则。"
   },
@@ -24,6 +24,19 @@
     "旁边",
     "附近"
   ],
+  "strategy_classification": {
+    "inline_tactics": [
+      "retry_same",
+      "micro_move",
+      "unstuck_backoff",
+      "unstuck_step_up",
+      "report_and_block"
+    ],
+    "push_stack_strategies": [
+      "goto_owner",
+      "craft_prerequisite"
+    ]
+  },
   "implicit_tasks": {
     "gather_owner_fallback": {
       "enabled": true,
@@ -42,6 +55,7 @@
     "L1_action_retry": {
       "enabled": true,
       "max_retries": 3,
+      "applicable_errors": ["PATH_NOT_FOUND", "TIMEOUT", "TARGET_NOT_FOUND"],
       "strategies": [
         { "type": "retry_same_action" },
         { "type": "random_micro_move", "params": { "max_delta": 1 } }
@@ -51,7 +65,7 @@
       "enabled": true,
       "after_consecutive_l1_failures": 3,
       "strategies": [
-        { "type": "unstuck_backoff" },
+        { "type": "unstuck_backoff", "params": { "backoff_distance": 3 } },
         { "type": "unstuck_step_up" }
       ]
     },
@@ -63,6 +77,11 @@
     "L4_overall_timeout": {
       "enabled": true,
       "strategy": { "type": "goto_owner_and_idle", "reason": "超时回主人身边待命" }
+    },
+    "error_code_overrides": {
+      "INVENTORY_FULL": { "level": "L3", "strategy": "report_and_block" },
+      "NO_TOOL": { "level": "L1", "strategy": "equip_or_craft" },
+      "TOOL_BROKEN": { "level": "L1", "strategy": "equip_or_craft" }
     }
   }
 }

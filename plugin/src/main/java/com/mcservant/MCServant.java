@@ -42,8 +42,8 @@ public class MCServant extends JavaPlugin {
     // Bot 注册表
     private IBotRegistry botRegistry;
     
-    // 配置
-    private static final String WS_URL = "ws://localhost:8765/ws/plugin";
+    // 配置默认值
+    private static final String DEFAULT_WS_URL = "ws://localhost:8765/ws/plugin";
 
     /**
      * 获取插件实例（单例模式）
@@ -84,6 +84,7 @@ public class MCServant extends JavaPlugin {
     public void onEnable() {
         instance = this;
         logger = getLogger();
+        saveDefaultConfig();
         
         // 初始化 Bot 注册表
         botRegistry = new BotRegistry();
@@ -125,15 +126,24 @@ public class MCServant extends JavaPlugin {
      * 初始化 WebSocket 连接
      */
     private void initWebSocket() {
+        String wsUrl = getConfig().getString("websocket.url", DEFAULT_WS_URL);
+        String wsToken = getConfig().getString("websocket.access_token", "");
+        if (wsToken == null || wsToken.isBlank() || "CHANGE_ME".equalsIgnoreCase(wsToken.trim())) {
+            logger.severe("WebSocket access token missing. Set websocket.access_token in config.yml");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+
         wsClient = new WSClient();
         wsClient.setMessageCallback(new MessageHandler());
+        wsClient.setAccessToken(wsToken.trim());
         
         // 异步连接，避免阻塞主线程
         getServer().getScheduler().runTaskAsynchronously(this, () -> {
-            wsClient.connect(WS_URL);
+            wsClient.connect(wsUrl);
         });
         
-        logger.info("WebSocket 模块已初始化 (目标: " + WS_URL + ")");
+        logger.info("WebSocket 模块已初始化 (目标: " + wsUrl + ")");
     }
 
     /**

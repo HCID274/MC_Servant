@@ -17,6 +17,13 @@ public interface IWebSocketClient {
     void connect(String url);
 
     /**
+     * 设置访问 Token（用于 WebSocket 鉴权）
+     *
+     * @param token 访问 Token
+     */
+    void setAccessToken(String token);
+
+    /**
      * 断开连接
      */
     void disconnect();

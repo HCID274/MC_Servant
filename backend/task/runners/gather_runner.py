@@ -2,10 +2,12 @@
 # 用于采集类任务 (非确定性任务)
 #
 # 从 executor.py 的 _execute_task_tick_loop() 提取
+# 升级: 支持 ITaskActor + IActionResolver + RecoveryCoordinator 架构
 
 import asyncio
 import logging
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
+import random
+from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
 
 from ..interfaces import (
     StackTask,
@@ -17,6 +19,13 @@ from ..interfaces import (
     ITaskPlanner,
 )
 from ..behavior_rules import BehaviorRules
+from ..actor_interfaces import ITaskActor, IActionResolver, ActorDecision, GroundedAction
+from ..recovery_interfaces import (
+    IRecoveryCoordinator,
+    RecoveryDecision,
+    RecoveryLevel,
+    RecoveryActionType,
+)
 
 if TYPE_CHECKING:
     from ...bot.interfaces import IBotActions, ActionResult
@@ -37,14 +46,27 @@ class GatherRunner(ITaskRunner):
     适用于：采集、战斗、跟随等非确定性任务
     """
     
-    def __init__(self, rules: Optional[BehaviorRules] = None):
+    def __init__(
+        self, 
+        rules: Optional[BehaviorRules] = None,
+        actor: Optional[ITaskActor] = None,
+        resolver: Optional[IActionResolver] = None,
+        recovery: Optional[IRecoveryCoordinator] = None
+    ):
         """
         初始化 GatherRunner
         
         Args:
             rules: 行为规则配置，控制阈值/关键词/策略
+            actor: 任务决策者 (可选，新架构)
+            resolver: 动作解析器 (可选，新架构)
+            recovery: 恢复协调器 (可选，处理失败恢复)
         """
         self._rules = rules or BehaviorRules()
+        self._actor = actor
+        self._resolver = resolver
+        self._recovery = recovery
+        self._use_new_architecture = (actor is not None) and (resolver is not None)
     
     @property
     def supported_types(self) -> List[TaskType]:
@@ -184,11 +206,44 @@ class GatherRunner(ITaskRunner):
             if result.action == "scan" and result.success and isinstance(result.data, dict):
                 last_scan = result.data
             
-            # 收集历史
+            # 收集历史 + 恢复处理
             if result.success:
                 completed_steps.append(result)
+                # 成功时重置 recovery 计数器
+                if self._recovery:
+                    self._recovery.reset()
             else:
                 logger.warning(f"[TickLoop] Step failed: {result.action} - {result.message}")
+                
+                # 使用 RecoveryCoordinator 处理失败
+                if self._recovery:
+                    recovery_result = await self._handle_failure(
+                        result=result,
+                        tick=tick,
+                        actions=actions,
+                        context=context
+                    )
+                    
+                    # L3: 报告并阻塞 -> 返回失败
+                    if recovery_result.get("blocked"):
+                        return TaskResult(
+                            success=False,
+                            task_description=task.goal,
+                            completed_steps=completed_steps,
+                            failed_step=result,
+                            message=recovery_result.get("reason", "任务被阻塞")
+                        )
+                    
+                    # L4: 压栈执行 -> 返回特殊状态让上层处理
+                    if recovery_result.get("push_stack"):
+                        # 这里返回需要上层 (TaskExecutor) 压栈的信号
+                        return TaskResult(
+                            success=False,
+                            task_description=task.goal,
+                            completed_steps=completed_steps,
+                            failed_step=result,
+                            message=f"PUSH_STACK:{recovery_result.get('stack_task_goal', 'goto_owner')}"
+                        )
         
         return TaskResult(
             success=False,
@@ -312,7 +367,23 @@ class GatherRunner(ITaskRunner):
                     )
                     return step, False, ""
         
-        # 默认：调用 LLM 决策
+        # 新架构: 使用 Actor + Resolver
+        if self._use_new_architecture:
+            try:
+                return await self._decide_with_actor(
+                    task=task,
+                    bot_state=bot_state,
+                    last_result=completed_steps[-1] if completed_steps else None,
+                    context=RunContext(
+                        owner_name=bot_state.get("owner_name"),
+                        owner_position=owner_pos,
+                        max_ticks=self._rules.thresholds.default_max_ticks,
+                    )
+                )
+            except Exception as e:
+                logger.error(f"Actor decision failed, falling back to planner: {e}")
+        
+        # Fallback: 调用旧的 LLM Planner
         try:
             step, done, done_message = await planner.act(
                 task_description=task.goal,
@@ -411,3 +482,208 @@ class GatherRunner(ITaskRunner):
                 status=_ActionStatus.FAILED,
                 error_code="EXECUTION_ERROR"
             )
+    
+    async def _decide_with_actor(
+        self,
+        task: StackTask,
+        bot_state: dict,
+        last_result: Optional["ActionResult"],
+        context: RunContext
+    ) -> tuple:
+        """
+        使用新 Actor 架构进行决策
+        
+        Args:
+            task: 当前任务
+            bot_state: Bot 状态
+            last_result: 上一步结果
+            context: 执行上下文
+        
+        Returns:
+            (ActionStep, done: bool, done_message: str)
+        """
+        # 将 last_result 转换为 dict 格式
+        last_result_dict = None
+        if last_result is not None:
+            last_result_dict = {
+                "action": last_result.action,
+                "success": last_result.success,
+                "status": getattr(last_result.status, "value", str(last_result.status)),
+                "message": last_result.message,
+                "error_code": last_result.error_code,
+                "data": last_result.data,
+            }
+        
+        # 1. Actor 决策
+        decision: ActorDecision = await self._actor.decide(
+            task_goal=task.goal,
+            bot_state=bot_state,
+            last_result=last_result_dict
+        )
+        
+        logger.debug(f"Actor decision: {decision}")
+        
+        # 2. 处理特殊动作
+        if decision.is_done:
+            return ActionStep(
+                action="done",
+                params=decision.params,
+                description=decision.params.get("message", "任务完成")
+            ), True, decision.params.get("message", "任务完成")
+        
+        if decision.is_clarify:
+            # 骨架实现: 发送聊天消息，返回失败
+            # 完整实现需要与状态机集成，此处先返回特殊 ActionStep
+            logger.info(f"Actor requests clarification: {decision.clarify_question}")
+            return ActionStep(
+                action="clarify",
+                params={
+                    "question": decision.clarify_question,
+                    "choices": decision.clarify_choices,
+                },
+                description=f"需要澄清: {decision.clarify_question}"
+            ), False, ""
+        
+        # 3. Resolver 落地
+        grounded: GroundedAction = await self._resolver.resolve(decision, context)
+        
+        logger.debug(f"Grounded action: {grounded}")
+        
+        # 4. 转换为 ActionStep
+        step = ActionStep(
+            action=grounded.action,
+            params=grounded.params,
+            description=grounded.description
+        )
+        
+        return step, False, ""
+
+    # ========================================================================
+    # Recovery Methods
+    # ========================================================================
+
+    async def _handle_failure(
+        self,
+        result: "ActionResult",
+        tick: int,
+        actions: "IBotActions",
+        context: RunContext
+    ) -> Dict[str, Any]:
+        """
+        处理动作失败，使用 RecoveryCoordinator 决策
+        
+        Returns:
+            dict with keys:
+            - blocked: bool (L3, 任务需要阻塞)
+            - push_stack: bool (L4, 需要压栈执行)
+            - stack_task_goal: str (压栈任务的目标)
+            - reason: str (原因描述)
+        """
+        if not self._recovery:
+            return {}
+        
+        decision = self._recovery.on_action_result(result, tick)
+        
+        logger.info(
+            f"[Recovery] Tick {tick}: {decision.level.value} - {decision.action_type.value} "
+            f"(failures={self._recovery.get_consecutive_failures()})"
+        )
+        
+        # L3: 报告并阻塞
+        if decision.level == RecoveryLevel.L3_REPORT_BLOCK:
+            return {
+                "blocked": True,
+                "reason": decision.reason,
+            }
+        
+        # L4: 压栈执行 (goto_owner)
+        if not decision.is_inline:
+            return {
+                "push_stack": True,
+                "stack_task_goal": "goto_owner",
+                "reason": decision.reason,
+            }
+        
+        # L1/L2: 内联执行恢复动作
+        if decision.should_retry:
+            await self._execute_recovery_action(decision, actions)
+        
+        return {}
+
+    async def _execute_recovery_action(
+        self,
+        decision: RecoveryDecision,
+        actions: "IBotActions"
+    ) -> None:
+        """
+        执行内联恢复动作 (L1/L2)
+        
+        Args:
+            decision: 恢复决策
+            actions: Bot 动作接口
+        """
+        action_type = decision.action_type
+        params = decision.params or {}
+        
+        try:
+            if action_type == RecoveryActionType.RETRY_SAME:
+                # 不需要额外动作，让 loop 重新执行
+                logger.debug("[Recovery] L1: Will retry same action")
+                return
+            
+            elif action_type == RecoveryActionType.MICRO_MOVE:
+                # 微移位：随机往某个方向移动一小段
+                max_delta = params.get("max_delta", 1)
+                dx = random.uniform(-max_delta, max_delta)
+                dz = random.uniform(-max_delta, max_delta)
+                
+                bot_state = actions.get_state()
+                pos = bot_state.get("position", {})
+                new_x = int(pos.get("x", 0) + dx)
+                new_y = int(pos.get("y", 64))
+                new_z = int(pos.get("z", 0) + dz)
+                
+                target = f"{new_x},{new_y},{new_z}"
+                logger.debug(f"[Recovery] L1: Micro move to {target}")
+                
+                await actions.goto(target=target, timeout=5.0)
+            
+            elif action_type == RecoveryActionType.UNSTUCK_BACKOFF:
+                # 后退：往反方向走一段距离
+                backoff = params.get("backoff_distance", 3)
+                
+                bot_state = actions.get_state()
+                pos = bot_state.get("position", {})
+                # 简单策略：随机方向后退
+                dx = random.uniform(-backoff, backoff)
+                dz = random.uniform(-backoff, backoff)
+                
+                new_x = int(pos.get("x", 0) + dx)
+                new_y = int(pos.get("y", 64))
+                new_z = int(pos.get("z", 0) + dz)
+                
+                target = f"{new_x},{new_y},{new_z}"
+                logger.debug(f"[Recovery] L2: Unstuck backoff to {target}")
+                
+                await actions.goto(target=target, timeout=10.0)
+            
+            elif action_type == RecoveryActionType.UNSTUCK_STEP_UP:
+                # 向上跳跃：尝试跳上一个方块
+                bot_state = actions.get_state()
+                pos = bot_state.get("position", {})
+                
+                new_x = int(pos.get("x", 0))
+                new_y = int(pos.get("y", 64)) + 1
+                new_z = int(pos.get("z", 0))
+                
+                target = f"{new_x},{new_y},{new_z}"
+                logger.debug(f"[Recovery] L2: Unstuck step up to {target}")
+                
+                await actions.goto(target=target, timeout=5.0)
+            
+            else:
+                logger.warning(f"[Recovery] Unknown action type: {action_type}")
+        
+        except Exception as e:
+            logger.warning(f"[Recovery] Recovery action failed: {e}")
+

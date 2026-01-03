@@ -9,6 +9,9 @@ import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -46,6 +49,10 @@ public class WSClient implements IWebSocketClient {
     private final AtomicBoolean connected = new AtomicBoolean(false);
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
     private String serverUrl;
+    private String accessToken;
+
+    private final ScheduledExecutorService heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
+    private ScheduledFuture<?> heartbeatFuture;
     
     // 回调
     private MessageCallback messageCallback;
@@ -68,11 +75,18 @@ public class WSClient implements IWebSocketClient {
         reconnectAttempts.set(0);
         doConnect();
     }
+
+    @Override
+    public void setAccessToken(String token) {
+        this.accessToken = token;
+    }
     
     private void doConnect() {
-        Request request = new Request.Builder()
-            .url(serverUrl)
-            .build();
+        Request.Builder requestBuilder = new Request.Builder().url(serverUrl);
+        if (accessToken != null && !accessToken.isBlank()) {
+            requestBuilder.addHeader("X-Access-Token", accessToken);
+        }
+        Request request = requestBuilder.build();
         
         webSocket = httpClient.newWebSocket(request, new WebSocketListener() {
             @Override
@@ -83,6 +97,7 @@ public class WSClient implements IWebSocketClient {
                 
                 // 发送当前在线玩家列表 (解决 Python 重启后错过 join 事件的问题)
                 sendOnlinePlayersList();
+                startHeartbeat();
             }
 
             @Override
@@ -107,6 +122,7 @@ public class WSClient implements IWebSocketClient {
             public void onClosed(@NotNull WebSocket webSocket, int code, @NotNull String reason) {
                 connected.set(false);
                 logger.info("WebSocket closed: " + code + " - " + reason);
+                stopHeartbeat();
                 
                 // 非正常关闭时尝试重连（1000 是正常关闭码）
                 if (code != 1000) {
@@ -118,6 +134,7 @@ public class WSClient implements IWebSocketClient {
             public void onFailure(@NotNull WebSocket webSocket, @NotNull Throwable t, @Nullable Response response) {
                 connected.set(false);
                 logger.warning("WebSocket failure: " + t.getMessage());
+                stopHeartbeat();
                 
                 // 尝试重连
                 scheduleReconnect();
@@ -152,12 +169,14 @@ public class WSClient implements IWebSocketClient {
 
     @Override
     public void disconnect() {
+        stopHeartbeat();
         if (webSocket != null) {
             webSocket.close(1000, "Plugin disabled");
             webSocket = null;
         }
         connected.set(false);
         logger.info("WebSocket disconnected");
+        heartbeatExecutor.shutdownNow();
     }
 
     @Override
@@ -184,6 +203,33 @@ public class WSClient implements IWebSocketClient {
     @Override
     public void setMessageCallback(MessageCallback callback) {
         this.messageCallback = callback;
+    }
+
+    private void startHeartbeat() {
+        stopHeartbeat();
+        heartbeatFuture = heartbeatExecutor.scheduleAtFixedRate(
+            this::sendHeartbeat,
+            HEARTBEAT_INTERVAL_SECONDS,
+            HEARTBEAT_INTERVAL_SECONDS,
+            TimeUnit.SECONDS
+        );
+    }
+
+    private void stopHeartbeat() {
+        if (heartbeatFuture != null) {
+            heartbeatFuture.cancel(true);
+            heartbeatFuture = null;
+        }
+    }
+
+    private void sendHeartbeat() {
+        if (!connected.get()) {
+            return;
+        }
+        JSONObject msg = new JSONObject();
+        msg.put("type", "heartbeat");
+        msg.put("timestamp", System.currentTimeMillis() / 1000);
+        send(msg.toJSONString());
     }
     
     /**

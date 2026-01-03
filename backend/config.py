@@ -1,6 +1,6 @@
 # MC_Servant Backend Configuration
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     
     # Bot 配置
     bot_username: str = "MCServant_Bot"
-    bot_password: Optional[str] = "VillagerBot@2025"  # AuthMe 密码
+    bot_password: Optional[str] = None  # AuthMe 密码，必须通过环境变量配置
     
     # 日志级别
     log_level: str = "INFO"
@@ -30,7 +30,11 @@ class Settings(BaseSettings):
     openai_api_key: str = ""  # DashScope API Key (格式: sk-xxxxxxxx)
     openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     openai_model: str = "qwen-flash"  # 默认使用 qwen-flash (速度快、成本低)
-    
+
+    # WebSocket 安全配置
+    ws_access_token: str = ""  # WebSocket 访问 Token（必填）
+    ws_heartbeat_timeout_seconds: int = 90  # 心跳超时阈值（秒）
+
     # PostgreSQL 数据库配置
     db_host: str = "localhost"
     db_port: int = 5432
@@ -44,9 +48,10 @@ class Settings(BaseSettings):
         """构建 asyncpg 连接 URL"""
         return f"postgresql+asyncpg://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
     
-    class Config:
-        env_prefix = "MC_SERVANT_"
-        env_file = ".env"
+    model_config = SettingsConfigDict(
+        env_prefix="MC_SERVANT_",
+        env_file=".env",
+    )
 
 
 # 全局配置实例

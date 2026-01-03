@@ -43,15 +43,24 @@ context_manager = None  # 记忆上下文管理器 (Optional)
 lifecycle_manager = None  # 生命周期管理器 (Optional)
 player_repo = None  # 玩家数据仓库 (Optional)
 bot_repo = None  # Bot 数据仓库 (Optional)
+ws_cleanup_task: Optional[asyncio.Task] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global bot_manager, message_router, llm_client, state_machine, context_manager, lifecycle_manager, player_repo, bot_repo
+    global bot_manager, message_router, llm_client, state_machine, context_manager, lifecycle_manager, player_repo, bot_repo, ws_cleanup_task
     
     # 启动时初始化
     logger.info("Initializing MC_Servant Backend...")
+
+    # 必填配置校验
+    if not settings.bot_password or not settings.bot_password.strip():
+        logger.error("MC_SERVANT_BOT_PASSWORD is required but missing")
+        raise RuntimeError("MC_SERVANT_BOT_PASSWORD is required")
+    if not settings.ws_access_token or not settings.ws_access_token.strip():
+        logger.error("MC_SERVANT_WS_ACCESS_TOKEN is required but missing")
+        raise RuntimeError("MC_SERVANT_WS_ACCESS_TOKEN is required")
     
     # 初始化数据库连接
     try:
@@ -136,16 +145,45 @@ async def lifespan(app: FastAPI):
             planner = LLMTaskPlanner(llm_client)
             prereq_resolver = PrerequisiteResolver()
             async def on_progress(msg: str) -> None:
-                await bot_context.update_hologram_throttled(f"?? {msg}")
+                await bot_context.update_hologram_throttled(f"🔧 {msg}")
+            
+            # ========== 新架构: Actor + Resolver ==========
+            # 初始化知识库
+            from perception.knowledge_base import JsonKnowledgeBase
+            knowledge_base = JsonKnowledgeBase()
+            logger.info("KnowledgeBase initialized")
+            
+            # 初始化 Actor 和 Resolver
+            from task.actor import LLMTaskActor
+            from task.action_resolver import SemanticActionResolver
+            actor = LLMTaskActor(llm_client, knowledge_base)
+            resolver = SemanticActionResolver(knowledge_base)
+            logger.info("LLMTaskActor and SemanticActionResolver initialized")
+            
+            # 初始化 RunnerRegistry (注入 Actor/Resolver)
+            from task.runners import GatherRunner, LinearPlanRunner
+            from task.runners.registry import RunnerRegistry
+            from task.interfaces import TaskType
+            
+            gather_runner = GatherRunner(actor=actor, resolver=resolver)
+            linear_runner = LinearPlanRunner()
+            
+            runner_registry = RunnerRegistry()
+            for task_type in gather_runner.supported_types:
+                runner_registry.register(task_type, gather_runner)
+            for task_type in linear_runner.supported_types:
+                runner_registry.register(task_type, linear_runner)
+            logger.info("RunnerRegistry initialized with Actor/Resolver architecture")
 
             executor = TaskExecutor(
                 planner,
                 actions,
                 prereq_resolver,
                 on_progress=on_progress,
+                runner_registry=runner_registry,
             )
             bot_context.executor = executor
-            logger.info("TaskExecutor initialized with LLMTaskPlanner")
+            logger.info("TaskExecutor initialized with LLMTaskPlanner + Actor architecture")
         else:
             logger.warning("No LLM client, TaskExecutor not initialized")
         
@@ -370,12 +408,34 @@ async def lifespan(app: FastAPI):
             ws_send_func=ws_send_func,
         )
     
+    # 启动连接清理任务
+    async def ws_cleanup_worker() -> None:
+        interval = max(5, settings.ws_heartbeat_timeout_seconds // 3)
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await manager.cleanup_stale(settings.ws_heartbeat_timeout_seconds)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"WS cleanup worker error: {e}")
+
+    ws_cleanup_task = asyncio.create_task(ws_cleanup_worker())
+
     logger.info(f"WebSocket server ready on ws://{settings.ws_host}:{settings.ws_port}")
     
     yield
     
     # 关闭时清理
     logger.info("Shutting down MC_Servant Backend...")
+
+    if ws_cleanup_task:
+        ws_cleanup_task.cancel()
+        try:
+            await ws_cleanup_task
+        except asyncio.CancelledError:
+            pass
+        ws_cleanup_task = None
     
     # 停止 ContextManager Worker
     if context_manager:
@@ -435,18 +495,28 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     
     Java 插件通过此端点连接
     """
+    token = websocket.headers.get("x-access-token")
+    if token != settings.ws_access_token:
+        logger.warning(f"Rejected WebSocket connection for {client_id}: invalid token")
+        await websocket.accept()
+        await websocket.close(code=1008, reason="Invalid token")
+        return
+
     await manager.connect(websocket, client_id)
     
     # Init Sync: 连接后立即发送 Bot 名称列表
     await send_init_config(websocket)
+    manager.touch(client_id)
     
     # Cold Start Sync: 请求 Java 端发送当前在线玩家列表
     await send_request_sync(websocket)
+    manager.touch(client_id)
     
     try:
         while True:
             # 接收消息
             data = await websocket.receive_text()
+            manager.touch(client_id)
             logger.debug(f"Received from {client_id}: {data}")
             
             try:
