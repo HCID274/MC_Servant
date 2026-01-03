@@ -122,24 +122,34 @@ async def lifespan(app: FastAPI):
         # Layer 2: 动作层 (依赖 Layer 1 bot)
         actions = MineflayerActions(default_bot)
         logger.info("MineflayerActions initialized")
+
+        bot_context = BotContext(
+            runtime=None,  # ???? RuntimeContext
+            executor=None,
+            actions=actions,
+            llm=llm_client,
+        )
         
         # Layer 3: 规划/执行层 (如果有 LLM)
         executor = None
         if llm_client:
             planner = LLMTaskPlanner(llm_client)
             prereq_resolver = PrerequisiteResolver()
-            executor = TaskExecutor(planner, actions, prereq_resolver)
+            async def on_progress(msg: str) -> None:
+                await bot_context.update_hologram_throttled(f"?? {msg}")
+
+            executor = TaskExecutor(
+                planner,
+                actions,
+                prereq_resolver,
+                on_progress=on_progress,
+            )
+            bot_context.executor = executor
             logger.info("TaskExecutor initialized with LLMTaskPlanner")
         else:
             logger.warning("No LLM client, TaskExecutor not initialized")
         
         # 创建 BotContext (DI 容器)
-        bot_context = BotContext(
-            runtime=None,  # 稍后注入 RuntimeContext
-            executor=executor,
-            actions=actions,
-            llm=llm_client,
-        )
         
         # 创建状态机
         state_machine = StateMachine(
@@ -188,6 +198,52 @@ async def lifespan(app: FastAPI):
         # 创建 WebSocket 发送回调函数 (用于同步消息)
         async def ws_send_func(msg: dict):
             await manager.broadcast(json.dumps(msg, ensure_ascii=False))
+
+        def _resolve_target_player() -> Optional[str]:
+            task = state_machine.context.current_task if state_machine else None
+            if task and isinstance(task.params, dict):
+                target = task.params.get("requesting_player")
+                if target:
+                    return target
+            if state_machine and state_machine.config.owner_name:
+                return state_machine.config.owner_name
+            return None
+
+        async def on_hologram_update(text: str) -> None:
+            msg = {
+                "type": "hologram_update",
+                "npc": bot_config.bot_name,
+                "hologram_text": text,
+                "identity_line": None,
+            }
+            await ws_send_func(msg)
+
+        async def on_chat_message(content: str) -> None:
+            target_player = _resolve_target_player()
+            if not target_player:
+                logger.debug("No target player for chat message, skipping send")
+                return
+            from websocket.handlers import split_to_segments
+            response = NpcResponse(
+                npc=bot_config.bot_name,
+                target_player=target_player,
+                content=content,
+                segments=split_to_segments(content),
+            )
+            await ws_send_func(response.model_dump())
+
+        async def on_npc_response(response: dict) -> None:
+            if "target_player" not in response:
+                target_player = _resolve_target_player()
+                if target_player:
+                    response["target_player"] = target_player
+            response.setdefault("type", MessageType.NPC_RESPONSE.value)
+            response.setdefault("npc", bot_config.bot_name)
+            await ws_send_func(response)
+
+        bot_context.on_hologram_update = on_hologram_update
+        bot_context.on_chat_message = on_chat_message
+        bot_context.on_npc_response = on_npc_response
         
         # 初始化消息路由器 (with LLM client, state machine, context manager, and repositories)
         message_router = MessageRouter(
@@ -247,6 +303,60 @@ async def lifespan(app: FastAPI):
         # 创建 WebSocket 发送回调函数 (MockBot 模式)
         async def ws_send_func(msg: dict):
             await manager.broadcast(json.dumps(msg, ensure_ascii=False))
+
+        bot_context = state_machine._bot_context
+
+        def _resolve_target_player() -> Optional[str]:
+            task = state_machine.context.current_task if state_machine else None
+            if task and isinstance(task.params, dict):
+                target = task.params.get("requesting_player")
+                if target:
+                    return target
+            if state_machine and state_machine.config.owner_name:
+                return state_machine.config.owner_name
+            return None
+
+        async def on_hologram_update(text: str) -> None:
+            msg = {
+                "type": "hologram_update",
+                "npc": state_machine.config.bot_name,
+                "hologram_text": text,
+                "identity_line": None,
+            }
+            await ws_send_func(msg)
+
+        async def on_chat_message(content: str) -> None:
+            target_player = _resolve_target_player()
+            if not target_player:
+                logger.debug("No target player for chat message, skipping send")
+                return
+            from websocket.handlers import split_to_segments
+            response = NpcResponse(
+                npc=state_machine.config.bot_name,
+                target_player=target_player,
+                content=content,
+                segments=split_to_segments(content),
+            )
+            await ws_send_func(response.model_dump())
+
+        async def on_npc_response(response: dict) -> None:
+            if "target_player" not in response:
+                target_player = _resolve_target_player()
+                if target_player:
+                    response["target_player"] = target_player
+            response.setdefault("type", MessageType.NPC_RESPONSE.value)
+            response.setdefault("npc", state_machine.config.bot_name)
+            await ws_send_func(response)
+
+        bot_context.on_hologram_update = on_hologram_update
+        bot_context.on_chat_message = on_chat_message
+        bot_context.on_npc_response = on_npc_response
+
+        async def on_event_queued(event_type, payload):
+            logger.debug(f"Event queued: {event_type}, triggering process_pending_events")
+            await state_machine.process_pending_events()
+
+        bot_context.on_event_queued = on_event_queued
         
         message_router = MessageRouter(
             bot_controller=mock_bot,

@@ -5,11 +5,11 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
+from typing import List, Optional, Dict, Any, TYPE_CHECKING, Callable, Awaitable
 from enum import Enum
 
 if TYPE_CHECKING:
-    from ..bot.interfaces import ActionResult
+    from ..bot.interfaces import ActionResult, IBotActions
 
 
 # ============================================================================
@@ -23,6 +23,30 @@ class TaskStatus(Enum):
     BLOCKED = "blocked"           # 被阻塞 (有前置任务在执行)
     COMPLETED = "completed"       # 已完成
     FAILED = "failed"             # 失败
+
+
+class TaskType(Enum):
+    """
+    任务类型枚举 - 决定使用哪个 Runner 执行
+    
+    Tick Loop 类型 (非确定性任务):
+    - GATHER: 采集资源
+    - COMBAT: 战斗 (未来扩展)
+    - FOLLOW: 跟随 (未来扩展)
+    
+    Linear Plan 类型 (确定性任务):
+    - CRAFT: 合成物品
+    - BUILD: 建造结构
+    - GOTO: 导航到位置
+    - GIVE: 交付物品
+    """
+    GATHER = "gather"       # Tick Loop: 采集类
+    CRAFT = "craft"         # Linear: 合成
+    BUILD = "build"         # Linear: 建造
+    GOTO = "goto"           # Linear: 导航
+    GIVE = "give"           # Linear: 交付
+    COMBAT = "combat"       # Tick Loop: 战斗 (未来)
+    FOLLOW = "follow"       # Tick Loop: 跟随 (未来)
 
 
 # ============================================================================
@@ -40,15 +64,18 @@ class StackTask:
         context: 上下文数据 (如来源任务、尝试次数)
         status: 任务状态
         blocking_reason: 阻塞原因 (如 "缺少 oak_planks")
+        task_type: 任务类型 (决定使用哪个 Runner)
     """
     name: str
     goal: str
+    task_type: Optional["TaskType"] = None  # 任务类型，决定执行策略
     context: Dict[str, Any] = field(default_factory=dict)
     status: TaskStatus = TaskStatus.PENDING
     blocking_reason: Optional[str] = None
     
     def __repr__(self) -> str:
-        return f"StackTask({self.name}, status={self.status.value})"
+        type_str = f", type={self.task_type.value}" if self.task_type else ""
+        return f"StackTask({self.name}{type_str}, status={self.status.value})"
 
 
 @dataclass
@@ -121,6 +148,27 @@ class TaskResult:
     def __repr__(self) -> str:
         status = "✅" if self.success else "❌"
         return f"TaskResult({status} {self.task_description})"
+
+
+@dataclass
+class RunContext:
+    """
+    Runner 执行上下文
+    
+    封装执行过程中需要的公共参数，避免 Runner 需要知道 Executor 的内部状态
+    
+    Attributes:
+        owner_name: 主人玩家名 (用于 give 命令)
+        owner_position: 主人实时坐标 (用于参照系锚定)
+        on_progress: 进度回调 (用于更新头顶显示)
+        max_ticks: Tick Loop 最大迭代次数
+        overall_timeout: 总体超时时间 (秒)
+    """
+    owner_name: Optional[str] = None
+    owner_position: Optional[Dict[str, Any]] = None
+    on_progress: Optional[Callable[[str], Awaitable[None]]] = None
+    max_ticks: int = 25
+    overall_timeout: float = 180.0
 
 
 # ============================================================================
@@ -267,4 +315,87 @@ class ITaskExecutor(ABC):
     @abstractmethod
     def is_running(self) -> bool:
         """是否正在执行任务"""
+        pass
+
+
+# ============================================================================
+# Task Decomposition & Runner Interfaces (Strategy Pattern)
+# ============================================================================
+
+class ITaskDecomposer(ABC):
+    """
+    粗粒度任务分解器抽象接口
+    
+    职责：
+    - 将用户意图分解为 StackTask 列表
+    - 只做逻辑分解，不展开资源依赖
+    
+    示例：
+    "帮我盖个简单木屋" → [
+        StackTask(name="采集木头", task_type=GATHER, goal="gather oak_log 32"),
+        StackTask(name="合成木板", task_type=CRAFT, goal="craft oak_planks 128"),
+        StackTask(name="建造木屋", task_type=BUILD, goal="build simple_house")
+    ]
+    """
+    
+    @abstractmethod
+    async def decompose(
+        self,
+        intent: str,
+        bot_state: Dict[str, Any],
+        target_info: Optional[Dict[str, Any]] = None
+    ) -> List[StackTask]:
+        """
+        将用户意图分解为粗粒度任务列表
+        
+        Args:
+            intent: 用户意图 (来自 LLM 意图识别或自然语言)
+            bot_state: Bot 当前状态 (位置、背包等)
+            target_info: 可选的目标信息 (如建筑模板、材料清单)
+            
+        Returns:
+            List[StackTask]: 有序的粗粒度任务列表 (按依赖序)
+        """
+        pass
+
+
+class ITaskRunner(ABC):
+    """
+    任务执行策略接口 (Strategy Pattern)
+    
+    职责：
+    - 执行单个 StackTask
+    - 不同类型任务使用不同 Runner 实现
+    
+    实现：
+    - GatherRunner: Tick Loop 模式 (采集/战斗/跟随)
+    - LinearPlanRunner: Linear Plan 模式 (合成/建造/导航/交付)
+    """
+    
+    @abstractmethod
+    async def run(
+        self,
+        task: StackTask,
+        actions: "IBotActions",
+        planner: ITaskPlanner,
+        context: RunContext
+    ) -> TaskResult:
+        """
+        执行单个任务
+        
+        Args:
+            task: 要执行的任务
+            actions: Bot 动作接口
+            planner: 任务规划器 (用于 plan/replan/act)
+            context: 执行上下文
+            
+        Returns:
+            TaskResult: 任务执行结果
+        """
+        pass
+    
+    @property
+    @abstractmethod
+    def supported_types(self) -> List[TaskType]:
+        """该 Runner 支持的任务类型列表"""
         pass

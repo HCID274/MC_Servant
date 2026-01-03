@@ -230,7 +230,13 @@ class PlanningState(IState):
         
         # 规划完成，触发进入 WORKING (使用异步版本立即通知)
         if self._ctx:
-            await self._ctx.queue_event_async(EventType.PLANNING_COMPLETE, {})
+            requesting_player = None
+            if task and isinstance(task.params, dict):
+                requesting_player = task.params.get("requesting_player")
+            payload = {}
+            if requesting_player:
+                payload["requesting_player"] = requesting_player
+            await self._ctx.queue_event_async(EventType.PLANNING_COMPLETE, payload)
     
     async def on_exit(self, context: RuntimeContext) -> None:
         """退出时取消未完成的规划任务"""
@@ -335,6 +341,9 @@ class WorkingState(IState):
             if self._ctx:
                 await self._ctx.queue_event_async(EventType.TASK_FAILED, {"error": "无任务"})
             return
+        requesting_player = None
+        if isinstance(task.params, dict):
+            requesting_player = task.params.get("requesting_player")
         
         # 检查 executor 是否可用
         if not self._ctx or not self._ctx.executor:
@@ -342,7 +351,10 @@ class WorkingState(IState):
             # 模拟执行 (用于测试/无 executor 场景)
             await asyncio.sleep(1)
             if self._ctx:
-                await self._ctx.queue_event_async(EventType.TASK_COMPLETE, {})
+                payload = {}
+                if requesting_player:
+                    payload["requesting_player"] = requesting_player
+                await self._ctx.queue_event_async(EventType.TASK_COMPLETE, payload)
             return
         
         try:
@@ -356,7 +368,6 @@ class WorkingState(IState):
             # 这里我们通过 BotContext 的回调间接实现
             
             # 设置 owner_name 用于 give 命令 (从 task params 获取)
-            requesting_player = task.params.get("requesting_player")
             if requesting_player and hasattr(self._ctx.executor, "_owner_name"):
                 self._ctx.executor._owner_name = requesting_player
                 logger.debug(f"Set executor owner_name to: {requesting_player}")
@@ -376,14 +387,18 @@ class WorkingState(IState):
             
             # 触发结果事件
             if result.success:
-                await self._ctx.queue_event_async(EventType.TASK_COMPLETE, {
+                payload = {
                     "message": result.message,
-                    "completed_steps": len(result.completed_steps)
-                })
+                    "completed_steps": len(result.completed_steps),
+                }
+                if requesting_player:
+                    payload["requesting_player"] = requesting_player
+                await self._ctx.queue_event_async(EventType.TASK_COMPLETE, payload)
             else:
-                await self._ctx.queue_event_async(EventType.TASK_FAILED, {
-                    "error": result.message
-                })
+                payload = {"error": result.message}
+                if requesting_player:
+                    payload["requesting_player"] = requesting_player
+                await self._ctx.queue_event_async(EventType.TASK_FAILED, payload)
                 
         except asyncio.CancelledError:
             logger.info("Task execution cancelled")
@@ -391,7 +406,10 @@ class WorkingState(IState):
         except Exception as e:
             logger.error(f"Task execution error: {e}")
             if self._ctx:
-                await self._ctx.queue_event_async(EventType.TASK_FAILED, {"error": str(e)})
+                payload = {"error": str(e)}
+                if requesting_player:
+                    payload["requesting_player"] = requesting_player
+                await self._ctx.queue_event_async(EventType.TASK_FAILED, payload)
     
     async def on_exit(self, context: RuntimeContext) -> None:
         """退出时取消执行任务并清理"""

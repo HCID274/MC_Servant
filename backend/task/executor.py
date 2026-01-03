@@ -12,12 +12,15 @@ from .interfaces import (
     ActionPlan,
     TaskResult,
     TaskStatus,
+    TaskType,
+    RunContext,
     ITaskPlanner,
     IPrerequisiteResolver,
     ITaskExecutor,
 )
 from .stack_planner import StackPlanner, StackOverflowError
 from .behavior_rules import BehaviorRules
+from .runners import RunnerRegistry
 
 # 运行时导入 (测试时由 Mock 提供)
 try:
@@ -77,6 +80,7 @@ class TaskExecutor(ITaskExecutor):
         planner: ITaskPlanner,
         actions: "IBotActions",
         prereq_resolver: Optional[IPrerequisiteResolver] = None,
+        runner_registry: Optional[RunnerRegistry] = None,
         max_retries: int = 3,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
         owner_name: Optional[str] = None,  # 用于 give 命令的玩家名
@@ -88,6 +92,7 @@ class TaskExecutor(ITaskExecutor):
             planner: 任务规划器 (LLM)
             actions: Bot 动作接口
             prereq_resolver: 前置任务解析器 (符号层)
+            runner_registry: Runner 注册表 (策略模式)
             max_retries: 单个任务最大重试次数
             on_progress: 进度回调 (用于更新头顶显示)
             owner_name: 主人玩家名 (用于 give 命令)
@@ -95,6 +100,7 @@ class TaskExecutor(ITaskExecutor):
         self._planner = planner
         self._actions = actions
         self._prereq = prereq_resolver
+        self._registry = runner_registry or RunnerRegistry.create_default()
         self._max_retries = max_retries
         self._on_progress = on_progress
         self._owner_name = owner_name
@@ -122,6 +128,88 @@ class TaskExecutor(ITaskExecutor):
     def stack_depth(self) -> int:
         """当前栈深度"""
         return self._stack.depth
+    
+    async def execute_tasks(self, tasks: List[StackTask]) -> TaskResult:
+        """
+        执行 Decomposer 产出的任务列表
+        
+        Args:
+            tasks: 有序的任务列表（按依赖序，第一个先执行）
+            
+        Returns:
+            TaskResult: 执行结果
+        """
+        if not tasks:
+            return TaskResult(
+                success=False,
+                task_description="空任务列表",
+                message="没有任务需要执行"
+            )
+        
+        self._cancelled = False
+        self._running = True
+        
+        task_names = [t.name for t in tasks]
+        overall_description = f"{len(tasks)} 个任务: {', '.join(task_names[:3])}{'...' if len(tasks) > 3 else ''}"
+        
+        logger.info(f"Starting execution of {len(tasks)} decomposed tasks: {task_names}")
+        
+        # 反向压入栈（确保第一个任务在栈顶先执行）
+        try:
+            for task in reversed(tasks):
+                self._stack.push(task)
+        except StackOverflowError as e:
+            self._running = False
+            return TaskResult(
+                success=False,
+                task_description=overall_description,
+                message=str(e)
+            )
+        
+        # 复用现有执行逻辑（继续到 execute 方法的循环部分）
+        all_completed_steps: List["ActionResult"] = []
+        last_failed_step: Optional["ActionResult"] = None
+        
+        try:
+            while not self._stack.is_empty() and not self._cancelled:
+                current = self._stack.current()
+                logger.info(f"Executing task: {current.name} (depth={self._stack.depth})")
+                await self._report_progress(f"执行: {current.name}")
+                result = await self._execute_task(current)
+                
+                if result.success:
+                    self._stack.pop()
+                    all_completed_steps.extend(result.completed_steps)
+                    logger.info(f"Task completed: {current.name}")
+                else:
+                    last_failed_step = result.failed_step
+                    resolved = await self._handle_task_failure(result)
+                    if not resolved:
+                        self._stack.clear()
+                        self._running = False
+                        return TaskResult(
+                            success=False,
+                            task_description=overall_description,
+                            completed_steps=all_completed_steps,
+                            failed_step=last_failed_step,
+                            message=f"任务失败: {result.message}"
+                        )
+            
+            if self._cancelled:
+                self._running = False
+                return TaskResult(success=False, task_description=overall_description, message="任务已取消")
+            
+            self._running = False
+            await self._report_progress("任务完成 ✅")
+            return TaskResult(success=True, task_description=overall_description, completed_steps=all_completed_steps, message="任务完成")
+        except StackOverflowError as e:
+            self._running = False
+            self._stack.clear()
+            return TaskResult(success=False, task_description=overall_description, message="任务太复杂")
+        except Exception as e:
+            self._running = False
+            self._stack.clear()
+            return TaskResult(success=False, task_description=overall_description, message=f"执行出错: {str(e)}")
     
     async def execute(
         self,
@@ -253,11 +341,8 @@ class TaskExecutor(ITaskExecutor):
         """
         执行单个栈任务
         
-        流程:
-        1. 调用 planner.plan() 生成 ActionPlan
-        2. 逐步执行 ActionStep
-        3. Step 失败时尝试 replan
-        4. 超过重试次数则返回失败
+        优先使用 RunnerRegistry 分发任务（策略模式）
+        如果任务没有 task_type 或 Runner 不可用，回退到旧逻辑
         
         Args:
             task: 栈任务
@@ -265,7 +350,19 @@ class TaskExecutor(ITaskExecutor):
         Returns:
             TaskResult: 任务执行结果
         """
-        # 对采集类任务启用“循环决策”（VillagerAgent 风格的 Observe→Act→Execute→Reflect）
+        # 优先使用 RunnerRegistry（策略模式）
+        if task.task_type is not None:
+            runner = self._registry.get(task.task_type)
+            if runner is not None:
+                context = RunContext(
+                    owner_name=self._owner_name,
+                    owner_position=self._owner_position,
+                    on_progress=self._on_progress,
+                )
+                return await runner.run(task, self._actions, self._planner, context)
+        
+        # 回退：旧的类型推断逻辑（向后兼容）
+        # 对采集类任务启用"循环决策"
         if self._should_use_tick_loop(task):
             return await self._execute_task_tick_loop(task)
 

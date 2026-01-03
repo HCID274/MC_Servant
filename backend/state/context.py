@@ -152,6 +152,7 @@ class BotContext:
     # 进度回调 (由 State 设置，由 Executor 调用)
     on_hologram_update: Optional[Any] = None  # Callable[[str], Awaitable[None]]
     on_chat_message: Optional[Any] = None     # Callable[[str], Awaitable[None]]
+    on_npc_response: Optional[Any] = None     # Callable[[dict], Awaitable[None]]
     
     # 事件通知回调 (当后台任务产生事件时调用，用于触发状态机处理)
     on_event_queued: Optional[Any] = None  # Callable[[EventType, dict], Awaitable[None]]

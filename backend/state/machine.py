@@ -132,7 +132,12 @@ class StateMachine(IStateMachine):
                     payload=payload,
                 )
                 logger.debug(f"Processing pending internal event: {event_type}")
-                await self.process(internal_event)
+                response = await self.process(internal_event)
+                if response and self._bot_context.on_npc_response:
+                    try:
+                        await self._bot_context.on_npc_response(response)
+                    except Exception as e:
+                        logger.warning(f"Failed to dispatch pending response: {e}")
     
     async def process(self, event: Event) -> Optional[Dict[str, Any]]:
         """
@@ -165,10 +170,12 @@ class StateMachine(IStateMachine):
         
         if not perm_result.allowed:
             logger.info(f"Permission denied: {perm_result.reason}")
-            return self._build_response(
+            response = self._build_response(
                 StateResult(response=perm_result.rejection_message),
                 hologram_text=None,
             )
+            self._attach_target_player(response, event)
+            return response
         
         # 2. 特殊事件处理（在状态处理之前）
         await self._handle_special_events(event)
@@ -198,7 +205,9 @@ class StateMachine(IStateMachine):
             await self._execute_action(result.action)
         
         # 7. 构建响应
-        return self._build_response(result, hologram_text)
+        response = self._build_response(result, hologram_text)
+        self._attach_target_player(response, event)
+        return response
     
     async def _handle_special_events(self, event: Event) -> None:
         """
@@ -277,6 +286,23 @@ class StateMachine(IStateMachine):
             response["action"] = result.action.get("type")
         
         return response
+
+    def _attach_target_player(self, response: Optional[Dict[str, Any]], event: Event) -> None:
+        """Attach target_player to response if missing."""
+        if not response or response.get("target_player"):
+            return
+        
+        payload = event.payload or {}
+        target_player = payload.get("target_player") or payload.get("requesting_player")
+        
+        if not target_player and event.source_player != "__internal__":
+            target_player = event.source_player
+        
+        if not target_player:
+            target_player = self._config.owner_name
+        
+        if target_player:
+            response["target_player"] = target_player
     
     # ==================== 便捷方法 ====================
     
