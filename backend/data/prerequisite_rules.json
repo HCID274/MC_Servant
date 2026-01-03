@@ -1,0 +1,106 @@
+{
+  "_comment": "前置任务规则库 - 符号层 Fast Path",
+  "_version": "1.0.0",
+  
+  "craftable_items": {
+    "_comment": "可合成物品及其基础材料 (简化版，仅列出常用物品)",
+    
+    "stick": {"materials": {"planks": 2}, "output_count": 4},
+    "oak_planks": {"materials": {"oak_log": 1}, "output_count": 4},
+    "birch_planks": {"materials": {"birch_log": 1}, "output_count": 4},
+    "spruce_planks": {"materials": {"spruce_log": 1}, "output_count": 4},
+    "jungle_planks": {"materials": {"jungle_log": 1}, "output_count": 4},
+    "acacia_planks": {"materials": {"acacia_log": 1}, "output_count": 4},
+    "dark_oak_planks": {"materials": {"dark_oak_log": 1}, "output_count": 4},
+    
+    "crafting_table": {"materials": {"planks": 4}, "output_count": 1, "requires_table": false},
+    "chest": {"materials": {"planks": 8}, "output_count": 1},
+    "furnace": {"materials": {"cobblestone": 8}, "output_count": 1},
+    
+    "wooden_pickaxe": {"materials": {"planks": 3, "stick": 2}, "output_count": 1},
+    "wooden_axe": {"materials": {"planks": 3, "stick": 2}, "output_count": 1},
+    "wooden_shovel": {"materials": {"planks": 1, "stick": 2}, "output_count": 1},
+    "wooden_sword": {"materials": {"planks": 2, "stick": 1}, "output_count": 1},
+    "wooden_hoe": {"materials": {"planks": 2, "stick": 2}, "output_count": 1},
+    
+    "stone_pickaxe": {"materials": {"cobblestone": 3, "stick": 2}, "output_count": 1},
+    "stone_axe": {"materials": {"cobblestone": 3, "stick": 2}, "output_count": 1},
+    "stone_shovel": {"materials": {"cobblestone": 1, "stick": 2}, "output_count": 1},
+    "stone_sword": {"materials": {"cobblestone": 2, "stick": 1}, "output_count": 1},
+    "stone_hoe": {"materials": {"cobblestone": 2, "stick": 2}, "output_count": 1},
+    
+    "iron_pickaxe": {"materials": {"iron_ingot": 3, "stick": 2}, "output_count": 1},
+    "iron_axe": {"materials": {"iron_ingot": 3, "stick": 2}, "output_count": 1},
+    "iron_shovel": {"materials": {"iron_ingot": 1, "stick": 2}, "output_count": 1},
+    "iron_sword": {"materials": {"iron_ingot": 2, "stick": 1}, "output_count": 1},
+    "iron_hoe": {"materials": {"iron_ingot": 2, "stick": 2}, "output_count": 1},
+    
+    "diamond_pickaxe": {"materials": {"diamond": 3, "stick": 2}, "output_count": 1},
+    "diamond_axe": {"materials": {"diamond": 3, "stick": 2}, "output_count": 1},
+    "diamond_shovel": {"materials": {"diamond": 1, "stick": 2}, "output_count": 1},
+    "diamond_sword": {"materials": {"diamond": 2, "stick": 1}, "output_count": 1},
+    
+    "torch": {"materials": {"coal": 1, "stick": 1}, "output_count": 4},
+    "ladder": {"materials": {"stick": 7}, "output_count": 3},
+    "fence": {"materials": {"planks": 4, "stick": 2}, "output_count": 3},
+    "fence_gate": {"materials": {"planks": 2, "stick": 4}, "output_count": 1},
+    
+    "bed": {"materials": {"planks": 3, "wool": 3}, "output_count": 1},
+    "door": {"materials": {"planks": 6}, "output_count": 3}
+  },
+  
+  "mineable_blocks": {
+    "_comment": "可采集的方块及其掉落物/所需工具",
+    
+    "oak_log": {"drops": "oak_log", "tool": null},
+    "birch_log": {"drops": "birch_log", "tool": null},
+    "spruce_log": {"drops": "spruce_log", "tool": null},
+    "jungle_log": {"drops": "jungle_log", "tool": null},
+    "acacia_log": {"drops": "acacia_log", "tool": null},
+    "dark_oak_log": {"drops": "dark_oak_log", "tool": null},
+    
+    "stone": {"drops": "cobblestone", "tool": "pickaxe"},
+    "cobblestone": {"drops": "cobblestone", "tool": "pickaxe"},
+    "coal_ore": {"drops": "coal", "tool": "pickaxe", "min_tier": "wooden"},
+    "iron_ore": {"drops": "raw_iron", "tool": "pickaxe", "min_tier": "stone"},
+    "gold_ore": {"drops": "raw_gold", "tool": "pickaxe", "min_tier": "iron"},
+    "diamond_ore": {"drops": "diamond", "tool": "pickaxe", "min_tier": "iron"},
+    "redstone_ore": {"drops": "redstone", "tool": "pickaxe", "min_tier": "iron"},
+    "lapis_ore": {"drops": "lapis_lazuli", "tool": "pickaxe", "min_tier": "stone"},
+    "emerald_ore": {"drops": "emerald", "tool": "pickaxe", "min_tier": "iron"},
+    
+    "dirt": {"drops": "dirt", "tool": null},
+    "grass_block": {"drops": "dirt", "tool": null},
+    "sand": {"drops": "sand", "tool": null},
+    "gravel": {"drops": "gravel", "tool": null},
+    "clay": {"drops": "clay_ball", "tool": null}
+  },
+  
+  "smeltable_items": {
+    "_comment": "可冶炼物品",
+    
+    "raw_iron": {"result": "iron_ingot", "fuel": 1},
+    "raw_gold": {"result": "gold_ingot", "fuel": 1},
+    "raw_copper": {"result": "copper_ingot", "fuel": 1},
+    "iron_ore": {"result": "iron_ingot", "fuel": 1},
+    "gold_ore": {"result": "gold_ingot", "fuel": 1},
+    "sand": {"result": "glass", "fuel": 1},
+    "cobblestone": {"result": "stone", "fuel": 1},
+    "oak_log": {"result": "charcoal", "fuel": 1}
+  },
+  
+  "tool_tiers": {
+    "_comment": "工具等级顺序",
+    "order": ["wooden", "stone", "iron", "diamond", "netherite"]
+  },
+  
+  "tag_equivalents": {
+    "_comment": "Tag 等价组 - 用于材料匹配",
+    
+    "planks": ["oak_planks", "birch_planks", "spruce_planks", "jungle_planks", "acacia_planks", "dark_oak_planks"],
+    "logs": ["oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log", "dark_oak_log"],
+    "wool": ["white_wool", "orange_wool", "magenta_wool", "light_blue_wool", "yellow_wool", "lime_wool", "pink_wool", "gray_wool", "light_gray_wool", "cyan_wool", "purple_wool", "blue_wool", "brown_wool", "green_wool", "red_wool", "black_wool"],
+    "pickaxe": ["wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "netherite_pickaxe"],
+    "axe": ["wooden_axe", "stone_axe", "iron_axe", "diamond_axe", "netherite_axe"]
+  }
+}
