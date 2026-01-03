@@ -672,8 +672,11 @@ class MineflayerActions(IBotActions):
         start_time = time.time()
         
         try:
-            # 检查玩家是否在线
-            player = self._bot.players.get(player_name)
+            # 检查玩家是否在线 (JSPyBridge 兼容方式)
+            try:
+                player = self._bot.players[player_name]
+            except (KeyError, TypeError):
+                player = None
             if not player or not player.entity:
                 return ActionResult(
                     success=False,
@@ -706,11 +709,26 @@ class MineflayerActions(IBotActions):
                     duration_ms=int((time.time() - start_time) * 1000)
                 )
             
-            # 丢物品给玩家
+            # 面向玩家 (实时获取玩家位置)
+            try:
+                player = self._bot.players[player_name]
+                if player and player.entity:
+                    await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: self._bot.lookAt(player.entity.position)
+                        ),
+                        timeout=2.0
+                    )
+            except (KeyError, TypeError):
+                pass  # 如果找不到玩家，继续丢物品
+            
+            # 丢物品给玩家 (使用 toss 指定数量，而不是 tossStack 丢整个栈)
+            actual_count = min(count, item.count)  # 不能丢超过拥有的数量
             await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self._bot.tossStack(item)
+                    lambda: self._bot.toss(item.type, None, actual_count)
                 ),
                 timeout=5.0
             )
@@ -718,9 +736,9 @@ class MineflayerActions(IBotActions):
             return ActionResult(
                 success=True,
                 action="give",
-                message=f"已将 {count} 个 {item_name} 交给 {player_name}",
+                message=f"已将 {actual_count} 个 {item_name} 交给 {player_name}",
                 status=ActionStatus.SUCCESS,
-                data={"given": {item_name: count}, "to": player_name},
+                data={"given": {item_name: actual_count}, "to": player_name},
                 duration_ms=int((time.time() - start_time) * 1000)
             )
             
@@ -919,7 +937,11 @@ class MineflayerActions(IBotActions):
         # 玩家目标: @PlayerName
         if target.startswith("@"):
             player_name = target[1:]
-            player = self._bot.players.get(player_name)
+            # JSPyBridge 兼容方式访问 players
+            try:
+                player = self._bot.players[player_name]
+            except (KeyError, TypeError):
+                player = None
             if player and player.entity:
                 return goals.GoalFollow(player.entity, 2)
             logger.warning(f"Player not found: {player_name}")

@@ -76,6 +76,7 @@ class TaskExecutor(ITaskExecutor):
         prereq_resolver: Optional[IPrerequisiteResolver] = None,
         max_retries: int = 3,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
+        owner_name: Optional[str] = None,  # 用于 give 命令的玩家名
     ):
         """
         初始化执行器
@@ -86,12 +87,14 @@ class TaskExecutor(ITaskExecutor):
             prereq_resolver: 前置任务解析器 (符号层)
             max_retries: 单个任务最大重试次数
             on_progress: 进度回调 (用于更新头顶显示)
+            owner_name: 主人玩家名 (用于 give 命令)
         """
         self._planner = planner
         self._actions = actions
         self._prereq = prereq_resolver
         self._max_retries = max_retries
         self._on_progress = on_progress
+        self._owner_name = owner_name
         
         self._stack = StackPlanner()
         self._cancelled = False
@@ -257,6 +260,10 @@ class TaskExecutor(ITaskExecutor):
         # 获取 Bot 状态
         bot_state = self._actions.get_state()
         
+        # 注入 owner_name 用于 give 命令
+        if self._owner_name:
+            bot_state["owner_name"] = self._owner_name
+        
         # 规划
         try:
             plan = await self._planner.plan(task.goal, bot_state)
@@ -377,6 +384,12 @@ class TaskExecutor(ITaskExecutor):
             params["timeout"] = params.pop("timeout_sec")
         elif "timeout" not in params:
             params["timeout"] = DEFAULT_TIMEOUTS.get(action_name, 30.0)
+        
+        # 某些动作不接受 timeout 参数，需要过滤掉
+        # scan() 只接受 target_type 和 radius
+        NO_TIMEOUT_ACTIONS = {"scan"}
+        if action_name in NO_TIMEOUT_ACTIONS and "timeout" in params:
+            params.pop("timeout")
         
         # 获取动作方法
         action_method = getattr(self._actions, action_name, None)

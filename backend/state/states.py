@@ -328,7 +328,7 @@ class WorkingState(IState):
         task = context.current_task
         if not task:
             if self._ctx:
-                self._ctx.queue_event(EventType.TASK_FAILED, {"error": "无任务"})
+                await self._ctx.queue_event_async(EventType.TASK_FAILED, {"error": "无任务"})
             return
         
         # 检查 executor 是否可用
@@ -337,7 +337,7 @@ class WorkingState(IState):
             # 模拟执行 (用于测试/无 executor 场景)
             await asyncio.sleep(1)
             if self._ctx:
-                self._ctx.queue_event(EventType.TASK_COMPLETE, {})
+                await self._ctx.queue_event_async(EventType.TASK_COMPLETE, {})
             return
         
         try:
@@ -350,17 +350,23 @@ class WorkingState(IState):
             # 注意：当前 TaskExecutor 通过构造函数注入 on_progress
             # 这里我们通过 BotContext 的回调间接实现
             
+            # 设置 owner_name 用于 give 命令 (从 task params 获取)
+            requesting_player = task.params.get("requesting_player")
+            if requesting_player and hasattr(self._ctx.executor, "_owner_name"):
+                self._ctx.executor._owner_name = requesting_player
+                logger.debug(f"Set executor owner_name to: {requesting_player}")
+            
             # 执行任务
             result = await self._ctx.executor.execute(task.description)
             
             # 触发结果事件
             if result.success:
-                self._ctx.queue_event(EventType.TASK_COMPLETE, {
+                await self._ctx.queue_event_async(EventType.TASK_COMPLETE, {
                     "message": result.message,
                     "completed_steps": len(result.completed_steps)
                 })
             else:
-                self._ctx.queue_event(EventType.TASK_FAILED, {
+                await self._ctx.queue_event_async(EventType.TASK_FAILED, {
                     "error": result.message
                 })
                 
@@ -370,7 +376,7 @@ class WorkingState(IState):
         except Exception as e:
             logger.error(f"Task execution error: {e}")
             if self._ctx:
-                self._ctx.queue_event(EventType.TASK_FAILED, {"error": str(e)})
+                await self._ctx.queue_event_async(EventType.TASK_FAILED, {"error": str(e)})
     
     async def on_exit(self, context: RuntimeContext) -> None:
         """退出时取消执行任务并清理"""

@@ -43,6 +43,12 @@ class PermissionGate(IPermissionGate):
         (EventType.TASK_FAILED, True): True,
         (EventType.TASK_FAILED, False): True,
         
+        # 内部事件 - 系统事件，总是允许
+        (EventType.PLANNING_COMPLETE, True): True,
+        (EventType.PLANNING_COMPLETE, False): True,
+        (EventType.TASK_STOP, True): True,
+        (EventType.TASK_STOP, False): True,
+        
         # 交互 - 所有人都能闲聊/查询
         (EventType.CHAT, True): True,
         (EventType.CHAT, False): True,

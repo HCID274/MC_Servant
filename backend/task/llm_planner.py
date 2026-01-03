@@ -48,7 +48,7 @@ PLAN_SYSTEM_PROMPT = """你是 Minecraft 任务规划专家。根据用户任务
    - timeout_sec: int (可选，默认10)
 
 5. **give** - 交给玩家
-   - player_name: str
+   - player_name: str (重要：使用 Bot 状态中的 owner_name，不要用占位符！)
    - item_name: str
    - count: int
    - timeout_sec: int (可选，默认30)
@@ -67,6 +67,7 @@ PLAN_SYSTEM_PROMPT = """你是 Minecraft 任务规划专家。根据用户任务
 3. 不要假设背包有某些物品，先检查 Bot 状态
 4. 合成物品前确保有足够材料
 5. 采集矿石前确保有合适工具
+6. **give 命令的 player_name 必须使用 Bot 状态中的 owner_name（真实玩家名），禁止使用占位符！**
 
 ## 输出格式
 返回纯 JSON (不要 markdown 代码块)：
@@ -229,6 +230,15 @@ class LLMTaskPlanner(ITaskPlanner):
             
             return self._parse_plan_response(task_description, response)
             
+        except json.JSONDecodeError as e:
+            logger.error(f"Replan JSON parse failed: {e}")
+            logger.error(f"This usually means LLM response was truncated or malformed")
+            # 返回空计划
+            return ActionPlan(
+                task_description=task_description,
+                steps=[],
+                estimated_time=0
+            )
         except Exception as e:
             logger.error(f"LLM replan failed: {e}")
             # 返回空计划

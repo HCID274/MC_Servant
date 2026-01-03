@@ -208,6 +208,7 @@ class PlayerMessageHandler(IMessageHandler):
                 "raw_input": msg.content,
                 "entities": metadata.get("entities", {}),
                 "confidence": metadata.get("confidence", 0),
+                "requesting_player": msg.player,  # 用于 LLM Planner 知道谁发起的任务
             }
         )
         
