@@ -214,6 +214,15 @@ class PlayerMessageHandler(IMessageHandler):
         # 3. 委托给状态机
         response = await self._fsm.process(event)
         
+        # 3.5 处理后台任务生成的内部事件 (如 PLANNING_COMPLETE)
+        # 给后台任务一点时间启动和完成
+        import asyncio
+        await asyncio.sleep(0.5)  # 等待后台任务触发事件
+        try:
+            await self._fsm.process_pending_events()
+        except Exception as e:
+            logger.warning(f"Error processing pending events: {e}")
+        
         # 4. 如果状态机返回响应，添加必要字段
         if response:
             response.setdefault("target_player", msg.player)

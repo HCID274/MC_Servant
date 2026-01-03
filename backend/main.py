@@ -25,6 +25,7 @@ from websocket.handlers import MessageRouter
 from bot.mineflayer_adapter import BotManager
 from protocol import NpcResponse, MessageType
 from bot.lifecycle_manager import BotLifecycleManager
+from state.context import BotContext
 
 # 配置日志
 logging.basicConfig(
@@ -102,25 +103,66 @@ async def lifespan(app: FastAPI):
         
         # Phase 1 Actions 验证完成，测试代码已删除
         
-        # 初始化状态机
+        # ========== 构建依赖图 (Layer 1 → Layer 3) ==========
         from pathlib import Path
         from state.machine import StateMachine
         from state.config import BotConfig
+        from bot.actions import MineflayerActions
+        from task.executor import TaskExecutor
+        from task.llm_planner import LLMTaskPlanner
+        from task.prerequisite_resolver import PrerequisiteResolver
         
         config_path = Path("data/bot_config.json")
         
         # 加载或创建配置，确保 bot_name 是真实的 Bot 用户名
         bot_config = BotConfig.load(config_path)
-        bot_config.bot_name = default_bot.username  # 使用真实的 Bot 名称
+        bot_config.bot_name = default_bot.username
         bot_config.save(config_path)
         
+        # Layer 2: 动作层 (依赖 Layer 1 bot)
+        actions = MineflayerActions(default_bot)
+        logger.info("MineflayerActions initialized")
+        
+        # Layer 3: 规划/执行层 (如果有 LLM)
+        executor = None
+        if llm_client:
+            planner = LLMTaskPlanner(llm_client)
+            prereq_resolver = PrerequisiteResolver()
+            executor = TaskExecutor(planner, actions, prereq_resolver)
+            logger.info("TaskExecutor initialized with LLMTaskPlanner")
+        else:
+            logger.warning("No LLM client, TaskExecutor not initialized")
+        
+        # 创建 BotContext (DI 容器)
+        bot_context = BotContext(
+            runtime=None,  # 稍后注入 RuntimeContext
+            executor=executor,
+            actions=actions,
+            llm=llm_client,
+        )
+        
+        # 创建状态机
         state_machine = StateMachine(
             config=bot_config,
             config_path=config_path,
             llm_client=llm_client,
             bot_controller=default_bot,
+            bot_context=bot_context,
+            executor=executor,
         )
-        logger.info(f"State machine initialized: state={state_machine.current_state.name}, bot={bot_config.bot_name}")
+        
+        # 回填 runtime 到 BotContext
+        bot_context.runtime = state_machine._context
+        
+        # 设置事件驱动回调 - 当后台任务生成事件时自动处理
+        async def on_event_queued(event_type, payload):
+            """事件回调：后台任务生成事件时触发"""
+            logger.debug(f"Event queued: {event_type}, triggering process_pending_events")
+            await state_machine.process_pending_events()
+        
+        bot_context.on_event_queued = on_event_queued
+        
+        logger.info(f"State machine initialized: state={state_machine.current_state.name}, bot={bot_config.bot_name}, executor={'✓' if executor else '✗'}")
         
         # 初始化生命周期管理器
         lifecycle_manager = BotLifecycleManager(
@@ -193,6 +235,13 @@ async def lifespan(app: FastAPI):
             llm_client=llm_client,
             bot_controller=mock_bot,
         )
+        
+        # 注入 BotContext (MockBot 模式)
+        state_machine._bot_context = BotContext(
+            runtime=state_machine._context,
+            llm=llm_client,
+        )
+        
         logger.info(f"State machine initialized (MockBot): state={state_machine.current_state.name}")
         
         # 创建 WebSocket 发送回调函数 (MockBot 模式)

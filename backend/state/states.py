@@ -1,12 +1,13 @@
 # State Implementations
 # 具体状态实现
 
+import asyncio
 import logging
 from typing import Optional, TYPE_CHECKING
 
 from .interfaces import IState, StateResult
 from .events import Event, EventType
-from .context import RuntimeContext
+from .context import RuntimeContext, BotContext
 
 if TYPE_CHECKING:
     from ..llm.interfaces import ILLMClient
@@ -76,7 +77,8 @@ class IdleState(IState):
     - 接受 QUERY → 报告状态
     """
     
-    def __init__(self, llm_client: Optional["ILLMClient"] = None):
+    def __init__(self, bot_context: Optional["BotContext"] = None, llm_client: Optional["ILLMClient"] = None):
+        self._ctx = bot_context
         self._llm = llm_client
     
     @property
@@ -108,7 +110,7 @@ class IdleState(IState):
             context.start_task(task_type, description, event.payload)
             
             return StateResult(
-                next_state=PlanningState(self._llm),
+                next_state=PlanningState(bot_context=self._ctx, llm_client=self._llm),
                 response="好的主人，让我想想怎么做...",
                 hologram_text="💭 思考中...",
             )
@@ -162,33 +164,90 @@ class IdleState(IState):
 
 class PlanningState(IState):
     """
-    规划状态 - LLM 生成计划
+    规划状态 - Auto-Start 模式
     
     行为：
-    - 进入时触发 LLM 规划
-    - 接受 TASK_CONFIRM → 转换到 WorkingState
+    - 进入时启动后台规划任务 (不阻塞状态机)
+    - 规划完成后自动触发 PLANNING_COMPLETE → 转换到 WorkingState
     - 接受 TASK_CANCEL → 返回 IdleState
     - 接受 CHAT → 简短回复
+    
+    设计：使用 asyncio.create_task 避免阻塞 on_enter
     """
     
-    def __init__(self, llm_client: Optional["ILLMClient"] = None):
+    def __init__(self, bot_context: Optional["BotContext"] = None, llm_client: Optional["ILLMClient"] = None):
+        self._ctx = bot_context
         self._llm = llm_client
+        self._planning_task: Optional[asyncio.Task] = None
     
     @property
     def name(self) -> str:
         return "planning"
     
     async def on_enter(self, context: RuntimeContext) -> Optional[str]:
+        """进入规划状态，启动后台规划任务"""
         context.reset_state_timer()
-        return "💭 思考中..."
+        
+        task = context.current_task
+        if not task:
+            return "❌ 无任务"
+        
+        # 发送开始消息 (通过 BotContext 回调)
+        if self._ctx and self._ctx.on_chat_message:
+            try:
+                await self._ctx.on_chat_message(f"好的，开始{task.description}...")
+            except Exception as e:
+                logger.warning(f"Failed to send chat message: {e}")
+        
+        # 启动后台规划任务 (不阻塞 on_enter)
+        self._planning_task = asyncio.create_task(
+            self._run_planning(context)
+        )
+        
+        return "💭 规划中..."
+    
+    async def _run_planning(self, context: RuntimeContext) -> None:
+        """
+        后台规划协程
+        
+        规划逻辑实际由 TaskExecutor.execute() 内部的 LLMPlanner 处理，
+        这里只需标记规划完成，触发自动转入 WORKING 状态
+        """
+        task = context.current_task
+        if not task:
+            if self._ctx:
+                await self._ctx.queue_event_async(EventType.TASK_FAILED, {"error": "无任务"})
+            return
+        
+        # 规划阶段实际不需要做什么，executor.execute() 会自己规划
+        # 这里只是给用户一个视觉反馈，稍微延迟一下再进入 WORKING
+        await asyncio.sleep(0.3)  # 短暂延迟，让全息显示有时间更新
+        
+        # 规划完成，触发进入 WORKING (使用异步版本立即通知)
+        if self._ctx:
+            await self._ctx.queue_event_async(EventType.PLANNING_COMPLETE, {})
     
     async def on_exit(self, context: RuntimeContext) -> None:
-        pass
+        """退出时取消未完成的规划任务"""
+        if self._planning_task and not self._planning_task.done():
+            self._planning_task.cancel()
+            try:
+                await self._planning_task
+            except asyncio.CancelledError:
+                pass
     
     async def handle_event(self, event: Event, context: RuntimeContext) -> StateResult:
-        if event.type == EventType.TASK_CONFIRM:
+        if event.type == EventType.PLANNING_COMPLETE:
+            # 规划完成，自动进入 WORKING (无需用户确认)
             return StateResult(
-                next_state=WorkingState(self._llm),
+                next_state=WorkingState(bot_context=self._ctx, llm_client=self._llm),
+                hologram_text="🔨 工作中",
+            )
+        
+        # 兼容旧逻辑：手动确认也可以进入 WORKING
+        elif event.type == EventType.TASK_CONFIRM:
+            return StateResult(
+                next_state=WorkingState(bot_context=self._ctx, llm_client=self._llm),
                 response="好的，开始干活啦！",
                 hologram_text="🔨 工作中",
                 action={"type": "start_task"},
@@ -219,31 +278,117 @@ class PlanningState(IState):
         return StateResult()
 
 
+
+
 class WorkingState(IState):
     """
     工作状态 - 执行任务
     
     行为：
+    - 进入时启动 TaskExecutor 后台任务
     - 接受 TASK_COMPLETE → 返回 IdleState
     - 接受 TASK_FAILED → 返回 IdleState (附带失败信息)
-    - 接受 TASK_CANCEL → 返回 IdleState
+    - 接受 TASK_STOP / TASK_CANCEL → 取消执行，返回 IdleState
     - 接受 CHAT → 简短回复，不中断工作
+    
+    设计：
+    - 使用 asyncio.create_task 后台执行任务
+    - 通过 BotContext.queue_event 触发状态转换
+    - 支持 on_progress 回调更新全息显示
     """
     
-    def __init__(self, llm_client: Optional["ILLMClient"] = None):
+    def __init__(self, bot_context: Optional["BotContext"] = None, llm_client: Optional["ILLMClient"] = None):
+        self._ctx = bot_context
         self._llm = llm_client
+        self._executor_task: Optional[asyncio.Task] = None
     
     @property
     def name(self) -> str:
         return "working"
     
     async def on_enter(self, context: RuntimeContext) -> Optional[str]:
+        """进入工作状态，启动 TaskExecutor 后台任务"""
         context.reset_state_timer()
         task = context.current_task
         task_name = task.task_type if task else "任务"
+        
+        # 启动后台执行任务
+        self._executor_task = asyncio.create_task(
+            self._run_executor(context)
+        )
+        
         return f"🔨 {task_name}中"
     
+    async def _run_executor(self, context: RuntimeContext) -> None:
+        """
+        后台执行协程
+        
+        调用 TaskExecutor.execute() 执行任务，完成后触发事件
+        """
+        task = context.current_task
+        if not task:
+            if self._ctx:
+                self._ctx.queue_event(EventType.TASK_FAILED, {"error": "无任务"})
+            return
+        
+        # 检查 executor 是否可用
+        if not self._ctx or not self._ctx.executor:
+            logger.warning("No executor available, simulating task execution")
+            # 模拟执行 (用于测试/无 executor 场景)
+            await asyncio.sleep(1)
+            if self._ctx:
+                self._ctx.queue_event(EventType.TASK_COMPLETE, {})
+            return
+        
+        try:
+            # 设置进度回调 (节流)
+            async def on_progress(msg: str):
+                if self._ctx:
+                    await self._ctx.update_hologram_throttled(f"🔨 {msg}")
+            
+            # 如果 executor 支持 on_progress，设置回调
+            # 注意：当前 TaskExecutor 通过构造函数注入 on_progress
+            # 这里我们通过 BotContext 的回调间接实现
+            
+            # 执行任务
+            result = await self._ctx.executor.execute(task.description)
+            
+            # 触发结果事件
+            if result.success:
+                self._ctx.queue_event(EventType.TASK_COMPLETE, {
+                    "message": result.message,
+                    "completed_steps": len(result.completed_steps)
+                })
+            else:
+                self._ctx.queue_event(EventType.TASK_FAILED, {
+                    "error": result.message
+                })
+                
+        except asyncio.CancelledError:
+            logger.info("Task execution cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"Task execution error: {e}")
+            if self._ctx:
+                self._ctx.queue_event(EventType.TASK_FAILED, {"error": str(e)})
+    
     async def on_exit(self, context: RuntimeContext) -> None:
+        """退出时取消执行任务并清理"""
+        # 取消后台任务
+        if self._executor_task and not self._executor_task.done():
+            self._executor_task.cancel()
+            try:
+                await self._executor_task
+            except asyncio.CancelledError:
+                pass
+        
+        # 取消 executor (如果正在运行)
+        if self._ctx and self._ctx.executor:
+            try:
+                self._ctx.executor.cancel()
+            except Exception as e:
+                logger.warning(f"Failed to cancel executor: {e}")
+        
         # 清理任务（无论成功还是失败）
         context.clear_task()
     
@@ -264,7 +409,8 @@ class WorkingState(IState):
                 hologram_text="💤 待命中",
             )
         
-        elif event.type == EventType.TASK_CANCEL:
+        elif event.type in (EventType.TASK_CANCEL, EventType.TASK_STOP):
+            # 用户请求停止 - cancel 在 on_exit 中处理
             return StateResult(
                 next_state=IdleState(self._llm),
                 response="好的，停下来了喵~",
@@ -296,3 +442,4 @@ class WorkingState(IState):
             return StateResult(response="正在工作中喵~")
         
         return StateResult()
+

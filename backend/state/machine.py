@@ -1,13 +1,14 @@
 # State Machine
 # 状态机主体 - Bot 的行为总控
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, TYPE_CHECKING
 
 from .interfaces import IState, IStateMachine, StateResult
 from .events import Event, EventType
-from .context import RuntimeContext
+from .context import RuntimeContext, BotContext
 from .config import BotConfig, DEFAULT_CONFIG_PATH
 from .permission import PermissionGate, PermissionResult
 from .states import UnclaimedState, IdleState
@@ -15,6 +16,7 @@ from .states import UnclaimedState, IdleState
 if TYPE_CHECKING:
     from ..llm.interfaces import ILLMClient
     from ..bot.interfaces import IBotController
+    from ..task.interfaces import ITaskExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,8 @@ class StateMachine(IStateMachine):
         config_path: Optional[Path] = None,
         llm_client: Optional["ILLMClient"] = None,
         bot_controller: Optional["IBotController"] = None,
+        bot_context: Optional[BotContext] = None,
+        executor: Optional["ITaskExecutor"] = None,
     ):
         """
         初始化状态机
@@ -45,6 +49,8 @@ class StateMachine(IStateMachine):
             config_path: 配置文件路径（默认 data/bot_config.json）
             llm_client: LLM 客户端
             bot_controller: Bot 控制器
+            bot_context: Bot 上下文 (DI 容器)
+            executor: 任务执行器
         """
         # 配置路径
         self._config_path = config_path or DEFAULT_CONFIG_PATH
@@ -62,6 +68,16 @@ class StateMachine(IStateMachine):
         self._llm = llm_client
         self._bot = bot_controller
         
+        # BotContext (DI 容器)
+        if bot_context:
+            self._bot_context = bot_context
+        else:
+            self._bot_context = BotContext(
+                runtime=self._context,
+                llm=llm_client,
+                executor=executor,
+            )
+        
         # 权限校验器
         self._permission_gate = PermissionGate()
         
@@ -76,7 +92,7 @@ class StateMachine(IStateMachine):
     def _get_initial_state(self) -> IState:
         """根据配置决定初始状态"""
         if self._config.is_claimed:
-            return IdleState(self._llm)
+            return IdleState(bot_context=self._bot_context, llm_client=self._llm)
         else:
             return UnclaimedState(self._llm)
     
@@ -91,6 +107,32 @@ class StateMachine(IStateMachine):
     @property
     def context(self) -> RuntimeContext:
         return self._context
+    
+    @property
+    def bot_context(self) -> BotContext:
+        """获取 Bot 上下文 (DI 容器)"""
+        return self._bot_context
+    
+    async def process_pending_events(self) -> None:
+        """
+        处理待处理的内部事件
+        
+        由后台任务 (如 PlanningState._run_planning, WorkingState._run_executor) 
+        通过 BotContext.queue_event() 放入队列的事件
+        
+        这个方法应该在主循环中定期调用，或者在 process() 结束后调用
+        """
+        while self._bot_context.has_pending_events():
+            event_data = self._bot_context.pop_pending_event()
+            if event_data:
+                event_type, payload = event_data
+                internal_event = Event(
+                    type=event_type,
+                    source_player="__internal__",
+                    payload=payload,
+                )
+                logger.debug(f"Processing pending internal event: {event_type}")
+                await self.process(internal_event)
     
     async def process(self, event: Event) -> Optional[Dict[str, Any]]:
         """

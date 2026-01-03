@@ -13,7 +13,7 @@ class EventType(str, Enum):
     
     分类：
     - 所有权相关：CLAIM, RELEASE
-    - 任务相关：TASK_REQUEST, TASK_CONFIRM, TASK_COMPLETE, TASK_CANCEL, TASK_FAILED
+    - 任务相关：TASK_REQUEST, TASK_CONFIRM, TASK_COMPLETE, TASK_CANCEL, TASK_FAILED, TASK_STOP, PLANNING_COMPLETE
     - 交互相关：CHAT, QUERY
     """
     # 所有权
@@ -26,6 +26,8 @@ class EventType(str, Enum):
     TASK_COMPLETE = "task_complete"  # 任务完成
     TASK_CANCEL = "task_cancel"      # 取消当前任务
     TASK_FAILED = "task_failed"      # 任务失败
+    TASK_STOP = "task_stop"          # 用户请求停止当前任务 (WORKING 状态中)
+    PLANNING_COMPLETE = "planning_complete"  # 规划完成 (内部事件，自动转入 WORKING)
     
     # 交互
     CHAT = "chat"            # 闲聊（不触发状态转换，触发回复）
@@ -56,11 +58,14 @@ class Event:
 INTENT_TO_EVENT_MAP = {
     "build": EventType.TASK_REQUEST,
     "mine": EventType.TASK_REQUEST,
+    "craft": EventType.TASK_REQUEST,  # 合成
+    "give": EventType.TASK_REQUEST,   # 给予物品
     "farm": EventType.TASK_REQUEST,
     "guard": EventType.TASK_REQUEST,
     "chat": EventType.CHAT,
     "status": EventType.QUERY,
     "cancel": EventType.TASK_CANCEL,
+    "stop": EventType.TASK_STOP,  # 停止当前任务
 }
 
 
