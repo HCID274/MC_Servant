@@ -41,7 +41,7 @@ class UnclaimedState(IState):
             # 认领成功，转换到 IdleState
             # 注意：实际的 owner 信息由 StateMachine 在 BotConfig 中设置
             return StateResult(
-                next_state=IdleState(self._llm) if hasattr(self, '_llm') else IdleState(),
+                next_state=IdleState(bot_context=None, llm_client=self._llm) if hasattr(self, '_llm') else IdleState(),
                 response=f"认领成功！你好主人，我是你的女仆，请多多关照喵~",
                 action={"type": "jump"},  # 开心地跳一下
             )
@@ -94,6 +94,8 @@ class IdleState(IState):
         pass
     
     async def handle_event(self, event: Event, context: RuntimeContext) -> StateResult:
+        logger.info(f"[DEBUG] IdleState.handle_event: event.type={event.type.value}")
+        
         if event.type == EventType.RELEASE:
             return StateResult(
                 next_state=UnclaimedState(self._llm),
@@ -106,6 +108,8 @@ class IdleState(IState):
             task_type = event.payload.get("intent", "unknown")
             description = event.payload.get("description", event.payload.get("raw_input", ""))
             
+            logger.info(f"[DEBUG] IdleState: TASK_REQUEST received, task_type={task_type}, description={description}")
+            
             # 开始任务，转换到规划状态
             context.start_task(task_type, description, event.payload)
             
@@ -117,6 +121,7 @@ class IdleState(IState):
         
         elif event.type == EventType.CHAT:
             # 闲聊
+            logger.info(f"[DEBUG] IdleState: CHAT event received")
             response = await self._generate_chat_response(event, context)
             # 截取前60个字符显示在全息上
             short_msg = response[:60] + "..." if len(response) > 60 else response
@@ -255,7 +260,7 @@ class PlanningState(IState):
         
         elif event.type == EventType.TASK_CANCEL:
             return StateResult(
-                next_state=IdleState(self._llm),
+                next_state=IdleState(bot_context=self._ctx, llm_client=self._llm),
                 response="好的，取消了喵~",
                 hologram_text="💤 待命中",
             )
@@ -356,6 +361,12 @@ class WorkingState(IState):
                 self._ctx.executor._owner_name = requesting_player
                 logger.debug(f"Set executor owner_name to: {requesting_player}")
             
+            # 设置玩家实时位置（来自 Java 插件，比 Mineflayer 更准确）
+            player_position = task.params.get("player_position")
+            if player_position and hasattr(self._ctx.executor, "_owner_position"):
+                self._ctx.executor._owner_position = player_position
+                logger.info(f"[DEBUG] Set executor owner_position from Java: {player_position}")
+            
             # 执行任务
             result = await self._ctx.executor.execute(task.description)
             
@@ -401,7 +412,7 @@ class WorkingState(IState):
     async def handle_event(self, event: Event, context: RuntimeContext) -> StateResult:
         if event.type == EventType.TASK_COMPLETE:
             return StateResult(
-                next_state=IdleState(self._llm),
+                next_state=IdleState(bot_context=self._ctx, llm_client=self._llm),
                 response="任务完成啦！主人看看满意吗喵~",
                 hologram_text="💤 待命中",
                 action={"type": "celebrate"},
@@ -410,7 +421,7 @@ class WorkingState(IState):
         elif event.type == EventType.TASK_FAILED:
             error = event.payload.get("error", "未知错误")
             return StateResult(
-                next_state=IdleState(self._llm),
+                next_state=IdleState(bot_context=self._ctx, llm_client=self._llm),
                 response=f"呜呜，任务失败了...原因：{error}，对不起主人喵~",
                 hologram_text="💤 待命中",
             )
@@ -418,7 +429,7 @@ class WorkingState(IState):
         elif event.type in (EventType.TASK_CANCEL, EventType.TASK_STOP):
             # 用户请求停止 - cancel 在 on_exit 中处理
             return StateResult(
-                next_state=IdleState(self._llm),
+                next_state=IdleState(bot_context=self._ctx, llm_client=self._llm),
                 response="好的，停下来了喵~",
                 hologram_text="💤 待命中",
             )

@@ -60,6 +60,7 @@ INTENT_TO_EVENT_MAP = {
     "mine": EventType.TASK_REQUEST,
     "craft": EventType.TASK_REQUEST,  # 合成
     "give": EventType.TASK_REQUEST,   # 给予物品
+    "goto": EventType.TASK_REQUEST,   # 移动导航
     "farm": EventType.TASK_REQUEST,
     "guard": EventType.TASK_REQUEST,
     "chat": EventType.CHAT,

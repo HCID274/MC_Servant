@@ -164,6 +164,11 @@ public final class ServantCommands {
         message.put("content", content);
         message.put("timestamp", System.currentTimeMillis() / 1000);
         
+        // 添加玩家实时位置（用于 goto 等命令）
+        message.put("player_x", player.getLocation().getX());
+        message.put("player_y", player.getLocation().getY());
+        message.put("player_z", player.getLocation().getZ());
+        
         // 发送到后端
         boolean sent = wsClient.send(message.toJSONString());
         

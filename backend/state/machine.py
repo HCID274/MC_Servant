@@ -154,6 +154,7 @@ class StateMachine(IStateMachine):
             响应消息字典
         """
         logger.debug(f"Processing event: {event} in state: {self._current_state.name}")
+        logger.info(f"[DEBUG] FSM.process: event.type={event.type.value}, current_state={self._current_state.name}")
         
         # 1. 权限校验
         perm_result = self._permission_gate.check(
@@ -173,7 +174,9 @@ class StateMachine(IStateMachine):
         await self._handle_special_events(event)
         
         # 3. 委托给当前状态处理
+        logger.info(f"[DEBUG] Delegating to state.handle_event: state={self._current_state.name}")
         result = await self._current_state.handle_event(event, self._context)
+        logger.info(f"[DEBUG] State returned: next_state={result.next_state.name if result.next_state else None}, response={result.response[:50] if result.response else None}")
         
         # 4. 状态转换
         hologram_text = None
@@ -234,9 +237,8 @@ class StateMachine(IStateMachine):
                 # 挥手（暂未实现，用跳跃代替）
                 await self._bot.jump()
             elif action_type == "celebrate":
-                # 庆祝（跳几下）
-                for _ in range(3):
-                    await self._bot.jump()
+                # 庆祝（跳一下，避免连续跳跃触发反作弊）
+                await self._bot.jump()
             elif action_type == "start_task":
                 # 开始任务（由 TaskExecutor 处理，这里只是标记）
                 logger.info("Task started signal sent")

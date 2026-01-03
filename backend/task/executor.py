@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+import inspect
 from typing import Dict, Any, List, Optional, Callable, Awaitable, TYPE_CHECKING
 
 from .interfaces import (
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUTS = {
     "goto": 60.0,
     "mine": 120.0,
+    "mine_tree": 120.0,
     "craft": 30.0,
     "place": 10.0,
     "give": 30.0,
@@ -95,6 +97,7 @@ class TaskExecutor(ITaskExecutor):
         self._max_retries = max_retries
         self._on_progress = on_progress
         self._owner_name = owner_name
+        self._owner_position: Optional[dict] = None  # 玩家实时位置（来自 Java 插件）
         
         self._stack = StackPlanner()
         self._cancelled = False
@@ -260,9 +263,20 @@ class TaskExecutor(ITaskExecutor):
         # 获取 Bot 状态
         bot_state = self._actions.get_state()
         
-        # 注入 owner_name 用于 give 命令
+        # 注入上下文信息（用于 LLM 规划）
         if self._owner_name:
             bot_state["owner_name"] = self._owner_name
+            
+            # 优先使用 Java 插件提供的实时位置（更准确）
+            if self._owner_position:
+                bot_state["owner_position"] = self._owner_position
+                logger.info(f"[DEBUG] Using Java-provided owner position: {self._owner_position}")
+            # 降级：使用 Mineflayer 获取的位置（可能有延迟）
+            elif hasattr(self._actions, 'get_player_position'):
+                owner_pos = self._actions.get_player_position(self._owner_name)
+                if owner_pos:
+                    bot_state["owner_position"] = owner_pos
+                    logger.info(f"[DEBUG] Using Mineflayer owner position (fallback): {owner_pos}")
         
         # 规划
         try:
@@ -378,6 +392,15 @@ class TaskExecutor(ITaskExecutor):
         
         action_name = step.action
         params = step.params.copy()
+
+        # --- 参数归一化（防御 LLM 生成的别名 / 多余字段） ---
+        # mine: 允许 block -> block_type
+        if action_name == "mine":
+            if "block_type" not in params and "block" in params:
+                params["block_type"] = params.pop("block")
+            # 也允许 planner 用 target 表示方块类型
+            if "block_type" not in params and "target" in params and isinstance(params["target"], str):
+                params["block_type"] = params.pop("target")
         
         # 处理超时参数
         if "timeout_sec" in params:
@@ -401,6 +424,22 @@ class TaskExecutor(ITaskExecutor):
                 status=_ActionStatus.FAILED,
                 error_code="UNKNOWN_ACTION"
             )
+
+        # 过滤未知参数（避免 TypeError 直接打断执行循环）
+        try:
+            sig = inspect.signature(action_method)
+            accepted = set(sig.parameters.keys())
+            # bound method 的签名不包含 self；这里保持防御性处理
+            if "self" in accepted:
+                accepted.remove("self")
+
+            # 如果函数有 **kwargs，则不需要过滤
+            has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            if not has_var_kw:
+                params = {k: v for k, v in params.items() if k in accepted}
+        except Exception:
+            # 签名解析失败时不阻断执行
+            pass
         
         # 执行动作
         try:

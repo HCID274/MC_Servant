@@ -195,25 +195,40 @@ class PlayerMessageHandler(IMessageHandler):
         
         # 2. 构造事件
         event_type = intent_to_event_type(intent.value)
+        logger.info(f"[DEBUG] intent_to_event_type: {intent.value} -> {event_type.value}")
         
         # 注意：CLAIM 和 RELEASE 应该通过 /servant claim 等命令触发
         # 不在这里处理，由 Java 插件发送 command 类型消息
+        
+        # 构建 payload，包含玩家实时位置（如果 Java 插件提供了）
+        payload = {
+            "intent": intent.value,
+            "raw_input": msg.content,
+            "entities": metadata.get("entities", {}),
+            "confidence": metadata.get("confidence", 0),
+            "requesting_player": msg.player,  # 用于 LLM Planner 知道谁发起的任务
+        }
+        
+        # 添加玩家实时位置（来自 Java 插件，比 Mineflayer 更准确）
+        if msg.player_x is not None and msg.player_y is not None and msg.player_z is not None:
+            payload["player_position"] = {
+                "x": int(msg.player_x),
+                "y": int(msg.player_y),
+                "z": int(msg.player_z),
+            }
+            logger.info(f"[DEBUG] Player position from Java: ({msg.player_x:.1f}, {msg.player_y:.1f}, {msg.player_z:.1f})")
         
         event = Event(
             type=event_type,
             source_player=msg.player,
             source_player_uuid=getattr(msg, 'player_uuid', None),  # 如果有 UUID
-            payload={
-                "intent": intent.value,
-                "raw_input": msg.content,
-                "entities": metadata.get("entities", {}),
-                "confidence": metadata.get("confidence", 0),
-                "requesting_player": msg.player,  # 用于 LLM Planner 知道谁发起的任务
-            }
+            payload=payload
         )
         
         # 3. 委托给状态机
+        logger.info(f"[DEBUG] Sending event to FSM: type={event.type.value}, player={event.source_player}")
         response = await self._fsm.process(event)
+        logger.info(f"[DEBUG] FSM response: {response}")
         
         # 3.5 处理后台任务生成的内部事件 (如 PLANNING_COMPLETE)
         # 给后台任务一点时间启动和完成
@@ -311,6 +326,12 @@ class PlayerMessageHandler(IMessageHandler):
             content = f"收到！我去帮您挖{material}~"
             hologram = "⛏️ 挖矿中..."
             action = "start_mine"
+            
+        elif intent == Intent.GOTO:
+            target_desc = entities.get("description", "您指定的位置")
+            content = f"好的主人！我这就过去~"
+            hologram = "🚶 移动中..."
+            action = "start_goto"
             
         elif intent == Intent.FARM:
             crop = entities.get("crop", "作物")

@@ -116,6 +116,7 @@ class MineflayerActions(IBotActions):
     async def goto(self, target: str, timeout: float = 60.0) -> ActionResult:
         """导航到目标位置"""
         start_time = time.time()
+        logger.info(f"[DEBUG] goto called with target: {target}")
         
         try:
             goal = self._parse_goal(target)
@@ -128,12 +129,13 @@ class MineflayerActions(IBotActions):
                     error_code="TARGET_NOT_FOUND"
                 )
             
+            logger.info(f"[DEBUG] goto: goal parsed, setting pathfinder goal")
             # 设置目标并等待到达
             self._bot.pathfinder.setGoal(goal)
             
             try:
                 await asyncio.wait_for(
-                    self._wait_for_goal_reached(),
+                    self._wait_for_goal_reached(saved_goal=goal),
                     timeout=timeout
                 )
             except asyncio.TimeoutError:
@@ -171,18 +173,39 @@ class MineflayerActions(IBotActions):
                 duration_ms=int((time.time() - start_time) * 1000)
             )
     
-    async def mine(self, block_type: str, count: int = 1, timeout: float = 120.0) -> ActionResult:
+    async def mine(
+        self, 
+        block_type: str, 
+        count: int = 1, 
+        timeout: float = 120.0,
+        near_position: dict = None,
+        search_radius: int = 64
+    ) -> ActionResult:
         """
         采集指定类型的方块
         
-        使用进度感知超时：每次检测到进度（挖完、捡起）重置 30s 计时器。
-        只有连续 30s 无进度才会超时。
+        简单接口：
+        - block_type: 方块类型
+        - count: 数量 (-1 表示挖到附近没有为止，适合砍整棵树)
+        - near_position: 搜索中心点 {"x": int, "y": int, "z": int}，默认 Bot 当前位置
+        - search_radius: 搜索半径 (默认64格)
+        
+        深度功能：
+        - 自动寻找 → 自动导航 → 自动选工具 → 挖掘
+        - 进度感知超时：每次检测到进度重置 30s 计时器
+        - 支持 count=-1 持续挖掘直到搜索范围内没有目标
         """
         start_time = time.time()
         collected = {}
         
         # 初始化进度计时器 (30秒无进度超时)
         self._progress_timer = ProgressTimer(timeout_seconds=30.0)
+        
+        # 确定搜索中心点
+        if near_position:
+            search_center = self._Vec3(near_position["x"], near_position["y"], near_position["z"])
+        else:
+            search_center = self._bot.entity.position
         
         try:
             # 获取方块类型信息
@@ -197,7 +220,8 @@ class MineflayerActions(IBotActions):
                 )
             
             block_id = block_info.id
-            remaining = count
+            remaining = count if count > 0 else float('inf')  # -1 表示无限
+            unlimited_mode = (count <= 0)
             last_location = None
             
             while remaining > 0:
@@ -225,14 +249,20 @@ class MineflayerActions(IBotActions):
                         duration_ms=int((time.time() - start_time) * 1000)
                     )
                 
-                # 寻找最近的目标方块
-                target_block = self._bot.findBlock({
-                    "matching": block_id,
-                    "maxDistance": 64
-                })
+                # 寻找搜索范围内最近的目标方块
+                # 使用 search_center 作为搜索原点（可以是玩家位置）
+                target_block = self._find_nearest_block(
+                    block_id, 
+                    search_center, 
+                    search_radius
+                )
                 
                 if not target_block:
-                    if remaining == count:
+                    if unlimited_mode:
+                        # 无限模式下，找不到就是成功完成
+                        break
+                    elif collected.get(block_type, 0) == 0:
+                        # 有限模式下，一个都没挖到才算失败
                         return ActionResult(
                             success=False,
                             action="mine",
@@ -326,12 +356,23 @@ class MineflayerActions(IBotActions):
                     logger.warning(f"Collect error: {collect_error}")
                     await asyncio.sleep(0.5)
             
+            total_collected = collected.get(block_type, 0)
+            if unlimited_mode:
+                msg = f"采集完成！共采集 {total_collected} 个 {block_type}"
+            else:
+                msg = f"成功采集 {total_collected} 个 {block_type}"
+            
             return ActionResult(
                 success=True,
                 action="mine",
-                message=f"成功采集 {collected.get(block_type, 0)} 个 {block_type}",
+                message=msg,
                 status=ActionStatus.SUCCESS,
-                data={"collected": collected, "location": last_location, "progress_events": self._progress_timer.progress_count},
+                data={
+                    "collected": collected, 
+                    "location": last_location, 
+                    "progress_events": self._progress_timer.progress_count,
+                    "unlimited_mode": unlimited_mode
+                },
                 duration_ms=int((time.time() - start_time) * 1000)
             )
             
@@ -348,6 +389,320 @@ class MineflayerActions(IBotActions):
             )
         finally:
             self._progress_timer = None
+    
+    async def mine_tree(
+        self,
+        near_position: dict = None,
+        search_radius: int = 32,
+        timeout: float = 120.0
+    ) -> ActionResult:
+        """
+        智能砍树 - 砍掉一整棵树（使用 BFS 精确识别连通的原木）
+        
+        简单接口：
+        - near_position: 搜索中心点 {"x": int, "y": int, "z": int}，默认 Bot 当前位置
+        - search_radius: 搜索半径 (默认32格)
+        
+        深度功能：
+        - 使用 BFS 找到与起始原木相连的所有原木（不会砍到相邻的树）
+        - 从下往上砍，确保砍完整棵树
+        - 自动识别各种类型的原木
+        """
+        start_time = time.time()
+        
+        # 所有原木类型
+        LOG_TYPES = [
+            "oak_log", "birch_log", "spruce_log", "jungle_log", 
+            "acacia_log", "dark_oak_log", "mangrove_log", "cherry_log"
+        ]
+        
+        try:
+            # 确定搜索中心
+            if near_position:
+                search_center = {
+                    "x": int(near_position.get("x", 0)),
+                    "y": int(near_position.get("y", 64)),
+                    "z": int(near_position.get("z", 0))
+                }
+            else:
+                pos = self._bot.entity.position
+                search_center = {"x": int(pos.x), "y": int(pos.y), "z": int(pos.z)}
+            
+            logger.info(f"[mine_tree] Searching for tree near {search_center}, radius={search_radius}")
+            
+            # 找到最近的原木
+            mcData = self._mcData
+            first_log = None
+            first_log_type = None
+            
+            for log_type in LOG_TYPES:
+                try:
+                    block_id = mcData.blocksByName[log_type]
+                    if block_id:
+                        block = self._bot.findBlock({
+                            "matching": block_id.id,
+                            "maxDistance": search_radius,
+                            "point": self._bot.entity.position
+                        })
+                        if block:
+                            if first_log is None:
+                                first_log = block
+                                first_log_type = log_type
+                            else:
+                                dist_new = (
+                                    (block.position.x - search_center["x"]) ** 2 +
+                                    (block.position.y - search_center["y"]) ** 2 +
+                                    (block.position.z - search_center["z"]) ** 2
+                                )
+                                dist_old = (
+                                    (first_log.position.x - search_center["x"]) ** 2 +
+                                    (first_log.position.y - search_center["y"]) ** 2 +
+                                    (first_log.position.z - search_center["z"]) ** 2
+                                )
+                                if dist_new < dist_old:
+                                    first_log = block
+                                    first_log_type = log_type
+                except:
+                    continue
+            
+            if not first_log:
+                return ActionResult(
+                    success=False,
+                    action="mine_tree",
+                    message=f"附近 {search_radius} 格内没有找到树",
+                    status=ActionStatus.FAILED,
+                    error_code="NO_TARGET"
+                )
+            
+            # 使用 BFS 找到这棵树的所有连通原木
+            tree_logs = self._find_connected_logs(first_log, first_log_type, mcData)
+            logger.info(f"[mine_tree] Found tree with {len(tree_logs)} logs of type {first_log_type}")
+            
+            if not tree_logs:
+                return ActionResult(
+                    success=False,
+                    action="mine_tree",
+                    message="无法识别树的结构",
+                    status=ActionStatus.FAILED,
+                    error_code="TREE_SCAN_FAILED"
+                )
+            
+            # 按 Y 坐标排序（从下往上砍，避免原木掉落问题）
+            tree_logs.sort(key=lambda pos: pos[1])
+            
+            # 逐个挖掘原木（使用 collectblock 插件）
+            collected = 0
+            failed = 0
+            
+            for log_pos in tree_logs:
+                if time.time() - start_time > timeout:
+                    logger.warning(f"[mine_tree] Timeout after collecting {collected} logs")
+                    break
+                
+                x, y, z = log_pos
+                
+                # 检查该位置是否还有原木（可能已经被挖掉或掉落）
+                try:
+                    block = self._bot.blockAt(self._Vec3(x, y, z))
+                    if not block or block.name != first_log_type:
+                        logger.debug(f"[mine_tree] Block at ({x},{y},{z}) is no longer {first_log_type}, skipping")
+                        continue
+                except Exception as e:
+                    logger.debug(f"[mine_tree] Error checking block at ({x},{y},{z}): {e}")
+                    continue
+                
+                # 使用 collectblock 插件挖掘（自动处理导航和工具选择）
+                try:
+                    # 关键：不要把 Python 回调传给 JS（会触发桥接层 len(function) 并导致 Node uncaughtException）
+                    # 这里复用 mine() 里的成熟模式：无回调调用 collect()，在 Python 侧轮询 inventory 变化。
+                    inventory_before = self._get_inventory_count(first_log_type)
+                    last_inventory_check = inventory_before
+
+                    # 尝试预先装备工具（collectBlock 也会处理，但这里提前做一次更稳）
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: self._bot.tool.equipForBlock(block)
+                            ),
+                            timeout=5.0
+                        )
+                    except Exception as e:
+                        logger.debug(f"[mine_tree] Auto-equip tool failed: {e}")
+
+                    collect_done = False
+                    collect_error = None
+
+                    def do_collect():
+                        nonlocal collect_done, collect_error
+                        try:
+                            self._bot.collectBlock.collect(block)
+                            collect_done = True
+                        except Exception as e:
+                            collect_error = e
+
+                    import threading
+                    threading.Thread(target=do_collect, daemon=True).start()
+
+                    # 等待采集完成/进度（最多 20s），通过 inventory 增量来判断是否真正拿到物品
+                    collect_start = time.time()
+                    while (not collect_done) and collect_error is None and (time.time() - collect_start < 20):
+                        await asyncio.sleep(1.0)
+                        try:
+                            current_inventory = self._get_inventory_count(first_log_type)
+                            if current_inventory > last_inventory_check:
+                                last_inventory_check = current_inventory
+                        except Exception:
+                            pass
+
+                    inventory_after = self._get_inventory_count(first_log_type)
+                    actually_collected = inventory_after - inventory_before
+
+                    if collect_error is not None:
+                        logger.warning(f"[mine_tree] Collect error at ({x},{y},{z}): {collect_error}")
+                        failed += 1
+                    elif actually_collected > 0:
+                        collected += actually_collected
+                        logger.debug(f"[mine_tree] Collected +{actually_collected} logs at ({x},{y},{z}), total: {collected}")
+                    elif collect_done:
+                        # JS 端报告完成但 inventory 没变：给一次“乐观计数”，避免因拾取延迟被误判为失败
+                        collected += 1
+                        logger.debug(f"[mine_tree] Collect done but inventory unchanged at ({x},{y},{z}); optimistic +1, total: {collected}")
+                    else:
+                        logger.warning(f"[mine_tree] Collect timeout at ({x},{y},{z})")
+                        failed += 1
+                        
+                except Exception as e:
+                    logger.warning(f"[mine_tree] Failed to mine log at ({x},{y},{z}): {e}")
+                    failed += 1
+            
+            # 等待掉落物被拾取
+            await asyncio.sleep(0.5)
+            
+            msg = f"砍树完成！共砍掉 {collected} 个 {first_log_type}"
+            if failed > 0:
+                msg += f"（{failed} 个失败）"
+            
+            return ActionResult(
+                success=collected > 0,
+                action="mine_tree",
+                message=msg,
+                status=ActionStatus.SUCCESS if collected > 0 else ActionStatus.FAILED,
+                data={
+                    "collected": collected,
+                    "failed": failed,
+                    "log_type": first_log_type,
+                    "tree_size": len(tree_logs)
+                },
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
+            
+        except Exception as e:
+            logger.error(f"mine_tree failed: {e}")
+            return ActionResult(
+                success=False,
+                action="mine_tree",
+                message=str(e),
+                status=ActionStatus.FAILED,
+                error_code="UNKNOWN",
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
+    
+    def _find_connected_logs(self, start_block, log_type: str, mcData) -> list:
+        """
+        使用 BFS 找到与起始原木相连的所有原木
+        
+        连通规则（支持樱花树等分叉结构）：
+        - 6 个正交方向（上下左右前后）
+        - 向上时也检查对角线（支持分叉的树冠）
+        - 水平距离限制在 5 格内（避免连接到相邻的树）
+        """
+        from collections import deque
+        
+        visited = set()
+        tree_logs = []
+        queue = deque()
+        
+        start_pos = (int(start_block.position.x), int(start_block.position.y), int(start_block.position.z))
+        queue.append(start_pos)
+        visited.add(start_pos)
+        
+        # 6 个正交方向 + 向上的对角线方向（支持分叉树）
+        # 基础方向
+        base_directions = [
+            (0, 1, 0),   # 上
+            (0, -1, 0),  # 下
+            (1, 0, 0),   # 东
+            (-1, 0, 0),  # 西
+            (0, 0, 1),   # 南
+            (0, 0, -1),  # 北
+        ]
+        # 向上的对角线方向（支持樱花树等分叉结构）
+        diagonal_up_directions = [
+            (1, 1, 0), (-1, 1, 0), (0, 1, 1), (0, 1, -1),  # 4 个向上的对角
+            (1, 1, 1), (-1, 1, 1), (1, 1, -1), (-1, 1, -1),  # 4 个向上的角落
+        ]
+        
+        # 获取原木的 block ID
+        try:
+            log_block_id = mcData.blocksByName[log_type].id
+        except:
+            return [start_pos]
+        
+        while queue:
+            x, y, z = queue.popleft()
+            tree_logs.append((x, y, z))
+            
+            # 检查所有方向
+            all_directions = base_directions + diagonal_up_directions
+            for dx, dy, dz in all_directions:
+                nx, ny, nz = x + dx, y + dy, z + dz
+                
+                if (nx, ny, nz) in visited:
+                    continue
+                
+                # 限制搜索范围，避免无限扩展
+                # 水平距离限制在 5 格内（避免连接到相邻的树）
+                if abs(nx - start_pos[0]) > 5 or abs(nz - start_pos[2]) > 5:
+                    continue
+                if ny < start_pos[1] - 3 or ny > start_pos[1] + 30:  # 树最高约 30 格
+                    continue
+                
+                visited.add((nx, ny, nz))
+                
+                # 检查该位置是否是同类型原木
+                try:
+                    block = self._bot.blockAt(self._Vec3(nx, ny, nz))
+                    if block and block.name == log_type:
+                        queue.append((nx, ny, nz))
+                except:
+                    continue
+        
+        return tree_logs
+    
+    async def _navigate_to_block(self, x: int, y: int, z: int):
+        """导航到可以挖掘指定方块的位置"""
+        try:
+            # 计算一个可以站立的位置（方块旁边）
+            bot_pos = self._bot.entity.position
+            
+            # 如果已经足够近，不需要移动
+            dist = ((bot_pos.x - x) ** 2 + (bot_pos.y - y) ** 2 + (bot_pos.z - z) ** 2) ** 0.5
+            if dist < 4:
+                return
+            
+            # 使用 pathfinder 导航到方块附近
+            goals = self._pathfinder.goals
+            goal = goals.GoalNear(x, y, z, 3)
+            self._bot.pathfinder.setGoal(goal)
+            
+            # 等待到达
+            start = time.time()
+            while self._bot.pathfinder.isMoving() and time.time() - start < 10:
+                await asyncio.sleep(0.1)
+                
+        except Exception as e:
+            logger.debug(f"Navigation to ({x},{y},{z}) failed: {e}")
     
     def _get_inventory_count(self, item_name: str) -> int:
         """获取背包中指定物品的数量"""
@@ -926,6 +1281,32 @@ class MineflayerActions(IBotActions):
                 "error": str(e)
             }
     
+    def get_player_position(self, player_name: str) -> Optional[dict]:
+        """
+        获取指定玩家的位置（感知能力）
+        
+        这是一个独立的感知方法，不属于 IBotActions 接口，
+        因为获取其他实体位置是感知能力，不是动作能力。
+        
+        Args:
+            player_name: 玩家名
+            
+        Returns:
+            {"x": int, "y": int, "z": int} 或 None
+        """
+        try:
+            player = self._bot.players[player_name]
+            if player and player.entity:
+                pos = player.entity.position
+                return {
+                    "x": int(pos.x),
+                    "y": int(pos.y),
+                    "z": int(pos.z)
+                }
+        except (KeyError, TypeError):
+            pass
+        return None
+    
     # ========================================================================
     # Helper Methods
     # ========================================================================
@@ -943,7 +1324,10 @@ class MineflayerActions(IBotActions):
             except (KeyError, TypeError):
                 player = None
             if player and player.entity:
-                return goals.GoalFollow(player.entity, 2)
+                pos = player.entity.position
+                logger.info(f"[DEBUG] goto @{player_name}: found at ({pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f})")
+                # 使用 GoalBlock 到达玩家脚下的方块位置
+                return goals.GoalBlock(int(pos.x), int(pos.y), int(pos.z))
             logger.warning(f"Player not found: {player_name}")
             return None
         
@@ -961,14 +1345,48 @@ class MineflayerActions(IBotActions):
         logger.warning(f"Unsupported target format: {target}")
         return None
     
-    async def _wait_for_goal_reached(self):
+    async def _wait_for_goal_reached(self, saved_goal=None):
         """等待寻路目标达成"""
-        while True:
-            if not self._bot.pathfinder.isMoving():
-                # 检查目标是否达成
-                goal = self._bot.pathfinder.goal
-                if goal is None or self._is_goal_reached(goal):
+        # 等待 pathfinder 开始移动（最多等 2 秒）
+        start_wait = time.time()
+        while not self._bot.pathfinder.isMoving():
+            if time.time() - start_wait > 2.0:
+                # 超过 2 秒还没开始移动，检查是否已经在目标位置
+                if saved_goal and self._is_goal_reached(saved_goal):
+                    logger.info("[DEBUG] Already at goal, no movement needed")
                     return
+                logger.warning("Pathfinder did not start moving within 2s")
+                break
+            await asyncio.sleep(0.1)
+        
+        logger.info(f"[DEBUG] Pathfinder started moving: {self._bot.pathfinder.isMoving()}")
+        
+        # 等待到达目标
+        iteration = 0
+        while True:
+            is_moving = self._bot.pathfinder.isMoving()
+            goal = self._bot.pathfinder.goal
+            
+            # 每秒打印一次状态
+            if iteration % 10 == 0:
+                pos = self._bot.entity.position
+                logger.info(f"[DEBUG] Pathfinder status: moving={is_moving}, goal={goal is not None}, pos=({pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f})")
+            iteration += 1
+            
+            if not is_moving:
+                # 停止移动了，检查是否到达
+                # 使用保存的 goal 检查（因为 pathfinder.goal 可能被清空）
+                check_goal = goal or saved_goal
+                if check_goal and self._is_goal_reached(check_goal):
+                    logger.info("[DEBUG] Goal reached!")
+                    return
+                if goal is None and saved_goal is None:
+                    logger.info("[DEBUG] Goal is None, pathfinder stopped (no saved goal)")
+                    return
+                # 没有到达但停止了，可能是路径被阻挡或已到达
+                logger.warning(f"[DEBUG] Pathfinder stopped, goal={goal is not None}, saved_goal={saved_goal is not None}")
+                return
+            
             await asyncio.sleep(0.1)
     
     def _is_goal_reached(self, goal) -> bool:
@@ -978,6 +1396,47 @@ class MineflayerActions(IBotActions):
             return goal.isEnd(pos.x, pos.y, pos.z)
         except:
             return False
+    
+    def _find_nearest_block(self, block_id: int, center, radius: int):
+        """
+        在指定中心点附近搜索最近的方块
+        
+        Args:
+            block_id: 方块 ID
+            center: 搜索中心点 (Vec3)
+            radius: 搜索半径
+            
+        Returns:
+            最近的方块对象，或 None
+        """
+        try:
+            # 获取搜索范围内的所有目标方块
+            blocks = self._bot.findBlocks({
+                "matching": block_id,
+                "maxDistance": radius,
+                "count": 256  # 足够大以覆盖一棵树
+            })
+            
+            if not blocks:
+                return None
+            
+            # 找到距离 center 最近的方块
+            nearest_block = None
+            nearest_dist = float('inf')
+            
+            for block_pos in blocks:
+                try:
+                    dist = center.distanceTo(block_pos)
+                    if dist < nearest_dist:
+                        nearest_dist = dist
+                        nearest_block = self._bot.blockAt(block_pos)
+                except:
+                    pass
+            
+            return nearest_block
+        except Exception as e:
+            logger.warning(f"_find_nearest_block failed: {e}")
+            return None
     
     def _find_inventory_item(self, item_name: str):
         """
@@ -1026,3 +1485,4 @@ class MineflayerActions(IBotActions):
             return held_item.name if held_item else None
         except:
             return None
+

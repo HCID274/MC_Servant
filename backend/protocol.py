@@ -33,6 +33,10 @@ class PlayerMessage(BaseModel):
     npc: Optional[str] = None
     content: str
     timestamp: int
+    # 玩家实时位置 (由 Java 插件提供，比 Mineflayer 更准确)
+    player_x: Optional[float] = None
+    player_y: Optional[float] = None
+    player_z: Optional[float] = None
 
 
 class NpcResponse(BaseModel):
