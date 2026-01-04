@@ -129,12 +129,37 @@ class MineflayerBot(IBotController):
         @On(self._bot, 'message')
         def on_message(this, message, *args):
             """监听聊天消息，检测 AuthMe 登录提示"""
-            msg = str(message).lower()
-            logger.debug(f"Bot received message: {msg}")
+            msg = str(message)
+            msg_lower = msg.lower()
+
+            # 安全日志：检查是否包含密码
+            if self._password and self._password in msg:
+                safe_msg = msg.replace(self._password, "********")
+                logger.debug(f"Bot received message: {safe_msg}")
+            else:
+                logger.debug(f"Bot received message: {msg}")
             
             # 检测 AuthMe 登录/注册提示
+            # 必须匹配服务器的标准提示，避免玩家聊天误触发
+            # 常见提示：
+            # - Please register with "/register password password"
+            # - Please login with "/login password"
+            # - /login <password>
             if self._password and not self._authme_logged_in:
-                if '/login' in msg or 'login' in msg or '/register' in msg:
+                should_login = False
+
+                # 关键词匹配 (更严格)
+                if "/login" in msg_lower or "/register" in msg_lower:
+                    # 排除玩家聊天 (简单的启发式：如果不包含冒号，或者是系统消息格式)
+                    # Mineflayer 的 message 对象通常是 ChatMessage，str(message) 得到纯文本
+                    # 这是一个简化的判断，防止玩家通过聊天诱骗 Bot 发送密码
+                    if ":" not in msg:
+                        should_login = True
+                    # 如果是常见的服务器提示格式
+                    elif "please" in msg_lower or "use" in msg_lower or "command" in msg_lower:
+                        should_login = True
+
+                if should_login:
                     logger.info(f"AuthMe prompt detected, sending login...")
                     try:
                         self._bot.chat(f"/login {self._password}")
