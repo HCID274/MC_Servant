@@ -137,3 +137,26 @@ class BehaviorRules:
         """获取错误码的级别覆盖配置"""
         return self._error_code_overrides.get(error_code)
 
+    # ========================================================================
+    # Phase 3+: 瞬态错误判定
+    # ========================================================================
+
+    # 瞬态错误: 可能因环境波动导致，值得本地重试
+    TRANSIENT_ERROR_CODES = {
+        "TIMEOUT",
+        "PATH_INTERRUPTED",
+        "ENTITY_NOT_FOUND",
+        "BLOCK_NOT_FOUND",
+        "INVENTORY_FULL",
+    }
+
+    def is_transient_error(self, error_code: str) -> bool:
+        """判断错误码是否为瞬态错误（值得本地重试）"""
+        if not error_code:
+            return False
+        return error_code.upper() in self.TRANSIENT_ERROR_CODES
+
+    @property
+    def max_retries_per_action(self) -> int:
+        """每个动作的最大重试次数"""
+        return self.thresholds.max_action_retries_l1

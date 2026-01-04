@@ -25,6 +25,14 @@ class TaskStatus(Enum):
     FAILED = "failed"             # 失败
 
 
+class TaskResultStatus(Enum):
+    """任务结果状态枚举"""
+    SUCCESS = "success"              # 成功完成
+    FAILED = "failed"                # 失败
+    WAITING_FOR_USER = "waiting"     # 等待用户回复
+    CANCELLED = "cancelled"          # 被取消
+
+
 class TaskType(Enum):
     """
     任务类型枚举 - 决定使用哪个 Runner 执行
@@ -144,6 +152,7 @@ class TaskResult:
     completed_steps: List["ActionResult"] = field(default_factory=list)
     failed_step: Optional["ActionResult"] = None
     message: str = ""
+    status: Optional["TaskResultStatus"] = None  # 详细状态 (用于 WAITING_FOR_USER 等)
     
     def __repr__(self) -> str:
         status = "✅" if self.success else "❌"

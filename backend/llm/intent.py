@@ -197,12 +197,13 @@ class IntentRecognizer(IIntentRecognizer):
             
         except Exception as e:
             logger.error(f"Intent recognition failed: {e}")
-            # 降级处理：返回 CHAT 意图
-            return Intent.CHAT, {
+            fallback_intent = self.recognize_simple(user_input)
+            return fallback_intent, {
                 "confidence": 0.0,
                 "entities": {},
                 "reason": f"LLM 调用失败: {str(e)}",
                 "fallback": True,
+                "fallback_intent": fallback_intent.value,
             }
     
     def recognize_simple(self, user_input: str) -> Intent:
@@ -228,13 +229,29 @@ class IntentRecognizer(IIntentRecognizer):
         # 守卫相关关键词
         if any(kw in text for kw in ["守", "护", "巡逻", "保护", "看守"]):
             return Intent.GUARD
+
+        # 移动/导航相关关键词
+        if any(kw in text for kw in ["过来", "到我", "到我这", "到这", "来这", "来这里", "跟我来", "跟我", "跟着", "跟随", "回家", "靠近", "goto", "go to", "come here"]):
+            return Intent.GOTO
+
+        # 合成相关关键词
+        if any(kw in text for kw in ["合成", "制作", "打造", "craft"]):
+            return Intent.CRAFT
+
+        # 给予相关关键词
+        if any(kw in text for kw in ["给我", "给你", "给他", "交给", "递给", "丢给", "送给", "give"]):
+            return Intent.GIVE
         
         # 状态查询
         if any(kw in text for kw in ["在哪", "位置", "状态", "干嘛", "在做什么"]):
             return Intent.STATUS
         
+        # 停止任务
+        if any(kw in text for kw in ["停止", "停下", "暂停", "别干"]):
+            return Intent.STOP
+
         # 取消任务
-        if any(kw in text for kw in ["停", "取消", "别", "不要", "算了"]):
+        if any(kw in text for kw in ["取消", "别", "不要", "算了"]):
             return Intent.CANCEL
         
         # 默认为闲聊

@@ -1,0 +1,3 @@
+Keep actions simple and safe.
+If stuck, consider "unstuck" or "look_around" before retrying.
+Never change the user's target silently; ask to clarify instead.

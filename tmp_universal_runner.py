@@ -1,7 +1,14 @@
+﻿# UniversalRunner - Phase 3 MVP 统一执行器
+#
+# 核心设计:
+# 1. 通过 planner.act() 产出宏动作 (LLM 决策 What)
+# 2. 使用 KB-only Resolver 解析语义概念 (tree → logs → oak_log)
+# 3. 调用现有 BotActions 执行 (Python 执行 How)
+# 4. L1/L2 静默恢复，L3 上报 LLM
+# 5. 非 LLM 完成判据: craft/give/goto 有明确完成条件，不完全依赖 LLM done
 
 import asyncio
 import logging
-import json
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 
 from .interfaces import (
@@ -12,24 +19,18 @@ from .interfaces import (
     RunContext,
     ITaskRunner,
     ITaskPlanner,
-    TaskResultStatus
 )
 from .behavior_rules import BehaviorRules
 from .recovery_interfaces import (
     IRecoveryCoordinator,
+    RecoveryDecision,
     RecoveryLevel,
     RecoveryActionType,
-)
-from .recovery_planner import (
-    RecoveryDecision,
-    RecoveryDecisionType,
-    RecoveryContext,
 )
 
 if TYPE_CHECKING:
     from ..bot.interfaces import IBotActions, ActionResult
     from ..perception.knowledge_base import JsonKnowledgeBase
-    from .recovery_planner import IRecoveryPlanner
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +51,8 @@ class KBOnlyResolver:
             kb: 知识库实例 (可选，默认使用全局单例)
         """
         if kb is None:
-            # 延迟导入以避免循环依赖
-            try:
-                from ..perception.knowledge_base import get_knowledge_base
-                kb = get_knowledge_base()
-            except ImportError:
-                pass
+            from ..perception.knowledge_base import get_knowledge_base
+            kb = get_knowledge_base()
         self._kb = kb
     
     def resolve_concept(self, concept: str) -> str:
@@ -68,9 +65,6 @@ class KBOnlyResolver:
         Returns:
             标准概念名或第一个候选 ID
         """
-        if not self._kb:
-            return concept
-            
         # 1. 尝试解析别名
         resolved = self._kb.resolve_alias(concept)
         
@@ -90,8 +84,6 @@ class KBOnlyResolver:
     
     def get_candidates(self, concept: str) -> List[str]:
         """获取概念对应的全部候选 ID"""
-        if not self._kb:
-            return []
         resolved = self._kb.resolve_alias(concept)
         return self._kb.get_candidates(resolved)
 
@@ -108,23 +100,23 @@ class UniversalRunner(ITaskRunner):
        - craft: 动作成功即完成
        - give: 动作成功即完成
        - goto: 动作成功即完成
-    4. 失败恢复: 瞬态错误本地重试，持久错误交给 LLM
+    4. 静默恢复: L1/L2 由 RecoveryCoordinator 处理，L3 上报 LLM
     """
     
     def __init__(
         self,
         rules: Optional[BehaviorRules] = None,
-        recovery_planner: Optional["IRecoveryPlanner"] = None,
+        recovery: Optional[IRecoveryCoordinator] = None,
     ):
         """
         初始化 UniversalRunner
         
         Args:
             rules: 行为规则配置
-            recovery_planner: LLM 恢复规划器 (可选)
+            recovery: 恢复协调器 (可选)
         """
         self._rules = rules or BehaviorRules()
-        self._recovery_planner = recovery_planner
+        self._recovery = recovery
         self._resolver = KBOnlyResolver()  # 使用轻量级 KB-only Resolver
     
     @property
@@ -166,50 +158,13 @@ class UniversalRunner(ITaskRunner):
         gather_target_count: Optional[int] = None
         gather_start_count: Optional[int] = None
         
-        # Recovery state (per-action signature)
+        # ✅ Q3: L1 RETRY_SAME 微重试 - 缓存当前动作
         cached_action: Optional[ActionStep] = None
-        pending_step: Optional[ActionStep] = None
-        last_signature: Optional[str] = None
-        attempt_count: int = 0
-        llm_recovery_used: bool = False
-
-        recovery_snapshot = None
-        if isinstance(task.context, dict):
-            recovery_snapshot = task.context.pop("recovery_snapshot", None)
-
-        if context.user_reply and recovery_snapshot and self._recovery_planner:
-            recovery_result = await self._recover_from_user_reply(
-                task_goal=task.goal or "",
-                user_reply=context.user_reply,
-                snapshot=recovery_snapshot,
-            )
-            if recovery_result.get("clarify"):
-                message = recovery_result.get("message", "需要澄清")
-                if message:
-                    await actions.chat(message)
-                return TaskResult(
-                    success=False,
-                    task_description=task.goal,
-                    completed_steps=completed_steps,
-                    failed_step=last_result,
-                    message=message,
-                    status=TaskResultStatus.WAITING_FOR_USER,
-                )
-            if recovery_result.get("abort"):
-                return TaskResult(
-                    success=False,
-                    task_description=task.goal,
-                    completed_steps=completed_steps,
-                    failed_step=last_result,
-                    message=recovery_result.get("reason", "任务终止")
-                )
-            if recovery_result.get("next_step"):
-                pending_step = recovery_result["next_step"]
+        retry_same_count: int = 0
+        max_retry_same: int = 2  # L1 直接重试最多 2 次
         
         # 任务类型检测
         is_tree_intent = self._is_tree_task(task)
-        tree_single_goal = is_tree_intent and self._is_single_tree_goal(task.goal or "")
-        tree_done = False
         
         # 🔴 修复: 仅当任务是「纯单步」时才启用非LLM完成判据
         # 复合任务 (如 "做点木板给我") 必须依赖 LLM 的 done=true
@@ -257,11 +212,11 @@ class UniversalRunner(ITaskRunner):
                 }
             
             # 2. Act: 通过 planner.act() 决策
-            if pending_step is not None:
-                step = pending_step
-                pending_step = None
-                done = False
-                done_message = ""
+            # ✅ Q3: 如果是 RETRY_SAME，跳过 LLM 调用，直接使用缓存动作
+            if cached_action is not None and retry_same_count > 0:
+                step = cached_action
+                logger.debug(f"[UniversalRunner] L1 Micro-retry #{retry_same_count}, reusing cached action: {step.action}")
+                retry_same_count -= 1  # 消耗一次重试机会
             else:
                 try:
                     step, done, done_message = await planner.act(
@@ -278,7 +233,7 @@ class UniversalRunner(ITaskRunner):
                         failed_step=last_result,
                         message=f"决策失败: {str(e)}"
                     )
-
+                
                 # LLM 声明完成
                 if done:
                     return TaskResult(
@@ -289,25 +244,6 @@ class UniversalRunner(ITaskRunner):
                     )
             
             # 3. Normalize: 参数归一化
-            if tree_single_goal and tree_done:
-                allow_give_flow = self._is_give_task(task)
-                if allow_give_flow:
-                    if step.action not in ("goto", "give"):
-                        return TaskResult(
-                            success=True,
-                            task_description=task.goal,
-                            completed_steps=completed_steps,
-                            message="Single-tree task complete"
-                        )
-                else:
-                    if step.action != "give":
-                        return TaskResult(
-                            success=True,
-                            task_description=task.goal,
-                            completed_steps=completed_steps,
-                            message="Single-tree task complete"
-                        )
-
             step = self._normalize_step(step, context, task.goal or "")
             
             # 4. 智能转换: tree → mine_tree (仅当没有指定 count 或 count == 1)
@@ -318,18 +254,8 @@ class UniversalRunner(ITaskRunner):
                     search_center = self._resolve_search_center(step, context, task.goal or "")
                     step = self._convert_to_mine_tree(step, context, search_center)
             
-            # 4.5 计算动作签名 (归一化参数后)
-            signature = self._compute_action_signature(step)
-            if signature != last_signature:
-                last_signature = signature
-                attempt_count = 0
-                llm_recovery_used = False
-
-            # 缓存当前动作供重试
+            # ✅ Q3: 缓存当前动作供微重试
             cached_action = step
-
-            # 记录本次尝试
-            attempt_count += 1
             
             # 报告进度
             if context.on_progress:
@@ -343,29 +269,16 @@ class UniversalRunner(ITaskRunner):
             last_result = result
             
             # 保存 scan 结果
-            if result.action in ("scan", "look_around") and result.success and isinstance(result.data, dict):
+            if result.action == "scan" and result.success and isinstance(result.data, dict):
                 last_scan = result.data
             
             # 6. Reflect: 处理结果
             if result.success:
                 completed_steps.append(result)
                 
-                if tree_single_goal and is_tree_intent and step.action in ("mine_tree", "mine"):
-                    tree_done = True
-                if tree_single_goal and tree_done and step.action == "give":
-                    return TaskResult(
-                        success=True,
-                        task_description=task.goal,
-                        completed_steps=completed_steps,
-                        message="Single-tree task complete"
-                    )
-                
-                # 成功后清空缓存与计数
+                # ✅ Q3: 成功后清空缓存和重试计数
                 cached_action = None
-                pending_step = None
-                attempt_count = 0
-                last_signature = None
-                llm_recovery_used = False
+                retry_same_count = 0
                 
                 # 🔴 修复: 仅对「纯单步」任务启用非LLM完成判据
                 # 复合任务必须依赖 LLM done=true，避免提前终止
@@ -377,62 +290,45 @@ class UniversalRunner(ITaskRunner):
                         message=f"{step.action} 完成"
                     )
                 
+                # 重置恢复计数器
+                if self._recovery:
+                    self._recovery.reset()
             else:
                 logger.warning(f"[UniversalRunner] Step failed: {result.action} - {result.message}")
                 
-                recovery_result = await self._handle_failure(
-                    result=result,
-                    tick=tick,
-                    actions=actions,
-                    context=context,
-                    cached_action=cached_action,
-                    bot_state=bot_state,
-                    completed_steps=completed_steps,
-                    attempt_count=attempt_count,
-                    task_goal=task.goal or "",
-                    llm_recovery_used=llm_recovery_used,
-                )
-
-                if recovery_result.get("llm_used"):
-                    llm_recovery_used = True
-
-                if recovery_result.get("retry_same"):
-                    pending_step = cached_action
-                    continue
-
-                if recovery_result.get("next_step"):
-                    pending_step = recovery_result["next_step"]
-                    continue
-
-                if recovery_result.get("clarify"):
-                    message = recovery_result.get("message", "需要澄清")
-                    if isinstance(task.context, dict):
-                        task.context["recovery_snapshot"] = {
-                            "last_action": cached_action,
-                            "last_result": result,
-                            "bot_state": bot_state,
-                            "completed_steps": completed_steps[-5:],
-                            "attempt_count": attempt_count,
-                        }
-                    if message:
-                        await actions.chat(message)
-                    return TaskResult(
-                        success=False,
-                        task_description=task.goal,
-                        completed_steps=completed_steps,
-                        failed_step=result,
-                        message=message,
-                        status=TaskResultStatus.WAITING_FOR_USER,
+                # L1/L2/L3 Recovery
+                if self._recovery:
+                    recovery_result = await self._handle_failure(
+                        result=result,
+                        tick=tick,
+                        actions=actions,
+                        context=context,
+                        cached_action=cached_action,  # ✅ Q3: 传入缓存动作
                     )
-
-                if recovery_result.get("abort"):
-                    return TaskResult(
-                        success=False,
-                        task_description=task.goal,
-                        completed_steps=completed_steps,
-                        failed_step=result,
-                        message=recovery_result.get("reason", "任务终止")
-                    )
+                    
+                    # ✅ Q3: 检查是否需要微重试
+                    if recovery_result.get("retry_same"):
+                        retry_same_count = recovery_result.get("retry_count", max_retry_same)
+                        logger.debug(f"[UniversalRunner] L1 RETRY_SAME triggered, retries={retry_same_count}")
+                        continue  # 直接进入下一个 tick，跳过后续处理
+                    
+                    if recovery_result.get("blocked"):
+                        return TaskResult(
+                            success=False,
+                            task_description=task.goal,
+                            completed_steps=completed_steps,
+                            failed_step=result,
+                            message=recovery_result.get("reason", "任务被阻塞")
+                        )
+                    
+                    if recovery_result.get("push_stack"):
+                        return TaskResult(
+                            success=False,
+                            task_description=task.goal,
+                            completed_steps=completed_steps,
+                            failed_step=result,
+                            message=f"PUSH_STACK:{recovery_result.get('stack_task_goal', 'goto_owner')}"
+                        )
         
         return TaskResult(
             success=False,
@@ -479,42 +375,22 @@ class UniversalRunner(ITaskRunner):
         goal = (task.goal or "").lower()
         return ("树" in goal and ("砍" in goal or "伐" in goal)) or \
                ("tree" in goal and ("chop" in goal or "cut" in goal or "mine" in goal))
-
-    def _is_single_tree_goal(self, task_goal: str) -> bool:
-        """Heuristic: user wants exactly one tree."""
-        goal = (task_goal or "").lower()
-        if not goal:
-            return False
-        single_keywords = [
-            "一棵", "这棵", "那棵", "1棵",
-            "个树", "颗树", "single tree", "this tree", "that tree", "one tree"
-        ]
-        if any(kw in goal for kw in single_keywords):
-            return True
-        multi_keywords = [
-            "些树", "片树", "林", "多树",
-            "砍光", "清理",
-            "2棵", "3棵", "4棵", "5棵", "many trees", "forest"
-        ]
-        if any(kw in goal for kw in multi_keywords):
-            return False
-        return False
-
+    
     def _is_give_task(self, task: StackTask) -> bool:
         """检测是否是交付任务"""
         goal = (task.goal or "").lower()
         return "给" in goal or "give" in goal or "交" in goal
-
+    
     def _is_craft_task(self, task: StackTask) -> bool:
         """检测是否是合成任务"""
         goal = (task.goal or "").lower()
         return "合成" in goal or "做" in goal or "craft" in goal or "make" in goal
-
+    
     def _is_goto_task(self, task: StackTask) -> bool:
         """检测是否是导航任务"""
         goal = (task.goal or "").lower()
-        return "去" in goal or "来" in goal or "过来" in goal or "goto" in goal or "go to" in goal
-
+        return "来" in goal or "过来" in goal or "goto" in goal or "go to" in goal
+    
     def _parse_gather_spec(self, task: StackTask) -> tuple:
         """解析采集规格 (item_id, count)"""
         # 从 context 读取
@@ -536,15 +412,6 @@ class UniversalRunner(ITaskRunner):
                     pass
         
         return None, None
-
-    def _compute_action_signature(self, step: ActionStep) -> str:
-        """动作签名: action + resolved params (sorted JSON)"""
-        params = step.params if isinstance(step.params, dict) else {}
-        try:
-            params_json = json.dumps(params, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-        except Exception:
-            params_json = str(params)
-        return f"{step.action}:{params_json}"
     
     def _normalize_step(self, step: ActionStep, context: RunContext, task_goal: str = "") -> ActionStep:
         """
@@ -581,45 +448,6 @@ class UniversalRunner(ITaskRunner):
             elif "item_name" in params:
                 # 即使已有 item_name，也尝试解析（以防 LLM 输出概念名）
                 params["item_name"] = self._resolver.resolve_concept(params["item_name"])
-        
-        elif action == "goto":
-            if "target" not in params:
-                if "target_position" in params:
-                    params["target"] = params.pop("target_position")
-                elif "position" in params:
-                    params["target"] = params.pop("position")
-                elif "pos" in params:
-                    params["target"] = params.pop("pos")
-                elif "player" in params:
-                    params["target"] = f"@{params.pop('player')}"
-                elif "player_name" in params:
-                    params["target"] = f"@{params.pop('player_name')}"
-            
-            if "target" in params:
-                target = params["target"]
-                if isinstance(target, dict):
-                    if all(k in target for k in ("x", "y", "z")):
-                        params["target"] = f"{int(target['x'])},{int(target['y'])},{int(target['z'])}"
-                elif isinstance(target, (list, tuple)) and len(target) == 3:
-                    try:
-                        params["target"] = f"{int(target[0])},{int(target[1])},{int(target[2])}"
-                    except Exception:
-                        pass
-                elif isinstance(target, str):
-                    lowered = target.strip().lower()
-                    if lowered in {"player", "owner", "me", "self", "@owner"}:
-                        if context.owner_name:
-                            params["target"] = f"@{context.owner_name}"
-                        elif context.owner_position:
-                            pos = context.owner_position
-                            params["target"] = f"{int(pos['x'])},{int(pos['y'])},{int(pos['z'])}"
-            
-            if "target" not in params and self._should_anchor_to_owner(task_goal):
-                if context.owner_name:
-                    params["target"] = f"@{context.owner_name}"
-                elif context.owner_position:
-                    pos = context.owner_position
-                    params["target"] = f"{int(pos['x'])},{int(pos['y'])},{int(pos['z'])}"
         
         elif action == "mine":
             # LLM: {"target": "log"} → {"block_type": "oak_log"}
@@ -772,15 +600,14 @@ class UniversalRunner(ITaskRunner):
         DEFAULT_TIMEOUTS = {
             "goto": 60.0, "mine": 120.0, "mine_tree": 120.0,
             "craft": 30.0, "place": 10.0, "give": 30.0, "equip": 5.0, "scan": 10.0,
-            "chat": 5.0, "look_around": 10.0, "unstuck": 5.0,
         }
         if "timeout_sec" in params:
             params["timeout"] = params.pop("timeout_sec")
         elif "timeout" not in params:
             params["timeout"] = DEFAULT_TIMEOUTS.get(action_name, 30.0)
         
-        # some actions do not accept timeout
-        if action_name in {"scan", "chat", "look_around"} and "timeout" in params:
+        # scan 不接受 timeout
+        if action_name == "scan" and "timeout" in params:
             params.pop("timeout")
         
         # 获取动作方法
@@ -832,133 +659,118 @@ class UniversalRunner(ITaskRunner):
     # Recovery Methods
     # ========================================================================
     
-    def _build_recovery_context(
-        self,
-        result: "ActionResult",
-        bot_state: dict,
-        completed_steps: List["ActionResult"],
-        cached_action: Optional[ActionStep],
-        attempt_count: int,
-        max_attempts: int,
-        user_reply: Optional[str],
-        task_goal: str,
-    ) -> Any:
-        # RecoveryContext 已在文件顶部导入
-        return RecoveryContext(
-            goal=task_goal,
-            task_goal=task_goal,
-            last_result=result,
-            bot_state=bot_state,
-            completed_steps=completed_steps,
-            cached_action=cached_action,
-            attempt=attempt_count,
-            max_attempts=max_attempts,
-            user_reply=user_reply,
-        )
-
-    def _default_clarify_message(self, error_code: str) -> str:
-        return f"任务遇到问题 ({error_code})，请指示怎么办喵~"
-
     async def _handle_failure(
         self,
         result: "ActionResult",
         tick: int,
         actions: "IBotActions",
         context: RunContext,
-        cached_action: Optional[ActionStep] = None,
-        bot_state: Optional[dict] = None,
-        completed_steps: Optional[List["ActionResult"]] = None,
-        attempt_count: int = 0,
-        task_goal: str = "",
-        llm_recovery_used: bool = False,
+        cached_action: Optional[ActionStep] = None,  # ✅ Q3: 缓存动作
     ) -> Dict[str, Any]:
         """
-        处理动作失败，使用 LLM Recovery Planner
+        处理动作失败，使用 RecoveryCoordinator
+        
+        ✅ Q3: 当 RETRY_SAME 时返回 retry_same 标志，由主循环执行微重试
         """
-        error_code = result.error_code or "UNKNOWN"
-        max_attempts = self._rules.max_retries_per_action
-
-        # Local retry for transient failures (Attempt 2)
-        if self._rules.is_transient_error(error_code) and attempt_count < 2:
-            logger.info(f"[Recovery] Transient error, retrying same action: {error_code}")
-            return {"retry_same": True}
-
-        if llm_recovery_used:
-            return {"clarify": True, "message": self._default_clarify_message(error_code)}
-
-        # Hard stop after max attempts
-        if attempt_count >= max_attempts:
-            return {"clarify": True, "message": self._default_clarify_message(error_code)}
-
-        if not self._recovery_planner:
-            return {"abort": True, "reason": f"恢复规划器不可用 ({error_code})"}
-
-        recovery_ctx = self._build_recovery_context(
-            result=result,
-            bot_state=bot_state or {},
-            completed_steps=completed_steps or [],
-            cached_action=cached_action,
-            attempt_count=attempt_count,
-            max_attempts=max_attempts,
-            user_reply=getattr(context, "user_reply", None),
-            task_goal=task_goal,
-        )
-
-        decision = await self._recovery_planner.recover(recovery_ctx)
+        import random
+        
+        if not self._recovery:
+            return {}
+        
+        decision = self._recovery.on_action_result(result, tick)
+        
         logger.info(
-            f"[Recovery] Decision: {decision.decision.value if decision else 'none'} "
-            f"(attempt={recovery_ctx.attempt}/{max_attempts})"
+            f"[UniversalRunner Recovery] Tick {tick}: {decision.level.value} - "
+            f"{decision.action_type.value} (failures={self._recovery.get_consecutive_failures()})"
         )
-
-        if decision.decision == RecoveryDecisionType.RETRY_SAME:
-            if not cached_action:
-                return {"clarify": True, "message": self._default_clarify_message(error_code), "llm_used": True}
-            return {"retry_same": True, "llm_used": True}
-
-        if decision.decision == RecoveryDecisionType.CLARIFY:
-            message = decision.message or self._default_clarify_message(error_code)
-            return {"clarify": True, "message": message, "llm_used": True}
-
-        if decision.decision == RecoveryDecisionType.ABORT:
-            return {"abort": True, "reason": decision.message or "任务无法继续", "llm_used": True}
         
-        if decision.decision == RecoveryDecisionType.NEW_STEP:
-            step = decision.next_step
-            # Normalize new step
-            step = self._normalize_step(step, context, task_goal)
-            return {"next_step": step, "llm_used": True}
+        # L3: 报告并阻塞
+        if decision.level == RecoveryLevel.L3_REPORT_BLOCK:
+            return {"blocked": True, "reason": decision.reason}
         
-        return {"clarify": True, "message": self._default_clarify_message(error_code), "llm_used": True}
+        # L4: 压栈执行
+        if not decision.is_inline:
+            return {
+                "push_stack": True,
+                "stack_task_goal": "goto_owner",
+                "reason": decision.reason,
+            }
+        
+        # ✅ Q3: L1 RETRY_SAME - 返回标志让主循环执行微重试
+        if decision.action_type == RecoveryActionType.RETRY_SAME:
+            logger.debug(f"[Recovery] L1: RETRY_SAME signaled, cached_action={cached_action.action if cached_action else None}")
+            return {
+                "retry_same": True,
+                "retry_count": 2,  # 最多重试 2 次
+            }
+        
+        # L1/L2 其他恢复动作: 内联执行
+        if decision.should_retry:
+            await self._execute_recovery_action(decision, actions)
+        
+        return {}
     
-    async def _recover_from_user_reply(
+    async def _execute_recovery_action(
         self,
-        task_goal: str,
-        user_reply: str,
-        snapshot: dict,
-    ) -> Dict[str, Any]:
-        """User replied context, ask planner for new step"""
-        recovery_ctx = self._build_recovery_context(
-            result=snapshot.get("last_result"),
-            bot_state=snapshot.get("bot_state", {}),
-            completed_steps=snapshot.get("completed_steps", []),
-            cached_action=snapshot.get("last_action"),
-            attempt_count=snapshot.get("attempt_count", 99),
-            max_attempts=99,
-            user_reply=user_reply,
-            task_goal=task_goal
-        )
+        decision: RecoveryDecision,
+        actions: "IBotActions"
+    ) -> None:
+        """执行内联恢复动作 (L1/L2)"""
+        import random
         
-        decision = await self._recovery_planner.recover(recovery_ctx)
+        action_type = decision.action_type
+        params = decision.params or {}
         
-        if decision.decision == RecoveryDecisionType.RETRY_SAME:
-             if snapshot.get("last_action"):
-                 return {"next_step": snapshot["last_action"]}
-             return {"clarify": True, "message": "无法重试"}
-             
-        if decision.decision == RecoveryDecisionType.NEW_STEP:
-             return {"next_step": decision.next_step}
-             
-        if decision.decision == RecoveryDecisionType.ABORT:
-             return {"abort": True, "reason": decision.message}
-             
-        return {"clarify": True, "message": decision.message or "我不理解您的指示"}
+        try:
+            if action_type == RecoveryActionType.RETRY_SAME:
+                logger.debug("[Recovery] L1: Will retry same action")
+                return
+            
+            elif action_type == RecoveryActionType.MICRO_MOVE:
+                max_delta = params.get("max_delta", 1)
+                dx = random.uniform(-max_delta, max_delta)
+                dz = random.uniform(-max_delta, max_delta)
+                
+                bot_state = actions.get_state()
+                pos = bot_state.get("position", {})
+                new_x = int(pos.get("x", 0) + dx)
+                new_y = int(pos.get("y", 64))
+                new_z = int(pos.get("z", 0) + dz)
+                
+                target = f"{new_x},{new_y},{new_z}"
+                logger.debug(f"[Recovery] L1: Micro move to {target}")
+                await actions.goto(target=target, timeout=5.0)
+            
+            elif action_type == RecoveryActionType.UNSTUCK_BACKOFF:
+                backoff = params.get("backoff_distance", 3)
+                
+                bot_state = actions.get_state()
+                pos = bot_state.get("position", {})
+                dx = random.uniform(-backoff, backoff)
+                dz = random.uniform(-backoff, backoff)
+                
+                new_x = int(pos.get("x", 0) + dx)
+                new_y = int(pos.get("y", 64))
+                new_z = int(pos.get("z", 0) + dz)
+                
+                target = f"{new_x},{new_y},{new_z}"
+                logger.debug(f"[Recovery] L2: Unstuck backoff to {target}")
+                await actions.goto(target=target, timeout=10.0)
+            
+            elif action_type == RecoveryActionType.UNSTUCK_STEP_UP:
+                bot_state = actions.get_state()
+                pos = bot_state.get("position", {})
+                
+                new_x = int(pos.get("x", 0))
+                new_y = int(pos.get("y", 64)) + 1
+                new_z = int(pos.get("z", 0))
+                
+                target = f"{new_x},{new_y},{new_z}"
+                logger.debug(f"[Recovery] L2: Unstuck step up to {target}")
+                await actions.goto(target=target, timeout=5.0)
+            
+            else:
+                logger.warning(f"[Recovery] Unknown action type: {action_type}")
+        
+        except Exception as e:
+            logger.warning(f"[Recovery] Recovery action failed: {e}")

@@ -92,7 +92,7 @@ class RunnerRegistry:
         - False (默认): GatherRunner + LinearPlanRunner
         - True: UniversalRunner (覆盖全部任务类型)
         """
-        from ...config import settings
+        from config import settings
         from ..behavior_rules import BehaviorRules
         
         registry = cls()

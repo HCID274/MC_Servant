@@ -1,4 +1,4 @@
-# MC_Servant Backend - Main Entry Point
+﻿# MC_Servant Backend - Main Entry Point
 
 """
 FastAPI + WebSocket 服务器入口
@@ -130,7 +130,7 @@ async def lifespan(app: FastAPI):
         logger.info("MineflayerActions initialized")
 
         bot_context = BotContext(
-            runtime=None,  # 稍后回填 RuntimeContext
+            runtime=None,  # ???? RuntimeContext
             executor=None,
             actions=actions,
             llm=llm_client,
@@ -166,7 +166,6 @@ async def lifespan(app: FastAPI):
                 rules=rules,
                 actor=actor,
                 resolver=resolver,
-                llm_client=llm_client,  # 🆕 Phase 3+: LLM 驱动恢复
             )
             logger.info(f"RunnerFactory initialized: {runner_factory.__class__.__name__}")
 
@@ -318,30 +317,25 @@ async def lifespan(app: FastAPI):
         
         mock_bot = MockBot()
         config_path = Path("data/bot_config.json")
-        
-        # 先创建 BotContext
-        bot_context = BotContext(
-            runtime=None,  # 稍后回填 RuntimeContext
-            executor=None, # MockBot 模式下暂不需要 Executor (或者由于没有 Java 连接无法工作)
-            actions=None,  # MockBot 暂无 Actions
-            llm=llm_client,
-        )
-
         state_machine = StateMachine(
             config_path=config_path,
             llm_client=llm_client,
             bot_controller=mock_bot,
-            bot_context=bot_context, # 传入上下文
         )
         
-        # 回填 runtime 到 BotContext
-        bot_context.runtime = state_machine._context
+        # 注入 BotContext (MockBot 模式)
+        state_machine._bot_context = BotContext(
+            runtime=state_machine._context,
+            llm=llm_client,
+        )
         
         logger.info(f"State machine initialized (MockBot): state={state_machine.current_state.name}")
         
         # 创建 WebSocket 发送回调函数 (MockBot 模式)
         async def ws_send_func(msg: dict):
             await manager.broadcast(json.dumps(msg, ensure_ascii=False))
+
+        bot_context = state_machine._bot_context
 
         def _resolve_target_player() -> Optional[str]:
             task = state_machine.context.current_task if state_machine else None

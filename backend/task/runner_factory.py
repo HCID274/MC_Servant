@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from ..perception.knowledge_base import JsonKnowledgeBase
     from .actor import LLMTaskActor
     from .action_resolver import SemanticActionResolver
+    from ..llm.interfaces import ILLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -26,40 +27,48 @@ class UniversalRunnerFactory(IRunnerFactory):
     Phase 3+ 通用 Runner 工厂
     
     所有任务都交给 UniversalRunner 处理。
-    每次 create() 都新建 Runner 和 RecoveryCoordinator 实例（任务级隔离）。
+    每次 create() 都新建 Runner 和 LLMRecoveryPlanner 实例（任务级隔离）。
     
     依赖注入：
     - rules: BehaviorRules (共享，只读配置)
+    - llm_client: ILLMClient (用于 LLM 驱动恢复)
     
     每次新建：
-    - RecoveryCoordinator (有状态，任务级隔离)
+    - LLMRecoveryPlanner (有状态，任务级隔离)
     - UniversalRunner
     """
     
-    def __init__(self, rules: Optional[BehaviorRules] = None):
+    def __init__(
+        self, 
+        rules: Optional[BehaviorRules] = None,
+        llm_client: Optional["ILLMClient"] = None,
+    ):
         """
         初始化工厂
         
         Args:
             rules: 行为规则配置 (可选，默认创建新实例)
+            llm_client: LLM 客户端 (用于 LLM 驱动恢复)
         """
         self._rules = rules or BehaviorRules()
+        self._llm_client = llm_client
         logger.info("UniversalRunnerFactory initialized")
     
     def create(self, task: StackTask) -> ITaskRunner:
         """
         为给定任务创建 UniversalRunner 实例
         
-        每次调用都新建 RecoveryCoordinator，确保任务级状态隔离。
+        每次调用都新建 LLMRecoveryPlanner，确保任务级状态隔离。
         """
         from .universal_runner import UniversalRunner
-        from .recovery_coordinator import RecoveryCoordinator
         
-        # 每次新建 RecoveryCoordinator（任务级隔离，防止失败计数跨任务累积）
-        recovery = RecoveryCoordinator(rules=self._rules)
+        recovery_planner = None
+        if self._llm_client:
+            from .llm_recovery_planner import LLMRecoveryPlanner
+            recovery_planner = LLMRecoveryPlanner(llm_client=self._llm_client)
         
         logger.debug(f"Creating UniversalRunner for task: {task.name}")
-        return UniversalRunner(rules=self._rules, recovery=recovery)
+        return UniversalRunner(rules=self._rules, recovery_planner=recovery_planner)
 
 
 class ClassicRunnerFactory(IRunnerFactory):
@@ -171,6 +180,7 @@ def create_runner_factory(
     rules: Optional[BehaviorRules] = None,
     actor: Optional["LLMTaskActor"] = None,
     resolver: Optional["SemanticActionResolver"] = None,
+    llm_client: Optional["ILLMClient"] = None,
 ) -> IRunnerFactory:
     """
     根据 Feature Flag 创建合适的 RunnerFactory
@@ -181,15 +191,16 @@ def create_runner_factory(
         rules: 行为规则配置
         actor: LLM Actor (仅 ClassicFactory 需要)
         resolver: 动作解析器 (仅 ClassicFactory 需要)
+        llm_client: LLM 客户端 (仅 UniversalFactory 需要)
         
     Returns:
         IRunnerFactory: 合适的工厂实例
     """
-    from ..config import settings
+    from config import settings
     
     if settings.use_universal_runner:
         logger.info("Feature flag enabled: using UniversalRunnerFactory")
-        return UniversalRunnerFactory(rules=rules)
+        return UniversalRunnerFactory(rules=rules, llm_client=llm_client)
     else:
         logger.info("Feature flag disabled: using ClassicRunnerFactory")
         return ClassicRunnerFactory(rules=rules, actor=actor, resolver=resolver)
