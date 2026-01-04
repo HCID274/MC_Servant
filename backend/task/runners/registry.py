@@ -88,24 +88,45 @@ class RunnerRegistry:
         """
         创建默认注册表
         
-        包含：
-        - GatherRunner: GATHER, COMBAT, FOLLOW
-        - LinearPlanRunner: CRAFT, BUILD, GOTO, GIVE
+        根据 config.use_universal_runner 切换:
+        - False (默认): GatherRunner + LinearPlanRunner
+        - True: UniversalRunner (覆盖全部任务类型)
         """
-        from .gather_runner import GatherRunner
-        from .linear_plan_runner import LinearPlanRunner
+        from ...config import settings
         from ..behavior_rules import BehaviorRules
         
         registry = cls()
         
-        # 创建 Runner 实例
-        gather_runner = GatherRunner(rules=BehaviorRules())
-        linear_runner = LinearPlanRunner(max_retries=3)
-        
-        # 自动注册
-        registry.register_for_types(gather_runner)
-        registry.register_for_types(linear_runner)
-        
-        logger.info(f"Created default RunnerRegistry with types: {[t.value for t in registry.registered_types]}")
+        if settings.use_universal_runner:
+            # Phase 3 MVP: UniversalRunner 接管全部
+            from ..universal_runner import UniversalRunner
+            from ..recovery_coordinator import RecoveryCoordinator
+            
+            # ✅ 修复 Hotfix #1: 正确初始化 RecoveryCoordinator (需要传入 rules)
+            rules = BehaviorRules()
+            recovery = RecoveryCoordinator(rules=rules)
+            universal_runner = UniversalRunner(rules=rules, recovery=recovery)
+            registry.register_for_types(universal_runner)
+            
+            logger.info(
+                f"Created UniversalRunner registry (MVP mode) with types: "
+                f"{[t.value for t in registry.registered_types]}"
+            )
+        else:
+            # Legacy: GatherRunner + LinearPlanRunner
+            from .gather_runner import GatherRunner
+            from .linear_plan_runner import LinearPlanRunner
+            
+            gather_runner = GatherRunner(rules=BehaviorRules())
+            linear_runner = LinearPlanRunner(max_retries=3)
+            
+            registry.register_for_types(gather_runner)
+            registry.register_for_types(linear_runner)
+            
+            logger.info(
+                f"Created default RunnerRegistry with types: "
+                f"{[t.value for t in registry.registered_types]}"
+            )
         
         return registry
+

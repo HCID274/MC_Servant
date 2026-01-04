@@ -341,8 +341,11 @@ class TaskExecutor(ITaskExecutor):
         """
         执行单个栈任务
         
-        优先使用 RunnerRegistry 分发任务（策略模式）
-        如果任务没有 task_type 或 Runner 不可用，回退到旧逻辑
+        路由逻辑:
+        1. Feature flag 开启 → 全部走 UniversalRunner
+        2. task.task_type 已设置 → 走对应 Runner
+        3. _should_use_tick_loop → 走 GatherRunner
+        4. 其他 → 旧的线性 plan 逻辑
         
         Args:
             task: 栈任务
@@ -350,6 +353,20 @@ class TaskExecutor(ITaskExecutor):
         Returns:
             TaskResult: 任务执行结果
         """
+        from ..config import settings
+        
+        # Feature flag: 全部走 UniversalRunner
+        if settings.use_universal_runner:
+            # UniversalRunner 覆盖全部类型，通过 get_or_default 获取
+            runner = self._registry.get_or_default(task.task_type, TaskType.GATHER)
+            if runner is not None:
+                context = RunContext(
+                    owner_name=self._owner_name,
+                    owner_position=self._owner_position,
+                    on_progress=self._on_progress,
+                )
+                return await runner.run(task, self._actions, self._planner, context)
+        
         # 优先使用 RunnerRegistry（策略模式）
         if task.task_type is not None:
             runner = self._registry.get(task.task_type)

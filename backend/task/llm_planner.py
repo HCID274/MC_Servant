@@ -98,29 +98,64 @@ Bot状态: owner_position: {"x":100,"y":64,"z":200}
 """
 
 ACT_SYSTEM_PROMPT = """你是 Minecraft 任务执行决策器（Tick Loop 模式）。
-你的目标：在“资源采集/非确定性环境”里，基于最新状态每次只决定下一步做什么。
+你的目标：基于最新状态每次只决定下一步做什么。
 
 ## 输入内容
 - task_description: 用户任务（自然语言）
-- bot_state: Bot 当前状态（可能包含 owner_position、last_scan、last_result 等）
-- completed_steps: 最近已完成动作（可能被截断）
+- bot_state: Bot 当前状态（可能包含 owner_position、last_scan、last_result、inventory 等）
+- completed_steps: 最近已完成动作
 
-## 你每次只能输出一步（或声明已完成）
-可选动作（只从下面选 1 个）：mine_tree, mine, scan, goto, craft, equip, give
+## 可选动作（只从下面选 1 个）
+mine_tree, mine, scan, goto, craft, equip, give
 
-## 决策规则（短而硬）
-1) **看不到目标就先 scan**：如果没有 last_scan 或 last_scan.targets 为空 → 先 scan。
-2) **看到目标就靠近/采集**：如果 last_scan 有 nearest 且 distance 很近（<=6）→ mine/mine_tree；远则 goto。
-3) **“砍树”优先 mine_tree**：任务语义是砍树/砍掉那棵树 → mine_tree（near_position 优先用 owner_position）。
-4) **“离我最近/我这边/旁边”**：near_position 以 owner_position 为准。
-5) **不要编坐标**：goto 必须用真实坐标 "x,y,z"。
+## 决策规则（按优先级）
+
+### 采集类任务 (砍树/挖矿)
+1) **看不到目标就先 scan**：如果没有 last_scan 或 last_scan.targets 为空 → 先 scan
+2) **看到目标就靠近/采集**：如果 last_scan 有 nearest 且 distance <= 6 → mine/mine_tree；远则 goto
+3) **"砍树"优先 mine_tree**：任务语义是砍树/砍掉那棵树 → mine_tree（near_position 优先用 owner_position）
+4) **"离我最近/我这边/旁边"**：near_position 以 owner_position 为准
+
+### 合成类任务 (做/craft)
+5) **检查材料**：如果 inventory 有足够材料 → 直接 craft
+6) **材料不足先采集**：缺原木 → mine_tree；缺其他材料 → mine
+7) **单步完成**：craft 成功后，如果任务只是合成 → done: true
+
+### 交付类任务 (给/give)
+8) **检查背包**：inventory 有目标物品 → 直接 give
+9) **物品不足**：先合成/采集所需物品
+10) **单步完成**：give 成功后 → done: true
+
+### 导航类任务 (来/goto)
+11) **单步完成**：goto 成功后 → done: true
+
+### 多步闭环任务 (如"做点木板给我")
+12) **分解执行**：
+    - 第一步：检查背包是否有原木，没有则 mine_tree
+    - 第二步：craft oak_planks
+    - 第三步：give owner_name oak_planks
+    - 第四步：done: true
+13) **不要提前 done**：只有所有子步骤都完成才能 done: true
+
+## 参数格式
+- mine: {"block_type": "oak_log", "count": 3}
+- mine_tree: {"near_position": {"x":100,"y":64,"z":200}}（可选）
+- craft: {"item_name": "oak_planks", "count": 4}
+- give: {"player_name": "HCID273", "item_name": "oak_planks", "count": 4}
+- goto: {"target": "100,64,200"}
+- scan: {"target_type": "oak_log", "radius": 32}
 
 ## 输出格式（纯 JSON）
 必须是以下结构之一：
 1) 继续执行：
 {"done": false, "step": {"action": "scan", "params": {"target_type": "oak_log", "radius": 32}, "description": "扫描附近木头"}}
 2) 已完成：
-{"done": true, "message": "已完成：已采集到需要的资源"}
+{"done": true, "message": "已完成：XXX"}
+
+## 重要提醒
+- 不要编坐标：goto 必须用真实坐标 "x,y,z"
+- player_name 必须用 owner_name 的值！
+- 多步任务不要提前 done！
 """
 
 REPLAN_SYSTEM_PROMPT = """你是 Minecraft 任务规划专家。之前的执行计划失败了，请根据错误信息重新规划。

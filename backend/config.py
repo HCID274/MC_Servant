@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     ws_access_token: str = ""  # WebSocket 访问 Token（必填）
     ws_heartbeat_timeout_seconds: int = 30  # 心跳超时阈值（秒）
 
+    # UniversalRunner 实验性开关
+    use_universal_runner: bool = False  # 启用 UniversalRunner (Phase 3 MVP)
+    
     # PostgreSQL 数据库配置
     db_host: str = "localhost"
     db_port: int = 5432
