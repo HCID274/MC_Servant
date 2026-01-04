@@ -13,6 +13,7 @@ FastAPI + WebSocket 服务器入口
 import asyncio
 import logging
 import json
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -26,6 +27,7 @@ from bot.mineflayer_adapter import BotManager
 from protocol import NpcResponse, MessageType
 from bot.lifecycle_manager import BotLifecycleManager
 from state.context import BotContext
+from text_utils import split_to_segments
 
 # 配置日志
 logging.basicConfig(
@@ -262,7 +264,6 @@ async def lifespan(app: FastAPI):
             if not target_player:
                 logger.debug("No target player for chat message, skipping send")
                 return
-            from websocket.handlers import split_to_segments
             response = NpcResponse(
                 npc=bot_config.bot_name,
                 target_player=target_player,
@@ -369,7 +370,6 @@ async def lifespan(app: FastAPI):
             if not target_player:
                 logger.debug("No target player for chat message, skipping send")
                 return
-            from websocket.handlers import split_to_segments
             response = NpcResponse(
                 npc=state_machine.config.bot_name,
                 target_player=target_player,
@@ -574,8 +574,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
 async def send_init_config(websocket: WebSocket):
     """发送初始化配置给 Java 插件（含 owner 同步）"""
-    import time
-    
     # 等待 Java 客户端完全准备好
     await asyncio.sleep(0.5)
     
@@ -613,8 +611,6 @@ async def send_init_config(websocket: WebSocket):
 
 async def send_request_sync(websocket: WebSocket):
     """发送同步请求给 Java 插件 (Cold Start Sync)"""
-    import time
-    
     # 请求 Java 端发送当前在线玩家列表
     request_msg = {
         "type": "request_sync",

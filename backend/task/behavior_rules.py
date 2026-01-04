@@ -13,6 +13,7 @@ class BehaviorThresholds:
     goto_owner_reached_distance: int = 5
     default_search_radius: int = 24
     default_gather_count: int = 32
+    default_max_ticks: int = 20  # 采集任务的最大 tick 数
     max_action_retries_l1: int = 3
     max_l1_failures_before_unstuck_l2: int = 3
 
@@ -56,6 +57,7 @@ class BehaviorRules:
                 goto_owner_reached_distance=int(t.get("goto_owner_reached_distance", self.thresholds.goto_owner_reached_distance)),
                 default_search_radius=int(t.get("default_search_radius", self.thresholds.default_search_radius)),
                 default_gather_count=int(t.get("default_gather_count", self.thresholds.default_gather_count)),
+                default_max_ticks=int(t.get("default_max_ticks", self.thresholds.default_max_ticks)),
                 max_action_retries_l1=int(t.get("max_action_retries_l1", self.thresholds.max_action_retries_l1)),
                 max_l1_failures_before_unstuck_l2=int(
                     t.get("max_l1_failures_before_unstuck_l2", self.thresholds.max_l1_failures_before_unstuck_l2)

@@ -571,121 +571,150 @@ class MineflayerActions(IBotActions):
                     logger.debug(f"[mine_tree] Error checking block at ({x},{y},{z}): {e}")
                     continue
                 
-                # 使用 collectblock 插件挖掘（自动处理导航和工具选择）
+                # 计算到方块的距离
+                bot_pos = self._bot.entity.position
+                distance = ((bot_pos.x - x) ** 2 + (bot_pos.y - y) ** 2 + (bot_pos.z - z) ** 2) ** 0.5
+                
                 try:
-                    # 关键：不要把 Python 回调传给 JS（会触发桥接层 len(function) 并导致 Node uncaughtException）
-                    # 这里复用 mine() 里的成熟模式：无回调调用 collect()，在 Python 侧轮询 inventory/方块是否消失。
-
                     last_err = None
                     mined_this_log = False
+                    inventory_before = self._get_inventory_count(first_log_type)
+                    
+                    import threading  # 提前导入，确保在所有 dig 调用中可用
 
                     for attempt in range(1, MAX_COLLECT_RETRIES + 1):
-                        # 清理旧 goal，避免 pathfinder 因残留目标卡住
-                        try:
-                            self._bot.pathfinder.stop()
-                        except Exception:
-                            pass
-
-                        # 重试前先尝试靠近（GoalNear 比 collectBlock 的“找可挖点”更宽松）
-                        if attempt > 1:
+                        # 重新获取方块（可能已经掉落）
+                        block = self._bot.blockAt(self._Vec3(x, y, z))
+                        if not block or block.name != first_log_type:
+                            mined_this_log = True  # 方块消失了，视为成功
+                            break
+                        
+                        # 重新计算距离
+                        bot_pos = self._bot.entity.position
+                        distance = ((bot_pos.x - x) ** 2 + (bot_pos.y - y) ** 2 + (bot_pos.z - z) ** 2) ** 0.5
+                        
+                        # 方案 A: 优先使用 bot.dig() 直接挖掘
+                        # Minecraft 触及距离约 4.5 格（保守值，避免空挖）
+                        dig_attempted = False
+                        if distance <= 5.0:
+                            # 在触及范围内，直接挖掘
+                            logger.debug(f"[mine_tree] Direct dig at ({x},{y},{z}), distance={distance:.1f}")
+                            dig_attempted = True
                             try:
-                                await self._navigate_to_block(x, y, z)
-                            except Exception:
-                                pass
-
-                        inventory_before = self._get_inventory_count(first_log_type)
-                        last_inventory_check = inventory_before
-
-                        # 尝试预先装备工具（collectBlock 也会处理，但这里提前做一次更稳）
-                        try:
-                            await asyncio.wait_for(
-                                asyncio.get_event_loop().run_in_executor(
-                                    None,
-                                    lambda: self._bot.tool.equipForBlock(block)
-                                ),
-                                timeout=5.0
-                            )
-                        except Exception as e:
-                            logger.debug(f"[mine_tree] Auto-equip tool failed: {e}")
-
-                        collect_done = False
-                        collect_error = None
-
-                        def do_collect():
-                            nonlocal collect_done, collect_error
-                            try:
-                                if self._shutdown_requested:
-                                    return
-                                self._bot.collectBlock.collect(block)
-                                collect_done = True
+                                # 装备工具
+                                try:
+                                    self._bot.tool.equipForBlock(block)
+                                except Exception:
+                                    pass
+                                
+                                # 直接挖掘 (同步调用，在线程中执行)
+                                dig_done = False
+                                dig_error = None
+                                
+                                def do_dig():
+                                    nonlocal dig_done, dig_error
+                                    try:
+                                        if self._shutdown_requested:
+                                            return
+                                        self._bot.dig(block)
+                                        dig_done = True
+                                    except Exception as e:
+                                        dig_error = e
+                                
+                                dig_thread = threading.Thread(target=do_dig, daemon=True, name=f"dig_{x}_{y}_{z}")
+                                self._track_thread(dig_thread)
+                                dig_thread.start()
+                                
+                                # 等待挖掘完成（最多10秒）
+                                dig_start = time.time()
+                                while not dig_done and dig_error is None and (time.time() - dig_start < 10):
+                                    await asyncio.sleep(0.3)
+                                
+                                # 检查方块是否真的被破坏
+                                await asyncio.sleep(0.2)
+                                check_block = self._bot.blockAt(self._Vec3(x, y, z))
+                                if not check_block or check_block.name != first_log_type:
+                                    collected += 1
+                                    mined_this_log = True
+                                    logger.debug(f"[mine_tree] Successfully dug log at ({x},{y},{z})")
+                                    break
+                                else:
+                                    # 挖掘调用成功但方块没消失 → 距离太远，需要移动
+                                    logger.debug(f"[mine_tree] Dig completed but block still exists at ({x},{y},{z}) - moving closer")
+                                    dig_attempted = False  # 标记需要移动
+                                
+                                if dig_error:
+                                    last_err = dig_error
+                                    logger.debug(f"[mine_tree] Dig error at ({x},{y},{z}): {dig_error}")
+                                    
                             except Exception as e:
-                                collect_error = e
-
-                        import threading
-                        tree_thread = threading.Thread(target=do_collect, daemon=True, name=f"collect_tree_{x}_{y}_{z}")
-                        self._track_thread(tree_thread)
-                        tree_thread.start()
-
-                        collect_start = time.time()
-                        while (not collect_done) and collect_error is None and (time.time() - collect_start < COLLECT_WAIT_SEC):
-                            await asyncio.sleep(1.0)
-                            # inventory 变化用于判断是否已有收益
+                                last_err = e
+                                logger.debug(f"[mine_tree] Direct dig failed at ({x},{y},{z}): {e}")
+                        
+                        # 如果没挖成功（距离太远 或 dig后方块没消失），需要先移动
+                        if not mined_this_log:
+                            logger.debug(f"[mine_tree] Need to move closer to ({x},{y},{z}), distance={distance:.1f}, dig_attempted={dig_attempted}")
                             try:
-                                current_inventory = self._get_inventory_count(first_log_type)
-                                if current_inventory > last_inventory_check:
-                                    last_inventory_check = current_inventory
-                            except Exception:
-                                pass
-
-                        inventory_after = self._get_inventory_count(first_log_type)
-                        actually_collected = inventory_after - inventory_before
-
-                        # 再检查一下方块是否已经被挖掉（比“乐观 +1”更可靠）
-                        block_removed = False
-                        try:
-                            await asyncio.sleep(0.2)
-                            now_block = self._bot.blockAt(self._Vec3(x, y, z))
-                            if not now_block or now_block.name != first_log_type:
-                                block_removed = True
-                        except Exception:
-                            pass
-
-                        if collect_error is not None:
-                            last_err = collect_error
-                            err_str = str(collect_error)
-                            logger.warning(f"[mine_tree] Collect error at ({x},{y},{z}) attempt {attempt}/{MAX_COLLECT_RETRIES}: {collect_error}")
-
-                            # 针对典型超时：重试即可
-                            if ("Took to long to decide path" in err_str or "noPathListener" in err_str or "No path" in err_str) and attempt < MAX_COLLECT_RETRIES:
-                                await asyncio.sleep(0.5 * attempt)
-                                continue
+                                # 清理旧目标
+                                try:
+                                    self._bot.pathfinder.stop()
+                                except Exception:
+                                    pass
+                                
+                                # 移动到方块附近
+                                await self._navigate_to_block(x, y, z)
+                                await asyncio.sleep(0.3)
+                                
+                                # 再次尝试直接挖掘
+                                block = self._bot.blockAt(self._Vec3(x, y, z))
+                                if block and block.name == first_log_type:
+                                    try:
+                                        self._bot.tool.equipForBlock(block)
+                                    except Exception:
+                                        pass
+                                    
+                                    dig_done = False
+                                    dig_error = None
+                                    
+                                    def do_dig2():
+                                        nonlocal dig_done, dig_error
+                                        try:
+                                            if self._shutdown_requested:
+                                                return
+                                            self._bot.dig(block)
+                                            dig_done = True
+                                        except Exception as e:
+                                            dig_error = e
+                                    
+                                    dig_thread = threading.Thread(target=do_dig2, daemon=True, name=f"dig2_{x}_{y}_{z}")
+                                    self._track_thread(dig_thread)
+                                    dig_thread.start()
+                                    
+                                    dig_start = time.time()
+                                    while not dig_done and dig_error is None and (time.time() - dig_start < 10):
+                                        await asyncio.sleep(0.3)
+                                    
+                                    if dig_done:
+                                        await asyncio.sleep(0.2)
+                                        check_block = self._bot.blockAt(self._Vec3(x, y, z))
+                                        if not check_block or check_block.name != first_log_type:
+                                            collected += 1
+                                            mined_this_log = True
+                                            break
+                                    
+                                    if dig_error:
+                                        last_err = dig_error
+                                        
+                            except Exception as e:
+                                last_err = e
+                                logger.debug(f"[mine_tree] Move+dig failed at ({x},{y},{z}): {e}")
+                        
+                        if mined_this_log:
                             break
-
-                        if actually_collected > 0:
-                            collected += actually_collected
-                            mined_this_log = True
-                            break
-
-                        if block_removed:
-                            collected += 1
-                            mined_this_log = True
-                            break
-
-                        # collect_done 但没收益：可能拾取延迟/掉落在路上，再等一下；仍无变化则重试
-                        if collect_done:
-                            await asyncio.sleep(0.8)
-                            inv2 = self._get_inventory_count(first_log_type)
-                            if inv2 > inventory_after:
-                                collected += (inv2 - inventory_after)
-                                mined_this_log = True
-                                break
-
-                        last_err = "collect_timeout"
+                        
+                        # 重试前等待
                         if attempt < MAX_COLLECT_RETRIES:
-                            logger.warning(f"[mine_tree] Collect timeout at ({x},{y},{z}) attempt {attempt}/{MAX_COLLECT_RETRIES}, retrying...")
                             await asyncio.sleep(0.5 * attempt)
-                            continue
-                        break
 
                     if not mined_this_log:
                         failed += 1
@@ -696,8 +725,74 @@ class MineflayerActions(IBotActions):
                     logger.warning(f"[mine_tree] Failed to mine log at ({x},{y},{z}): {e}")
                     failed += 1
             
-            # 等待掉落物被拾取
-            await asyncio.sleep(0.5)
+            # 等待掉落物落地（高处原木可能需要时间掉落）
+            logger.info(f"[mine_tree] Waiting for falling logs and items...")
+            await asyncio.sleep(1.0)
+            
+            # 拾取掉落物：走到掉落物附近自动拾取
+            try:
+                # 搜索附近的掉落物实体
+                pickup_count = 0
+                logger.info(f"[mine_tree] Searching for dropped items...")
+                
+                for attempt in range(3):  # 最多尝试3次
+                    # 获取附近的掉落物实体
+                    items_to_pickup = []
+                    try:
+                        bot_pos = self._bot.entity.position
+                        total_entities = 0
+                        item_entities = 0
+                        
+                        for entity_id in self._bot.entities:
+                            entity = self._bot.entities[entity_id]
+                            total_entities += 1
+                            
+                            if entity.name == "item":
+                                item_entities += 1
+                                # 检查距离
+                                try:
+                                    e_pos = entity.position
+                                    dist = ((e_pos.x - bot_pos.x)**2 + (e_pos.y - bot_pos.y)**2 + (e_pos.z - bot_pos.z)**2) ** 0.5
+                                    if dist <= 16:  # 16格范围内的掉落物
+                                        items_to_pickup.append((dist, e_pos))
+                                        logger.debug(f"[mine_tree] Found item entity at distance {dist:.1f}")
+                                except Exception as e:
+                                    logger.debug(f"[mine_tree] Error checking item entity: {e}")
+                        
+                        logger.info(f"[mine_tree] Attempt {attempt+1}: Found {total_entities} entities, {item_entities} items, {len(items_to_pickup)} within range")
+                        
+                    except Exception as e:
+                        logger.warning(f"[mine_tree] Error finding dropped items: {e}")
+                    
+                    if not items_to_pickup:
+                        logger.info(f"[mine_tree] No items to pickup, stopping search")
+                        break
+                    
+                    # 按距离排序，走向最近的掉落物
+                    items_to_pickup.sort(key=lambda x: x[0])
+                    nearest = items_to_pickup[0][1]
+                    
+                    logger.info(f"[mine_tree] Moving to pickup items at ({nearest.x:.1f},{nearest.y:.1f},{nearest.z:.1f})")
+                    
+                    try:
+                        # 走到掉落物位置（会自动拾取）
+                        await self.goto(
+                            target=f"{int(nearest.x)},{int(nearest.y)},{int(nearest.z)}",
+                            timeout=5.0
+                        )
+                        pickup_count += 1
+                        await asyncio.sleep(0.5)  # 等待自动拾取
+                    except Exception as e:
+                        logger.warning(f"[mine_tree] Failed to pickup items: {e}")
+                        break
+                
+                if pickup_count > 0:
+                    logger.info(f"[mine_tree] Picked up items from {pickup_count} locations")
+                else:
+                    logger.info(f"[mine_tree] No items were picked up")
+                    
+            except Exception as e:
+                logger.warning(f"[mine_tree] Error in item pickup phase: {e}")
             
             msg = f"砍树完成！共砍掉 {collected} 个 {first_log_type}"
             if failed > 0:

@@ -31,6 +31,9 @@ class LLMCallLogger:
         total_tokens: int,
         error: Optional[str] = None,
     ) -> None:
+        total_tokens_per_second = None
+        if latency_ms > 0 and total_tokens > 0:
+            total_tokens_per_second = round(total_tokens / (latency_ms / 1000.0), 2)
         payload = {
             "provider": provider,
             "model": model,
@@ -40,6 +43,7 @@ class LLMCallLogger:
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
+            "total_tokens_per_second": total_tokens_per_second,
         }
         if error:
             payload["error"] = error

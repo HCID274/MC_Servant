@@ -1,5 +1,6 @@
 # Qwen-Flash Client Implementation
 
+import asyncio
 import json
 import logging
 import time
@@ -57,64 +58,107 @@ class QwenClient(ILLMClient):
         messages: list[dict],
         max_tokens: int = 512,
         temperature: float = 0.7,
+        max_retries: int = 2,
     ) -> str:
-        """发送聊天请求，返回模型回复文本"""
+        """
+        发送聊天请求，返回模型回复文本
+        
+        如果 LLM 返回空内容，自动重试最多 max_retries 次
+        """
         start = time.perf_counter()
         usage = None
-        try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            usage = response.usage
-            content = response.choices[0].message.content
-            logger.debug(f"LLM response: {content[:100]}...")
-            self._log_call("chat", True, start, usage, None)
-            return content
-            
-        except Exception as e:
-            self._log_call("chat", False, start, usage, str(e))
-            logger.error(f"QwenClient.chat failed: {e}")
-            raise
+        
+        for attempt in range(1, max_retries + 2):
+            try:
+                response = await self._client.chat.completions.create(
+                    model=self._model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                usage = response.usage
+                content = response.choices[0].message.content
+                
+                # 检查是否为空
+                if content is None or not content.strip():
+                    logger.warning(f"LLM returned empty content, model={self._model}, attempt={attempt}/{max_retries + 1}")
+                    if attempt <= max_retries:
+                        await asyncio.sleep(0.3 * attempt)
+                        continue
+                    content = ""
+                
+                logger.debug(f"LLM response: {content[:100] if content else '(empty)'}...")
+                self._log_call("chat", True, start, usage, None)
+                return content
+                
+            except Exception as e:
+                logger.warning(f"LLM chat error (attempt {attempt}/{max_retries + 1}): {e}")
+                if attempt <= max_retries:
+                    await asyncio.sleep(0.5 * attempt)
+                    continue
+                self._log_call("chat", False, start, usage, str(e))
+                logger.error(f"QwenClient.chat failed after {attempt} attempts: {e}")
+                raise
     
     async def chat_json(
         self,
         messages: list[dict],
         max_tokens: int = 512,
         temperature: float = 0.3,
+        max_retries: int = 2,
     ) -> dict:
-        """Send a chat request and return JSON."""
+        """
+        发送聊天请求并返回 JSON
+        
+        如果 LLM 返回空内容或无效 JSON，自动重试最多 max_retries 次
+        """
         start = time.perf_counter()
         usage = None
-        try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                response_format={"type": "json_object"},
-            )
-            usage = response.usage
-            content = response.choices[0].message.content
+        content = None
+        
+        for attempt in range(1, max_retries + 2):
+            try:
+                response = await self._client.chat.completions.create(
+                    model=self._model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format={"type": "json_object"},
+                )
+                usage = response.usage
+                content = response.choices[0].message.content
+                
+                # 检查是否为空
+                if content is None or not content.strip():
+                    logger.warning(f"LLM JSON returned empty content, model={self._model}, attempt={attempt}/{max_retries + 1}")
+                    if attempt <= max_retries:
+                        await asyncio.sleep(0.3 * attempt)
+                        continue
+                    raise ValueError("LLM returned empty content after all retries")
 
-            clean_content = content.replace("```json", "").replace("```", "").strip()
-
-            result = json.loads(clean_content)
-            logger.debug(f"LLM JSON response: {result}")
-            self._log_call("chat_json", True, start, usage, None)
-            return result
-
-        except json.JSONDecodeError as e:
-            self._log_call("chat_json", False, start, usage, f"json_decode_error: {e}")
-            logger.error(f"Failed to parse LLM response as JSON: {e}")
-            logger.error(f"Raw content: {content}")
-            raise
-        except Exception as e:
-            self._log_call("chat_json", False, start, usage, str(e))
-            logger.error(f"QwenClient.chat_json failed: {e}")
-            raise
+                clean_content = content.replace("```json", "").replace("```", "").strip()
+                result = json.loads(clean_content)
+                logger.debug(f"LLM JSON response: {result}")
+                self._log_call("chat_json", True, start, usage, None)
+                return result
+                
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON decode error (attempt {attempt}/{max_retries + 1}): {e}")
+                if attempt <= max_retries:
+                    await asyncio.sleep(0.3 * attempt)
+                    continue
+                self._log_call("chat_json", False, start, usage, f"json_decode_error: {e}")
+                logger.error(f"Failed to parse LLM response as JSON after {attempt} attempts: {e}")
+                logger.error(f"Raw content: {content}")
+                raise
+            except Exception as e:
+                logger.warning(f"LLM chat_json error (attempt {attempt}/{max_retries + 1}): {e}")
+                if attempt <= max_retries:
+                    await asyncio.sleep(0.5 * attempt)
+                    continue
+                self._log_call("chat_json", False, start, usage, str(e))
+                logger.error(f"QwenClient.chat_json failed after {attempt} attempts: {e}")
+                raise
 
     def _extract_usage(self, usage: Optional[object]) -> Tuple[int, int, int]:
         if usage is None:

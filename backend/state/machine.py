@@ -12,6 +12,7 @@ from .context import RuntimeContext, BotContext
 from .config import BotConfig, DEFAULT_CONFIG_PATH
 from .permission import PermissionGate, PermissionResult
 from .states import UnclaimedState, IdleState
+from text_utils import split_to_segments
 
 if TYPE_CHECKING:
     from ..llm.interfaces import ILLMClient
@@ -262,8 +263,6 @@ class StateMachine(IStateMachine):
         hologram_text: Optional[str]
     ) -> Dict[str, Any]:
         """构建响应消息"""
-        from websocket.handlers import split_to_segments
-        
         # DEBUG: 打印构建响应时的关键信息
         logger.info(f"[DEBUG] _build_response: bot_name='{self._config.bot_name}', hologram_text='{hologram_text}'")
         

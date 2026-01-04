@@ -159,6 +159,9 @@ class IdleState(IState):
             ]
             
             response = await self._llm.chat(messages, max_tokens=256, temperature=0.8)
+            if not response or not response.strip():
+                logger.warning("LLM returned empty response, using fallback")
+                response = "嗯...喵？"
             context.add_message("assistant", response)
             return response
             

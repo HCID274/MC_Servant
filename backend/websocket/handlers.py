@@ -1,14 +1,18 @@
 # WebSocket Message Handlers
 
 from abc import ABC, abstractmethod
-from typing import Optional, List, TYPE_CHECKING
+import asyncio
 import logging
-import re
+import time
+from typing import Optional, List, TYPE_CHECKING
 
 from protocol import (
-    MessageType, PlayerMessage, NpcResponse, BotCommand, 
+    MessageType, PlayerMessage, NpcResponse, BotCommand,
     BotStatus, Heartbeat, ServantCommandMessage, parse_message
 )
+from llm.intent import Intent, IntentRecognizer
+from state.events import Event, EventType, intent_to_event_type
+from text_utils import split_to_segments
 
 if TYPE_CHECKING:
     from bot.interfaces import IBotController, IBotManager
@@ -16,64 +20,6 @@ if TYPE_CHECKING:
     from state.machine import StateMachine
 
 logger = logging.getLogger(__name__)
-
-
-def split_to_segments(text: str, max_chars: int = 50) -> List[str]:
-    """
-    按语义切分文本用于全息分段显示
-    
-    - 优先在标点符号（中英文）处断开
-    - 单个片段超长时强制切分（兜底）
-    - 非首段开头加 '...'，非末段结尾加 '...'
-    
-    Args:
-        text: 原始文本
-        max_chars: 每段最大字符数
-        
-    Returns:
-        分段列表
-    """
-    if not text:
-        return []
-    
-    if len(text) <= max_chars:
-        return [text]
-    
-    # 1. 先按标点粗分（含中英文标点和换行）
-    raw_parts = re.split(r'([。！？；.!?\n])', text)
-    
-    segments = []
-    current = ""
-    
-    for part in raw_parts:
-        # 2. 如果当前 + 新片段超限，先保存当前
-        if len(current) + len(part) > max_chars:
-            if current:
-                segments.append(current)
-                current = ""
-            
-            # 3. 【兜底】单个 part 超长则强制切分
-            while len(part) > max_chars:
-                segments.append(part[:max_chars])
-                part = part[max_chars:]
-            
-            current = part
-        else:
-            current += part
-    
-    if current:
-        segments.append(current)
-    
-    # 4. 添加省略号标记
-    result = []
-    for i, seg in enumerate(segments):
-        if i > 0:
-            seg = "..." + seg
-        if i < len(segments) - 1:
-            seg = seg + "..."
-        result.append(seg)
-    
-    return result
 
 
 class IMessageHandler(ABC):
@@ -123,7 +69,6 @@ class PlayerMessageHandler(IMessageHandler):
         
         # 延迟初始化意图识别器
         if llm_client:
-            from llm.intent import IntentRecognizer
             self._intent_recognizer = IntentRecognizer(llm_client)
             logger.info("LLM-based intent recognition enabled")
         
@@ -169,9 +114,6 @@ class PlayerMessageHandler(IMessageHandler):
         4. 委托给状态机
         5. 记录助手响应到上下文
         """
-        from llm.intent import Intent
-        from state.events import Event, EventType, intent_to_event_type
-        
         # 获取玩家 UUID 和 Bot 名称
         player_uuid = getattr(msg, 'player_uuid', None) or msg.player
         bot_name = self._get_bot_name()
@@ -232,7 +174,6 @@ class PlayerMessageHandler(IMessageHandler):
         
         # 3.5 处理后台任务生成的内部事件 (如 PLANNING_COMPLETE)
         # 给后台任务一点时间启动和完成
-        import asyncio
         await asyncio.sleep(0.5)  # 等待后台任务触发事件
         try:
             await self._fsm.process_pending_events()
@@ -287,8 +228,6 @@ class PlayerMessageHandler(IMessageHandler):
     
     async def _handle_with_llm(self, msg: PlayerMessage) -> dict:
         """使用 LLM 处理消息"""
-        from llm.intent import Intent
-        
         # 获取玩家 UUID (如果有)
         player_uuid = getattr(msg, 'player_uuid', None) or msg.player
         bot_name = self._get_bot_name()
@@ -470,8 +409,6 @@ class PlayerMessageHandler(IMessageHandler):
     
     async def _handle_fallback(self, msg: PlayerMessage) -> dict:
         """降级处理 (使用简单规则匹配)"""
-        from llm.intent import IntentRecognizer, Intent
-        
         # 使用简单规则匹配
         class DummyLLM:
             @property
@@ -512,7 +449,6 @@ class HeartbeatHandler(IMessageHandler):
     
     async def handle(self, data: dict) -> Optional[dict]:
         """回复心跳"""
-        import time
         return Heartbeat(timestamp=int(time.time())).model_dump()
 
 
@@ -577,7 +513,6 @@ class ServantCommandHandler(IMessageHandler):
             logger.info(f"No target specified, using default bot: {bot_name}")
         
         # 构造 CLAIM 事件
-        from state.events import Event, EventType
         event = Event(
             type=EventType.CLAIM,
             source_player=player,
@@ -631,7 +566,6 @@ class ServantCommandHandler(IMessageHandler):
             logger.info(f"No target specified, using default bot: {bot_name}")
         
         # 构造 RELEASE 事件
-        from state.events import Event, EventType
         event = Event(
             type=EventType.RELEASE,
             source_player=player,

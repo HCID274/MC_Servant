@@ -324,21 +324,33 @@ class GatherRunner(ITaskRunner):
                 return step, False, ""
         
         # Fast Path：砍树类任务优先 mine_tree
-        if tree_intent and (tick == 1 or owner_anchor_intent):
-            sr = int(self._rules.thresholds.default_search_radius)
-            if has_owner_pos:
-                step = ActionStep(
-                    action="mine_tree",
-                    params={"near_position": owner_pos, "search_radius": sr},
-                    description="砍掉主人附近的一棵树",
-                )
-            else:
-                step = ActionStep(
-                    action="mine_tree",
-                    params={"search_radius": sr},
-                    description="砍掉附近的一棵树",
-                )
-            return step, False, ""
+        # 只在第一个 tick 调用 mine_tree，砍完一棵树就返回完成
+        if tree_intent:
+            # 检查上一步是否已经成功砍了树
+            if tick > 1:
+                # 上一步是 mine_tree 并且成功了 → 任务完成
+                if completed_steps:
+                    last = completed_steps[-1]
+                    if hasattr(last, 'action') and last.action == "mine_tree" and last.success:
+                        msg = getattr(last, 'message', '砍树完成')
+                        return ActionStep(action="done", params={}, description="砍树完成"), True, msg
+            
+            # 第一个 tick 或之前没成功：执行 mine_tree
+            if tick == 1:
+                sr = int(self._rules.thresholds.default_search_radius)
+                if has_owner_pos:
+                    step = ActionStep(
+                        action="mine_tree",
+                        params={"near_position": owner_pos, "search_radius": sr},
+                        description="砍掉主人附近的一棵树",
+                    )
+                else:
+                    step = ActionStep(
+                        action="mine_tree",
+                        params={"search_radius": sr},
+                        description="砍掉附近的一棵树",
+                    )
+                return step, False, ""
         
         # 混合参照系策略：扫描为空且离主人太远时，隐式回主人
         if (not owner_anchor_intent) and has_owner_pos and last_scan is not None:
