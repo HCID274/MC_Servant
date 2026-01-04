@@ -2,17 +2,234 @@
 # 具体状态实现
 
 import asyncio
+import io
+import json
 import logging
+import os
+import zipfile
+from collections import Counter
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 from .interfaces import IState, StateResult
 from .events import Event, EventType
 from .context import RuntimeContext, BotContext
+from config import settings
 
 if TYPE_CHECKING:
     from ..llm.interfaces import ILLMClient
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _load_kb_maps() -> tuple[dict, dict]:
+    kb_path = Path(__file__).parent.parent / "data" / "mc_knowledge_base.json"
+    try:
+        with kb_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load knowledge base: {e}")
+        return {}, {}
+    return data.get("items", {}) or {}, data.get("aliases", {}) or {}
+
+
+def _load_lang_from_json_file(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load lang file: {path} ({e})")
+        return {}
+    return _extract_lang_map(data)
+
+
+def _extract_lang_map(data: dict) -> dict:
+    mapping = {}
+    for key, value in data.items():
+        if not isinstance(value, str):
+            continue
+        if key.startswith("block.minecraft.") or key.startswith("item.minecraft."):
+            item_id = key.split(".", 2)[2]
+            mapping[item_id] = value
+    return mapping
+
+
+def _load_lang_from_jar(jar_path: str) -> dict:
+    jar_file = Path(jar_path)
+    if not jar_file.is_file():
+        return {}
+    try:
+        with zipfile.ZipFile(jar_file) as zf:
+            lang_path = "assets/minecraft/lang/zh_cn.json"
+            try:
+                with zf.open(lang_path) as f:
+                    data = json.load(io.TextIOWrapper(f, encoding="utf-8"))
+            except KeyError:
+                logger.warning("zh_cn.json not found in jar")
+                return {}
+    except Exception as e:
+        logger.warning(f"Failed to load language file: {e}")
+        return {}
+    return _extract_lang_map(data)
+
+
+def _load_lang_from_minecraft_assets() -> dict:
+    appdata = os.getenv("APPDATA")
+    if not appdata:
+        return {}
+    base = Path(appdata) / ".minecraft" / "assets"
+    indexes_dir = base / "indexes"
+    objects_dir = base / "objects"
+    if not indexes_dir.is_dir() or not objects_dir.is_dir():
+        return {}
+    index_files = sorted(indexes_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for index_path in index_files:
+        try:
+            with index_path.open("r", encoding="utf-8") as f:
+                index_data = json.load(f)
+        except Exception:
+            continue
+        objects = index_data.get("objects", {})
+        meta = objects.get("minecraft/lang/zh_cn.json")
+        if not meta:
+            continue
+        hash_value = meta.get("hash", "")
+        if not hash_value:
+            continue
+        obj_path = objects_dir / hash_value[:2] / hash_value
+        data = _load_lang_from_json_file(obj_path)
+        if data:
+            return data
+    return {}
+
+
+@lru_cache(maxsize=1)
+def _load_lang_map() -> dict:
+    env_lang_path = os.getenv("MC_SERVANT_MC_LANG_PATH", "").strip()
+    settings_lang_path = getattr(settings, "mc_lang_path", "")
+    lang_path = (env_lang_path or settings_lang_path or "").strip()
+    if lang_path:
+        data = _load_lang_from_json_file(Path(lang_path))
+        if data:
+            return data
+
+    jar_path = (settings.mc_jar_path or "").strip()
+    if jar_path:
+        data = _load_lang_from_jar(jar_path)
+        if data:
+            return data
+
+    data = _load_lang_from_minecraft_assets()
+    if data:
+        return data
+
+    return {}
+
+
+def _build_tag_to_zh(aliases: dict) -> dict:
+    tag_to_aliases = {}
+    for alias, tag in aliases.items():
+        if not isinstance(alias, str) or not isinstance(tag, str):
+            continue
+        if any("\u4e00" <= ch <= "\u9fff" for ch in alias):
+            tag_to_aliases.setdefault(tag, []).append(alias)
+    tag_to_zh = {}
+    for tag, names in tag_to_aliases.items():
+        preferred = [n for n in names if 2 <= len(n) <= 4]
+        if preferred:
+            tag_to_zh[tag] = sorted(preferred, key=len)[0]
+        else:
+            tag_to_zh[tag] = sorted(names, key=len)[0]
+    return tag_to_zh
+
+
+@lru_cache(maxsize=1)
+def _get_tag_to_zh() -> dict:
+    _, aliases = _load_kb_maps()
+    return _build_tag_to_zh(aliases)
+
+
+def _translate_by_tag(item_id: str) -> Optional[str]:
+    items, _ = _load_kb_maps()
+    tags = items.get(item_id) or items.get(item_id.lower())
+    if not tags:
+        return None
+    tag_to_zh = _get_tag_to_zh()
+    for tag in tags:
+        name = tag_to_zh.get(tag)
+        if name:
+            return name
+    return None
+
+
+def _translate_item_name(item_id: str) -> str:
+    lang_map = _load_lang_map()
+    if lang_map:
+        name = lang_map.get(item_id) or lang_map.get(item_id.lower())
+        if name:
+            return name
+    name = _translate_by_tag(item_id)
+    if name:
+        return name
+    return item_id
+
+
+def _get_bot_state(bot_context: Optional["BotContext"]) -> Optional[dict]:
+    if not bot_context or not bot_context.actions:
+        return None
+    try:
+        return bot_context.actions.get_state()
+    except Exception as e:
+        logger.warning(f"Query get_state failed: {e}")
+        return None
+
+
+def _format_inventory(inventory: dict, limit: int = 10) -> str:
+    if not inventory:
+        return "背包是空的喵~"
+    translated = []
+    for item_id, count in inventory.items():
+        translated.append((_translate_item_name(item_id), item_id, count))
+    name_counts = Counter(name for name, _, _ in translated)
+    translated.sort(key=lambda kv: (-kv[2], kv[0], kv[1]))
+    display_items = []
+    for name, item_id, count in translated[:limit]:
+        if name_counts[name] > 1 and name != item_id:
+            display_name = f"{name}({item_id})"
+        else:
+            display_name = name
+        display_items.append(f"{display_name} x{count}")
+    shown = ", ".join(display_items)
+    if len(translated) > limit:
+        shown += f" ...还有 {len(translated) - limit} 种物品"
+    return f"背包里有: {shown}"
+
+
+def _handle_query(bot_context: Optional["BotContext"], entities: Optional[dict]) -> Optional[str]:
+    if not entities:
+        return None
+    query_type = (entities.get("query_type") or "").lower()
+    if not query_type:
+        return None
+
+    state = _get_bot_state(bot_context)
+    if query_type in ("inventory", "bag"):
+        if not state:
+            return "我现在读不到背包信息喵~"
+        inventory = state.get("inventory") or {}
+        return _format_inventory(inventory)
+
+    if query_type in ("position", "location"):
+        if not state:
+            return "我现在不太确定位置喵~"
+        pos = state.get("position") or {}
+        return f"我在 ({pos.get('x', 0)}, {pos.get('y', 0)}, {pos.get('z', 0)}) 喵~"
+
+    return None
 
 
 class UnclaimedState(IState):
@@ -128,6 +345,9 @@ class IdleState(IState):
             return StateResult(response=response, hologram_text=f"💬 {short_msg}")
         
         elif event.type == EventType.QUERY:
+            query_response = _handle_query(self._ctx, event.payload.get("entities"))
+            if query_response:
+                return StateResult(response=query_response)
             duration = context.get_state_duration()
             return StateResult(
                 response=f"我正在待命中，已经等了 {int(duration)} 秒啦，随时准备接受主人的指令喵~",
@@ -282,6 +502,9 @@ class PlanningState(IState):
             )
         
         elif event.type == EventType.QUERY:
+            query_response = _handle_query(self._ctx, event.payload.get("entities"))
+            if query_response:
+                return StateResult(response=query_response)
             task = context.current_task
             if task:
                 return StateResult(
@@ -471,6 +694,9 @@ class WorkingState(IState):
             return StateResult(response="忙着呢喵~", hologram_text="🔨 工作中")
         
         elif event.type == EventType.QUERY:
+            query_response = _handle_query(self._ctx, event.payload.get("entities"))
+            if query_response:
+                return StateResult(response=query_response)
             task = context.current_task
             if task:
                 progress = task.progress * 100

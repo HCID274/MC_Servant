@@ -41,6 +41,74 @@ class OpenRouterClient(ILLMClient):
             request_kwargs["extra_body"] = {"reasoning": {"enabled": True}}
         return request_kwargs
 
+    def _strip_code_fences(self, content: str) -> str:
+        return content.replace("```json", "").replace("```", "").strip()
+
+    def _extract_first_json_object(self, content: str) -> Optional[str]:
+        in_string = False
+        escape = False
+        start = None
+        depth = 0
+        for i, ch in enumerate(content):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == "\"":
+                    in_string = False
+                continue
+            if ch == "\"":
+                in_string = True
+                continue
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start is not None:
+                        return content[start:i + 1]
+        return None
+
+    def _drop_reasoning_field(self, content: str) -> Optional[str]:
+        keys = ["\"reasoning\"", "\"reasoning_details\""]
+        idx = -1
+        for key in keys:
+            pos = content.find(key)
+            if pos != -1:
+                idx = pos if idx == -1 else min(idx, pos)
+        if idx == -1:
+            return None
+        prefix = content[:idx]
+        comma_idx = prefix.rfind(",")
+        if comma_idx != -1:
+            prefix = prefix[:comma_idx]
+        prefix = prefix.rstrip()
+        if "{" not in prefix:
+            return None
+        if not prefix.endswith("}"):
+            prefix = prefix + "\n}"
+        return prefix
+
+    def _salvage_json(self, content: str) -> Optional[dict]:
+        if not content:
+            return None
+        candidate = self._drop_reasoning_field(content)
+        if candidate:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+        candidate = self._extract_first_json_object(content)
+        if candidate:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+        return None
+
     async def chat(
         self,
         messages: list[dict],
@@ -132,8 +200,18 @@ class OpenRouterClient(ILLMClient):
                         continue
                     raise ValueError("LLM returned empty content after all retries")
 
-                clean_content = content.replace("```json", "").replace("```", "").strip()
-                result = json.loads(clean_content)
+                clean_content = self._strip_code_fences(content)
+                try:
+                    result = json.loads(clean_content)
+                except json.JSONDecodeError:
+                    salvaged = self._salvage_json(clean_content)
+                    if salvaged is not None:
+                        logger.warning(
+                            f"LLM JSON salvaged, model={self._model}, attempt={attempt}/{max_retries + 1}"
+                        )
+                        self._log_call("chat_json", True, start, usage, None)
+                        return salvaged
+                    raise
                 logger.debug(f"LLM JSON response: {result}")
                 self._log_call("chat_json", True, start, usage, None)
                 return result

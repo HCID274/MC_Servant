@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # Minecraft 服务器配置 (通过 Velocity 代理连接)
     mc_host: str = "mc.hcid274.xyz"
     mc_port: int = 25565
+    mc_jar_path: str = ""  # Paper/Spigot 服务端 jar 路径，用于读取中文名
     
     # Bot 配置
     bot_username: str = "MCServant_Bot"
@@ -49,7 +50,7 @@ class Settings(BaseSettings):
 
     # WebSocket 安全配置
     ws_access_token: str = ""  # WebSocket 访问 Token（必填）
-    ws_heartbeat_timeout_seconds: int = 90  # 心跳超时阈值（秒）
+    ws_heartbeat_timeout_seconds: int = 30  # 心跳超时阈值（秒）
 
     # PostgreSQL 数据库配置
     db_host: str = "localhost"

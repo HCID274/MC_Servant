@@ -481,6 +481,7 @@ class MineflayerActions(IBotActions):
             else:
                 pos = self._bot.entity.position
                 search_center = {"x": int(pos.x), "y": int(pos.y), "z": int(pos.z)}
+            search_point = self._Vec3(search_center["x"], search_center["y"], search_center["z"])
             
             logger.info(f"[mine_tree] Searching for tree near {search_center}, radius={search_radius}")
             
@@ -496,7 +497,7 @@ class MineflayerActions(IBotActions):
                         block = self._bot.findBlock({
                             "matching": block_id.id,
                             "maxDistance": search_radius,
-                            "point": self._bot.entity.position
+                            "point": search_point
                         })
                         if block:
                             if first_log is None:
@@ -543,6 +544,18 @@ class MineflayerActions(IBotActions):
             
             # 按 Y 坐标排序（从下往上砍，避免原木掉落问题）
             tree_logs.sort(key=lambda pos: pos[1])
+
+            # Move closer to the trunk once before mining (helps when far from search center)
+            try:
+                bot_pos = self._bot.entity.position
+                tx, ty, tz = tree_logs[0]
+                dist = ((bot_pos.x - tx) ** 2 + (bot_pos.y - ty) ** 2 + (bot_pos.z - tz) ** 2) ** 0.5
+                if dist > 5.0:
+                    await self._navigate_to_block(tx, ty, tz)
+                    await asyncio.sleep(0.3)
+            except Exception:
+                pass
+
             
             # 逐个挖掘原木（使用 collectblock 插件）
             collected = 0
@@ -631,17 +644,15 @@ class MineflayerActions(IBotActions):
                                     await asyncio.sleep(0.3)
                                 
                                 # 检查方块是否真的被破坏
-                                await asyncio.sleep(0.2)
-                                check_block = self._bot.blockAt(self._Vec3(x, y, z))
-                                if not check_block or check_block.name != first_log_type:
+                                if await self._wait_for_block_break(x, y, z, first_log_type, timeout=2.0):
                                     collected += 1
                                     mined_this_log = True
                                     logger.debug(f"[mine_tree] Successfully dug log at ({x},{y},{z})")
                                     break
                                 else:
-                                    # 挖掘调用成功但方块没消失 → 距离太远，需要移动
+                                    # Dig returned but block still exists -> likely out of reach
                                     logger.debug(f"[mine_tree] Dig completed but block still exists at ({x},{y},{z}) - moving closer")
-                                    dig_attempted = False  # 标记需要移动
+                                    dig_attempted = False  # Mark that we should move
                                 
                                 if dig_error:
                                     last_err = dig_error
@@ -695,13 +706,11 @@ class MineflayerActions(IBotActions):
                                         await asyncio.sleep(0.3)
                                     
                                     if dig_done:
-                                        await asyncio.sleep(0.2)
-                                        check_block = self._bot.blockAt(self._Vec3(x, y, z))
-                                        if not check_block or check_block.name != first_log_type:
+                                        if await self._wait_for_block_break(x, y, z, first_log_type, timeout=2.0):
                                             collected += 1
                                             mined_this_log = True
                                             break
-                                    
+
                                     if dig_error:
                                         last_err = dig_error
                                         
@@ -720,6 +729,8 @@ class MineflayerActions(IBotActions):
                         failed += 1
                         if last_err is not None:
                             logger.warning(f"[mine_tree] Failed to mine log at ({x},{y},{z}) after retries: {last_err}")
+                        else:
+                            logger.warning(f"[mine_tree] Failed to mine log at ({x},{y},{z}) after retries: block still present")
                         
                 except Exception as e:
                     logger.warning(f"[mine_tree] Failed to mine log at ({x},{y},{z}): {e}")
@@ -893,7 +904,22 @@ class MineflayerActions(IBotActions):
                 except:
                     continue
         
+
         return tree_logs
+    async def _wait_for_block_break(self, x: int, y: int, z: int, expected_name: str, timeout: float = 2.0) -> bool:
+        'Poll the block state until it is no longer expected_name.'
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                block = self._bot.blockAt(self._Vec3(x, y, z))
+            except Exception:
+                block = None
+            if block is not None and block.name != expected_name:
+                return True
+            # Unknown block state; keep waiting to avoid false positives
+            await asyncio.sleep(0.2)
+        return False
+
     
     async def _navigate_to_block(self, x: int, y: int, z: int):
         """导航到可以挖掘指定方块的位置"""
@@ -908,9 +934,22 @@ class MineflayerActions(IBotActions):
             
             # 使用 pathfinder 导航到方块附近
             goals = self._pathfinder.goals
-            goal = goals.GoalNear(x, y, z, 3)
+            goal = goals.GoalNear(int(x), int(y), int(z), 3)
             self._bot.pathfinder.setGoal(goal)
-            
+
+            # Wait briefly; if no movement, fallback to an XZ-only goal
+            start_wait = time.time()
+            while not self._bot.pathfinder.isMoving() and time.time() - start_wait < 2.0:
+                await asyncio.sleep(0.1)
+            if not self._bot.pathfinder.isMoving():
+                fallback_goal = None
+                if hasattr(goals, "GoalNearXZ"):
+                    fallback_goal = goals.GoalNearXZ(int(x), int(z), 3)
+                else:
+                    fallback_goal = goals.GoalNear(int(x), int(bot_pos.y), int(z), 3)
+                logger.debug(f"Navigation fallback to XZ-only goal for ({x},{y},{z})")
+                self._bot.pathfinder.setGoal(fallback_goal)
+
             # 等待到达
             start = time.time()
             while self._bot.pathfinder.isMoving() and time.time() - start < 10:

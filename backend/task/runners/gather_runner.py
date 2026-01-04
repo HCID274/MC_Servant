@@ -548,12 +548,9 @@ class GatherRunner(ITaskRunner):
             # 完整实现需要与状态机集成，此处先返回特殊 ActionStep
             logger.info(f"Actor requests clarification: {decision.clarify_question}")
             return ActionStep(
-                action="clarify",
-                params={
-                    "question": decision.clarify_question,
-                    "choices": decision.clarify_choices,
-                },
-                description=f"需要澄清: {decision.clarify_question}"
+                action="scan",
+                params={"target_type": "block", "radius": 32},
+                description=f"澄清失败，先扫描周围: {decision.clarify_question}"
             ), False, ""
         
         # 3. Resolver 落地

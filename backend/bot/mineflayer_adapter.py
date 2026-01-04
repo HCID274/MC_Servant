@@ -252,7 +252,7 @@ class BotManager(IBotManager):
         self, 
         name: str, 
         max_retries: int = 5,
-        base_delay: float = 5.0
+        base_delay: float = 2.0
     ) -> Optional[IBotController]:
         """
         带指数退避重试的 Bot 生成
