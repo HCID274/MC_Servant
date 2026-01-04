@@ -399,3 +399,35 @@ class ITaskRunner(ABC):
     def supported_types(self) -> List[TaskType]:
         """该 Runner 支持的任务类型列表"""
         pass
+
+
+class IRunnerFactory(ABC):
+    """
+    Runner 工厂抽象接口
+    
+    职责：
+    - 根据 Task 创建合适的 Runner 实例
+    - 封装"用哪个 Runner"的决策逻辑
+    - 持有 Runner 所需的依赖（DI）
+    
+    设计原则：
+    - TaskExecutor 依赖于此抽象，不知道具体 Runner 类型
+    - 每次 create() 返回新实例（生命周期 = 任务周期）
+    
+    实现：
+    - UniversalRunnerFactory: Phase 3+ 通用模式
+    - ClassicRunnerFactory: 过渡期旧模式
+    """
+    
+    @abstractmethod
+    def create(self, task: StackTask) -> ITaskRunner:
+        """
+        为给定任务创建 Runner 实例
+        
+        Args:
+            task: 待执行的任务
+            
+        Returns:
+            ITaskRunner: 适合该任务的 Runner 实例
+        """
+        pass

@@ -17,6 +17,7 @@ from .interfaces import (
     ITaskPlanner,
     IPrerequisiteResolver,
     ITaskExecutor,
+    IRunnerFactory,
 )
 from .stack_planner import StackPlanner, StackOverflowError
 from .behavior_rules import BehaviorRules
@@ -81,6 +82,7 @@ class TaskExecutor(ITaskExecutor):
         actions: "IBotActions",
         prereq_resolver: Optional[IPrerequisiteResolver] = None,
         runner_registry: Optional[RunnerRegistry] = None,
+        runner_factory: Optional[IRunnerFactory] = None,  # 🆕 Phase 3+: 推荐使用
         max_retries: int = 3,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
         owner_name: Optional[str] = None,  # 用于 give 命令的玩家名
@@ -92,7 +94,8 @@ class TaskExecutor(ITaskExecutor):
             planner: 任务规划器 (LLM)
             actions: Bot 动作接口
             prereq_resolver: 前置任务解析器 (符号层)
-            runner_registry: Runner 注册表 (策略模式)
+            runner_registry: [Deprecated] Runner 注册表，请使用 runner_factory
+            runner_factory: Runner 工厂 (推荐，Phase 3+)
             max_retries: 单个任务最大重试次数
             on_progress: 进度回调 (用于更新头顶显示)
             owner_name: 主人玩家名 (用于 give 命令)
@@ -100,11 +103,25 @@ class TaskExecutor(ITaskExecutor):
         self._planner = planner
         self._actions = actions
         self._prereq = prereq_resolver
-        self._registry = runner_registry or RunnerRegistry.create_default()
         self._max_retries = max_retries
         self._on_progress = on_progress
         self._owner_name = owner_name
         self._owner_position: Optional[dict] = None  # 玩家实时位置（来自 Java 插件）
+        
+        # 🆕 Phase 3+ RunnerFactory 优先
+        # 兼容性：支持 runner_registry 或自动创建默认 factory
+        if runner_factory is not None:
+            self._runner_factory = runner_factory
+            self._registry = None  # 不再使用
+        elif runner_registry is not None:
+            # 兼容旧代码：包装 registry 为 factory-like 行为
+            self._registry = runner_registry
+            self._runner_factory = None
+        else:
+            # 默认：根据 Feature Flag 创建
+            from .runner_factory import create_runner_factory
+            self._runner_factory = create_runner_factory(BehaviorRules())
+            self._registry = None
         
         self._stack = StackPlanner()
         self._cancelled = False
@@ -341,11 +358,12 @@ class TaskExecutor(ITaskExecutor):
         """
         执行单个栈任务
         
-        路由逻辑:
-        1. Feature flag 开启 → 全部走 UniversalRunner
-        2. task.task_type 已设置 → 走对应 Runner
-        3. _should_use_tick_loop → 走 GatherRunner
-        4. 其他 → 旧的线性 plan 逻辑
+        Phase 3+ 架构：
+        - 通过 RunnerFactory 获取 Runner（封装所有路由决策）
+        - TaskExecutor 只负责生命周期管理，不关心具体 Runner 类型
+        
+        兼容模式：
+        - 如果使用旧的 runner_registry，则回退到旧逻辑
         
         Args:
             task: 栈任务
@@ -353,45 +371,71 @@ class TaskExecutor(ITaskExecutor):
         Returns:
             TaskResult: 任务执行结果
         """
-        from ..config import settings
+        # 构建执行上下文
+        context = RunContext(
+            owner_name=self._owner_name,
+            owner_position=self._owner_position,
+            on_progress=self._on_progress,
+        )
         
-        # Feature flag: 全部走 UniversalRunner
-        if settings.use_universal_runner:
-            # UniversalRunner 覆盖全部类型，通过 get_or_default 获取
-            runner = self._registry.get_or_default(task.task_type, TaskType.GATHER)
-            if runner is not None:
-                context = RunContext(
-                    owner_name=self._owner_name,
-                    owner_position=self._owner_position,
-                    on_progress=self._on_progress,
-                )
+        # 🆕 Phase 3+: 使用 RunnerFactory
+        if self._runner_factory is not None:
+            try:
+                runner = self._runner_factory.create(task)
+                logger.debug(f"Using {runner.__class__.__name__} for task: {task.name}")
                 return await runner.run(task, self._actions, self._planner, context)
+            except Exception as e:
+                logger.exception(f"Runner execution failed: {e}")
+                return TaskResult(
+                    success=False,
+                    task_description=task.goal,
+                    message=f"执行异常: {str(e)}"
+                )
         
-        # 优先使用 RunnerRegistry（策略模式）
+        # 兼容模式: 使用旧的 RunnerRegistry
+        if self._registry is not None:
+            return await self._execute_task_with_registry(task, context)
+        
+        # 不应到达这里
+        logger.error("No runner_factory or registry configured")
+        return TaskResult(
+            success=False,
+            task_description=task.goal,
+            message="内部错误: 未配置 Runner"
+        )
+    
+    async def _execute_task_with_registry(
+        self, 
+        task: StackTask, 
+        context: RunContext
+    ) -> TaskResult:
+        """
+        [兼容模式] 使用旧的 RunnerRegistry 执行任务
+        
+        此方法在 Week 12+ 将被删除。
+        """
+        # 类型推断
+        if task.task_type is None and self._should_use_tick_loop(task):
+            task.task_type = TaskType.GATHER
+        
+        # 从 Registry 获取 Runner
+        runner = None
         if task.task_type is not None:
             runner = self._registry.get(task.task_type)
-            if runner is not None:
-                context = RunContext(
-                    owner_name=self._owner_name,
-                    owner_position=self._owner_position,
-                    on_progress=self._on_progress,
-                )
-                return await runner.run(task, self._actions, self._planner, context)
         
-        # 回退：旧的类型推断逻辑 -> 转换为 TaskType 并路由到 RunnerRegistry
-        # 对采集类任务启用 Tick Loop (通过 GatherRunner)
-        if self._should_use_tick_loop(task):
-            # 设置 task_type 并重新路由到 RunnerRegistry (消除代码重复)
-            task.task_type = TaskType.GATHER
-            runner = self._registry.get(TaskType.GATHER)
-            if runner is not None:
-                context = RunContext(
-                    owner_name=self._owner_name,
-                    owner_position=self._owner_position,
-                    on_progress=self._on_progress,
-                )
-                return await runner.run(task, self._actions, self._planner, context)
-
+        if runner is not None:
+            return await runner.run(task, self._actions, self._planner, context)
+        
+        # 旧的线性 plan 逻辑 (LinearPlanRunner 的 inline 版本)
+        return await self._execute_task_linear_fallback(task)
+    
+    async def _execute_task_linear_fallback(self, task: StackTask) -> TaskResult:
+        """
+        [兼容模式] 旧的线性 plan 执行逻辑
+        
+        此方法在 Week 12+ 将被删除。
+        从原 _execute_task() 提取的 L412-527 逻辑。
+        """
         retries = 0
         completed_steps: List["ActionResult"] = []
         
@@ -405,13 +449,11 @@ class TaskExecutor(ITaskExecutor):
             # 优先使用 Java 插件提供的实时位置（更准确）
             if self._owner_position:
                 bot_state["owner_position"] = self._owner_position
-                logger.info(f"[DEBUG] Using Java-provided owner position: {self._owner_position}")
             # 降级：使用 Mineflayer 获取的位置（可能有延迟）
             elif hasattr(self._actions, 'get_player_position'):
                 owner_pos = self._actions.get_player_position(self._owner_name)
                 if owner_pos:
                     bot_state["owner_position"] = owner_pos
-                    logger.info(f"[DEBUG] Using Mineflayer owner position (fallback): {owner_pos}")
         
         # 规划
         try:
@@ -447,7 +489,6 @@ class TaskExecutor(ITaskExecutor):
             if result.success:
                 completed_steps.append(result)
                 step_index += 1
-                logger.debug(f"Step {step_index}/{len(plan.steps)} completed: {step.action}")
             else:
                 # 步骤失败
                 logger.warning(f"Step failed: {step.action} - {result.message}")
@@ -471,9 +512,7 @@ class TaskExecutor(ITaskExecutor):
                         task.goal, bot_state, result, completed_steps
                     )
                     
-                    # 检查 replan 是否返回空计划（LLM 放弃）
                     if not plan.steps:
-                        logger.warning(f"Replan returned empty plan, giving up")
                         return TaskResult(
                             success=False,
                             task_description=task.goal,
@@ -508,6 +547,7 @@ class TaskExecutor(ITaskExecutor):
             completed_steps=completed_steps,
             message="任务完成"
         )
+
 
     def _should_use_tick_loop(self, task: StackTask) -> bool:
         """

@@ -157,36 +157,27 @@ async def lifespan(app: FastAPI):
             resolver = SemanticActionResolver(knowledge_base)
             logger.info("LLMTaskActor and SemanticActionResolver initialized")
             
-            # 初始化 RunnerRegistry (注入 Actor/Resolver/Recovery)
-            from task.runners import GatherRunner, LinearPlanRunner
-            from task.runners.registry import RunnerRegistry
-            from task.interfaces import TaskType
+                        # 🆕 Phase 3+ RunnerFactory (根据 Feature Flag 自动切换)
             from task.behavior_rules import BehaviorRules
-            from task.recovery_coordinator import create_recovery_coordinator
+            from task.runner_factory import create_runner_factory
             
-            # 加载行为规则并创建 RecoveryCoordinator
             rules = BehaviorRules()
-            recovery = create_recovery_coordinator(rules)
-            
-            gather_runner = GatherRunner(actor=actor, resolver=resolver, recovery=recovery)
-            linear_runner = LinearPlanRunner()
-            
-            runner_registry = RunnerRegistry()
-            for task_type in gather_runner.supported_types:
-                runner_registry.register(task_type, gather_runner)
-            for task_type in linear_runner.supported_types:
-                runner_registry.register(task_type, linear_runner)
-            logger.info("RunnerRegistry initialized with Actor/Resolver/Recovery architecture")
+            runner_factory = create_runner_factory(
+                rules=rules,
+                actor=actor,
+                resolver=resolver,
+            )
+            logger.info(f"RunnerFactory initialized: {runner_factory.__class__.__name__}")
 
             executor = TaskExecutor(
                 planner,
                 actions,
                 prereq_resolver,
                 on_progress=on_progress,
-                runner_registry=runner_registry,
+                runner_factory=runner_factory,  # 🆕 使用 factory 而非 registry
             )
             bot_context.executor = executor
-            logger.info("TaskExecutor initialized with LLMTaskPlanner + Actor architecture")
+            logger.info("TaskExecutor initialized with RunnerFactory architecture")
         else:
             logger.warning("No LLM client, TaskExecutor not initialized")
         
