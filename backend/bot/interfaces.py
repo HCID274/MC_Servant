@@ -213,6 +213,83 @@ class IBotActions(ABC):
         pass
     
     @abstractmethod
+    async def find_location(
+        self, 
+        feature: str, 
+        radius: int = 64, 
+        count: int = 1
+    ) -> ActionResult:
+        """
+        寻找符合特定特征的地点 (语义感知)
+        
+        简单接口：
+        - LLM 只需说 {"action": "find_location", "feature": "highest"}
+        
+        深度功能：
+        - Python 负责特征提取，返回候选坐标
+        - LLM 不需要处理原始高程数据，只需处理语义化的结果
+        - 支持多种地形特征类型
+        
+        Args:
+            feature: 特征描述，支持:
+                     - "highest": 视野内最高点 (山顶)
+                     - "lowest": 视野内最低点 (谷底/洞穴入口)
+                     - "flat": 平坦区域 (适合建筑)
+                     - "water": 最近的水源 (河边/海边)
+                     - "tree": 树木密集处 (森林)
+                     - "structure": 人造结构 (村庄/房子)
+            radius: 搜索半径 (格)
+            count: 返回候选点数量
+            
+        Returns:
+            ActionResult
+            data: {
+                "locations": [
+                    {"x": int, "y": int, "z": int, "description": str, "distance": float}
+                ],
+                "feature": str
+            }
+        """
+        pass
+    
+    @abstractmethod
+    async def patrol(
+        self,
+        center_x: int,
+        center_z: int,
+        radius: int = 10,
+        duration: int = 30,
+        timeout: float = 60.0
+    ) -> ActionResult:
+        """
+        在指定区域内巡逻/游荡
+        
+        简单接口：
+        - LLM 只需说 {"action": "patrol", "center_x": 100, "center_z": 200, "radius": 10}
+        
+        深度功能：
+        - Python 自动生成随机巡逻路径点
+        - 依次导航到各个路径点
+        - 支持时间限制和超时保护
+        
+        Args:
+            center_x: 巡逻中心 X 坐标
+            center_z: 巡逻中心 Z 坐标
+            radius: 巡逻半径 (格)
+            duration: 巡逻时长 (秒)
+            timeout: 超时时间 (秒)
+            
+        Returns:
+            ActionResult
+            data: {
+                "waypoints_visited": int,
+                "total_distance": float,
+                "duration_actual": float
+            }
+        """
+        pass
+    
+    @abstractmethod
     def get_state(self) -> dict:
         """
         获取 Bot 当前状态 (同步方法)

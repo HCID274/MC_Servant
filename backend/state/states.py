@@ -385,6 +385,7 @@ class IdleState(IState):
         
         try:
             # 添加用户消息到历史
+            user_input = event.payload.get("raw_input", "")
             context.add_message("user", user_input, event.source_player)
             
             # 构建消息 - 增强版 prompt 支持表演动作

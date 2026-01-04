@@ -160,6 +160,7 @@ class UniversalRunner(ITaskRunner):
         completed_steps: List["ActionResult"] = []
         last_result: Optional["ActionResult"] = None
         last_scan: Optional[dict] = None
+        last_find_location: Optional[dict] = None  # 语义感知结果
         
         # Inventory Delta 追踪 (用于辅助 LLM 判断)
         gather_item_id: Optional[str] = None
@@ -345,6 +346,10 @@ class UniversalRunner(ITaskRunner):
             # 保存 scan 结果
             if result.action in ("scan", "look_around") and result.success and isinstance(result.data, dict):
                 last_scan = result.data
+            
+            # 保存 find_location 结果 (供 LLM 下一步使用)
+            if result.action == "find_location" and result.success and isinstance(result.data, dict):
+                last_find_location = result.data
             
             # 6. Reflect: 处理结果
             if result.success:
@@ -782,6 +787,7 @@ class UniversalRunner(ITaskRunner):
             "goto": 60.0, "mine": 120.0, "mine_tree": 120.0,
             "craft": 30.0, "place": 10.0, "give": 30.0, "equip": 5.0, "scan": 10.0,
             "chat": 5.0, "look_around": 10.0, "unstuck": 5.0, "pickup": 60.0,
+            "find_location": 30.0, "patrol": 90.0,
         }
         if "timeout_sec" in params:
             params["timeout"] = params.pop("timeout_sec")
@@ -789,7 +795,7 @@ class UniversalRunner(ITaskRunner):
             params["timeout"] = DEFAULT_TIMEOUTS.get(action_name, 30.0)
         
         # some actions do not accept timeout
-        if action_name in {"scan", "chat", "look_around"} and "timeout" in params:
+        if action_name in {"scan", "chat", "look_around", "find_location"} and "timeout" in params:
             params.pop("timeout")
         
         # 获取动作方法

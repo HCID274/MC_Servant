@@ -16,6 +16,7 @@ Bot 动作实现层 (Layer 2: Python Actions)
 
 import asyncio
 import logging
+import math
 import time
 from typing import Optional, List, Dict, Any, Callable
 
@@ -1808,6 +1809,408 @@ class MineflayerActions(IBotActions):
             return entity_id in self._bot.entities
         except:
             return False
+    
+    # ========================================================================
+    # Semantic Perception - 语义感知动作
+    # ========================================================================
+    
+    async def find_location(
+        self,
+        feature: str,
+        radius: int = 64,
+        count: int = 1
+    ) -> ActionResult:
+        """
+        寻找符合特定特征的地点 (语义感知)
+        
+        简单接口：
+        - LLM 只需说 {"action": "find_location", "feature": "highest"}
+        
+        深度功能：
+        - Python 负责特征提取，返回候选坐标
+        - LLM 不需要处理原始高程数据，只需处理语义化的结果
+        
+        支持的特征：
+        - "highest": 视野内最高点 (山顶)
+        - "lowest": 视野内最低点 (谷底/洞穴入口)
+        - "flat": 平坦区域 (适合建筑)
+        - "water": 最近的水源 (河边/海边)
+        - "tree": 树木密集处 (森林)
+        """
+        start_time = time.time()
+        feature = feature.lower().strip()
+        
+        try:
+            bot_pos = self._bot.entity.position
+            candidates = []
+            
+            if feature == "highest":
+                # 算法：在半径内采样，寻找 Y 值最大的固体方块
+                # 采样步长：radius / 10，最小 4 格，最大 8 格
+                step = max(4, min(8, radius // 10))
+                max_y = -999
+                best_pos = None
+                best_dist = float('inf')
+                
+                for x in range(int(bot_pos.x - radius), int(bot_pos.x + radius + 1), step):
+                    for z in range(int(bot_pos.z - radius), int(bot_pos.z + radius + 1), step):
+                        # 检查是否在圆形范围内
+                        dx, dz = x - bot_pos.x, z - bot_pos.z
+                        if dx * dx + dz * dz > radius * radius:
+                            continue
+                        
+                        y = self._get_highest_block_y_at(x, z)
+                        if y is not None:
+                            dist = ((x - bot_pos.x)**2 + (z - bot_pos.z)**2) ** 0.5
+                            # 优先选择更高的点，相同高度选择更近的
+                            if y > max_y or (y == max_y and dist < best_dist):
+                                max_y = y
+                                best_pos = (x, y, z)
+                                best_dist = dist
+                
+                if best_pos:
+                    candidates.append({
+                        "x": best_pos[0], 
+                        "y": best_pos[1], 
+                        "z": best_pos[2],
+                        "description": f"Highest point (Y={best_pos[1]})",
+                        "distance": round(best_dist, 1)
+                    })
+            
+            elif feature == "lowest":
+                # 算法：在半径内采样，寻找 Y 值最小的固体方块（避免空洞）
+                step = max(4, min(8, radius // 10))
+                min_y = 999
+                best_pos = None
+                best_dist = float('inf')
+                
+                for x in range(int(bot_pos.x - radius), int(bot_pos.x + radius + 1), step):
+                    for z in range(int(bot_pos.z - radius), int(bot_pos.z + radius + 1), step):
+                        dx, dz = x - bot_pos.x, z - bot_pos.z
+                        if dx * dx + dz * dz > radius * radius:
+                            continue
+                        
+                        y = self._get_highest_block_y_at(x, z)
+                        if y is not None and y > 0:  # 避免虚空
+                            dist = ((x - bot_pos.x)**2 + (z - bot_pos.z)**2) ** 0.5
+                            if y < min_y or (y == min_y and dist < best_dist):
+                                min_y = y
+                                best_pos = (x, y, z)
+                                best_dist = dist
+                
+                if best_pos:
+                    candidates.append({
+                        "x": best_pos[0],
+                        "y": best_pos[1],
+                        "z": best_pos[2],
+                        "description": f"Lowest point (Y={best_pos[1]})",
+                        "distance": round(best_dist, 1)
+                    })
+            
+            elif feature == "flat":
+                # 算法：寻找 5x5 范围内 Y 轴方差最小的区域
+                step = 5  # 每 5 格检查一个候选中心
+                best_pos = None
+                best_variance = float('inf')
+                best_dist = float('inf')
+                
+                for cx in range(int(bot_pos.x - radius), int(bot_pos.x + radius + 1), step):
+                    for cz in range(int(bot_pos.z - radius), int(bot_pos.z + radius + 1), step):
+                        dx, dz = cx - bot_pos.x, cz - bot_pos.z
+                        if dx * dx + dz * dz > radius * radius:
+                            continue
+                        
+                        # 计算 5x5 区域的 Y 值方差
+                        heights = []
+                        for ox in range(-2, 3):
+                            for oz in range(-2, 3):
+                                y = self._get_highest_block_y_at(cx + ox, cz + oz)
+                                if y is not None:
+                                    heights.append(y)
+                        
+                        if len(heights) >= 20:  # 至少 80% 有效
+                            avg_y = sum(heights) / len(heights)
+                            variance = sum((h - avg_y) ** 2 for h in heights) / len(heights)
+                            dist = ((cx - bot_pos.x)**2 + (cz - bot_pos.z)**2) ** 0.5
+                            
+                            # 优先选择方差小的，方差相同选择更近的
+                            if variance < best_variance or (variance == best_variance and dist < best_dist):
+                                best_variance = variance
+                                best_pos = (cx, int(avg_y) + 1, cz)  # +1 站在地面上
+                                best_dist = dist
+                
+                if best_pos and best_variance < 2.0:  # 方差小于 2 才算平坦
+                    candidates.append({
+                        "x": best_pos[0],
+                        "y": best_pos[1],
+                        "z": best_pos[2],
+                        "description": f"Flat area (variance={best_variance:.2f})",
+                        "distance": round(best_dist, 1)
+                    })
+            
+            elif feature == "water":
+                # 使用 findBlocks 寻找水方块
+                water_id = None
+                try:
+                    water_info = self._mcData.blocksByName.water
+                    if water_info:
+                        water_id = water_info.id
+                except:
+                    pass
+                
+                if water_id:
+                    blocks = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self._bot.findBlocks({
+                            "matching": water_id,
+                            "maxDistance": radius,
+                            "count": count * 5  # 多找一些，以便筛选
+                        })
+                    )
+                    
+                    blocks = list(blocks) if blocks else []
+                    
+                    # 按距离排序，取最近的 count 个
+                    water_blocks = []
+                    for b in blocks:
+                        dist = bot_pos.distanceTo(b)
+                        water_blocks.append((b, dist))
+                    
+                    water_blocks.sort(key=lambda x: x[1])
+                    
+                    for b, dist in water_blocks[:count]:
+                        candidates.append({
+                            "x": int(b.x),
+                            "y": int(b.y),
+                            "z": int(b.z),
+                            "description": "Water source",
+                            "distance": round(dist, 1)
+                        })
+            
+            elif feature in ("tree", "forest"):
+                # 寻找原木密集区域
+                log_types = ["oak_log", "birch_log", "spruce_log", "jungle_log", 
+                            "acacia_log", "dark_oak_log", "cherry_log", "mangrove_log"]
+                
+                all_logs = []
+                for log_name in log_types:
+                    try:
+                        log_info = self._mcData.blocksByName[log_name]
+                        if log_info:
+                            blocks = self._bot.findBlocks({
+                                "matching": log_info.id,
+                                "maxDistance": radius,
+                                "count": 64
+                            })
+                            all_logs.extend(list(blocks) if blocks else [])
+                    except:
+                        pass
+                
+                if all_logs:
+                    # 找最近的原木（树的起点）
+                    nearest = min(all_logs, key=lambda b: bot_pos.distanceTo(b))
+                    dist = bot_pos.distanceTo(nearest)
+                    
+                    candidates.append({
+                        "x": int(nearest.x),
+                        "y": int(nearest.y),
+                        "z": int(nearest.z),
+                        "description": f"Tree/Forest area ({len(all_logs)} logs nearby)",
+                        "distance": round(dist, 1)
+                    })
+            
+            else:
+                return ActionResult(
+                    success=False,
+                    action="find_location",
+                    message=f"Unknown feature type: {feature}. Supported: highest, lowest, flat, water, tree",
+                    status=ActionStatus.FAILED,
+                    error_code="INVALID_PARAM",
+                    duration_ms=int((time.time() - start_time) * 1000)
+                )
+            
+            if not candidates:
+                return ActionResult(
+                    success=False,
+                    action="find_location",
+                    message=f"No location found matching feature '{feature}' within {radius} blocks",
+                    status=ActionStatus.FAILED,
+                    error_code="TARGET_NOT_FOUND",
+                    data={"feature": feature, "locations": []},
+                    duration_ms=int((time.time() - start_time) * 1000)
+                )
+            
+            return ActionResult(
+                success=True,
+                action="find_location",
+                message=f"Found {len(candidates)} location(s) matching '{feature}'",
+                status=ActionStatus.SUCCESS,
+                data={"feature": feature, "locations": candidates},
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
+            
+        except Exception as e:
+            logger.error(f"find_location failed: {e}")
+            return ActionResult(
+                success=False,
+                action="find_location",
+                message=str(e),
+                status=ActionStatus.FAILED,
+                error_code="UNKNOWN",
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
+    
+    def _get_highest_block_y_at(self, x: int, z: int) -> Optional[int]:
+        """
+        获取指定 X/Z 坐标处最高的固体方块 Y 坐标
+        
+        从 Bot 当前 Y 坐标开始向上/向下搜索，找到最高的可站立点
+        """
+        try:
+            # 从高处开始向下搜索
+            start_y = min(320, int(self._bot.entity.position.y) + 64)
+            
+            for y in range(start_y, -64, -1):
+                try:
+                    block = self._bot.blockAt({"x": x, "y": y, "z": z})
+                    if block and block.name != "air" and block.name != "void_air" and block.name != "cave_air":
+                        # 检查是否可站立（上方是空气）
+                        above = self._bot.blockAt({"x": x, "y": y + 1, "z": z})
+                        if above and above.name in ("air", "void_air", "cave_air"):
+                            return y + 1  # 返回可站立的位置
+                except:
+                    pass
+            
+            return None
+        except:
+            return None
+    
+    async def patrol(
+        self,
+        center_x: int,
+        center_z: int,
+        radius: int = 10,
+        duration: int = 30,
+        timeout: float = 60.0
+    ) -> ActionResult:
+        """
+        在指定区域内巡逻/游荡
+        
+        简单接口：
+        - LLM 只需说 {"action": "patrol", "center_x": 100, "center_z": 200, "radius": 10}
+        
+        深度功能：
+        - Python 自动生成随机巡逻路径点
+        - 依次导航到各个路径点
+        - 支持时间限制和超时保护
+        """
+        import random
+        
+        start_time = time.time()
+        waypoints_visited = 0
+        total_distance = 0.0
+        
+        logger.info(f"[patrol] Starting patrol at ({center_x}, {center_z}), radius={radius}, duration={duration}s")
+        
+        try:
+            # 获取巡逻起点的 Y 坐标
+            center_y = self._get_highest_block_y_at(center_x, center_z)
+            if center_y is None:
+                center_y = int(self._bot.entity.position.y)
+            
+            # 生成随机路径点（圆形分布）
+            num_waypoints = max(3, duration // 10)  # 大约每 10 秒一个路径点
+            waypoints = []
+            
+            for i in range(num_waypoints):
+                # 使用极坐标生成随机点
+                angle = random.uniform(0, 2 * 3.14159)
+                r = random.uniform(radius * 0.3, radius)  # 避免太靠近中心
+                
+                wx = int(center_x + r * math.cos(angle))
+                wz = int(center_z + r * math.sin(angle))
+                wy = self._get_highest_block_y_at(wx, wz)
+                
+                if wy is not None:
+                    waypoints.append((wx, wy, wz))
+            
+            if not waypoints:
+                return ActionResult(
+                    success=False,
+                    action="patrol",
+                    message="Failed to generate valid waypoints",
+                    status=ActionStatus.FAILED,
+                    error_code="TARGET_NOT_FOUND",
+                    duration_ms=int((time.time() - start_time) * 1000)
+                )
+            
+            logger.info(f"[patrol] Generated {len(waypoints)} waypoints")
+            
+            # 巡逻循环
+            patrol_start = time.time()
+            last_pos = self._bot.entity.position
+            
+            while time.time() - patrol_start < duration:
+                # 检查总超时
+                if time.time() - start_time > timeout:
+                    break
+                
+                # 选择下一个路径点
+                waypoint = random.choice(waypoints)
+                target_str = f"{waypoint[0]},{waypoint[1]},{waypoint[2]}"
+                
+                logger.debug(f"[patrol] Moving to waypoint: {target_str}")
+                
+                # 导航到路径点（设置较短超时）
+                goto_result = await self.goto(target_str, timeout=min(15, duration / 2))
+                
+                if goto_result.success:
+                    waypoints_visited += 1
+                    # 计算移动距离
+                    curr_pos = self._bot.entity.position
+                    dist = ((curr_pos.x - last_pos.x)**2 + 
+                           (curr_pos.y - last_pos.y)**2 + 
+                           (curr_pos.z - last_pos.z)**2) ** 0.5
+                    total_distance += dist
+                    last_pos = curr_pos
+                    
+                    # 短暂停留
+                    await asyncio.sleep(random.uniform(0.5, 2.0))
+                else:
+                    # 导航失败，尝试下一个路径点
+                    logger.debug(f"[patrol] Failed to reach waypoint, trying next")
+                    await asyncio.sleep(0.5)
+            
+            actual_duration = time.time() - patrol_start
+            
+            return ActionResult(
+                success=True,
+                action="patrol",
+                message=f"Patrol complete: visited {waypoints_visited} waypoints in {actual_duration:.1f}s",
+                status=ActionStatus.SUCCESS,
+                data={
+                    "waypoints_visited": waypoints_visited,
+                    "total_distance": round(total_distance, 1),
+                    "duration_actual": round(actual_duration, 1)
+                },
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
+            
+        except Exception as e:
+            logger.error(f"patrol failed: {e}")
+            return ActionResult(
+                success=waypoints_visited > 0,
+                action="patrol",
+                message=str(e) if waypoints_visited == 0 else f"Partial patrol: {waypoints_visited} waypoints",
+                status=ActionStatus.FAILED,
+                error_code="UNKNOWN",
+                data={
+                    "waypoints_visited": waypoints_visited,
+                    "total_distance": round(total_distance, 1),
+                    "duration_actual": round(time.time() - start_time, 1)
+                },
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
     
     def get_state(self) -> dict:
         """获取 Bot 当前状态"""
