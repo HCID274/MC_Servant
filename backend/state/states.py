@@ -369,6 +369,8 @@ class IdleState(IState):
         """
         使用 LLM 生成闲聊回复 + 表演动作
         
+        JSON 解析失败时自动重试，最多 3 次
+        
         Returns:
             {
                 "text": "回复文字",
@@ -378,9 +380,11 @@ class IdleState(IState):
         if not self._llm:
             return {"text": "主人好~ (LLM 未配置，无法进行深度对话)", "actions": []}
         
+        MAX_RETRIES = 3
+        user_input = event.payload.get("raw_input", "")
+        
         try:
             # 添加用户消息到历史
-            user_input = event.payload.get("raw_input", "")
             context.add_message("user", user_input, event.source_player)
             
             # 构建消息 - 增强版 prompt 支持表演动作
@@ -395,81 +399,107 @@ class IdleState(IState):
 - jump: 跳跃
 - look_at: 看向主人 (参数: target="@主人名字")
 
-## 响应格式
-你必须用 JSON 格式回复，包含两个字段：
-1. "text": 你要说的话（可爱俏皮风格）
-2. "actions": 要执行的动作列表（可选，没有动作就填空数组）
+## 响应格式 (必须严格遵守!)
+只输出一个 JSON 对象，格式如下:
+{{"text": "你的回复", "actions": []}}
 
 ## 示例
 用户: "给我跳个舞"
-回复: {{"text": "好的主人！看我的专属舞蹈喵~ ✧(≖ ◡ ≖✿)", "actions": [{{"type": "look_at", "target": "@{event.source_player}"}}, {{"type": "spin", "rotations": 2}}, {{"type": "jump"}}, {{"type": "spin", "rotations": -1}}]}}
-
-用户: "跳一下"
-回复: {{"text": "嘿咻！(๑•̀ㅂ•́)و✧", "actions": [{{"type": "jump"}}]}}
-
-用户: "看着我"
-回复: {{"text": "好的主人，我一直在看着你喵~ ♡", "actions": [{{"type": "look_at", "target": "@{event.source_player}"}}]}}
+{{"text": "好的主人！看我的专属舞蹈喵~ ✧(≖ ◡ ≖✿)", "actions": [{{"type": "look_at", "target": "@{event.source_player}"}}, {{"type": "spin", "rotations": 2}}, {{"type": "jump"}}]}}
 
 用户: "今天天气怎么样"
-回复: {{"text": "主人~我是女仆不是天气预报喵，不过只要和主人在一起，每天都是好天气呀！♪(^∇^*)", "actions": []}}
+{{"text": "主人~我是女仆不是天气预报喵，不过只要和主人在一起，每天都是好天气呀！♪(^∇^*)", "actions": []}}
 
 ## 重要
-- 只输出 JSON，不要有其他内容
+- 只输出 JSON，不要有任何其他文字
+- 不要使用 markdown 代码块
 - 表演请求（跳舞、转圈、看我等）要包含动作
-- 普通对话不需要动作，actions 填空数组
-- 动作要合理搭配，表现出活泼可爱的感觉"""
+- 普通对话不需要动作，actions 填空数组 []"""
 
-            messages = [
-                {"role": "system", "content": system_prompt},
-                *context.get_conversation_for_llm()
-            ]
+            last_response = None
             
-            response = await self._llm.chat(messages, max_tokens=512, temperature=0.7)
+            for attempt in range(1, MAX_RETRIES + 1):
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    *context.get_conversation_for_llm()
+                ]
+                
+                # 重试时追加格式修正提示
+                if attempt > 1:
+                    messages.append({
+                        "role": "user", 
+                        "content": f"请用纯 JSON 格式回复，不要有其他文字。格式: {{\"text\": \"...\", \"actions\": []}}"
+                    })
+                
+                response = await self._llm.chat(messages, max_tokens=512, temperature=0.7)
+                last_response = response
+                
+                if not response or not response.strip():
+                    logger.warning(f"LLM returned empty response (attempt {attempt}/{MAX_RETRIES})")
+                    continue
+                
+                # 尝试解析 JSON
+                parsed_result = self._try_parse_json_response(response)
+                if parsed_result is not None:
+                    logger.info(f"[Chat] JSON parsed successfully on attempt {attempt}")
+                    context.add_message("assistant", parsed_result["text"])
+                    return parsed_result
+                else:
+                    logger.warning(f"[Chat] JSON parse failed (attempt {attempt}/{MAX_RETRIES})")
             
-            if not response or not response.strip():
-                logger.warning("LLM returned empty response, using fallback")
-                return {"text": "嗯...喵？", "actions": []}
-            
-            # 解析 JSON 响应
-            try:
-                # 尝试提取 JSON（处理可能的 markdown 代码块）
-                response_text = response.strip()
-                if response_text.startswith("```"):
-                    # 移除 markdown 代码块标记
-                    lines = response_text.split("\n")
-                    json_lines = []
-                    in_block = False
-                    for line in lines:
-                        if line.startswith("```"):
-                            in_block = not in_block
-                            continue
-                        if in_block or not line.startswith("```"):
-                            json_lines.append(line)
-                    response_text = "\n".join(json_lines).strip()
-                
-                parsed = json.loads(response_text)
-                text = parsed.get("text", "喵~")
-                actions = parsed.get("actions", [])
-                
-                # 验证动作格式
-                valid_actions = []
-                for action in actions:
-                    if isinstance(action, dict) and action.get("type") in ["spin", "jump", "look_at"]:
-                        valid_actions.append(action)
-                
-                result = {"text": text, "actions": valid_actions}
-                
-            except json.JSONDecodeError:
-                # 如果解析失败，把原始响应当作纯文字
-                logger.warning(f"Failed to parse chat response as JSON, treating as plain text")
-                result = {"text": response.strip(), "actions": []}
-            
-            context.add_message("assistant", result["text"])
-            return result
+            # 所有重试都失败，使用最后一次响应作为纯文字
+            logger.warning(f"[Chat] All {MAX_RETRIES} attempts failed, using plain text fallback")
+            fallback_text = last_response.strip() if last_response else "喵？"
+            context.add_message("assistant", fallback_text)
+            return {"text": fallback_text, "actions": []}
             
         except Exception as e:
             logger.error(f"Chat generation failed: {e}")
             return {"text": "啊...我脑子有点转不过来了，再说一遍好吗喵~", "actions": []}
+    
+    def _try_parse_json_response(self, response: str) -> dict | None:
+        """
+        尝试解析 LLM 响应中的 JSON
+        
+        Returns:
+            成功返回 {"text": ..., "actions": [...]}, 失败返回 None
+        """
+        try:
+            response_text = response.strip()
+            
+            # 处理 markdown 代码块
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                json_lines = []
+                in_block = False
+                for line in lines:
+                    if line.startswith("```"):
+                        in_block = not in_block
+                        continue
+                    if in_block:
+                        json_lines.append(line)
+                response_text = "\n".join(json_lines).strip()
+            
+            # 尝试提取 JSON 对象（处理可能的前导/尾随文字）
+            start_idx = response_text.find("{")
+            end_idx = response_text.rfind("}") + 1
+            if start_idx != -1 and end_idx > start_idx:
+                response_text = response_text[start_idx:end_idx]
+            
+            parsed = json.loads(response_text)
+            text = parsed.get("text", "喵~")
+            actions = parsed.get("actions", [])
+            
+            # 验证动作格式
+            valid_actions = []
+            for action in actions:
+                if isinstance(action, dict) and action.get("type") in ["spin", "jump", "look_at"]:
+                    valid_actions.append(action)
+            
+            return {"text": text, "actions": valid_actions}
+            
+        except (json.JSONDecodeError, Exception):
+            return None
     
     async def _execute_performance_actions(self, actions: list) -> None:
         """执行表演动作序列"""
@@ -499,6 +529,7 @@ class IdleState(IState):
                         
             except Exception as e:
                 logger.warning(f"Performance action '{action_type}' failed: {e}")
+    
 
 
 class PlanningState(IState):
