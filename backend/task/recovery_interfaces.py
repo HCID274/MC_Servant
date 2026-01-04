@@ -23,11 +23,13 @@ class RecoveryLevel(Enum):
     """
     恢复策略级别
     
+    L0: 成功状态 (无需恢复)
     L1: 动作级重试 (最轻量)
     L2: 脱困策略 (连续失败时)
     L3: 报告并阻塞 (需要主人介入)
     L4: 超时兜底 (回主人身边)
     """
+    L0_SUCCESS = "L0"
     L1_ACTION_RETRY = "L1"
     L2_UNSTUCK = "L2"
     L3_REPORT_BLOCK = "L3"

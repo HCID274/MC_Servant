@@ -78,26 +78,21 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Database initialization failed (memory mode): {e}")
     
     # 初始化 LLM 客户端 (如果配置了 API Key)
-    if settings.openai_api_key:
-        try:
-            from llm.qwen_client import QwenClient
-            llm_client = QwenClient(
-                api_key=settings.openai_api_key,
-                base_url=settings.openai_base_url,
-                model=settings.openai_model,
-            )
-            logger.info(f"LLM client initialized: {settings.openai_model}")
-            
-            # 初始化 ContextManager (需要 LLM 客户端)
+    try:
+        from llm.factory import create_llm_client
+        llm_client = await create_llm_client()
+        if llm_client:
+            logger.info(f"LLM client initialized: {llm_client.model_name}")
+
             from llm.context_manager import ContextManager
             context_manager = ContextManager(llm_client=llm_client)
             await context_manager.start_worker()
             logger.info("ContextManager initialized with compression worker")
-        except Exception as e:
-            logger.warning(f"Failed to initialize LLM client: {e}")
-            llm_client = None
-    else:
-        logger.info("LLM not configured (no API key), using fallback intent recognition")
+        else:
+            logger.info("LLM not configured (no API key), using fallback intent recognition")
+    except Exception as e:
+        logger.warning(f"Failed to initialize LLM client: {e}")
+        llm_client = None
     
     bot_manager = BotManager(
         mc_host=settings.mc_host,
@@ -160,12 +155,18 @@ async def lifespan(app: FastAPI):
             resolver = SemanticActionResolver(knowledge_base)
             logger.info("LLMTaskActor and SemanticActionResolver initialized")
             
-            # 初始化 RunnerRegistry (注入 Actor/Resolver)
+            # 初始化 RunnerRegistry (注入 Actor/Resolver/Recovery)
             from task.runners import GatherRunner, LinearPlanRunner
             from task.runners.registry import RunnerRegistry
             from task.interfaces import TaskType
+            from task.behavior_rules import BehaviorRules
+            from task.recovery_coordinator import create_recovery_coordinator
             
-            gather_runner = GatherRunner(actor=actor, resolver=resolver)
+            # 加载行为规则并创建 RecoveryCoordinator
+            rules = BehaviorRules()
+            recovery = create_recovery_coordinator(rules)
+            
+            gather_runner = GatherRunner(actor=actor, resolver=resolver, recovery=recovery)
             linear_runner = LinearPlanRunner()
             
             runner_registry = RunnerRegistry()
@@ -173,7 +174,7 @@ async def lifespan(app: FastAPI):
                 runner_registry.register(task_type, gather_runner)
             for task_type in linear_runner.supported_types:
                 runner_registry.register(task_type, linear_runner)
-            logger.info("RunnerRegistry initialized with Actor/Resolver architecture")
+            logger.info("RunnerRegistry initialized with Actor/Resolver/Recovery architecture")
 
             executor = TaskExecutor(
                 planner,

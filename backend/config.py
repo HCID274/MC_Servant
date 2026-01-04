@@ -30,6 +30,22 @@ class Settings(BaseSettings):
     openai_api_key: str = ""  # DashScope API Key (格式: sk-xxxxxxxx)
     openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     openai_model: str = "qwen-flash"  # 默认使用 qwen-flash (速度快、成本低)
+    
+    # LLM 配置 (OpenRouter)
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = ""  # 单一模型 (为空时使用 openrouter_models)
+    openrouter_models: str = ""  # 逗号分隔的模型列表
+    openrouter_reasoning_enabled: bool = False
+    
+    # LLM Router 配置
+    llm_provider: str = "auto"  # auto | qwen | openrouter | weighted
+    llm_qwen_weight: int = 1
+    llm_openrouter_weight: int = 1
+    llm_call_log_path: str = "logs/llm_calls.log"
+    llm_preflight_enabled: bool = False
+    llm_preflight_fail_fast: bool = False
+    llm_preflight_timeout_seconds: int = 15
 
     # WebSocket 安全配置
     ws_access_token: str = ""  # WebSocket 访问 Token（必填）

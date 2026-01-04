@@ -106,6 +106,9 @@ class LLMTaskActor(ITaskActor):
     - 只输出语义意图，不输出坐标
     """
     
+    # 熔断阈值：连续失败 N 次后停止重试
+    MAX_CONSECUTIVE_FAILURES = 3
+    
     def __init__(
         self, 
         llm_client: "ILLMClient",
@@ -120,6 +123,7 @@ class LLMTaskActor(ITaskActor):
         """
         self._llm = llm_client
         self._kb = knowledge_base
+        self._consecutive_failures = 0
     
     async def decide(
         self,
@@ -138,6 +142,22 @@ class LLMTaskActor(ITaskActor):
         Returns:
             ActorDecision: 语义决策
         """
+        # 熔断检查：连续失败过多时，返回 clarify 请求用户帮助
+        if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+            logger.warning(
+                f"Actor circuit breaker triggered: {self._consecutive_failures} consecutive failures"
+            )
+            self._consecutive_failures = 0  # 重置，允许后续重试
+            return ActorDecision(
+                action=ActorActionType.CLARIFY,
+                target=None,
+                params={
+                    "question": "我遇到了一些问题，无法决定下一步行动。你能换个方式说明任务吗？",
+                    "error": "ACTOR_CIRCUIT_BREAKER"
+                },
+                reasoning="连续决策失败，触发熔断，请求用户帮助"
+            )
+        
         # 构建用户消息
         user_message = self._build_user_message(task_goal, bot_state, last_result)
         
@@ -153,11 +173,37 @@ class LLMTaskActor(ITaskActor):
                 temperature=0.2,
             )
             
-            return self._parse_response(response)
+            result = self._parse_response(response)
+            # 成功，重置失败计数器
+            self._consecutive_failures = 0
+            return result
+            
+        except (ConnectionError, TimeoutError, OSError) as e:
+            # 网络错误：记录并返回安全默认动作
+            self._consecutive_failures += 1
+            logger.error(f"Actor network error (attempt {self._consecutive_failures}): {e}")
+            return ActorDecision(
+                action=ActorActionType.SCAN,
+                target="block",
+                params={"radius": 32},
+                reasoning=f"网络错误，执行默认扫描: {str(e)}"
+            )
+            
+        except (json.JSONDecodeError, ValueError, KeyError) as e:
+            # 解析错误：可能是 LLM 配置问题
+            self._consecutive_failures += 1
+            logger.error(f"Actor parse error (attempt {self._consecutive_failures}): {e}")
+            return ActorDecision(
+                action=ActorActionType.SCAN,
+                target="block",
+                params={"radius": 32},
+                reasoning=f"响应解析失败，执行默认扫描: {str(e)}"
+            )
             
         except Exception as e:
-            logger.error(f"Actor decide failed: {e}")
-            # 返回一个安全的默认动作
+            # 其他未知错误
+            self._consecutive_failures += 1
+            logger.error(f"Actor decide failed (attempt {self._consecutive_failures}): {e}")
             return ActorDecision(
                 action=ActorActionType.SCAN,
                 target="block",

@@ -84,7 +84,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
         if result.success:
             self._reset_counters()
             return RecoveryDecision(
-                level=RecoveryLevel.L1_ACTION_RETRY,
+                level=RecoveryLevel.L0_SUCCESS,
                 action_type=RecoveryActionType.NO_RECOVERY,
                 should_retry=False,
                 reason="动作成功，无需恢复"

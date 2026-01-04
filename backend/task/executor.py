@@ -361,10 +361,19 @@ class TaskExecutor(ITaskExecutor):
                 )
                 return await runner.run(task, self._actions, self._planner, context)
         
-        # 回退：旧的类型推断逻辑（向后兼容）
-        # 对采集类任务启用"循环决策"
+        # 回退：旧的类型推断逻辑 -> 转换为 TaskType 并路由到 RunnerRegistry
+        # 对采集类任务启用 Tick Loop (通过 GatherRunner)
         if self._should_use_tick_loop(task):
-            return await self._execute_task_tick_loop(task)
+            # 设置 task_type 并重新路由到 RunnerRegistry (消除代码重复)
+            task.task_type = TaskType.GATHER
+            runner = self._registry.get(TaskType.GATHER)
+            if runner is not None:
+                context = RunContext(
+                    owner_name=self._owner_name,
+                    owner_position=self._owner_position,
+                    on_progress=self._on_progress,
+                )
+                return await runner.run(task, self._actions, self._planner, context)
 
         retries = 0
         completed_steps: List["ActionResult"] = []
@@ -497,13 +506,30 @@ class TaskExecutor(ITaskExecutor):
 
     async def _execute_task_tick_loop(self, task: StackTask) -> TaskResult:
         """
-        采集任务 Tick Loop：
+        [已弃用] 采集任务 Tick Loop
+        
+        ⚠️ 此方法已弃用，请使用 GatherRunner 代替。
+        所有采集类任务现在通过 RunnerRegistry 路由到 GatherRunner。
+        
+        保留此方法是为了向后兼容，但不再维护。
+        
+        原始功能：
         每个 tick：
         1) Observe：bot_state + last_scan + last_result + history
         2) Act：LLM 只输出 1 个动作（或 done=true）
         3) Execute：执行动作
         4) Reflect：通过下一次 act() 的 done 或动作结果收敛
+        
+        推荐迁移：
+        - 使用 task.task_type = TaskType.GATHER
+        - 任务会自动路由到 GatherRunner.run()
         """
+        import warnings
+        warnings.warn(
+            "_execute_task_tick_loop is deprecated, use GatherRunner instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
         completed_steps: List["ActionResult"] = []
         last_result: Optional["ActionResult"] = None
         last_scan: Optional[dict] = None

@@ -253,11 +253,15 @@ class SemanticActionResolver(IActionResolver):
                     description="走到主人身边"
                 )
             else:
-                # 没有 owner_position，返回错误
+                # 没有 owner_position，返回失败状态让上层处理
+                logger.warning("Cannot goto owner: owner_position not available")
                 return GroundedAction(
-                    action="goto",
-                    params={"target": "0,64,0"},
-                    description="无法获取主人位置"
+                    action="clarify",
+                    params={
+                        "question": "无法获取主人位置，请问你在哪里？",
+                        "error": "OWNER_POSITION_UNAVAILABLE"
+                    },
+                    description="无法获取主人位置，需要澄清"
                 )
         
         # 如果 target 已经是坐标格式，直接使用
@@ -301,8 +305,19 @@ class SemanticActionResolver(IActionResolver):
         params = decision.params or {}
         count = params.get("count", 1)
         
-        # 获取主人名称
-        player_name = context.owner_name or "unknown"
+        # 获取主人名称，如果不存在则返回 clarify
+        if not context.owner_name:
+            logger.warning("Cannot give: owner_name not available")
+            return GroundedAction(
+                action="clarify",
+                params={
+                    "question": "我应该把物品给谁？请告诉我你的名字。",
+                    "error": "OWNER_NAME_UNAVAILABLE"
+                },
+                description="无法确定交付对象，需要澄清"
+            )
+        
+        player_name = context.owner_name
         
         # 解析物品名
         resolved = self._kb.resolve_alias(target) if target else target

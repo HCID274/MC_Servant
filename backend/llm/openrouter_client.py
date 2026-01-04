@@ -1,5 +1,3 @@
-# Qwen-Flash Client Implementation
-
 import json
 import logging
 import time
@@ -13,88 +11,79 @@ from .interfaces import ILLMClient
 logger = logging.getLogger(__name__)
 
 
-class QwenClient(ILLMClient):
-    """
-    通义千问 Qwen-Flash 客户端实现
-    
-    使用 OpenAI 兼容接口调用阿里云 DashScope API
-    
-    特点:
-    - qwen-flash: 速度快、成本低、JSON 输出稳定
-    - 支持 response_format={"type": "json_object"} 的 JSON Mode
-    """
-    
+class OpenRouterClient(ILLMClient):
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model: str = "qwen-flash",
+        model: str,
+        base_url: str = "https://openrouter.ai/api/v1",
+        reasoning_enabled: bool = False,
         call_logger: Optional[LLMCallLogger] = None,
-    ):
-        """
-        初始化 Qwen 客户端
-        
-        Args:
-            api_key: DashScope API Key (格式: sk-xxxxxxxx)
-            base_url: OpenAI 兼容 API 地址
-            model: 模型名称 (qwen-flash / qwen-max)
-        """
+    ) -> None:
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
         )
         self._model = model
-        self._provider = "qwen"
+        self._reasoning_enabled = reasoning_enabled
+        self._provider = "openrouter"
         self._call_logger = call_logger
-        logger.info(f"QwenClient initialized with model: {model}")
-    
+        logger.info(f"OpenRouterClient initialized with model: {model}")
+
     @property
     def model_name(self) -> str:
         return self._model
-    
+
+    def _build_request_kwargs(self, **kwargs: object) -> dict:
+        request_kwargs = dict(kwargs)
+        if self._reasoning_enabled:
+            request_kwargs["extra_body"] = {"reasoning": {"enabled": True}}
+        return request_kwargs
+
     async def chat(
         self,
         messages: list[dict],
         max_tokens: int = 512,
         temperature: float = 0.7,
     ) -> str:
-        """发送聊天请求，返回模型回复文本"""
         start = time.perf_counter()
         usage = None
         try:
             response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
+                **self._build_request_kwargs(
+                    model=self._model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
             )
             usage = response.usage
             content = response.choices[0].message.content
             logger.debug(f"LLM response: {content[:100]}...")
             self._log_call("chat", True, start, usage, None)
             return content
-            
         except Exception as e:
             self._log_call("chat", False, start, usage, str(e))
-            logger.error(f"QwenClient.chat failed: {e}")
+            logger.error(f"OpenRouterClient.chat failed: {e}")
             raise
-    
+
     async def chat_json(
         self,
         messages: list[dict],
         max_tokens: int = 512,
         temperature: float = 0.3,
     ) -> dict:
-        """Send a chat request and return JSON."""
         start = time.perf_counter()
         usage = None
         try:
             response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                response_format={"type": "json_object"},
+                **self._build_request_kwargs(
+                    model=self._model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format={"type": "json_object"},
+                )
             )
             usage = response.usage
             content = response.choices[0].message.content
@@ -105,7 +94,6 @@ class QwenClient(ILLMClient):
             logger.debug(f"LLM JSON response: {result}")
             self._log_call("chat_json", True, start, usage, None)
             return result
-
         except json.JSONDecodeError as e:
             self._log_call("chat_json", False, start, usage, f"json_decode_error: {e}")
             logger.error(f"Failed to parse LLM response as JSON: {e}")
@@ -113,7 +101,7 @@ class QwenClient(ILLMClient):
             raise
         except Exception as e:
             self._log_call("chat_json", False, start, usage, str(e))
-            logger.error(f"QwenClient.chat_json failed: {e}")
+            logger.error(f"OpenRouterClient.chat_json failed: {e}")
             raise
 
     def _extract_usage(self, usage: Optional[object]) -> Tuple[int, int, int]:
@@ -154,24 +142,3 @@ class QwenClient(ILLMClient):
             total_tokens=total_tokens,
             error=error,
         )
-
-
-def create_qwen_client(
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
-    model: Optional[str] = None,
-    call_logger: Optional[LLMCallLogger] = None,
-) -> QwenClient:
-    """
-    工厂函数：从配置创建 QwenClient
-    
-    优先使用传入参数，否则从 settings 读取
-    """
-    from config import settings
-    
-    return QwenClient(
-        api_key=api_key or settings.openai_api_key,
-        base_url=base_url or settings.openai_base_url,
-        model=model or settings.openai_model,
-        call_logger=call_logger,
-    )

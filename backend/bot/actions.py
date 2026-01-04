@@ -96,6 +96,13 @@ class MineflayerActions(IBotActions):
         
         # 进度感知超时支持
         self._progress_timer: Optional[ProgressTimer] = None
+        
+        # 线程管理：追踪所有后台采集线程，防止资源泄漏
+        import threading
+        self._background_threads: List[threading.Thread] = []
+        self._thread_lock = threading.Lock()
+        self._shutdown_requested = False
+        
         self._setup_progress_events()
     
     def _setup_progress_events(self):
@@ -108,6 +115,50 @@ class MineflayerActions(IBotActions):
         # 暂时不注册事件，避免 JSPyBridge 崩溃
         # 使用 inventory 轮询来检测进度
         pass
+    
+    def _track_thread(self, thread: "threading.Thread") -> None:
+        """追踪后台线程"""
+        with self._thread_lock:
+            # 清理已完成的线程
+            self._background_threads = [t for t in self._background_threads if t.is_alive()]
+            self._background_threads.append(thread)
+    
+    def stop_all_background_tasks(self, timeout: float = 5.0) -> int:
+        """
+        停止所有后台任务，释放资源
+        
+        Args:
+            timeout: 等待每个线程结束的超时时间
+            
+        Returns:
+            仍在运行的线程数
+        """
+        self._shutdown_requested = True
+        
+        # 停止 pathfinder
+        try:
+            self._bot.pathfinder.stop()
+        except:
+            pass
+        
+        # 等待线程结束
+        with self._thread_lock:
+            threads = self._background_threads.copy()
+        
+        still_running = 0
+        for t in threads:
+            if t.is_alive():
+                t.join(timeout=timeout / len(threads) if threads else timeout)
+                if t.is_alive():
+                    still_running += 1
+                    logger.warning(f"Thread {t.name} did not terminate in time")
+        
+        # 清空列表
+        with self._thread_lock:
+            self._background_threads.clear()
+        
+        self._shutdown_requested = False
+        return still_running
     
     # ========================================================================
     # Core Actions
@@ -303,14 +354,17 @@ class MineflayerActions(IBotActions):
                 def do_collect():
                     nonlocal collect_done, collect_error
                     try:
+                        if self._shutdown_requested:
+                            return
                         self._bot.collectBlock.collect(target_block)
                         collect_done = True
                     except Exception as e:
                         collect_error = e
                 
-                # 在后台线程启动采集
+                # 在后台线程启动采集 (追踪以防资源泄漏)
                 import threading
-                collect_thread = threading.Thread(target=do_collect, daemon=True)
+                collect_thread = threading.Thread(target=do_collect, daemon=True, name=f"collect_{block_type}")
+                self._track_thread(collect_thread)
                 collect_thread.start()
                 
                 # 轮询等待，同时检查进度 (通过 inventory 变化)
@@ -560,13 +614,17 @@ class MineflayerActions(IBotActions):
                         def do_collect():
                             nonlocal collect_done, collect_error
                             try:
+                                if self._shutdown_requested:
+                                    return
                                 self._bot.collectBlock.collect(block)
                                 collect_done = True
                             except Exception as e:
                                 collect_error = e
 
                         import threading
-                        threading.Thread(target=do_collect, daemon=True).start()
+                        tree_thread = threading.Thread(target=do_collect, daemon=True, name=f"collect_tree_{x}_{y}_{z}")
+                        self._track_thread(tree_thread)
+                        tree_thread.start()
 
                         collect_start = time.time()
                         while (not collect_done) and collect_error is None and (time.time() - collect_start < COLLECT_WAIT_SEC):
