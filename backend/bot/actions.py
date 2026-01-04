@@ -1508,6 +1508,307 @@ class MineflayerActions(IBotActions):
                 duration_ms=int((time.time() - start_time) * 1000)
             )
     
+    async def pickup(
+        self,
+        target: Optional[str] = None,
+        count: int = -1,
+        radius: int = 16,
+        timeout: float = 60.0
+    ) -> ActionResult:
+        """
+        拾取附近的掉落物
+        
+        简单接口：
+        - LLM 只需说 {"action": "pickup", "target": "apple"}
+        
+        深度功能：
+        - 自动寻找最近的掉落物 → 寻路走过去 → 校验是否捡到 → 找下一个
+        - 支持指定物品类型过滤
+        - 支持指定拾取数量
+        - 30秒无进度超时保护
+        
+        Args:
+            target: 目标物品类型 (可选，None 或 "all" 表示拾取所有)
+            count: 拾取数量 (-1 表示尽可能多捡)
+            radius: 搜索半径 (格)
+            timeout: 超时时间 (秒)
+            
+        Returns:
+            ActionResult
+            data: {"picked_up": {"apple": 3, "oak_log": 5}, "total": 8}
+        """
+        start_time = time.time()
+        picked_up: Dict[str, int] = {}
+        total_picked = 0
+        
+        # 进度感知超时 (30秒无进度)
+        self._progress_timer = ProgressTimer(timeout_seconds=30.0)
+        
+        # 目标物品类型 (None 表示捡所有)
+        target_item_name: Optional[str] = None
+        if target and target.lower() not in ("all", "any", "*", ""):
+            target_item_name = target.lower()
+        
+        # 无限拾取模式还是指定数量
+        unlimited_mode = (count <= 0)
+        remaining = count if count > 0 else float('inf')
+        
+        logger.info(f"[pickup] Starting: target={target_item_name or 'all'}, count={count}, radius={radius}")
+        
+        try:
+            while remaining > 0:
+                # 检查总超时
+                if time.time() - start_time > timeout:
+                    msg = f"拾取超时，已捡起 {total_picked} 个物品"
+                    return ActionResult(
+                        success=total_picked > 0,
+                        action="pickup",
+                        message=msg,
+                        status=ActionStatus.TIMEOUT if total_picked == 0 else ActionStatus.SUCCESS,
+                        error_code="TIMEOUT" if total_picked == 0 else None,
+                        data={"picked_up": picked_up, "total": total_picked},
+                        duration_ms=int((time.time() - start_time) * 1000)
+                    )
+                
+                # 检查进度超时 (30秒无进度)
+                if self._progress_timer.is_expired():
+                    msg = f"拾取停滞（30秒无进度），已捡起 {total_picked} 个物品"
+                    return ActionResult(
+                        success=total_picked > 0,
+                        action="pickup",
+                        message=msg,
+                        status=ActionStatus.SUCCESS if total_picked > 0 else ActionStatus.FAILED,
+                        error_code="NO_PROGRESS" if total_picked == 0 else None,
+                        data={"picked_up": picked_up, "total": total_picked},
+                        duration_ms=int((time.time() - start_time) * 1000)
+                    )
+                
+                # 1. 寻找附近的掉落物实体
+                item_entity = self._find_nearest_item_entity(target_item_name, radius)
+                
+                if not item_entity:
+                    # 没有更多掉落物了
+                    if total_picked > 0:
+                        msg = f"附近没有更多掉落物了，共捡起 {total_picked} 个物品"
+                        return ActionResult(
+                            success=True,
+                            action="pickup",
+                            message=msg,
+                            status=ActionStatus.SUCCESS,
+                            data={"picked_up": picked_up, "total": total_picked},
+                            duration_ms=int((time.time() - start_time) * 1000)
+                        )
+                    else:
+                        target_desc = target_item_name or "掉落物"
+                        msg = f"附近 {radius} 格内没有找到 {target_desc}"
+                        return ActionResult(
+                            success=False,
+                            action="pickup",
+                            message=msg,
+                            status=ActionStatus.FAILED,
+                            error_code="TARGET_NOT_FOUND",
+                            data={"picked_up": picked_up, "total": 0},
+                            duration_ms=int((time.time() - start_time) * 1000)
+                        )
+                
+                # 2. 获取掉落物信息
+                item_pos = item_entity.get("position")
+                item_name = item_entity.get("name", "unknown")
+                entity_id = item_entity.get("entity_id")
+                
+                logger.info(f"[pickup] Found item: {item_name} at ({item_pos['x']:.1f}, {item_pos['y']:.1f}, {item_pos['z']:.1f})")
+                
+                # 3. 记录拾取前的背包状态
+                inventory_before = self._get_inventory_count(item_name)
+                
+                # 4. 走向掉落物（会自动拾取）
+                try:
+                    target_str = f"{int(item_pos['x'])},{int(item_pos['y'])},{int(item_pos['z'])}"
+                    
+                    # 使用 pathfinder 导航到掉落物位置
+                    goal = self._pathfinder.goals.GoalNear(
+                        int(item_pos['x']), 
+                        int(item_pos['y']), 
+                        int(item_pos['z']), 
+                        1  # 到达 1 格内即可（会自动拾取）
+                    )
+                    self._bot.pathfinder.setGoal(goal)
+                    
+                    # 等待到达或物品消失（表示被捡起）
+                    pickup_start = time.time()
+                    pickup_timeout = 10.0  # 单个物品最多等 10 秒
+                    
+                    while time.time() - pickup_start < pickup_timeout:
+                        await asyncio.sleep(0.3)
+                        
+                        # 检查物品是否已经消失（被捡起）
+                        if entity_id and not self._entity_exists(entity_id):
+                            logger.debug(f"[pickup] Entity {entity_id} disappeared (picked up)")
+                            break
+                        
+                        # 检查是否已经到达
+                        if not self._bot.pathfinder.isMoving():
+                            # 再等一小会儿让拾取发生
+                            await asyncio.sleep(0.5)
+                            break
+                    
+                    # 停止寻路
+                    try:
+                        self._bot.pathfinder.stop()
+                    except:
+                        pass
+                    
+                except Exception as e:
+                    logger.warning(f"[pickup] Navigation to item failed: {e}")
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                # 5. 检测是否真的捡到了（通过 inventory 变化）
+                await asyncio.sleep(0.3)  # 等待 inventory 同步
+                inventory_after = self._get_inventory_count(item_name)
+                actually_picked = inventory_after - inventory_before
+                
+                if actually_picked > 0:
+                    picked_up[item_name] = picked_up.get(item_name, 0) + actually_picked
+                    total_picked += actually_picked
+                    remaining -= actually_picked
+                    self._progress_timer.reset("item_picked")
+                    logger.info(f"[pickup] Picked up {actually_picked} x {item_name}, total: {total_picked}")
+                else:
+                    # 物品可能消失了但没进背包（被其他玩家捡走或消失）
+                    # 也可能是背包满了
+                    if not self._entity_exists(entity_id):
+                        logger.debug(f"[pickup] Item {item_name} disappeared but not in inventory")
+                        self._progress_timer.reset("item_disappeared")
+                    else:
+                        logger.debug(f"[pickup] Item {item_name} still exists, may be unreachable")
+                
+                # 短暂等待避免过于频繁的循环
+                await asyncio.sleep(0.2)
+            
+            # 达到目标数量
+            msg = f"成功捡起 {total_picked} 个物品"
+            return ActionResult(
+                success=True,
+                action="pickup",
+                message=msg,
+                status=ActionStatus.SUCCESS,
+                data={"picked_up": picked_up, "total": total_picked},
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
+            
+        except Exception as e:
+            logger.error(f"pickup failed: {e}")
+            return ActionResult(
+                success=total_picked > 0,
+                action="pickup",
+                message=str(e) if total_picked == 0 else f"部分成功，已捡起 {total_picked} 个",
+                status=ActionStatus.FAILED,
+                error_code="UNKNOWN",
+                data={"picked_up": picked_up, "total": total_picked},
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
+        finally:
+            self._progress_timer = None
+    
+    def _find_nearest_item_entity(
+        self, 
+        target_name: Optional[str] = None, 
+        radius: int = 16
+    ) -> Optional[Dict[str, Any]]:
+        """
+        寻找最近的掉落物实体
+        
+        Args:
+            target_name: 目标物品类型 (可选，None 表示任意物品)
+            radius: 搜索半径
+            
+        Returns:
+            {"entity_id": int, "name": str, "position": {x, y, z}, "distance": float}
+            或 None
+        """
+        try:
+            bot_pos = self._bot.entity.position
+            nearest = None
+            nearest_dist = float('inf')
+            
+            for entity_id in self._bot.entities:
+                entity = self._bot.entities[entity_id]
+                
+                # 检查是否是掉落物实体
+                if entity.name != "item":
+                    continue
+                
+                # 获取物品名称
+                item_name = None
+                try:
+                    # Mineflayer 中 item entity 有 metadata 包含物品信息
+                    if hasattr(entity, 'metadata') and entity.metadata:
+                        for meta in entity.metadata:
+                            if isinstance(meta, dict) and 'itemId' in meta:
+                                # 通过 itemId 获取物品名称
+                                item_id = meta.get('itemId')
+                                item_info = self._mcData.items[item_id]
+                                if item_info:
+                                    item_name = item_info.name
+                                break
+                            elif isinstance(meta, dict) and 'nbtData' in meta:
+                                # 某些版本可能有 nbtData
+                                pass
+                    
+                    # 备用方法：尝试从 entity.getDroppedItem() 获取
+                    if not item_name:
+                        try:
+                            dropped_item = entity.getDroppedItem()
+                            if dropped_item:
+                                item_name = dropped_item.name
+                        except:
+                            pass
+                    
+                    # 再次备用：使用 displayName 或 name
+                    if not item_name:
+                        item_name = getattr(entity, 'displayName', None) or "unknown"
+                        
+                except Exception as e:
+                    logger.debug(f"Failed to get item name for entity {entity_id}: {e}")
+                    item_name = "unknown"
+                
+                # 过滤：如果指定了目标类型，检查是否匹配
+                if target_name:
+                    # 模糊匹配：target_name 可以是物品名的一部分
+                    if item_name and target_name.lower() not in item_name.lower():
+                        continue
+                
+                # 计算距离
+                try:
+                    e_pos = entity.position
+                    dist = ((e_pos.x - bot_pos.x)**2 + (e_pos.y - bot_pos.y)**2 + (e_pos.z - bot_pos.z)**2) ** 0.5
+                    
+                    if dist <= radius and dist < nearest_dist:
+                        nearest_dist = dist
+                        nearest = {
+                            "entity_id": entity_id,
+                            "name": item_name or "unknown",
+                            "position": {"x": e_pos.x, "y": e_pos.y, "z": e_pos.z},
+                            "distance": dist
+                        }
+                except Exception as e:
+                    logger.debug(f"Failed to get position for entity {entity_id}: {e}")
+                    continue
+            
+            return nearest
+            
+        except Exception as e:
+            logger.warning(f"_find_nearest_item_entity failed: {e}")
+            return None
+    
+    def _entity_exists(self, entity_id) -> bool:
+        """检查实体是否仍然存在"""
+        try:
+            return entity_id in self._bot.entities
+        except:
+            return False
+    
     def get_state(self) -> dict:
         """获取 Bot 当前状态"""
         try:

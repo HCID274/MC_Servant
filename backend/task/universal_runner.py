@@ -635,6 +635,15 @@ class UniversalRunner(ITaskRunner):
                 params.setdefault("near_position", context.owner_position)
                 params.setdefault("search_radius", int(self._rules.thresholds.default_search_radius))
         
+        elif action == "pickup":
+            # LLM: {"target": "apple"} → {"target": "apple"}
+            # pickup 动作的 target 参数已经是正确的格式，无需转换
+            # 但可以接受 item/item_name 别名
+            if "item" in params and "target" not in params:
+                params["target"] = params.pop("item")
+            elif "item_name" in params and "target" not in params:
+                params["target"] = params.pop("item_name")
+        
         return ActionStep(action=action, params=params, description=step.description)
     
     def _convert_to_mine_tree(
@@ -772,7 +781,7 @@ class UniversalRunner(ITaskRunner):
         DEFAULT_TIMEOUTS = {
             "goto": 60.0, "mine": 120.0, "mine_tree": 120.0,
             "craft": 30.0, "place": 10.0, "give": 30.0, "equip": 5.0, "scan": 10.0,
-            "chat": 5.0, "look_around": 10.0, "unstuck": 5.0,
+            "chat": 5.0, "look_around": 10.0, "unstuck": 5.0, "pickup": 60.0,
         }
         if "timeout_sec" in params:
             params["timeout"] = params.pop("timeout_sec")

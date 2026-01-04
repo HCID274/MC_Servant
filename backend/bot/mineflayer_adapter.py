@@ -202,6 +202,88 @@ class MineflayerBot(IBotController):
             logger.error(f"Chat failed: {e}")
             return False
     
+    async def spin(self, rotations: int = 1, duration: float = 1.0) -> bool:
+        """
+        原地旋转（表演动作）
+        
+        通过逐步修改 bot 的 yaw 角度实现旋转效果
+        """
+        if not self.is_connected:
+            logger.warning("Cannot spin: Bot not connected")
+            return False
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self._do_spin(rotations, duration))
+            logger.info(f"Bot {self._username} spinned {rotations} times!")
+            return True
+        except Exception as e:
+            logger.error(f"Spin failed: {e}")
+            return False
+    
+    def _do_spin(self, rotations: int, duration: float):
+        """执行旋转（阻塞操作）"""
+        import time
+        import math
+        
+        # 每圈分成 16 个步骤，更平滑的旋转
+        steps_per_rotation = 16
+        total_steps = abs(rotations) * steps_per_rotation
+        angle_per_step = (2 * math.pi / steps_per_rotation) * (1 if rotations > 0 else -1)
+        step_duration = duration / steps_per_rotation
+        
+        for _ in range(total_steps):
+            try:
+                # 获取当前 yaw 并增加角度
+                current_yaw = self._bot.entity.yaw
+                new_yaw = current_yaw + angle_per_step
+                
+                # 使用 look 方法设置朝向 (yaw, pitch)
+                # pitch 保持不变（水平看）
+                self._bot.look(new_yaw, 0, True)  # True 表示强制更新
+                time.sleep(step_duration)
+            except Exception as e:
+                logger.warning(f"Spin step failed: {e}")
+                break
+    
+    async def look_at(self, target: str) -> bool:
+        """
+        看向目标（表演动作）
+        
+        Args:
+            target: 目标 ("@PlayerName" 或 "x,y,z")
+        """
+        if not self.is_connected:
+            logger.warning("Cannot look_at: Bot not connected")
+            return False
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self._do_look_at(target))
+            logger.info(f"Bot {self._username} looked at {target}")
+            return True
+        except Exception as e:
+            logger.error(f"Look at failed: {e}")
+            return False
+    
+    def _do_look_at(self, target: str):
+        """执行看向目标（阻塞操作）"""
+        if target.startswith("@"):
+            # 看向玩家
+            player_name = target[1:]
+            player = self._bot.players.get(player_name)
+            if player and player.entity:
+                # lookAt 会自动计算角度
+                self._bot.lookAt(player.entity.position.offset(0, 1.6, 0))  # 看向玩家眼睛高度
+            else:
+                logger.warning(f"Player {player_name} not found")
+        else:
+            # 看向坐标
+            parts = target.split(",")
+            if len(parts) == 3:
+                x, y, z = map(float, parts)
+                self._bot.lookAt(self._Vec3(x, y, z))
+            else:
+                logger.warning(f"Invalid target format: {target}")
+    
     async def get_position(self) -> Optional[Tuple[float, float, float]]:
         """获取当前位置"""
         if not self.is_connected:

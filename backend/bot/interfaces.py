@@ -181,6 +181,38 @@ class IBotActions(ABC):
         pass
     
     @abstractmethod
+    async def pickup(
+        self, 
+        target: Optional[str] = None, 
+        count: int = -1,
+        radius: int = 16, 
+        timeout: float = 60.0
+    ) -> ActionResult:
+        """
+        拾取附近的掉落物
+        
+        简单接口：
+        - LLM 只需说 {"action": "pickup", "target": "apple"}
+        
+        深度功能：
+        - 自动寻找最近的掉落物 → 寻路走过去 → 校验是否捡到 → 找下一个
+        - 支持指定物品类型过滤
+        - 支持指定拾取数量
+        - 超时保护与进度追踪
+        
+        Args:
+            target: 目标物品类型 (可选，None 或 "all" 表示拾取所有)
+            count: 拾取数量 (-1 表示尽可能多捡)
+            radius: 搜索半径 (格)
+            timeout: 超时时间 (秒)
+            
+        Returns:
+            ActionResult
+            data: {"picked_up": {"apple": 3, "oak_log": 5}, "total": 8}
+        """
+        pass
+    
+    @abstractmethod
     def get_state(self) -> dict:
         """
         获取 Bot 当前状态 (同步方法)
@@ -236,6 +268,33 @@ class IBotController(ABC):
     @abstractmethod
     async def jump(self) -> bool:
         """跳跃"""
+        pass
+    
+    @abstractmethod
+    async def spin(self, rotations: int = 1, duration: float = 1.0) -> bool:
+        """
+        原地旋转（表演动作）
+        
+        Args:
+            rotations: 旋转圈数 (正数顺时针，负数逆时针)
+            duration: 每圈耗时（秒）
+            
+        Returns:
+            是否成功
+        """
+        pass
+    
+    @abstractmethod
+    async def look_at(self, target: str) -> bool:
+        """
+        看向目标（表演动作）
+        
+        Args:
+            target: 目标 ("@PlayerName" 或 "x,y,z")
+            
+        Returns:
+            是否成功
+        """
         pass
     
     @abstractmethod

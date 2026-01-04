@@ -134,6 +134,7 @@ async def lifespan(app: FastAPI):
             executor=None,
             actions=actions,
             llm=llm_client,
+            bot=default_bot,  # 表演动作：spin, look_at, jump
         )
         
         # Layer 3: 规划/执行层 (如果有 LLM)
@@ -306,6 +307,12 @@ async def lifespan(app: FastAPI):
             async def jump(self) -> bool:
                 logger.info("[MockBot] Jump!")
                 return True
+            async def spin(self, rotations: int = 1, duration: float = 1.0) -> bool:
+                logger.info(f"[MockBot] Spin {rotations} times!")
+                return True
+            async def look_at(self, target: str) -> bool:
+                logger.info(f"[MockBot] Look at {target}")
+                return True
             async def chat(self, message: str) -> bool:
                 logger.info(f"[MockBot] Chat: {message}")
                 return True
@@ -325,6 +332,7 @@ async def lifespan(app: FastAPI):
             executor=None, # MockBot 模式下暂不需要 Executor (或者由于没有 Java 连接无法工作)
             actions=None,  # MockBot 暂无 Actions
             llm=llm_client,
+            bot=mock_bot,  # 表演动作 (MockBot)
         )
 
         state_machine = StateMachine(

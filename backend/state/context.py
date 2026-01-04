@@ -136,6 +136,7 @@ class BotContext:
         actions: Bot 动作接口 (Optional)
         resolver: 实体解析器 (Optional)
         llm: LLM 客户端 (Optional)
+        bot: Bot 控制器 (Optional) - 表演动作
     """
     runtime: RuntimeContext = field(default_factory=RuntimeContext)
     
@@ -144,6 +145,7 @@ class BotContext:
     actions: Optional[Any] = None   # IBotActions
     resolver: Optional[Any] = None  # IEntityResolver
     llm: Optional[Any] = None       # ILLMClient
+    bot: Optional[Any] = None       # IBotController (表演动作：spin, look_at, jump)
     
     # 全息显示节流器
     _last_hologram_update: float = field(default=0.0)

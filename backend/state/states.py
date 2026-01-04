@@ -337,12 +337,22 @@ class IdleState(IState):
             )
         
         elif event.type == EventType.CHAT:
-            # 闲聊
+            # 闲聊 + 表演动作
             logger.info(f"[DEBUG] IdleState: CHAT event received")
-            response = await self._generate_chat_response(event, context)
+            chat_result = await self._generate_chat_response(event, context)
+            
+            response_text = chat_result.get("text", "喵~")
+            actions = chat_result.get("actions", [])
+            
+            # 执行表演动作（如果有）
+            if actions:
+                logger.info(f"[DEBUG] IdleState: Executing {len(actions)} performance actions")
+                # 在后台执行动作，不阻塞响应
+                asyncio.create_task(self._execute_performance_actions(actions))
+            
             # 截取前60个字符显示在全息上
-            short_msg = response[:60] + "..." if len(response) > 60 else response
-            return StateResult(response=response, hologram_text=f"💬 {short_msg}")
+            short_msg = response_text[:60] + "..." if len(response_text) > 60 else response_text
+            return StateResult(response=response_text, hologram_text=f"💬 {short_msg}")
         
         elif event.type == EventType.QUERY:
             query_response = _handle_query(self._ctx, event.payload.get("entities"))
@@ -355,39 +365,140 @@ class IdleState(IState):
         
         return StateResult(response="喵？")
     
-    async def _generate_chat_response(self, event: Event, context: RuntimeContext) -> str:
-        """使用 LLM 生成闲聊回复"""
+    async def _generate_chat_response(self, event: Event, context: RuntimeContext) -> dict:
+        """
+        使用 LLM 生成闲聊回复 + 表演动作
+        
+        Returns:
+            {
+                "text": "回复文字",
+                "actions": [{"type": "spin", "rotations": 2}, {"type": "jump"}]  # 可选
+            }
+        """
         if not self._llm:
-            return "主人好~ (LLM 未配置，无法进行深度对话)"
+            return {"text": "主人好~ (LLM 未配置，无法进行深度对话)", "actions": []}
         
         try:
             # 添加用户消息到历史
             user_input = event.payload.get("raw_input", "")
             context.add_message("user", user_input, event.source_player)
             
-            # 构建消息
+            # 构建消息 - 增强版 prompt 支持表演动作
+            system_prompt = f"""你是一个可爱的 Minecraft 女仆助手，说话要可爱俏皮，每句话结尾都要加上「喵~」。
+你的主人是 {event.source_player}。
+
+## 表演能力
+你不仅会说话，还能用实际动作来表达自己！当主人让你做某些表演动作时，你要在回复中包含动作指令。
+
+## 可用动作
+- spin: 原地转圈 (参数: rotations=圈数, 正数顺时针、负数逆时针)
+- jump: 跳跃
+- look_at: 看向主人 (参数: target="@主人名字")
+
+## 响应格式
+你必须用 JSON 格式回复，包含两个字段：
+1. "text": 你要说的话（可爱俏皮风格）
+2. "actions": 要执行的动作列表（可选，没有动作就填空数组）
+
+## 示例
+用户: "给我跳个舞"
+回复: {{"text": "好的主人！看我的专属舞蹈喵~ ✧(≖ ◡ ≖✿)", "actions": [{{"type": "look_at", "target": "@{event.source_player}"}}, {{"type": "spin", "rotations": 2}}, {{"type": "jump"}}, {{"type": "spin", "rotations": -1}}]}}
+
+用户: "跳一下"
+回复: {{"text": "嘿咻！(๑•̀ㅂ•́)و✧", "actions": [{{"type": "jump"}}]}}
+
+用户: "看着我"
+回复: {{"text": "好的主人，我一直在看着你喵~ ♡", "actions": [{{"type": "look_at", "target": "@{event.source_player}"}}]}}
+
+用户: "今天天气怎么样"
+回复: {{"text": "主人~我是女仆不是天气预报喵，不过只要和主人在一起，每天都是好天气呀！♪(^∇^*)", "actions": []}}
+
+## 重要
+- 只输出 JSON，不要有其他内容
+- 表演请求（跳舞、转圈、看我等）要包含动作
+- 普通对话不需要动作，actions 填空数组
+- 动作要合理搭配，表现出活泼可爱的感觉"""
+
             messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一个可爱的 Minecraft 女仆助手，说话要可爱俏皮，"
-                        "每句话结尾可以加上「喵~」。你很乐意帮助主人完成各种任务。"
-                        f"你的主人是 {event.source_player}。"
-                    ),
-                },
+                {"role": "system", "content": system_prompt},
                 *context.get_conversation_for_llm()
             ]
             
-            response = await self._llm.chat(messages, max_tokens=256, temperature=0.8)
+            response = await self._llm.chat(messages, max_tokens=512, temperature=0.7)
+            
             if not response or not response.strip():
                 logger.warning("LLM returned empty response, using fallback")
-                response = "嗯...喵？"
-            context.add_message("assistant", response)
-            return response
+                return {"text": "嗯...喵？", "actions": []}
+            
+            # 解析 JSON 响应
+            try:
+                # 尝试提取 JSON（处理可能的 markdown 代码块）
+                response_text = response.strip()
+                if response_text.startswith("```"):
+                    # 移除 markdown 代码块标记
+                    lines = response_text.split("\n")
+                    json_lines = []
+                    in_block = False
+                    for line in lines:
+                        if line.startswith("```"):
+                            in_block = not in_block
+                            continue
+                        if in_block or not line.startswith("```"):
+                            json_lines.append(line)
+                    response_text = "\n".join(json_lines).strip()
+                
+                parsed = json.loads(response_text)
+                text = parsed.get("text", "喵~")
+                actions = parsed.get("actions", [])
+                
+                # 验证动作格式
+                valid_actions = []
+                for action in actions:
+                    if isinstance(action, dict) and action.get("type") in ["spin", "jump", "look_at"]:
+                        valid_actions.append(action)
+                
+                result = {"text": text, "actions": valid_actions}
+                
+            except json.JSONDecodeError:
+                # 如果解析失败，把原始响应当作纯文字
+                logger.warning(f"Failed to parse chat response as JSON, treating as plain text")
+                result = {"text": response.strip(), "actions": []}
+            
+            context.add_message("assistant", result["text"])
+            return result
             
         except Exception as e:
             logger.error(f"Chat generation failed: {e}")
-            return "啊...我脑子有点转不过来了，再说一遍好吗喵~"
+            return {"text": "啊...我脑子有点转不过来了，再说一遍好吗喵~", "actions": []}
+    
+    async def _execute_performance_actions(self, actions: list) -> None:
+        """执行表演动作序列"""
+        if not self._ctx or not self._ctx.bot:
+            logger.warning("No bot controller available for performance actions")
+            return
+        
+        bot = self._ctx.bot
+        
+        for action in actions:
+            action_type = action.get("type")
+            try:
+                if action_type == "jump":
+                    await bot.jump()
+                    await asyncio.sleep(0.3)  # 跳跃后短暂等待
+                    
+                elif action_type == "spin":
+                    rotations = action.get("rotations", 1)
+                    duration = action.get("duration", 0.8)
+                    await bot.spin(rotations, duration)
+                    
+                elif action_type == "look_at":
+                    target = action.get("target", "")
+                    if target:
+                        await bot.look_at(target)
+                        await asyncio.sleep(0.2)
+                        
+            except Exception as e:
+                logger.warning(f"Performance action '{action_type}' failed: {e}")
 
 
 class PlanningState(IState):

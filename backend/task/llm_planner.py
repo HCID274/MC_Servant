@@ -63,7 +63,17 @@ player_name 必须用 owner_name！
 ⚠️ 重要：如果有 owner_position，必须用坐标格式 "x,y,z"，不要用 @PlayerName！
 示例：{"action":"goto","params":{"target":"100,64,200"}}
 
-### 6. equip/scan/place - 其他动作
+### 6. pickup - 拾取掉落物 捡东西专用！
+功能：自动寻找掉落物 → 寻路走过去 → 拾取 → 循环直到没有或达到数量
+参数：
+- target (str, 可选): 物品类型（如"apple"、"oak_log"），不填或"all"表示捡所有
+- count (int, 可选): 拾取数量，-1表示尽可能多捡
+- radius (int, 可选): 搜索半径，默认16
+
+示例：{"action":"pickup","params":{"target":"oak_log"}}
+示例：{"action":"pickup","params":{}}  // 捡起所有掉落物
+
+### 7. equip/scan/place - 其他动作
 - equip: item_name (str)
 - scan: target_type (str), radius (int)
 - place: block_type (str), x, y, z (int)
@@ -106,7 +116,7 @@ ACT_SYSTEM_PROMPT = """你是 Minecraft 任务执行决策器（Tick Loop 模式
 - completed_steps: 最近已完成动作
 
 ## 可选动作（只从下面选 1 个）
-mine_tree, mine, scan, goto, craft, equip, give
+mine_tree, mine, scan, goto, craft, equip, give, pickup
 
 ## 决策规则（按优先级）
 
@@ -144,6 +154,7 @@ mine_tree, mine, scan, goto, craft, equip, give
 - give: {"player_name": "HCID273", "item_name": "oak_planks", "count": 4}
 - goto: {"target": "100,64,200"}
 - scan: {"target_type": "oak_log", "radius": 32}
+- pickup: {"target": "apple"} 或 {} 捡所有
 
 ## 输出格式（纯 JSON）
 必须是以下结构之一：

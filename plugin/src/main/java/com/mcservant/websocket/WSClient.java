@@ -24,7 +24,7 @@ import java.util.logging.Logger;
  * <ul>
  *   <li>WebSocket 连接管理</li>
  *   <li>心跳保活 (30秒间隔)</li>
- *   <li>自动重连 (最多5次，5秒间隔)</li>
+ *   <li>自动重连 (无限重试，最大10秒间隔)</li>
  *   <li>线程安全</li>
  * </ul>
  * </p>
@@ -36,7 +36,7 @@ public class WSClient implements IWebSocketClient {
     // 配置常量
     private static final int HEARTBEAT_INTERVAL_SECONDS = 30;
     private static final int BASE_RECONNECT_DELAY_SECONDS = 5;
-    private static final int MAX_RECONNECT_DELAY_SECONDS = 30;
+    private static final int MAX_RECONNECT_DELAY_SECONDS = 10;  // 调试友好：最大 10 秒
     private static final int MAX_RECONNECT_ATTEMPTS = -1;  // -1 = 无限重试
     
     // OkHttp 客户端（复用以提高性能）
@@ -151,9 +151,9 @@ public class WSClient implements IWebSocketClient {
             return;
         }
         
-        // 指数退避：5s -> 10s -> 20s -> 30s (max)
+        // 指数退避：5s -> 10s (max)
         int delay = Math.min(
-            BASE_RECONNECT_DELAY_SECONDS * (1 << Math.min(attempts - 1, 3)),  // 2^attempts, 最多 2^3=8 倍
+            BASE_RECONNECT_DELAY_SECONDS * (1 << Math.min(attempts - 1, 1)),  // 最多 2 倍
             MAX_RECONNECT_DELAY_SECONDS
         );
         
