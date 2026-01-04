@@ -21,7 +21,6 @@ from .interfaces import (
 )
 from .stack_planner import StackPlanner, StackOverflowError
 from .behavior_rules import BehaviorRules
-from .runners import RunnerRegistry
 
 # 运行时导入 (测试时由 Mock 提供)
 try:
@@ -34,6 +33,7 @@ except ImportError:
 
 if TYPE_CHECKING:
     from ..bot.interfaces import IBotActions, ActionResult, ActionStatus
+    from .runners import RunnerRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ class TaskExecutor(ITaskExecutor):
         planner: ITaskPlanner,
         actions: "IBotActions",
         prereq_resolver: Optional[IPrerequisiteResolver] = None,
-        runner_registry: Optional[RunnerRegistry] = None,
+        runner_registry: Optional["RunnerRegistry"] = None,
         runner_factory: Optional[IRunnerFactory] = None,  # 🆕 Phase 3+: 推荐使用
         max_retries: int = 3,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,

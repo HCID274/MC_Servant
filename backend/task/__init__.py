@@ -20,7 +20,6 @@ from .prerequisite_resolver import PrerequisiteResolver
 from .llm_planner import LLMTaskPlanner
 from .executor import TaskExecutor
 from .decomposer import LLMTaskDecomposer
-from .runners import GatherRunner, LinearPlanRunner, RunnerRegistry
 from .behavior_rules import BehaviorRules, BehaviorThresholds
 from .recovery_interfaces import (
     RecoveryLevel,
@@ -32,6 +31,13 @@ from .recovery_interfaces import (
 )
 from .recovery_coordinator import RecoveryCoordinator, create_recovery_coordinator
 from .recovery_logger import JsonRecoveryLogger, create_recovery_logger
+
+try:
+    from .runners import GatherRunner, LinearPlanRunner, RunnerRegistry
+except Exception:
+    GatherRunner = None
+    LinearPlanRunner = None
+    RunnerRegistry = None
 
 __all__ = [
     # Enums
@@ -69,8 +75,13 @@ __all__ = [
     # Factory Functions
     "create_recovery_coordinator",
     "create_recovery_logger",
-    # Runners
-    "GatherRunner",
-    "LinearPlanRunner",
-    "RunnerRegistry",
 ]
+
+if GatherRunner is not None:
+    __all__.extend(
+        [
+            "GatherRunner",
+            "LinearPlanRunner",
+            "RunnerRegistry",
+        ]
+    )
