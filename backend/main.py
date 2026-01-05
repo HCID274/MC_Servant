@@ -210,23 +210,15 @@ async def lifespan(app: FastAPI):
             knowledge_base = JsonKnowledgeBase()
             logger.info("KnowledgeBase initialized")
             
-            # 初始化 Actor 和 Resolver
-            from task.actor import LLMTaskActor
-            from task.action_resolver import SemanticActionResolver
-            actor = LLMTaskActor(llm_client, knowledge_base)
-            resolver = SemanticActionResolver(knowledge_base)
-            logger.info("LLMTaskActor and SemanticActionResolver initialized")
-            
-                        # 🆕 Phase 3+ RunnerFactory (根据 Feature Flag 自动切换)
+            # 🆕 Phase 3+ RunnerFactory (Universal Only)
             from task.behavior_rules import BehaviorRules
             from task.runner_factory import create_runner_factory
             
             rules = BehaviorRules()
             runner_factory = create_runner_factory(
                 rules=rules,
-                actor=actor,
-                resolver=resolver,
-                llm_client=llm_client,  # 🆕 Phase 3+: LLM 驱动恢复
+                llm_client=llm_client,
+                knowledge_base=knowledge_base,
             )
             logger.info(f"RunnerFactory initialized: {runner_factory.__class__.__name__}")
 
@@ -235,7 +227,7 @@ async def lifespan(app: FastAPI):
                 actions,
                 prereq_resolver,
                 on_progress=on_progress,
-                runner_factory=runner_factory,  # 🆕 使用 factory 而非 registry
+                runner_factory=runner_factory,
             )
             bot_context.executor = executor
             logger.info("TaskExecutor initialized with RunnerFactory architecture")
@@ -404,8 +396,6 @@ async def lifespan(app: FastAPI):
                 from task.behavior_rules import BehaviorRules
                 from task.runner_factory import create_runner_factory
                 from perception.knowledge_base import JsonKnowledgeBase
-                from task.actor import LLMTaskActor
-                from task.action_resolver import SemanticActionResolver
                 
                 planner = LLMTaskPlanner(llm_client)
                 prereq_resolver = PrerequisiteResolver()
@@ -416,16 +406,11 @@ async def lifespan(app: FastAPI):
                 # 初始化知识库
                 knowledge_base = JsonKnowledgeBase()
                 
-                # 初始化 Actor 和 Resolver
-                actor = LLMTaskActor(llm_client, knowledge_base)
-                resolver_semantic = SemanticActionResolver(knowledge_base)
-                
                 rules = BehaviorRules()
                 runner_factory = create_runner_factory(
                     rules=rules,
-                    actor=actor,
-                    resolver=resolver_semantic,
                     llm_client=llm_client,
+                    knowledge_base=knowledge_base,
                 )
                 
                 # Note: Mock 模式下 actions=None，实际动作无法执行

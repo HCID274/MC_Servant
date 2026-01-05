@@ -33,7 +33,6 @@ except ImportError:
 
 if TYPE_CHECKING:
     from ..bot.interfaces import IBotActions, ActionResult, ActionStatus
-    from .runners import RunnerRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -78,11 +77,12 @@ class TaskExecutor(ITaskExecutor):
         planner: ITaskPlanner,
         actions: "IBotActions",
         prereq_resolver: Optional[IPrerequisiteResolver] = None,
-        runner_registry: Optional["RunnerRegistry"] = None,
         runner_factory: Optional[IRunnerFactory] = None,  # 🆕 Phase 3+: 推荐使用
         max_retries: int = 3,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
         owner_name: Optional[str] = None,  # 用于 give 命令的玩家名
+        # Legacy parameter for compatibility (ignored)
+        runner_registry: Optional[Any] = None,
     ):
         """
         初始化执行器
@@ -91,7 +91,6 @@ class TaskExecutor(ITaskExecutor):
             planner: 任务规划器 (LLM)
             actions: Bot 动作接口
             prereq_resolver: 前置任务解析器 (符号层)
-            runner_registry: [Deprecated] Runner 注册表，请使用 runner_factory
             runner_factory: Runner 工厂 (推荐，Phase 3+)
             max_retries: 单个任务最大重试次数
             on_progress: 进度回调 (用于更新头顶显示)
@@ -109,19 +108,12 @@ class TaskExecutor(ITaskExecutor):
         self._lock = asyncio.Lock()
 
         # 🆕 Phase 3+ RunnerFactory 优先
-        # 兼容性：支持 runner_registry 或自动创建默认 factory
         if runner_factory is not None:
             self._runner_factory = runner_factory
-            self._registry = None  # 不再使用
-        elif runner_registry is not None:
-            # 兼容旧代码：包装 registry 为 factory-like 行为
-            self._registry = runner_registry
-            self._runner_factory = None
         else:
-            # 默认：根据 Feature Flag 创建
+            # 默认：根据 Feature Flag 创建 (UniversalRunnerFactory)
             from .runner_factory import create_runner_factory
             self._runner_factory = create_runner_factory(BehaviorRules())
-            self._registry = None
         
         self._stack = StackPlanner()
         self._cancelled = False
@@ -383,9 +375,6 @@ class TaskExecutor(ITaskExecutor):
         - 通过 RunnerFactory 获取 Runner（封装所有路由决策）
         - TaskExecutor 只负责生命周期管理，不关心具体 Runner 类型
         
-        兼容模式：
-        - 如果使用旧的 runner_registry，则回退到旧逻辑
-        
         Args:
             task: 栈任务
             
@@ -413,58 +402,13 @@ class TaskExecutor(ITaskExecutor):
                     message=f"执行异常: {str(e)}"
                 )
         
-        # 兼容模式: 使用旧的 RunnerRegistry (已精简，仅支持基本的 get)
-        if self._registry is not None:
-            # 类型推断 (简单的)
-            if task.task_type is None and self._should_use_tick_loop(task):
-                 task.task_type = TaskType.GATHER
-
-            runner = None
-            if task.task_type is not None:
-                runner = self._registry.get(task.task_type)
-
-            if runner:
-                 return await runner.run(task, self._actions, self._planner, context)
-            else:
-                return TaskResult(
-                    success=False,
-                    task_description=task.goal,
-                    message="未找到合适的 Runner，且 Legacy fallback 已移除"
-                )
-        
         # 不应到达这里
-        logger.error("No runner_factory or registry configured")
+        logger.error("No runner_factory configured")
         return TaskResult(
             success=False,
             task_description=task.goal,
             message="内部错误: 未配置 Runner"
         )
-        
-    def _should_use_tick_loop(self, task: StackTask) -> bool:
-        """
-        [Helper] 简单的类型推断，仅用于 Legacy Registry 模式
-        """
-        ctx = task.context or {}
-        if ctx.get("source") == "prerequisite":
-            return False
-        task_type = ctx.get("task_type")
-        return task_type == "mine"
-    
-    async def _execute_step(self, step: ActionStep) -> "ActionResult":
-        """
-        执行单个动作步骤 (Legacy, 仅供 _execute_task_linear_fallback 使用，
-        虽然 _execute_task_linear_fallback 已移除，但为了防止某些极端边缘情况下的引用，保留此基础方法作为 utility 也可以。
-        但在当前设计中，只有 Runner 会调用 BotActions。TaskExecutor 不再直接调用 actions。)
-        
-        实际上，如果 TaskExecutor 不再直接执行 step，这个方法也可以移除。
-        但为了保险起见，或者给子类/其他组件使用，暂时保留，或者根据架构文档应该清理。
-
-        这里选择暂时保留但作为 protected utility，或者如果有引用则移除。
-        TaskExecutor 类目前没有地方调用它了。
-        """
-        # ... 实现略 (因为不再被调用，可以选择删除)
-        # 为保持代码整洁，删除之。
-        pass
     
     async def _handle_task_failure(self, result: TaskResult) -> bool:
         """

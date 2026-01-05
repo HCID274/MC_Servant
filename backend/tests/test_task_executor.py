@@ -4,7 +4,7 @@
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 
 from task.interfaces import (
     StackTask, 
@@ -102,39 +102,23 @@ class MockTaskPlanner(ITaskPlanner):
         self._done_message = done_message
         self.act_call_count = 0
     
-    async def plan(self, task_description: str, bot_state: Dict[str, Any]) -> ActionPlan:
-        # UniversalRunner 不使用 plan()；保留实现仅为满足接口
-        return ActionPlan(
-            task_description=task_description,
-            steps=[],
-            estimated_time=60
-        )
-    
-    async def replan(
-        self,
-        task_description: str,
-        bot_state: Dict[str, Any],
-        failed_result: BotActionResult,
-        completed_steps: List[BotActionResult]
-    ) -> ActionPlan:
-        # UniversalRunner 不使用 replan()；保留实现仅为满足接口
-        return ActionPlan(
-            task_description=task_description,
-            steps=[],
-            estimated_time=30
-        )
+    async def plan_tasks(self, user_instruction: str) -> List[StackTask]:
+        """
+        Mock implementation of plan_tasks.
+        """
+        return [StackTask(name=user_instruction, goal=user_instruction)]
 
     async def act(
         self,
         task_description: str,
         bot_state: Dict[str, Any],
         completed_steps: List[BotActionResult],
-    ):
+    ) -> Tuple[Optional[ActionStep], bool, str]:
         self.act_call_count += 1
         if self._steps:
             step = self._steps.pop(0)
-            return step, False, None
-        return ActionStep(action="noop", params={}, description="done"), True, self._done_message
+            return step, False, ""
+        return None, True, self._done_message
 
 
 class MockPrerequisiteResolver(IPrerequisiteResolver):
@@ -149,7 +133,7 @@ class MockPrerequisiteResolver(IPrerequisiteResolver):
         error_code: str,
         context: Dict[str, Any],
         inventory: Dict[str, int]
-    ) -> StackTask:
+    ) -> Optional[StackTask]:
         self._resolve_count += 1
         if self._should_return:
             return StackTask(

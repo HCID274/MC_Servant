@@ -34,10 +34,8 @@ from .recovery_coordinator import RecoveryCoordinator, create_recovery_coordinat
 from .recovery_logger import JsonRecoveryLogger, create_recovery_logger
 
 try:
-    from .runners import GatherRunner, LinearPlanRunner, RunnerRegistry
+    from .runners import RunnerRegistry
 except Exception:
-    GatherRunner = None
-    LinearPlanRunner = None
     RunnerRegistry = None
 
 __all__ = [
@@ -79,11 +77,5 @@ __all__ = [
     "create_recovery_logger",
 ]
 
-if GatherRunner is not None:
-    __all__.extend(
-        [
-            "GatherRunner",
-            "LinearPlanRunner",
-            "RunnerRegistry",
-        ]
-    )
+if RunnerRegistry is not None:
+    __all__.append("RunnerRegistry")
