@@ -7,7 +7,9 @@ import dev.jorel.commandapi.CommandAPICommand;
 import dev.jorel.commandapi.arguments.StringArgument;
 import dev.jorel.commandapi.arguments.GreedyStringArgument;
 import dev.jorel.commandapi.arguments.ArgumentSuggestions;
+import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
+import org.bukkit.persistence.PersistentDataType;
 
 /**
  * Servant 命令注册器
@@ -25,7 +27,9 @@ import org.bukkit.entity.Player;
 public final class ServantCommands {
 
     // 快捷操作类型
-    private static final String[] QUICK_ACTIONS = {"claim", "release", "list", "status", "hello"};
+    private static final String[] QUICK_ACTIONS = {"claim", "release", "list", "status", "hello", "setdefault"};
+
+    private static NamespacedKey KEY_DEFAULT_BOT;
 
     private ServantCommands() {
         // 工具类，禁止实例化
@@ -35,6 +39,7 @@ public final class ServantCommands {
      * 注册所有 Servant 相关命令
      */
     public static void register() {
+        KEY_DEFAULT_BOT = new NamespacedKey(MCServant.getInstance(), "default_bot");
         registerMainCommand();
         registerQuickCommand();
     }
@@ -106,9 +111,23 @@ public final class ServantCommands {
             case "list" -> sendCommandToBackend(player, "list", null);
             case "status" -> handleStatus(player);
             case "hello" -> sendChatToBackend(player, "hello", targetBot);
+            case "setdefault" -> handleSetDefault(player, targetBot);
             default -> player.sendMessage("§c[MC_Servant] §f未知操作: " + action + 
-                "\n§7可用: claim, release, list, status, hello");
+                "\n§7可用: claim, release, list, status, hello, setdefault");
         }
+    }
+
+    /**
+     * 设置默认 Bot
+     */
+    private static void handleSetDefault(Player player, String targetBot) {
+        if (targetBot == null || targetBot.isEmpty()) {
+            player.sendMessage("§c[MC_Servant] §f用法: /servant setdefault <bot>");
+            return;
+        }
+
+        player.getPersistentDataContainer().set(KEY_DEFAULT_BOT, PersistentDataType.STRING, targetBot);
+        player.sendMessage("§a[MC_Servant] §f默认 Bot 已设置为: §e" + targetBot);
     }
     
     /**
@@ -160,7 +179,7 @@ public final class ServantCommands {
         message.put("type", "player_message");
         message.put("player", player.getName());
         message.put("player_uuid", player.getUniqueId().toString());
-        message.put("npc", targetBot != null ? targetBot : getDefaultBot());
+        message.put("npc", targetBot != null ? targetBot : getDefaultBot(player));
         message.put("content", content);
         message.put("timestamp", System.currentTimeMillis() / 1000);
         
@@ -245,8 +264,22 @@ public final class ServantCommands {
     /**
      * 获取默认 Bot 名称
      */
-    private static String getDefaultBot() {
-        // TODO: 从配置或玩家数据中获取默认 Bot
+    private static String getDefaultBot(Player player) {
+        // 1. 尝试从玩家数据获取
+        if (player != null) {
+            String savedBot = player.getPersistentDataContainer().get(KEY_DEFAULT_BOT, PersistentDataType.STRING);
+            if (savedBot != null && !savedBot.isEmpty()) {
+                return savedBot;
+            }
+        }
+
+        // 2. 尝试从配置获取
+        String configBot = MCServant.getInstance().getConfig().getString("bot.default_name");
+        if (configBot != null && !configBot.isEmpty()) {
+            return configBot;
+        }
+
+        // 3. 默认回退
         return "MCServant_Bot";
     }
     
