@@ -172,12 +172,14 @@ class RunContext:
         on_progress: 进度回调 (用于更新头顶显示)
         max_ticks: Tick Loop 最大迭代次数
         overall_timeout: 总体超时时间 (秒)
+        user_reply: 用户的澄清回复 (用于恢复流程)
     """
     owner_name: Optional[str] = None
     owner_position: Optional[Dict[str, Any]] = None
     on_progress: Optional[Callable[[str], Awaitable[None]]] = None
     max_ticks: int = 25
     overall_timeout: float = 180.0
+    user_reply: Optional[str] = None
 
 
 # ============================================================================

@@ -30,15 +30,32 @@ from task.interfaces import (
     ITaskPlanner,
 )
 from task.recovery_interfaces import (
-    RecoveryDecision,
     RecoveryLevel,
     RecoveryActionType,
+)
+from task.recovery_planner import (
+    IRecoveryPlanner,
+    RecoveryDecision,
+    RecoveryDecisionType,
+    RecoveryContext
 )
 
 
 # ============================================================================
 # Mock Classes
 # ============================================================================
+
+class MockRecoveryPlanner(IRecoveryPlanner):
+    """Mock recovery planner for testing"""
+    def __init__(self):
+        self.decisions = []
+
+    async def recover(self, context: RecoveryContext) -> RecoveryDecision:
+        if self.decisions:
+            return self.decisions.pop(0)
+        # Default to RETRY_SAME for tests
+        return RecoveryDecision(decision=RecoveryDecisionType.RETRY_SAME)
+
 
 class MockKnowledgeBase:
     """Mock JsonKnowledgeBase for testing"""
@@ -169,9 +186,9 @@ def create_runner_with_mock_kb():
         # 导入并创建 runner
         from task.universal_runner import UniversalRunner
         rules = BehaviorRules()
-        recovery = RecoveryCoordinator(rules)
-        runner = UniversalRunner(rules=rules, recovery=recovery)
-        return runner
+    recovery = MockRecoveryPlanner()
+    runner = UniversalRunner(rules=rules, recovery_planner=recovery)
+    return runner
 
 
 class TestGatherWithRetry:
@@ -188,6 +205,7 @@ class TestGatherWithRetry:
             owner_position={"x": 100, "y": 64, "z": 100},
             max_ticks=10,
             overall_timeout=60.0,
+            user_reply=None
         )
     
     @pytest.mark.asyncio
@@ -306,6 +324,7 @@ class TestCompositeTaskFlow:
             owner_position={"x": 100, "y": 64, "z": 100},
             max_ticks=10,
             overall_timeout=60.0,
+            user_reply=None
         )
     
     def test_is_pure_single_step_detects_composite(self, runner):
