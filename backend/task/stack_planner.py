@@ -33,6 +33,11 @@ class StackPlanner:
     - soft_limit=6: 超过时发出警告，但继续执行
     - hard_limit=9: 超过时抛出 StackOverflowError，停止执行
     
+    注意：
+    - 本类是非线程安全的 (Not Thread-Safe)。
+    - 必须由调用者 (TaskExecutor) 确保并发访问的串行化 (如使用 asyncio.Lock)。
+    - 虽然 asyncio 单线程运行，但在 await 切换点如果共享实例可能导致状态不一致，因此依赖外部锁。
+
     工作流程示例：
     ```
     任务: 合成床

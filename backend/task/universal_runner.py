@@ -181,8 +181,10 @@ class UniversalRunner(ITaskRunner):
         STUCK_MAX_TICKS = 3    # 容忍的最大原地踏步次数
 
         recovery_snapshot = None
-        if isinstance(task.context, dict):
-            recovery_snapshot = task.context.pop("recovery_snapshot", None)
+        # 安全获取上下文，防止 task.context 为 None
+        task_context = task.context or {}
+        if isinstance(task_context, dict):
+            recovery_snapshot = task_context.pop("recovery_snapshot", None)
 
         if context.user_reply and recovery_snapshot and self._recovery_planner:
             if actions is None:
@@ -222,8 +224,10 @@ class UniversalRunner(ITaskRunner):
                 pending_step = recovery_result["next_step"]
         
         # 任务类型检测
+        # 确保 task.goal 不为 None
+        safe_goal = task.goal or ""
         is_tree_intent = TaskIntentAnalyzer.is_tree_task(task)
-        tree_single_goal = is_tree_intent and self._is_single_tree_goal(task.goal or "")
+        tree_single_goal = is_tree_intent and self._is_single_tree_goal(safe_goal)
         tree_done = False
         
         # 🔴 修复: 仅当任务是「纯单步」时才启用非 LLM 完成判据
@@ -801,7 +805,9 @@ class UniversalRunner(ITaskRunner):
                     params["target"] = f"@{context.owner_name}"
                 elif context.owner_position:
                     pos = context.owner_position
-                    params["target"] = f"{int(pos['x'])},{int(pos['y'])},{int(pos['z'])}"
+                    # 确保 pos 不为 None 且包含坐标
+                    if pos and all(k in pos for k in ("x", "y", "z")):
+                        params["target"] = f"{int(pos['x'])},{int(pos['y'])},{int(pos['z'])}"
         
         elif action == "mine":
             # LLM: {"target": "log"} → {"block_type": "oak_log"}

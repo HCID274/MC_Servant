@@ -105,6 +105,9 @@ class TaskExecutor(ITaskExecutor):
         self._owner_name = owner_name
         self._owner_position: Optional[dict] = None  # 玩家实时位置（来自 Java 插件）
         
+        # 并发锁，防止多任务重入导致状态不一致
+        self._lock = asyncio.Lock()
+
         # 🆕 Phase 3+ RunnerFactory 优先
         # 兼容性：支持 runner_registry 或自动创建默认 factory
         if runner_factory is not None:
@@ -168,62 +171,73 @@ class TaskExecutor(ITaskExecutor):
         
         logger.info(f"Starting execution of {len(tasks)} decomposed tasks: {task_names}")
         
-        # 反向压入栈（确保第一个任务在栈顶先执行）
-        try:
-            for task in reversed(tasks):
-                self._stack.push(task)
-        except StackOverflowError as e:
-            self._running = False
-            return TaskResult(
-                success=False,
-                task_description=overall_description,
-                message=str(e)
-            )
-        
-        # 复用现有执行逻辑（继续到 execute 方法的循环部分）
-        all_completed_steps: List["ActionResult"] = []
-        last_failed_step: Optional["ActionResult"] = None
-        
-        try:
-            while not self._stack.is_empty() and not self._cancelled:
-                current = self._stack.current()
-                logger.info(f"Executing task: {current.name} (depth={self._stack.depth})")
-                await self._report_progress(f"执行: {current.name}")
-                result = await self._execute_task(current)
-                
-                if result.success:
-                    self._stack.pop()
-                    all_completed_steps.extend(result.completed_steps)
-                    logger.info(f"Task completed: {current.name}")
-                else:
-                    last_failed_step = result.failed_step
-                    resolved = await self._handle_task_failure(result)
-                    if not resolved:
-                        self._stack.clear()
-                        self._running = False
-                        return TaskResult(
-                            success=False,
-                            task_description=overall_description,
-                            completed_steps=all_completed_steps,
-                            failed_step=last_failed_step,
-                            message=f"任务失败: {result.message}"
-                        )
-            
-            if self._cancelled:
+        # 使用锁确保串行执行
+        async with self._lock:
+            # 反向压入栈（确保第一个任务在栈顶先执行）
+            try:
+                for task in reversed(tasks):
+                    self._stack.push(task)
+            except StackOverflowError as e:
                 self._running = False
-                return TaskResult(success=False, task_description=overall_description, message="任务已取消")
+                return TaskResult(
+                    success=False,
+                    task_description=overall_description,
+                    message=str(e)
+                )
+
+            # 复用现有执行逻辑（继续到 execute 方法的循环部分）
+            all_completed_steps: List["ActionResult"] = []
+            last_failed_step: Optional["ActionResult"] = None
+
+            try:
+                while not self._stack.is_empty() and not self._cancelled:
+                    current = self._stack.current()
+                    logger.info(f"Executing task: {current.name} (depth={self._stack.depth})")
+                    await self._report_progress(f"执行: {current.name}")
+                    result = await self._execute_task(current)
+
+                    if result.success:
+                        self._stack.pop()
+                        all_completed_steps.extend(result.completed_steps)
+                        logger.info(f"Task completed: {current.name}")
+                    else:
+                        last_failed_step = result.failed_step
+
+                        # 增加重试计数逻辑，防止无限循环
+                        current_retries = current.context.get("retries", 0)
+                        if current_retries >= self._max_retries:
+                            logger.warning(f"Task {current.name} failed {current_retries} times. Max retries reached.")
+                            resolved = False
+                        else:
+                            current.context["retries"] = current_retries + 1
+                            resolved = await self._handle_task_failure(result)
+
+                        if not resolved:
+                            self._stack.clear()
+                            self._running = False
+                            return TaskResult(
+                                success=False,
+                                task_description=overall_description,
+                                completed_steps=all_completed_steps,
+                                failed_step=last_failed_step,
+                                message=f"任务失败: {result.message}"
+                            )
+                
+                if self._cancelled:
+                    self._running = False
+                    return TaskResult(success=False, task_description=overall_description, message="任务已取消")
             
-            self._running = False
-            await self._report_progress("任务完成 ✅")
-            return TaskResult(success=True, task_description=overall_description, completed_steps=all_completed_steps, message="任务完成")
-        except StackOverflowError as e:
-            self._running = False
-            self._stack.clear()
-            return TaskResult(success=False, task_description=overall_description, message="任务太复杂")
-        except Exception as e:
-            self._running = False
-            self._stack.clear()
-            return TaskResult(success=False, task_description=overall_description, message=f"执行出错: {str(e)}")
+                self._running = False
+                await self._report_progress("任务完成 ✅")
+                return TaskResult(success=True, task_description=overall_description, completed_steps=all_completed_steps, message="任务完成")
+            except StackOverflowError as e:
+                self._running = False
+                self._stack.clear()
+                return TaskResult(success=False, task_description=overall_description, message="任务太复杂")
+            except Exception as e:
+                self._running = False
+                self._stack.clear()
+                return TaskResult(success=False, task_description=overall_description, message=f"执行出错: {str(e)}")
     
     async def execute(
         self,
@@ -252,104 +266,114 @@ class TaskExecutor(ITaskExecutor):
         
         logger.info(f"Starting task execution: {task_description}")
         
-        # 创建根任务并压入栈
-        root_task = StackTask(
-            name=task_description,
-            goal=task_description,
-            context={"is_root": True, "task_type": task_type, "task_payload": task_payload or {}},
-            status=TaskStatus.PENDING
-        )
-        
-        try:
-            self._stack.push(root_task)
-        except StackOverflowError as e:
-            self._running = False
-            return TaskResult(
-                success=False,
-                task_description=task_description,
-                message=str(e)
+        # 使用锁确保串行执行
+        async with self._lock:
+            # 创建根任务并压入栈
+            root_task = StackTask(
+                name=task_description,
+                goal=task_description,
+                context={"is_root": True, "task_type": task_type, "task_payload": task_payload or {}},
+                status=TaskStatus.PENDING
             )
-        
-        all_completed_steps: List["ActionResult"] = []
-        last_failed_step: Optional["ActionResult"] = None
-        
-        try:
-            # 主执行循环
-            while not self._stack.is_empty() and not self._cancelled:
-                current = self._stack.current()
-                logger.info(f"Executing task: {current.name} (depth={self._stack.depth})")
-                
-                # 更新进度
-                await self._report_progress(f"执行: {current.name}")
-                
-                # 执行当前任务
-                result = await self._execute_task(current)
-                
-                if result.success:
-                    # 任务成功，弹出栈
-                    self._stack.pop()
-                    all_completed_steps.extend(result.completed_steps)
-                    logger.info(f"Task completed: {current.name}")
-                else:
-                    # 任务失败，尝试解决
-                    last_failed_step = result.failed_step
-                    resolved = await self._handle_task_failure(result)
-                    
-                    if not resolved:
-                        # 无法解决，中止执行
-                        logger.warning(f"Task failed and cannot be resolved: {current.name}")
-                        self._stack.clear()
-                        self._running = False
-                        return TaskResult(
-                            success=False,
-                            task_description=task_description,
-                            completed_steps=all_completed_steps,
-                            failed_step=last_failed_step,
-                            message=f"任务失败: {result.message}"
-                        )
             
-            # 检查取消状态
-            if self._cancelled:
+            try:
+                self._stack.push(root_task)
+            except StackOverflowError as e:
                 self._running = False
                 return TaskResult(
                     success=False,
                     task_description=task_description,
-                    completed_steps=all_completed_steps,
-                    message="任务已取消"
+                    message=str(e)
                 )
             
-            # 全部完成
-            self._running = False
-            await self._report_progress("任务完成 ✅")
-            return TaskResult(
-                success=True,
-                task_description=task_description,
-                completed_steps=all_completed_steps,
-                message="任务完成"
-            )
+            all_completed_steps: List["ActionResult"] = []
+            last_failed_step: Optional["ActionResult"] = None
             
-        except StackOverflowError as e:
-            self._running = False
-            self._stack.clear()
-            logger.error(f"Stack overflow: {e}")
-            return TaskResult(
-                success=False,
-                task_description=task_description,
-                completed_steps=all_completed_steps,
-                failed_step=last_failed_step,
-                message="任务太复杂了，我脑子转不过来了，请拆分一下指令吧。"
-            )
-        except Exception as e:
-            self._running = False
-            self._stack.clear()
-            logger.exception(f"Unexpected error during execution: {e}")
-            return TaskResult(
-                success=False,
-                task_description=task_description,
-                completed_steps=all_completed_steps,
-                failed_step=last_failed_step,
-                message=f"执行出错: {str(e)}"
-            )
+            try:
+                # 主执行循环
+                while not self._stack.is_empty() and not self._cancelled:
+                    current = self._stack.current()
+                    logger.info(f"Executing task: {current.name} (depth={self._stack.depth})")
+
+                    # 更新进度
+                    await self._report_progress(f"执行: {current.name}")
+
+                    # 执行当前任务
+                    result = await self._execute_task(current)
+
+                    if result.success:
+                        # 任务成功，弹出栈
+                        self._stack.pop()
+                        all_completed_steps.extend(result.completed_steps)
+                        logger.info(f"Task completed: {current.name}")
+                    else:
+                        # 任务失败，尝试解决
+                        last_failed_step = result.failed_step
+
+                        # 增加重试计数逻辑，防止无限循环
+                        current_retries = current.context.get("retries", 0)
+                        if current_retries >= self._max_retries:
+                            logger.warning(f"Task {current.name} failed {current_retries} times. Max retries reached.")
+                            resolved = False
+                        else:
+                            current.context["retries"] = current_retries + 1
+                            resolved = await self._handle_task_failure(result)
+
+                        if not resolved:
+                            # 无法解决，中止执行
+                            logger.warning(f"Task failed and cannot be resolved: {current.name}")
+                            self._stack.clear()
+                            self._running = False
+                            return TaskResult(
+                                success=False,
+                                task_description=task_description,
+                                completed_steps=all_completed_steps,
+                                failed_step=last_failed_step,
+                                message=f"任务失败: {result.message}"
+                            )
+
+                # 检查取消状态
+                if self._cancelled:
+                    self._running = False
+                    return TaskResult(
+                        success=False,
+                        task_description=task_description,
+                        completed_steps=all_completed_steps,
+                        message="任务已取消"
+                    )
+
+                # 全部完成
+                self._running = False
+                await self._report_progress("任务完成 ✅")
+                return TaskResult(
+                    success=True,
+                    task_description=task_description,
+                    completed_steps=all_completed_steps,
+                    message="任务完成"
+                )
+
+            except StackOverflowError as e:
+                self._running = False
+                self._stack.clear()
+                logger.error(f"Stack overflow: {e}")
+                return TaskResult(
+                    success=False,
+                    task_description=task_description,
+                    completed_steps=all_completed_steps,
+                    failed_step=last_failed_step,
+                    message="任务太复杂了，我脑子转不过来了，请拆分一下指令吧。"
+                )
+            except Exception as e:
+                self._running = False
+                self._stack.clear()
+                logger.exception(f"Unexpected error during execution: {e}")
+                return TaskResult(
+                    success=False,
+                    task_description=task_description,
+                    completed_steps=all_completed_steps,
+                    failed_step=last_failed_step,
+                    message=f"执行出错: {str(e)}"
+                )
     
     async def _execute_task(self, task: StackTask) -> TaskResult:
         """
