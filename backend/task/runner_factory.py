@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from .actor import LLMTaskActor
     from .action_resolver import SemanticActionResolver
     from ..llm.interfaces import ILLMClient
+    from ..perception.interfaces import IKnowledgeBase
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +33,11 @@ class UniversalRunnerFactory(IRunnerFactory):
     依赖注入：
     - rules: BehaviorRules (共享，只读配置)
     - llm_client: ILLMClient (用于 LLM 驱动恢复)
+    - knowledge_base: IKnowledgeBase (用于 KBOnlyResolver)
     
     每次新建：
     - LLMRecoveryPlanner (有状态，任务级隔离)
+    - KBOnlyResolver (轻量级)
     - UniversalRunner
     """
     
@@ -42,6 +45,7 @@ class UniversalRunnerFactory(IRunnerFactory):
         self, 
         rules: Optional[BehaviorRules] = None,
         llm_client: Optional["ILLMClient"] = None,
+        knowledge_base: Optional["IKnowledgeBase"] = None,
     ):
         """
         初始化工厂
@@ -49,9 +53,20 @@ class UniversalRunnerFactory(IRunnerFactory):
         Args:
             rules: 行为规则配置 (可选，默认创建新实例)
             llm_client: LLM 客户端 (用于 LLM 驱动恢复)
+            knowledge_base: 知识库 (用于参数归一化)
         """
         self._rules = rules or BehaviorRules()
         self._llm_client = llm_client
+        self._kb = knowledge_base
+
+        # 如果没有注入 KB，尝试获取全局实例 (为了兼容性)
+        if self._kb is None:
+            try:
+                from ..perception.knowledge_base import get_knowledge_base
+                self._kb = get_knowledge_base()
+            except ImportError:
+                logger.warning("KnowledgeBase not available for UniversalRunnerFactory")
+
         logger.info("UniversalRunnerFactory initialized")
     
     def create(self, task: StackTask) -> ITaskRunner:
@@ -61,14 +76,22 @@ class UniversalRunnerFactory(IRunnerFactory):
         每次调用都新建 LLMRecoveryPlanner，确保任务级状态隔离。
         """
         from .universal_runner import UniversalRunner
+        from .kb_resolver import KBOnlyResolver
         
         recovery_planner = None
         if self._llm_client:
             from .llm_recovery_planner import LLMRecoveryPlanner
             recovery_planner = LLMRecoveryPlanner(llm_client=self._llm_client)
         
+        # 创建 Resolver (注入 KnowledgeBase)
+        resolver = KBOnlyResolver(kb=self._kb)
+
         logger.debug(f"Creating UniversalRunner for task: {task.name}")
-        return UniversalRunner(rules=self._rules, recovery_planner=recovery_planner)
+        return UniversalRunner(
+            resolver=resolver,
+            rules=self._rules,
+            recovery=recovery_planner  # 注意参数名是 recovery
+        )
 
 
 class ClassicRunnerFactory(IRunnerFactory):
@@ -200,7 +223,14 @@ def create_runner_factory(
     
     if settings.use_universal_runner:
         logger.info("Feature flag enabled: using UniversalRunnerFactory")
-        return UniversalRunnerFactory(rules=rules, llm_client=llm_client)
+        # 需要获取 KB 实例注入
+        kb = None
+        if resolver and hasattr(resolver, '_kb'):
+            kb = resolver._kb
+        elif actor and hasattr(actor, '_kb'):
+            kb = actor._kb
+
+        return UniversalRunnerFactory(rules=rules, llm_client=llm_client, knowledge_base=kb)
     else:
         logger.info("Feature flag disabled: using ClassicRunnerFactory")
         return ClassicRunnerFactory(rules=rules, actor=actor, resolver=resolver)
