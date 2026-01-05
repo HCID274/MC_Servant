@@ -6,9 +6,6 @@ from typing import Dict, Optional, TYPE_CHECKING
 
 from ..interfaces import TaskType, ITaskRunner
 
-if TYPE_CHECKING:
-    from .gather_runner import GatherRunner
-    from .linear_plan_runner import LinearPlanRunner
 
 logger = logging.getLogger(__name__)
 
@@ -86,44 +83,21 @@ class RunnerRegistry:
     @classmethod
     def create_default(cls) -> "RunnerRegistry":
         """
-        创建默认注册表
-        
-        根据 config.use_universal_runner 切换:
-        - False (默认): GatherRunner + LinearPlanRunner
-        - True: UniversalRunner (覆盖全部任务类型)
+        创建默认注册表 (仅 UniversalRunner)
         """
-        from config import settings
+        from ..universal_runner import UniversalRunner
         from ..behavior_rules import BehaviorRules
         
         registry = cls()
         
-        if settings.use_universal_runner:
-            # Phase 3 MVP: UniversalRunner 接管全部
-            from ..universal_runner import UniversalRunner
-            
-            rules = BehaviorRules()
-            universal_runner = UniversalRunner(rules=rules)
-            registry.register_for_types(universal_runner)
-            
-            logger.info(
-                f"Created UniversalRunner registry (MVP mode) with types: "
-                f"{[t.value for t in registry.registered_types]}"
-            )
-        else:
-            # Legacy: GatherRunner + LinearPlanRunner
-            from .gather_runner import GatherRunner
-            from .linear_plan_runner import LinearPlanRunner
-            
-            gather_runner = GatherRunner(rules=BehaviorRules())
-            linear_runner = LinearPlanRunner(max_retries=3)
-            
-            registry.register_for_types(gather_runner)
-            registry.register_for_types(linear_runner)
-            
-            logger.info(
-                f"Created default RunnerRegistry with types: "
-                f"{[t.value for t in registry.registered_types]}"
-            )
+        # Phase 3 MVP: UniversalRunner 接管全部
+        rules = BehaviorRules()
+        universal_runner = UniversalRunner(rules=rules)
+        registry.register_for_types(universal_runner)
+
+        logger.info(
+            f"Created UniversalRunner registry (MVP mode) with types: "
+            f"{[t.value for t in registry.registered_types]}"
+        )
         
         return registry
-

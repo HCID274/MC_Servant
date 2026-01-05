@@ -6,8 +6,7 @@
 import logging
 from typing import List, Optional, Dict, Any
 
-from .actor_interfaces import IActionResolver, ActorDecision, GroundedAction
-from .interfaces import RunContext
+from .interfaces import IActionResolver, RunContext
 
 logger = logging.getLogger(__name__)
 
@@ -28,28 +27,6 @@ class KBOnlyResolver(IActionResolver):
             kb: 知识库实例 (IKnowledgeBase)
         """
         self._kb = kb
-
-    async def resolve(
-        self,
-        decision: ActorDecision,
-        context: RunContext
-    ) -> GroundedAction:
-        """
-        IActionResolver 接口实现
-
-        注意：UniversalRunner 目前主要使用 synchronous 的 resolve_concept 等方法。
-        此异步方法是为了满足接口契约，暂时简单透传。
-
-        UniversalRunner 的设计是先获取 LLM 的 ActionStep，再归一化。
-        而 IActionResolver 的设计是 ActorDecision -> GroundedAction。
-        两者略有不同，但可以统一。
-        """
-        # 简单透传，UniversalRunner 仍主要使用 resolve_concept
-        return GroundedAction(
-            action=decision.action,
-            params=decision.params,
-            description=decision.params.get("description", "")
-        )
 
     def resolve_concept(self, concept: str) -> str:
         """
