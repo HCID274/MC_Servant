@@ -107,6 +107,22 @@ class MineflayerBot(IBotController):
             movements = self._pathfinder.Movements(self._bot, self._mcData)
             movements.canDig = True      # 允许挖掘障碍
             movements.allowParkour = True  # 允许跑酷
+            
+            # 🆕 允许自动搭路 (用于地下脱困)
+            movements.allow1by1towers = True
+            
+            # 配置脚手架方块 (常用建筑材料)
+            scaffold_names = ["dirt", "cobblestone", "stone", "oak_planks", "spruce_planks", "birch_planks"]
+            scaffold_ids = []
+            for name in scaffold_names:
+                try:
+                    block = self._mcData.blocksByName[name]
+                    if block:
+                        scaffold_ids.append(block.id)
+                except Exception:
+                    pass
+            movements.scafoldingBlocks = scaffold_ids
+            
             self._bot.pathfinder.setMovements(movements)
             
             logger.info(f"Bot {self._username} plugins loaded: pathfinder, collectblock, tool")

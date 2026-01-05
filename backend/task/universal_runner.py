@@ -174,6 +174,12 @@ class UniversalRunner(ITaskRunner):
         last_signature: Optional[str] = None
         attempt_count: int = 0
         llm_recovery_used: bool = False
+        
+        # Stuck Monitor (位移检测)
+        last_pos: Optional[dict] = None
+        stuck_ticks: int = 0
+        STUCK_THRESHOLD = 0.1  # 位移阈值
+        STUCK_MAX_TICKS = 3    # 容忍的最大原地踏步次数
 
         recovery_snapshot = None
         if isinstance(task.context, dict):
@@ -233,6 +239,15 @@ class UniversalRunner(ITaskRunner):
                 )
             
             # 1. Observe: 获取 Bot 状态
+            if actions is None:
+                return TaskResult(
+                    success=False,
+                    task_description=task.goal,
+                    completed_steps=completed_steps,
+                    failed_step=last_result,
+                    message="未连接到 Minecraft，无法执行动作"
+                )
+            
             bot_state = self._get_bot_state(actions, context, last_scan, last_result, last_find_location)
             
             # 初始化 Inventory Delta (第一个 tick)
@@ -241,6 +256,34 @@ class UniversalRunner(ITaskRunner):
                 if gather_item_id and gather_target_count:
                     inv = bot_state.get("inventory", {})
                     gather_start_count = int(inv.get(gather_item_id, 0) or 0)
+            
+            # Stuck Monitor 逻辑
+            current_pos = bot_state.get("position", {})
+            if last_pos and current_pos:
+                dist = (
+                    (current_pos.get("x", 0) - last_pos.get("x", 0))**2 +
+                    (current_pos.get("z", 0) - last_pos.get("z", 0))**2
+                )**0.5
+                if dist < STUCK_THRESHOLD:
+                    stuck_ticks += 1
+                    logger.warning(f"[StuckMonitor] Bot seems stuck, ticks: {stuck_ticks}/{STUCK_MAX_TICKS}")
+                else:
+                    stuck_ticks = 0
+            last_pos = current_pos
+
+            # 紧急触发脱困：仅依赖位移检测 (不再依赖硬编码高度)
+            is_moving_action = cached_action and cached_action.action in ["goto", "mine", "explore", "patrol"]
+            
+            if stuck_ticks >= STUCK_MAX_TICKS and is_moving_action:
+                logger.warning(f"[StuckMonitor] Triggering emergency recovery: stuck={stuck_ticks}")
+                # 构造异步脱困动作并执行
+                climb_res = await actions.climb_to_surface()
+                if climb_res.success:
+                    stuck_ticks = 0 # 重置监测
+                    # 脱困成功后，重新观察状态
+                    bot_state = self._get_bot_state(actions, context, last_scan, last_result, last_find_location)
+                else:
+                    logger.error(f"[StuckMonitor] Climb to surface failed: {climb_res.message}")
             
             # ✅ Q2: Inventory Delta 作为辅助信息注入 (而非直接返回成功)
             if gather_item_id and gather_target_count and gather_start_count is not None:
@@ -508,13 +551,14 @@ class UniversalRunner(ITaskRunner):
                 # 🔴 新增: 前置条件错误传递给 TaskExecutor 处理
                 if recovery_result.get("propagate_to_executor"):
                     # 返回失败结果，让 TaskExecutor._handle_task_failure() 
-                    # 有机会调用 PrerequisiteResolver 生成前置任务
+                    # 有机会调用 PrerequisiteResolver 或处理 dynamic_tasks
                     return TaskResult(
                         success=False,
                         task_description=task.goal,
                         completed_steps=completed_steps,
                         failed_step=result,
-                        message=recovery_result.get("reason", "前置条件不足")
+                        message=recovery_result.get("reason", "前置条件不足"),
+                        dynamic_tasks=recovery_result.get("dynamic_tasks"),  # 🆕 传递 LLM 生成的任务
                     )
 
                 if recovery_result.get("abort"):
@@ -960,6 +1004,27 @@ class UniversalRunner(ITaskRunner):
         error_code = result.error_code or "UNKNOWN"
         max_attempts = self._rules.max_retries_per_action
         inventory = (bot_state or {}).get("inventory", {})
+
+        # ============================================================
+        # Phase 0: 紧急脱困 (Symbolic Fast Track)
+        # ============================================================
+        # 如果寻路/移动失败，无论高度如何，优先尝试垂直脱困
+        if error_code != "SUCCESS" and attempt_count >= 1:
+            # 条件：属于移动/寻路相关的失败
+            move_errors = ["PATH_BLOCKED", "TARGET_NOT_FOUND", "TIMEOUT", "RECOVERY_FAILED", "EXECUTION_ERROR"]
+            if error_code in move_errors:
+                logger.info(f"[Recovery] Bot potentially stuck (error: {error_code}), triggering climb_to_surface")
+                climb_step = ActionStep(
+                    action="climb_to_surface",
+                    params={"timeout": 60.0},
+                    description=f"检测到移动失败 ({error_code})，强制尝试垂直爬升回地面"
+                )
+                return {"next_step": climb_step}
+
+        # Local retry for transient failures (Attempt 2)
+        if self._rules.is_transient_error(error_code) and attempt_count < 2:
+            logger.info(f"[Recovery] Transient error, retrying same action: {error_code}")
+            return {"retry_same": True}
         
         # ============================================================
         # Phase 1: Fast Path - 符号层处理确定性错误
@@ -1034,12 +1099,14 @@ class UniversalRunner(ITaskRunner):
                             }
                         
                         if decision.strategy == StrategyType.REPLAN and decision.tasks:
-                            new_step = ActionStep(
-                                action="noop",
-                                params={"replan_hint": decision.tasks[0]},
-                                description=decision.reason
-                            )
-                            return {"next_step": new_step, "llm_used": True}
+                            # REPLAN: 用 INSERT 方式处理（换一种方法）
+                            return {
+                                "propagate_to_executor": True,
+                                "error_code": error_code,
+                                "reason": decision.reason,
+                                "dynamic_tasks": decision.tasks,
+                                "llm_used": True,
+                            }
                         
                         if decision.strategy == StrategyType.ESCALATE:
                             return {
@@ -1064,11 +1131,6 @@ class UniversalRunner(ITaskRunner):
         # Phase 3: 原有逻辑 - 瞬态重试 + LLM Recovery Planner
         # ============================================================
         
-        # Local retry for transient failures (Attempt 2)
-        if self._rules.is_transient_error(error_code) and attempt_count < 2:
-            logger.info(f"[Recovery] Transient error, retrying same action: {error_code}")
-            return {"retry_same": True}
-
         if llm_recovery_used:
             return {"clarify": True, "message": self._default_clarify_message(error_code)}
 

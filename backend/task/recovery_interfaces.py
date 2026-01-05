@@ -57,6 +57,7 @@ class RecoveryActionType(Enum):
     
     # L4 策略
     GOTO_OWNER = "goto_owner"
+    CLIMB_TO_SURFACE = "climb_to_surface"
     
     # 特殊
     NO_RECOVERY = "no_recovery"

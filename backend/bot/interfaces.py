@@ -100,6 +100,18 @@ class IBotActions(ABC):
         pass
     
     @abstractmethod
+    async def climb_to_surface(self, timeout: float = 60.0) -> ActionResult:
+        """
+        尝试从地下返回地面 (垂直脱困)
+        
+        策略:
+        1. 寻找上方最高的非空气方块高度
+        2. 尝试使用 pathfinder 导航 (已启用 allow1by1towers)
+        3. 如果常规导航失败，尝试强制搭路向上或使用挖掘脱困
+        """
+        pass
+
+    @abstractmethod
     async def place(self, block_type: str, x: int, y: int, z: int, timeout: float = 10.0) -> ActionResult:
         """
         在指定位置放置方块

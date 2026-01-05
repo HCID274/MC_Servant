@@ -215,6 +215,11 @@ class RecoveryCoordinator(IRecoveryCoordinator):
         else:
             action_type = RecoveryActionType.UNSTUCK_STEP_UP
             reason = "L2 脱困: 向上跳跃"
+            
+        # 🆕 增强: 如果之前的恢复动作失败，优先尝试爬向地面
+        if result.error_code == "RECOVERY_FAILED":
+             action_type = RecoveryActionType.CLIMB_TO_SURFACE
+             reason = "L2 脱困: 基础恢复失败，尝试垂直爬向地面"
         
         return RecoveryDecision(
             level=RecoveryLevel.L2_UNSTUCK,

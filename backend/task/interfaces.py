@@ -146,6 +146,7 @@ class TaskResult:
         completed_steps: 已完成的动作结果列表
         failed_step: 失败的动作结果 (如果有)
         message: 结果描述 (人类可读)
+        dynamic_tasks: LLM 生成的前置任务列表 (用于 DynamicResolver)
     """
     success: bool
     task_description: str
@@ -153,6 +154,7 @@ class TaskResult:
     failed_step: Optional["ActionResult"] = None
     message: str = ""
     status: Optional["TaskResultStatus"] = None  # 详细状态 (用于 WAITING_FOR_USER 等)
+    dynamic_tasks: Optional[List[str]] = None   # LLM 生成的前置任务 (如 ["craft planks 4", "craft stick 2"])
     
     def __repr__(self) -> str:
         status = "✅" if self.success else "❌"

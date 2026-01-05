@@ -738,9 +738,129 @@ class MineflayerActions(IBotActions):
                 data={"collected": collected},
                 duration_ms=int((time.time() - start_time) * 1000)
             )
-        finally:
-            self._progress_timer = None
-    
+    def _get_highest_block_y_at(self, x: int, z: int) -> Optional[int]:
+        """寻找指定 XZ 坐标处最高的海拔高度 (非空气方块)"""
+        try:
+            # 从 256 开始往下找
+            for y in range(120, -64, -1):
+                block = self._bot.blockAt(self._Vec3(x, y, z))
+                if block and block.name != "air" and block.name != "cave_air":
+                    return int(y)
+        except:
+            pass
+        return None
+
+    async def climb_to_surface(self, timeout: float = 60.0) -> ActionResult:
+        """
+        增强型脱困：支持螺旋挖掘 (Spiral Dig) 和 自动垫路 (Padding)
+        """
+        start_time = time.time()
+        logger.info("[climb_to_surface] Starting enhanced recovery to surface")
+        
+        # 记录是否可以使用作弊命令 (OP权限)
+        # 如果发现无效(没有移动/方块没变)，则设为False，后续不再尝试，防止刷屏导致断连
+        can_use_cheats = True
+        
+        try:
+            # 1. 寻找目标位置
+            pos = self._bot.entity.position
+            cur_x, cur_z = int(pos.x), int(pos.z)
+            target_y = self._get_highest_block_y_at(cur_x, cur_z)
+            
+            if target_y is None or target_y <= pos.y:
+                for dx, dz in [(2,0), (-2,0), (0,2), (0,-2)]:
+                    target_y = self._get_highest_block_y_at(cur_x + dx, cur_z + dz)
+                    if target_y and target_y > pos.y:
+                        cur_x += dx
+                        cur_z += dz
+                        break
+            
+            if target_y is None or target_y <= pos.y:
+                # 仍然没找到地表，尝试向上爬升一段距离
+                target_y = int(pos.y) + 10
+            
+            logger.info(f"[climb_to_surface] Target: ({cur_x}, {target_y}, {cur_z})")
+
+            # 2. 尝试常规 goto
+            goto_result = await self.goto(f"{cur_x},{target_y},{cur_z}", timeout=timeout / 3)
+            if goto_result.success:
+                return ActionResult(success=True, action="climb_to_surface", message="寻路脱困成功")
+
+            # 3. 核心循环：强制上移
+            current_y = int(self._bot.entity.position.y)
+            while current_y < target_y:
+                if time.time() - start_time > timeout:
+                    break
+                
+                # A. 检查头部上方是否被堵
+                head_pos = self._Vec3(cur_x, current_y + 2, cur_z)
+                block_head = self._bot.blockAt(head_pos)
+                
+                if block_head and block_head.name not in ["air", "cave_air", "water"]:
+                    # 尝试 OP 命令移除方块
+                    if can_use_cheats:
+                        self._bot.chat(f"/setblock {cur_x} {current_y + 2} {cur_z} air")
+                        await asyncio.sleep(0.1) 
+                        # 检查 OP 命令是否生效
+                        block_head_check = self._bot.blockAt(head_pos)
+                        if block_head_check and block_head_check.name not in ["air", "cave_air", "water"]:
+                            logger.info("[climb_to_surface] /setblock failed (no permission?), disabling cheats")
+                            can_use_cheats = False
+                    
+                    # 再次检查，如果命令无效（非 OP 或已禁用），则手动挖掘
+                    block_head = self._bot.blockAt(head_pos)
+                    if block_head and block_head.name not in ["air", "cave_air", "water"]:
+                        try:
+                            await self._bot.dig(block_head)
+                        except:
+                            # 螺旋侧移挖掘逻辑 (Spiral Dig Fallback)
+                            for dx, dz in [(1,0), (0,1), (-1,0), (0,-1)]:
+                                side_head = self._bot.blockAt(self._Vec3(cur_x + dx, current_y + 2, cur_z + dz))
+                                if side_head and side_head.name in ["air", "cave_air"]:
+                                    cur_x += dx
+                                    cur_z += dz
+                                    logger.info(f"[climb_to_surface] Spiraling to ({cur_x}, {cur_z})")
+                                    break
+
+                # B. 垫路：向上跳跃并在脚下放方格
+                old_y = current_y
+                
+                # 尝试 OP tp
+                if can_use_cheats:
+                    try:
+                        self._bot.chat(f"/setblock {cur_x} {current_y} {cur_z} dirt")
+                        self._bot.chat(f"/tp @s {cur_x} {current_y + 1} {cur_z}")
+                        await asyncio.sleep(0.1)
+                        
+                        # Check position
+                        new_pos = self._bot.entity.position
+                        if int(new_pos.y) <= old_y:
+                            logger.info("[climb_to_surface] /tp failed (no permission?), disabling cheats")
+                            can_use_cheats = False
+                    except:
+                        can_use_cheats = False
+                
+                # 更新坐标并检查进度
+                new_pos = self._bot.entity.position
+                current_y = int(new_pos.y)
+                
+                if current_y <= old_y: # TP/Setblock 失败，尝试物理跳跃
+                    self._bot.setControlState('jump', True)
+                    await asyncio.sleep(0.3)
+                    self._bot.setControlState('jump', False)
+                    # 尝试在脚下放泥土
+                    current_y = int(self._bot.entity.position.y)
+
+            final_pos = self._bot.entity.position
+            return ActionResult(
+                success=final_pos.y >= target_y - 2,
+                action="climb_to_surface",
+                message=f"脱困结束，最终 Y: {int(final_pos.y)}",
+                data={"final_y": int(final_pos.y)}
+            )
+        except Exception as e:
+            return ActionResult(success=False, action="climb_to_surface", message=f"执行崩溃: {str(e)}")
+
     async def mine_tree(
         self,
         near_position: dict = None,
@@ -1949,69 +2069,119 @@ class MineflayerActions(IBotActions):
         def find_material_slot(target_id: int) -> int:
             # Fix: Proxy has no len(), use .length
             slots_len = int(window.slots.length)
+            logger.debug(f"[find_material_slot] Searching for target_id={target_id}, search_start={search_start}, slots_len={slots_len}")
             
             # 优先找精确匹配
             for i in range(search_start, slots_len):
                 item = window.slots[i]
                 if item and item.type == target_id:
+                    logger.debug(f"[find_material_slot] Exact match found at slot {i}: {item.name}")
                     return i
             
             # Tag 匹配
             target_name = self._get_item_name_by_id(target_id)
+            logger.debug(f"[find_material_slot] No exact match, target_name={target_name}, trying Tag match...")
             if not target_name:
+                logger.warning(f"[find_material_slot] Cannot resolve target_id={target_id} to name")
                 return -1
                 
             # 查找所有等价物
             equivs = tag_resolver.get_equivalents(target_name) # includes self
+            logger.debug(f"[find_material_slot] Tag equivalents for {target_name}: {equivs[:5]}{'...' if len(equivs)>5 else ''}")
             for i in range(search_start, slots_len):
                 item = window.slots[i]
                 if item and item.name in equivs:
+                    logger.debug(f"[find_material_slot] Tag match found at slot {i}: {item.name} (count={item.count})")
                     return i
+            logger.warning(f"[find_material_slot] No material found for {target_name} (id={target_id})")
             return -1
+        # 辅助函数：安全获取 JS Proxy 数组长度
+        def _safe_len(obj):
+            """获取 JS Proxy 数组长度，支持 Python list 和 JS Proxy"""
+            if obj is None:
+                return 0
+            try:
+                return len(obj)  # Python list
+            except TypeError:
+                try:
+                    return int(obj.length)  # JS Proxy
+                except:
+                    return 0
 
         # 3. 执行合成循环
+        shape_len = _safe_len(shape)
+        logger.info(f"[manual_craft] Recipe inShape: rows={shape_len}, is_3x3={is_3x3}")
         for _ in range(int(count)):
             used_materials_slots = {} # slot -> count_taken_this_round (简单起见，每次都重新扫)
             
             # Plan execution for one craft
             # 遍历 shape，把材料放上去
-            # 遍历 shape，把材料放上去
-            for r, row_data in enumerate(shape):
-                for c, ingredient in enumerate(row_data):
-                    # ingredient 可能是 Item 或 [Item] (variation)
+            for r in range(shape_len):
+                row_data = shape[r]
+                row_len = _safe_len(row_data)
+                logger.debug(f"[manual_craft] Processing row {r}, cols={row_len}")
+                for c in range(row_len):
+                    ingredient = row_data[c]
+                    # ingredient 可能是 Item 或 [Item] (variation) 或 JS Proxy
                     required_id = None
                     if ingredient is None:
+                        logger.debug(f"[manual_craft] shape[{r}][{c}] is None, skipping")
                         continue
 
-                    if isinstance(ingredient, list):
-                         if len(ingredient) > 0:
-                             required_id = ingredient[0].id
-                    elif hasattr(ingredient, 'id'):
-                        required_id = ingredient.id
+                    # 安全解析 ingredient.id，处理 JS Proxy
+                    try:
+                        # JS Proxy 不能用 isinstance 检查，尝试直接访问属性
+                        raw_id = None
+                        
+                        # 先尝试作为单个 RecipeItem 访问
+                        if hasattr(ingredient, 'id'):
+                            raw_id = ingredient.id
+                        # 再尝试作为数组访问第一个元素 (ingredient 是 [RecipeItem])
+                        elif _safe_len(ingredient) > 0:
+                            first_item = ingredient[0]
+                            if hasattr(first_item, 'id'):
+                                raw_id = first_item.id
+                        
+                        if raw_id is None:
+                            logger.debug(f"[manual_craft] shape[{r}][{c}] has no id: {type(ingredient)}")
+                            continue
+                        
+                        # 使用 _coerce_js_int 安全转换 JS Proxy
+                        required_id = _coerce_js_int(raw_id)
+                        logger.debug(f"[manual_craft] shape[{r}][{c}] requires id={required_id}")
+                    except Exception as parse_err:
+                        logger.warning(f"[manual_craft] Failed to parse ingredient at [{r}][{c}]: {parse_err}")
+                        continue
                     
                     if required_id is None:
                         continue # Empty slot
                     
                     if required_id < 0:
                         # id=-1 usually means "empty" or "no item required"
+                        logger.debug(f"[manual_craft] shape[{r}][{c}] id={required_id} < 0, skipping")
                         continue
 
                     grid_slot = get_grid_slot(r, c)
                     
                     # 找到源材料
                     src_slot = find_material_slot(required_id)
+                    target_name = self._get_item_name_by_id(required_id)
+                    logger.info(f"[manual_craft] shape[{r}][{c}]: need {target_name}(id={required_id}), found at slot {src_slot}, placing to grid_slot {grid_slot}")
+                    
                     if src_slot < 0:
                          # Try to resolve variant names to log helpful error
-                        needed_name = self._get_item_name_by_id(required_id)
-                        raise RuntimeError(f"Manual craft: missing material for shape[{r}][{c}] (id={required_id}/{needed_name})")
+                        raise RuntimeError(f"Manual craft: missing material for shape[{r}][{c}] (id={required_id}/{target_name})")
                     
                     # Pickup
+                    logger.debug(f"[manual_craft] clickWindow({src_slot}, 0, 0) - pickup")
                     self._bot.clickWindow(src_slot, 0, 0)
                     _time.sleep(0.2)
                     # Place 1
+                    logger.debug(f"[manual_craft] clickWindow({grid_slot}, 1, 0) - place 1")
                     self._bot.clickWindow(grid_slot, 1, 0)
                     _time.sleep(0.3)
                     # Put back
+                    logger.debug(f"[manual_craft] clickWindow({src_slot}, 0, 0) - put back remainder")
                     self._bot.clickWindow(src_slot, 0, 0)
                     _time.sleep(0.3)
             

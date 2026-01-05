@@ -446,7 +446,9 @@ class TaskExecutor(ITaskExecutor):
         """
         处理任务失败
         
-        优先使用符号层 (Fast Path)，失败则已经在 _execute_task 中尝试过 replan
+        优先级：
+        1. 如果有 dynamic_tasks (LLM Slow Path)，直接压入栈
+        2. 否则尝试符号层 (Fast Path)
         
         Args:
             result: 失败的任务结果
@@ -455,13 +457,33 @@ class TaskExecutor(ITaskExecutor):
             True 如果成功压入前置任务
             False 如果无法解决
         """
+        # 🆕 优先处理 dynamic_tasks (来自 DynamicResolver)
+        if result.dynamic_tasks:
+            logger.info(f"[DynamicResolver] Pushing {len(result.dynamic_tasks)} prerequisite tasks")
+            try:
+                # 反向压入栈（确保第一个任务先执行）
+                for task_str in reversed(result.dynamic_tasks):
+                    prereq = StackTask(
+                        name=task_str,
+                        goal=task_str,
+                        context={"source": "dynamic_resolver"},
+                        status=TaskStatus.PENDING,
+                    )
+                    self._stack.push(prereq)
+                    logger.info(f"  - Pushed: {task_str}")
+                return True
+            except StackOverflowError:
+                logger.warning("Stack overflow while pushing dynamic_tasks")
+                raise  # 让上层处理
+        
+        # 符号层 (Fast Path)
         if not result.failed_step or not self._prereq:
             return False
         
         failed = result.failed_step
         
         # 只处理特定错误码
-        if failed.error_code not in ("INSUFFICIENT_MATERIALS", "NO_TOOL"):
+        if failed.error_code not in ("INSUFFICIENT_MATERIALS", "NO_TOOL", "STATION_NOT_PLACED"):
             return False
         
         # 构建上下文
@@ -471,9 +493,10 @@ class TaskExecutor(ITaskExecutor):
             "item": failed.data.get("item") if failed.data else None,
             "tool_type": failed.data.get("tool_type") if failed.data else None,
             "min_tier": failed.data.get("min_tier") if failed.data else None,
+            "station": failed.data.get("station") if failed.data else None,
         }
         
-        inventory = self._actions.get_state().get("inventory", {})
+        inventory = self._actions.get_state().get("inventory", {}) if self._actions else {}
         
         # 尝试符号解析
         prereq_task = self._prereq.resolve(

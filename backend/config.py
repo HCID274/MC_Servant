@@ -61,9 +61,9 @@ class Settings(BaseSettings):
     # - chat：闲聊可以更慢一点
     # - compression：记忆压缩后台跑，允许更久，但必须可超时/可降级
     llm_intent_timeout_seconds: float = 5.0
-    llm_chat_timeout_seconds: float = 20.0
+    llm_chat_timeout_seconds: float = 60.0  # 规划和决策需要更多时间
     llm_compression_timeout_seconds: float = 25.0
-    llm_http_timeout_seconds: float = 30.0  # HTTP 层兜底（给 AsyncOpenAI/httpx）
+    llm_http_timeout_seconds: float = 63.0  # HTTP 层兜底（给 AsyncOpenAI/httpx）
 
     # UniversalRunner 实验性开关
     use_universal_runner: bool = True  # Phase 3+ 新架构 (UniversalRunner + LLM Recovery)
