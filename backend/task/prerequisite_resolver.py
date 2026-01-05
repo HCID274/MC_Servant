@@ -107,6 +107,15 @@ class PrerequisiteResolver(IPrerequisiteResolver):
         
         if error_code == "NO_TOOL":
             return self._resolve_missing_tool(context, inventory)
+
+        if error_code == "STATION_NOT_PLACED":
+            station = context.get("station", "crafting_table")
+            return StackTask(
+                name=f"放置 {station}",
+                goal=f"place {station}",
+                context={"source": "prerequisite", "station": station},
+                status=TaskStatus.PENDING
+            )
         
         # 其他错误码交给 LLM
         logger.debug(f"Cannot resolve error code '{error_code}' symbolically")

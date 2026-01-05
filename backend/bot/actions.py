@@ -1450,10 +1450,22 @@ class MineflayerActions(IBotActions):
                     error_code="TARGET_NOT_FOUND"
                 )
             
-            # 获取所有配方 (使用 recipesAll 获取完整列表)
+            # 1. 预先寻找附近的工作台 (32格内)
+            crafting_table_block = None
+            try:
+                ct_info = self._mcData.blocksByName["crafting_table"]
+                if ct_info:
+                    crafting_table_block = self._bot.findBlock({
+                        "matching": ct_info.id,
+                        "maxDistance": 32
+                    })
+            except Exception:
+                pass
+
+            # 获取所有配方 (传入工作台以解锁 3x3 配方)
             all_recipes = []
             try:
-                all_recipes_proxy = self._bot.recipesAll(item_info.id, None, None)
+                all_recipes_proxy = self._bot.recipesAll(item_info.id, None, crafting_table_block)
                 all_recipes = list(all_recipes_proxy) if all_recipes_proxy else []
             except Exception as e:
                 logger.debug(f"recipesAll failed: {e}")
@@ -1489,7 +1501,56 @@ class MineflayerActions(IBotActions):
             
             # 🔴 调试日志：显示配方数量
             logger.info(f"[craft] Found {len(all_recipes)} recipe variants for {item_name}")
-            
+
+            # 兼容逻辑：如果 mineflayerAPI 找不到配方 (通常因为缺少工作台)，尝试检查 raw recipe 是否存在
+            if not all_recipes:
+                # 检查 mcData.recipes 是否有此物品的配方数据
+                has_raw_recipe = False
+                try:
+                    raw_recipes = self._mcData.recipes.get(str(item_info.id))
+                    if raw_recipes and len(raw_recipes) > 0:
+                        has_raw_recipe = True
+                except Exception:
+                    pass
+                
+                if has_raw_recipe:
+                    # 原生配方存在但 valid recipes 为空 -> 99% 概率是缺工作台
+                    # 检查背包是否有工作台
+                    ct_id = None
+                    try:
+                        ct_info = self._mcData.itemsByName.crafting_table
+                        ct_id = ct_info.id
+                    except:
+                        pass
+                    
+                    has_table_item = False
+                    if ct_id:
+                        inv_count = 0
+                        for item in self._bot.inventory.items():
+                            if item.type == ct_id:
+                                inv_count += item.count
+                        if inv_count > 0:
+                            has_table_item = True
+
+                    if has_table_item:
+                         return ActionResult(
+                            success=False,
+                            action="craft",
+                            message=f"合成 {item_name} 需要工作台，请先放置工作台",
+                            status=ActionStatus.FAILED,
+                            error_code="STATION_NOT_PLACED",
+                            data={"station": "crafting_table", "item": item_name}
+                        )
+                    else:
+                         return ActionResult(
+                            success=False,
+                            action="craft",
+                            message=f"合成 {item_name} 需要工作台，背包中也没有",
+                            status=ActionStatus.FAILED,
+                            error_code="INSUFFICIENT_MATERIALS",
+                            data={"missing": {"crafting_table": 1}, "item": item_name}
+                        )
+
             # 尝试找到可执行的配方
             executable_recipe, missing_materials = self._find_executable_recipe(all_recipes, inventory, count)
 
@@ -1552,35 +1613,64 @@ class MineflayerActions(IBotActions):
                 # Mineflayer 对 recipe 示例材料做严格检查（不理解 #planks），会在这里抛 missing ingredient。
                 # 对 crafting_table（2x2，无需工作台）我们提供一个“手动摆盘”的兜底路径，避免任务进入“Tag 满足但不可解”死循环。
                 msg_lower = str(craft_exc).lower()
+                
+                # Check if we have a tag-compatible recipe identified earlier (even if not strictly matching)
+                # 'best_recipe' variable from earlier scope is not directly available here unless we use the one passed to craft()
+                # But we know 'executable_recipe' was what we tried to craft.
+                
+                if "missing ingredient" in msg_lower and executable_recipe:
+                     logger.warning(
+                        f"[craft] bot.craft() strict missing ingredient for {item_name}. "
+                        f"Attempting generic manual craft fallback..."
+                    )
+                     try:
+                        # Ensure window is open if needed (crafting table logic handled by bot.craft, 
+                        # but if it failed, window might be closed? No, bot.craft opens it.)
+                        # We need to access the currently open window.
+                        current_window = self._bot.currentWindow
+                        
+                        # Verify if current window matches requirement
+                        use_window = None
+                        if executable_recipe.requiresTable:
+                            # If bot.craft opened table, currentWindow should be it.
+                            # If not, we might need to open it ourselves? 
+                            # bot.craft likely closed it or failed to open.
+                            # For safety, let's try to find/open table if not open.
+                            # But that's async. We are in sync block? No, await asyncio.wait_for... wrapper.
+                            
+                            # Actually, we can reuse the crafting_table block we found earlier.
+                            if not current_window or "crafting_table" not in str(current_window.title).lower():
+                                 pass # Complex to re-open async inside exception handler.
+                                 # Simplification: Assume if bot.craft failed mid-way, window MIGHT be open.
+                                 # If not, manual craft fails.
+                            else:
+                                use_window = current_window
+                        
+                        # Execute manual craft
+                        await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: self._manual_craft_generic_sync(executable_recipe, int(count), use_window)
+                            ),
+                            timeout=timeout
+                        )
+
+                        return ActionResult(
+                            success=True,
+                            action="craft",
+                            message=f"成功合成 {count} 个 {item_name} (Manual Fallback)",
+                            status=ActionStatus.SUCCESS,
+                            data={"crafted": {item_name: count}, "mode": "manual_generic"},
+                            duration_ms=int((time.time() - start_time) * 1000)
+                        )
+                     except Exception as manual_exc:
+                        logger.error(f"[craft] Manual generic fallback failed: {manual_exc}")
+                        # Fallthrough to raise original exception
+
                 if "missing ingredient" in msg_lower and item_name == "crafting_table" and crafting_table is None:
-                    try:
-                        from bot.tag_resolver import get_tag_resolver
-                        tag_resolver = get_tag_resolver()
-                        need = int(count) * 4
-                        total_planks = int(tag_resolver.get_available_count("planks", inventory))
-                        plank_item = tag_resolver.find_available("planks", inventory)
-                        if plank_item and total_planks >= need:
-                            logger.warning(
-                                f"[craft] bot.craft() strict missing ingredient. Falling back to manual craft crafting_table "
-                                f"using {plank_item} (have={total_planks}, need={need})"
-                            )
-                            await asyncio.wait_for(
-                                asyncio.get_event_loop().run_in_executor(
-                                    None,
-                                    lambda: self._manual_craft_crafting_table_sync(plank_item, int(count))
-                                ),
-                                timeout=timeout
-                            )
-                            return ActionResult(
-                                success=True,
-                                action="craft",
-                                message=f"成功合成 {count} 个 {item_name}",
-                                status=ActionStatus.SUCCESS,
-                                data={"crafted": {item_name: count}, "mode": "manual_clickwindow", "material": plank_item},
-                                duration_ms=int((time.time() - start_time) * 1000)
-                            )
-                    except Exception as manual_exc:
-                        logger.error(f"[craft] Manual craft fallback failed: {manual_exc}")
+                    # Deprecated specific fallback (kept for safety if generic fails or recipe object issue)
+                    pass 
+                
                 raise craft_exc
             
             return ActionResult(
@@ -1733,6 +1823,172 @@ class MineflayerActions(IBotActions):
             self._bot.clickWindow(OUTPUT_SLOT, 0, 1)  # mode=1 shift-click
             _time.sleep(0.1)
 
+    def _manual_craft_generic_sync(self, recipe, count: int = 1, crafting_table_window=None) -> None:
+        """
+        通用手动合成 (First Principles fallback)
+        
+        解析 recipe.inShape，根据背包实际拥有的 Tag 等价物，手动执行 clickWindow。
+        支持 2x2 (Inventory) 和 3x3 (Crafting Table)。
+        
+        Args:
+            recipe: Mineflayer Recipe 对象
+            count: 合成次数
+            crafting_table_window: 如果是 3x3，传入打开的窗口对象；如果是 2x2，传 None (使用 player inventory)
+        """
+        import time as _time
+        from bot.tag_resolver import get_tag_resolver
+        tag_resolver = get_tag_resolver()
+
+        # 1. 确定窗口和槽位映射
+        # Inventory Window (id=0): Output=0, Input=1,2,3,4 (2x2)
+        # Crafting Window: Output=0, Input=1..9 (3x3)
+        window = crafting_table_window if crafting_table_window else self._bot.inventory
+        
+        is_3x3 = (crafting_table_window is not None)
+        GRID_WIDTH = 3 if is_3x3 else 2
+        
+        # 槽位偏移 (Output slot index usually 0 for widely used windows)
+        # 3x3 Input slots: 1,2,3 / 4,5,6 / 7,8,9
+        # 2x2 Input slots: 1,2 / 3,4
+        def get_grid_slot(row, col):
+            if is_3x3:
+                return 1 + row * 3 + col
+            else:
+                return 1 + row * 2 + col
+
+        # 2. 解析配方形状并准备材料映射
+        # inShape: [row][col] -> RecipeItem (has id) or List of RecipeItems
+        # 我们需要将其展平为一个 Plan: [(slot_idx, item_id_needed)]
+        # 并提前解析出 "我应该用哪个 item 来满足 item_id_needed"
+        
+        shape = recipe.inShape # List[List[Item]]
+        if not shape:
+            raise RuntimeError("Recipe has no inShape")
+        
+        # 预先获取背包快照
+        slots = getattr(window, "slots", [])
+        if not slots:
+             # 如果是 window 对象，可能 slots 在 .slots 属性 (Array)
+             pass
+        
+        # 辅助函数：找可用材料槽位
+        def find_material_slot(target_id: int) -> int:
+            # 优先找精确匹配
+            for i, item in enumerate(window.slots):
+                if item and item.type == target_id:
+                    return i
+            
+            # Tag 匹配
+            target_name = self._get_item_name_by_id(target_id)
+            if not target_name:
+                return -1
+                
+            # 查找所有等价物
+            equivs = tag_resolver.get_equivalents(target_name) # includes self
+            for i, item in enumerate(window.slots):
+                if item and item.name in equivs:
+                    return i
+            return -1
+
+        # 3. 执行合成循环
+        for _ in range(int(count)):
+            used_materials_slots = {} # slot -> count_taken_this_round (简单起见，每次都重新扫)
+            
+            # Plan execution for one craft
+            # 遍历 shape，把材料放上去
+            for r, row_data in enumerate(shape):
+                for c, ingredient in enumerate(row_data):
+                    # ingredient 可能是 Item 或 [Item] (variation)
+                    required_id = None
+                    if isinstance(ingredient, list):
+                         if len(ingredient) > 0:
+                             required_id = ingredient[0].id
+                    elif hasattr(ingredient, 'id'):
+                        required_id = ingredient.id
+                    
+                    if required_id is None:
+                        continue # Empty slot
+                    
+                    grid_slot = get_grid_slot(r, c)
+                    
+                    # 找到源材料
+                    src_slot = find_material_slot(required_id)
+                    if src_slot < 0:
+                         raise RuntimeError(f"Manual craft: missing material for shape[{r}][{c}] (id={required_id})")
+                    
+                    # 动作：从源拿1个，放到 grid
+                    # Left click source to pick up stack (or part) - complex logic simplified:
+                    # Robust way: 
+                    # 1. Left click src (pickup all)
+                    # 2. Right click grid (place 1)
+                    # 3. Left click src (put back rest)
+                    
+                    # ⚠️ 注意：如果 src 也是 grid 的一部分（例如上次合成剩下的），逻辑会复杂。
+                    # 假设 inventory 足量且整理过，通常 src 在非 grid区域。
+                    
+                    # Pickup
+                    self._bot.clickWindow(src_slot, 0, 0)
+                    _time.sleep(0.05)
+                    # Place 1
+                    self._bot.clickWindow(grid_slot, 1, 0)
+                    _time.sleep(0.05)
+                    # Put back
+                    self._bot.clickWindow(src_slot, 0, 0)
+                    _time.sleep(0.05)
+            
+            # Take result
+            # Shift-click output to inventory
+            self._bot.clickWindow(0, 0, 1) 
+            _time.sleep(0.1)
+
+            # Close window to ensure transaction commits and inventory syncs
+            # If we opened a table, we must close it.
+            if crafting_table_window:
+                 try:
+                     self._bot.closeWindow(crafting_table_window)
+                     _time.sleep(0.1)
+                 except:
+                     pass
+            
+            # 4. State Verification (Essential for prevention of infinite loops)
+            # Wait for inventory to update
+            try:
+                result_id = recipe.result.id
+                target_name = self._get_item_name_by_id(result_id)
+                start_count = inventory_snapshot.get(target_name, 0) # Snapshot might be old?
+                
+                # Get fresh count
+                current_inv = {}
+                for item in self._bot.inventory.items():
+                    current_inv[item.name] = current_inv.get(item.name, 0) + item.count
+                start_count = current_inv.get(target_name, 0)
+
+                success_verify = False
+                for _v in range(20): # Wait up to 2.0s
+                    _time.sleep(0.1)
+                    # Check count
+                    now_inv = {}
+                    for item in self._bot.inventory.items():
+                        now_inv[item.name] = now_inv.get(item.name, 0) + item.count
+                    
+                    if now_inv.get(target_name, 0) > start_count:
+                        success_verify = True
+                        break
+                
+                if not success_verify:
+                    raise RuntimeError(f"Manual craft verification failed: {target_name} count did not increase.")
+                    
+            except Exception as e:
+                # Don't block flow if verification logic errors, but do log it
+                # Actually, if verify fails, we SHOULD error out to let retry happen logic properly.
+                raise RuntimeError(f"Manual craft verification error: {e}")
+            
+            # 如果产生了多余 items 在 grid 里（某些配方），通常 shift-click 会自动清空 grid 吗？
+            # 不会，shift-click result 只拿结果。
+            # 原料被消耗了。如果配方正确，grid 应该空了（或剩下 bucket 等副产物）。
+            # 简单起见，不处理副产物回收，依靠 inventory 同步。
+
+
     def _find_executable_recipe(
         self, 
         recipes: list, 
@@ -1788,6 +2044,15 @@ class MineflayerActions(IBotActions):
 
             return (needs_mining, total, len(missing))
         
+        best_recipe = None
+        best_recipe_missing = {}
+        best_score = None 
+
+        # New: Track strict match to avoid "missing ingredient" crash in bot.craft()
+        # If we have multiple recipes (e.g. stick from oak, stick from birch), we MUST pick the one 
+        # that matches our actual inventory items.
+        exact_match_found = False
+
         for recipe in recipes:
             try:
                 required_materials = self._extract_recipe_materials(recipe)
@@ -1797,72 +2062,81 @@ class MineflayerActions(IBotActions):
 
             parseable_recipes += 1
             
-            # Tag-aware 材料检查
-            # Mineflayer 只返回 1 个通用配方（如 oak_planks），但游戏允许任何 #planks
-            # 我们使用 TagResolver 让背包中的 cherry_planks 通过 oak_planks 的检查
-            # Mineflayer 的 craft() 会自动使用背包中可用的材料
-            can_craft = True
+            can_craft_tag = True
+            is_strict_match = True
             recipe_missing = {}
             
             from bot.tag_resolver import get_tag_resolver
             tag_resolver = get_tag_resolver()
             
             for material_id, required_count in required_materials.items():
-                # 将 ID 转换为物品名
                 material_name = self._get_item_name_by_id(material_id)
                 if not material_name:
-                    can_craft = False
+                    can_craft_tag = False
+                    is_strict_match = False
                     recipe_missing[f"id:{material_id}"] = required_count * craft_count
                     continue
 
                 needed = int(required_count) * int(craft_count)
                 
-                # 1. 先尝试精确匹配
-                available_count = int(inventory.get(material_name, 0))
+                # 1. 精确匹配检查
+                available_strict = int(inventory.get(material_name, 0))
                 
-                # 2. 如果精确匹配不足，尝试 Tag 等价物品
-                # 注意：Minecraft 的 Tag 允许“混用”多种等价物品填充配方格（例如 2 oak + 2 cherry 也能合成工作台）
-                # 因此不能只找一种替代物品并要求其数量 >= needed；应统计等价集合的总数量。
-                if available_count < needed:
+                if available_strict < needed:
+                    is_strict_match = False
+                    
+                    # 2. Tag 等价检查 (Soft Match)
                     try:
                         total_equiv = int(tag_resolver.get_available_count(material_name, inventory))
                     except Exception:
-                        total_equiv = available_count
+                        total_equiv = available_strict
 
-                    if total_equiv >= needed:
-                        tag_name = None
-                        try:
-                            tag_name = tag_resolver.get_tag_for_item(material_name)
-                        except Exception:
-                            tag_name = None
-
-                        if tag_name:
-                            logger.info(
-                                f"[craft] Tag-aware total: #{tag_name} provides {total_equiv}/{needed} for {material_name}"
-                            )
-                        else:
-                            logger.info(
-                                f"[craft] Tag-aware total provides {total_equiv}/{needed} for {material_name}"
-                            )
-
-                        available_count = total_equiv
-                    else:
-                        # 记录等价集合总量，用于缺料计算（而不是仅记录精确匹配）
-                        available_count = total_equiv
-
-                if available_count < needed:
-                    can_craft = False
-                    recipe_missing[material_name] = needed - available_count
+                    if total_equiv < needed:
+                        can_craft_tag = False
+                        # 记录真正的缺口 (基于 Tag 总量)
+                        recipe_missing[material_name] = needed - total_equiv
+                
+            if can_craft_tag:
+                if is_strict_match:
+                    # 完美匹配：配方要求的材料我们背包里都有 (e.g. Recipe=Cherry->Stick, Inv=Cherry)
+                    logger.info(f"[craft] Exact strict recipe match found! using {recipe}")
+                    return (recipe, {})
+                
+                # Tag 匹配但非严格匹配 (e.g. Recipe=Oak->Stick, Inv=Cherry)
+                # 暂时存下来，如果后面没有 Strict Match 再用这个兜底
+                # 注意：Mineflayer bot.craft 可能对非严格匹配报错，除非它是通用 Tag 配方
+                if not exact_match_found: 
+                    # Only overwrite if we haven't found a better one yet
+                    # We prefer the one with fewer strict mismatches if possible? 
+                    # Actually, if we have multiple "Tag Compatible" recipes, we should pick the one 
+                    # where we have the most *strict* ingredients.
+                    
+                    # For now just save the first tag-compatible one, or maybe last?
+                    # Ideally we want to find the one that IS strict match.
+                    if best_recipe is None:
+                        logger.info(f"[craft] Found tag-compatible recipe (fallback): {recipe}")
+                        best_recipe = recipe
+                        best_recipe_missing = {}
             
-            if can_craft:
-                logger.info(f"[craft] Recipe check passed (Tag-aware). Calling bot.craft()...")
-                return (recipe, {})
+            # 如果即使 Tag 也不满足，记录缺口得分，以便报错时告诉用户缺什么
+            if not can_craft_tag:
+                score = _missing_score(recipe_missing)
+                # 如果这个配方的缺口比之前的更小，记录它为“最佳错误提示”
+                if best_score is None or score < best_score:
+                    best_recipe_missing = recipe_missing
+                    best_score = score
+
+        if exact_match_found:
+             # Should have returned already
+             pass
+
+        if best_recipe:
+            logger.info("Using best tag-compatible recipe (Strict match failed)")
+            return (best_recipe, {})
             
-            # 记录最接近成功的配方
-            score = _missing_score(recipe_missing)
-            if best_score is None or score < best_score:
-                best_missing = recipe_missing
-                best_score = score
+        # 所有配方都不可行
+        if parseable_recipes > 0:
+             return (None, best_recipe_missing)
 
         # 所有配方都解析失败（delta 不可用/Proxy 无法读取）
         if parseable_recipes == 0 and parse_failures > 0:
