@@ -1515,41 +1515,15 @@ class MineflayerActions(IBotActions):
                 
                 if has_raw_recipe:
                     # 原生配方存在但 valid recipes 为空 -> 99% 概率是缺工作台
-                    # 检查背包是否有工作台
-                    ct_id = None
-                    try:
-                        ct_info = self._mcData.itemsByName.crafting_table
-                        ct_id = ct_info.id
-                    except:
-                        pass
-                    
-                    has_table_item = False
-                    if ct_id:
-                        inv_count = 0
-                        for item in self._bot.inventory.items():
-                            if item.type == ct_id:
-                                inv_count += item.count
-                        if inv_count > 0:
-                            has_table_item = True
-
-                    if has_table_item:
-                         return ActionResult(
-                            success=False,
-                            action="craft",
-                            message=f"合成 {item_name} 需要工作台，请先放置工作台",
-                            status=ActionStatus.FAILED,
-                            error_code="STATION_NOT_PLACED",
-                            data={"station": "crafting_table", "item": item_name}
-                        )
-                    else:
-                         return ActionResult(
-                            success=False,
-                            action="craft",
-                            message=f"合成 {item_name} 需要工作台，背包中也没有",
-                            status=ActionStatus.FAILED,
-                            error_code="INSUFFICIENT_MATERIALS",
-                            data={"missing": {"crafting_table": 1}, "item": item_name}
-                        )
+                    # 直接返回 STATION_NOT_PLACED，让 Resolver 去处理（如果没有工作台物品，Resolver 会进一步生成合成工作台的任务）
+                    return ActionResult(
+                        success=False,
+                        action="craft",
+                        message=f"合成 {item_name} 需要工作台，请确保工作台已放置",
+                        status=ActionStatus.FAILED,
+                        error_code="STATION_NOT_PLACED",
+                        data={"station": "crafting_table", "item": item_name}
+                    )
 
             # 尝试找到可执行的配方
             executable_recipe, missing_materials = self._find_executable_recipe(all_recipes, inventory, count)
@@ -1618,33 +1592,109 @@ class MineflayerActions(IBotActions):
                 # 'best_recipe' variable from earlier scope is not directly available here unless we use the one passed to craft()
                 # But we know 'executable_recipe' was what we tried to craft.
                 
-                if "missing ingredient" in msg_lower and executable_recipe:
+                if ("missing ingredient" in msg_lower or "timed out" in msg_lower) and executable_recipe:
                      logger.warning(
-                        f"[craft] bot.craft() strict missing ingredient for {item_name}. "
+                        f"[craft] bot.craft() failed ({msg_lower}) for {item_name}. "
                         f"Attempting generic manual craft fallback..."
                     )
                      try:
-                        # Ensure window is open if needed (crafting table logic handled by bot.craft, 
-                        # but if it failed, window might be closed? No, bot.craft opens it.)
-                        # We need to access the currently open window.
-                        current_window = self._bot.currentWindow
-                        
-                        # Verify if current window matches requirement
+                        # Ensure window is open if needed
                         use_window = None
                         if executable_recipe.requiresTable:
-                            # If bot.craft opened table, currentWindow should be it.
-                            # If not, we might need to open it ourselves? 
-                            # bot.craft likely closed it or failed to open.
-                            # For safety, let's try to find/open table if not open.
-                            # But that's async. We are in sync block? No, await asyncio.wait_for... wrapper.
+                            # If bot.craft failed/timeout, window might NOT be open.
+                            # We MUST try to ensure it is open.
+                            current_window = self._bot.currentWindow
                             
-                            # Actually, we can reuse the crafting_table block we found earlier.
                             if not current_window or "crafting_table" not in str(current_window.title).lower():
-                                 pass # Complex to re-open async inside exception handler.
-                                 # Simplification: Assume if bot.craft failed mid-way, window MIGHT be open.
-                                 # If not, manual craft fails.
+                                # Try to open table manually
+                                if crafting_table is None:
+                                     # Re-find table if variable is lost (unlikely but safe)
+                                     crafting_table = self._bot.findBlock({
+                                        "matching": lambda b: b.name == "crafting_table",
+                                        "maxDistance": 2
+                                     })
+                                
+                                if crafting_table:
+                                    logger.info(f"[craft] Manually opening crafting table at {crafting_table.position}")
+                                    
+                                    # Async open with navigation
+                                    # Async open with navigation
+                                    async def open_table():
+                                        try:
+                                            # 1. Navigate to be close enough
+                                            try:
+                                                pos = crafting_table.position
+                                                logger.info(f"[craft] Navigating to {pos}...")
+                                                await self._navigate_to_block(int(pos.x), int(pos.y), int(pos.z))
+                                            except Exception as nav_err:
+                                                logger.warning(f"[craft] Navigation to table failed: {nav_err}")
+
+                                            # 2. Look at it
+                                            try:
+                                                # Offset to look at center of block
+                                                center = crafting_table.position.offset(0.5, 0.5, 0.5)
+                                                logger.info(f"[craft] Looking at {center}...")
+                                                await self._bot.lookAt(center)
+                                            except Exception:
+                                                pass
+
+                                            # 3. Activate
+                                            logger.info("[craft] Activating block...")
+                                            # Put await here, assuming javascript library handles promise awaiting if available.
+                                            # If it's void/sync, await might warn or be no-op. Safe to try.
+                                            try:
+                                                self._bot.activateBlock(crafting_table)
+                                            except Exception as act_err:
+                                                 logger.error(f"[craft] activateBlock failed: {act_err}")
+                                            
+                                            # Initial wait for server/bridge response
+                                            logger.info("[craft] Waiting for window to open...")
+                                            await asyncio.sleep(1.0)
+
+                                            # 4. Wait for window to open
+                                            # Reduce polling frequency to avoid flooding the bridge (0.1s -> 1.0s)
+                                            for i in range(15): # 15 seconds max
+                                                try:
+                                                    w = self._bot.currentWindow
+                                                    if w:
+                                                        # Log window details for debugging
+                                                        w_title = str(w.title).lower() if w.title else "none"
+                                                        w_type = str(w.type) if hasattr(w, 'type') else "none"
+                                                        
+                                                        # Calculate slot length safely via proxy
+                                                        try:
+                                                            w_len = int(w.slots.length)
+                                                        except:
+                                                            w_len = 0
+                                                            
+                                                        logger.info(f"[craft] Detected open window: title='{w_title}', type='{w_type}', slots={w_len}")
+                                                        
+                                                        # Multi-factor check: Title OR Type OR Slot Count (46 = 3x3 table + inventory)
+                                                        is_crafting = (
+                                                            "crafting_table" in w_title or 
+                                                            "工作台" in w_title or
+                                                            "crafting" in w_type or
+                                                            w_len == 46
+                                                        )
+                                                        
+                                                        if is_crafting:
+                                                            logger.info(f"[craft] Verified crafting table detected!")
+                                                            return w
+                                                except Exception as e:
+                                                    logger.warning(f"[craft] Window check warning: {e}")
+                                                await asyncio.sleep(1.0)
+                                            logger.warning("[craft] Window open poll timed out.")
+                                            return None
+                                        except Exception as e:
+                                            logger.error(f"[craft] open_table logic crashed: {e}")
+                                            return None
+
+                                    use_window = await asyncio.wait_for(open_table(), timeout=40.0) # ample time for nav + open
                             else:
                                 use_window = current_window
+                                
+                            if not use_window:
+                                 raise RuntimeError("Failed to open crafting table window for manual fallback.")
                         
                         # Execute manual craft
                         await asyncio.wait_for(
@@ -1652,7 +1702,7 @@ class MineflayerActions(IBotActions):
                                 None,
                                 lambda: self._manual_craft_generic_sync(executable_recipe, int(count), use_window)
                             ),
-                            timeout=timeout
+                            timeout=timeout * 3 # Give manual craft plenty of time
                         )
 
                         return ActionResult(
@@ -1856,7 +1906,25 @@ class MineflayerActions(IBotActions):
             else:
                 return 1 + row * 2 + col
 
-        # 2. 解析配方形状并准备材料映射
+        # 2. Preparation: Clear Cursor & Grid
+        # 这一步至关重要：如果 Grid 里有上次残留的物品，配方形状就会错乱
+        
+        # Clear Grid Slots
+        # 3x3: 1..9, 2x2: 1..4
+        grid_slots_count = 9 if is_3x3 else 4
+        for i in range(1, grid_slots_count + 1):
+            slot_item = window.slots[i]
+            if slot_item:
+                # Shift click to move back to inventory
+                self._bot.clickWindow(i, 0, 1)
+                _time.sleep(0.2) # Wait for server update
+        
+        # 3. 解析配方形状并准备材料映射
+        # Capture snapshot for later verification
+        inventory_snapshot = {}
+        for item in self._bot.inventory.items():
+            inventory_snapshot[item.name] = inventory_snapshot.get(item.name, 0) + item.count
+
         # inShape: [row][col] -> RecipeItem (has id) or List of RecipeItems
         # 我们需要将其展平为一个 Plan: [(slot_idx, item_id_needed)]
         # 并提前解析出 "我应该用哪个 item 来满足 item_id_needed"
@@ -1872,9 +1940,19 @@ class MineflayerActions(IBotActions):
              pass
         
         # 辅助函数：找可用材料槽位
+        # ⚠️ CRITICAL FIX: Must skip crafting slots (0-grid_max) to avoid cannibalizing placed ingredients!
+        # For 3x3 table (window), slots 0-9 are crafting. Inventory starts at 10.
+        # For 2x2 inventory (id 0), slots 0-4 are crafting. Armor 5-8. Main Inv 9+.
+        # We start searching from 9 or 10 depending on window type.
+        search_start = 10 if is_3x3 else 9 # Safe lower bound for main inventory
+        
         def find_material_slot(target_id: int) -> int:
+            # Fix: Proxy has no len(), use .length
+            slots_len = int(window.slots.length)
+            
             # 优先找精确匹配
-            for i, item in enumerate(window.slots):
+            for i in range(search_start, slots_len):
+                item = window.slots[i]
                 if item and item.type == target_id:
                     return i
             
@@ -1885,7 +1963,8 @@ class MineflayerActions(IBotActions):
                 
             # 查找所有等价物
             equivs = tag_resolver.get_equivalents(target_name) # includes self
-            for i, item in enumerate(window.slots):
+            for i in range(search_start, slots_len):
+                item = window.slots[i]
                 if item and item.name in equivs:
                     return i
             return -1
@@ -1896,10 +1975,14 @@ class MineflayerActions(IBotActions):
             
             # Plan execution for one craft
             # 遍历 shape，把材料放上去
+            # 遍历 shape，把材料放上去
             for r, row_data in enumerate(shape):
                 for c, ingredient in enumerate(row_data):
                     # ingredient 可能是 Item 或 [Item] (variation)
                     required_id = None
+                    if ingredient is None:
+                        continue
+
                     if isinstance(ingredient, list):
                          if len(ingredient) > 0:
                              required_id = ingredient[0].id
@@ -1909,44 +1992,47 @@ class MineflayerActions(IBotActions):
                     if required_id is None:
                         continue # Empty slot
                     
+                    if required_id < 0:
+                        # id=-1 usually means "empty" or "no item required"
+                        continue
+
                     grid_slot = get_grid_slot(r, c)
                     
                     # 找到源材料
                     src_slot = find_material_slot(required_id)
                     if src_slot < 0:
-                         raise RuntimeError(f"Manual craft: missing material for shape[{r}][{c}] (id={required_id})")
-                    
-                    # 动作：从源拿1个，放到 grid
-                    # Left click source to pick up stack (or part) - complex logic simplified:
-                    # Robust way: 
-                    # 1. Left click src (pickup all)
-                    # 2. Right click grid (place 1)
-                    # 3. Left click src (put back rest)
-                    
-                    # ⚠️ 注意：如果 src 也是 grid 的一部分（例如上次合成剩下的），逻辑会复杂。
-                    # 假设 inventory 足量且整理过，通常 src 在非 grid区域。
+                         # Try to resolve variant names to log helpful error
+                        needed_name = self._get_item_name_by_id(required_id)
+                        raise RuntimeError(f"Manual craft: missing material for shape[{r}][{c}] (id={required_id}/{needed_name})")
                     
                     # Pickup
                     self._bot.clickWindow(src_slot, 0, 0)
-                    _time.sleep(0.05)
+                    _time.sleep(0.2)
                     # Place 1
                     self._bot.clickWindow(grid_slot, 1, 0)
-                    _time.sleep(0.05)
+                    _time.sleep(0.3)
                     # Put back
                     self._bot.clickWindow(src_slot, 0, 0)
-                    _time.sleep(0.05)
+                    _time.sleep(0.3)
             
             # Take result
             # Shift-click output to inventory
             self._bot.clickWindow(0, 0, 1) 
-            _time.sleep(0.1)
+            _time.sleep(1.0) # Give server time to sync inventory
 
             # Close window to ensure transaction commits and inventory syncs
             # If we opened a table, we must close it.
+            if window.type != 'minecraft:inventory':
+                 self._bot.closeWindow(window)
+                 _time.sleep(0.5)
+            
+            # Verify result
+            start = _time.time()
+            success_verify = False
             if crafting_table_window:
                  try:
                      self._bot.closeWindow(crafting_table_window)
-                     _time.sleep(0.1)
+                     _time.sleep(0.2)
                  except:
                      pass
             

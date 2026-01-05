@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     # - chat：闲聊可以更慢一点
     # - compression：记忆压缩后台跑，允许更久，但必须可超时/可降级
     llm_intent_timeout_seconds: float = 5.0
-    llm_chat_timeout_seconds: float = 15.0
+    llm_chat_timeout_seconds: float = 20.0
     llm_compression_timeout_seconds: float = 25.0
     llm_http_timeout_seconds: float = 30.0  # HTTP 层兜底（给 AsyncOpenAI/httpx）
 

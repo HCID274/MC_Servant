@@ -38,6 +38,8 @@ if TYPE_CHECKING:
     from ..bot.interfaces import IBotActions, ActionResult
     from ..perception.knowledge_base import JsonKnowledgeBase
     from .recovery_planner import IRecoveryPlanner
+    from .dynamic_resolver import DynamicResolver
+    from .prerequisite_resolver import PrerequisiteResolver
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,8 @@ class UniversalRunner(ITaskRunner):
         resolver: Optional[KBOnlyResolver] = None,
         rules: Optional[BehaviorRules] = None,
         recovery_planner: Optional["IRecoveryPlanner"] = None,
+        dynamic_resolver: Optional["DynamicResolver"] = None,
+        prerequisite_resolver: Optional["PrerequisiteResolver"] = None,
     ):
         """
         初始化 UniversalRunner
@@ -94,9 +98,13 @@ class UniversalRunner(ITaskRunner):
             resolver: KBOnlyResolver，用于概念归一化
             rules: 行为规则配置
             recovery_planner: LLM 恢复规划器 (可选)
+            dynamic_resolver: LLM 动态任务解析器 (Slow Path)
+            prerequisite_resolver: 符号层前置任务解析器 (Fast Path)
         """
         self._rules = rules or BehaviorRules()
         self._recovery_planner = recovery_planner
+        self._dynamic_resolver = dynamic_resolver
+        self._prerequisite_resolver = prerequisite_resolver
         self._resolver = resolver or self._create_default_resolver()
 
     def _create_default_resolver(self) -> Any:
@@ -951,16 +959,111 @@ class UniversalRunner(ITaskRunner):
         """
         error_code = result.error_code or "UNKNOWN"
         max_attempts = self._rules.max_retries_per_action
-
-        # 🔴 修复: 对于前置条件错误，不直接 abort，而是向上传递给 TaskExecutor
-        # 让 PrerequisiteResolver 有机会生成前置任务（如合成工作台）
-        if error_code in ("NO_TOOL", "INSUFFICIENT_MATERIALS"):
+        inventory = (bot_state or {}).get("inventory", {})
+        
+        # ============================================================
+        # Phase 1: Fast Path - 符号层处理确定性错误
+        # ============================================================
+        if error_code in ("NO_TOOL", "INSUFFICIENT_MATERIALS", "STATION_NOT_PLACED"):
+            if self._prerequisite_resolver:
+                try:
+                    prereq_context = {
+                        "action": cached_action.action if cached_action else "",
+                        "message": result.message,
+                        **(result.data if isinstance(result.data, dict) else {})
+                    }
+                    prereq_task = self._prerequisite_resolver.resolve(
+                        error_code=error_code,
+                        context=prereq_context,
+                        inventory=inventory
+                    )
+                    if prereq_task:
+                        logger.info(f"[Recovery] Fast Path resolved: {prereq_task.goal}")
+                        return {
+                            "propagate_to_executor": True,
+                            "error_code": error_code,
+                            "reason": f"需要前置任务: {prereq_task.goal}",
+                            "prerequisite_task": prereq_task,
+                        }
+                except Exception as e:
+                    logger.warning(f"[Recovery] PrerequisiteResolver failed: {e}")
+            
+            # 符号层无法处理，传给 TaskExecutor 处理
+            logger.info(f"[Recovery] Fast Path cannot resolve {error_code}, propagating to executor")
             return {
-                "propagate_to_executor": True, 
+                "propagate_to_executor": True,
                 "error_code": error_code,
                 "reason": f"前置条件不足 ({error_code})"
             }
 
+        # ============================================================
+        # Phase 2: Slow Path - LLM DynamicResolver (模糊错误)
+        # ============================================================
+        if self._dynamic_resolver and not llm_recovery_used:
+            # 排除简单瞬态错误（不值得调 LLM）
+            if not self._rules.is_transient_error(error_code) or attempt_count >= 2:
+                try:
+                    from .dynamic_resolver import StrategyType
+                    
+                    decision = await self._dynamic_resolver.resolve(
+                        error_code=error_code,
+                        context={
+                            "action": cached_action.action if cached_action else "",
+                            "message": result.message,
+                            **(result.data if isinstance(result.data, dict) else {})
+                        },
+                        inventory=inventory,
+                        bot_state=bot_state or {},
+                        original_goal=task_goal,
+                        attempt_count=attempt_count,
+                    )
+                    
+                    if decision:
+                        logger.info(f"[Recovery] Slow Path decision: {decision}")
+                        
+                        if decision.strategy == StrategyType.RETRY:
+                            return {"retry_same": True, "llm_used": True}
+                        
+                        if decision.strategy == StrategyType.INSERT and decision.tasks:
+                            return {
+                                "propagate_to_executor": True,
+                                "error_code": error_code,
+                                "reason": decision.reason,
+                                "dynamic_tasks": decision.tasks,
+                                "llm_used": True,
+                            }
+                        
+                        if decision.strategy == StrategyType.REPLAN and decision.tasks:
+                            new_step = ActionStep(
+                                action="noop",
+                                params={"replan_hint": decision.tasks[0]},
+                                description=decision.reason
+                            )
+                            return {"next_step": new_step, "llm_used": True}
+                        
+                        if decision.strategy == StrategyType.ESCALATE:
+                            return {
+                                "clarify": True,
+                                "message": decision.reason or self._default_clarify_message(error_code),
+                                "llm_used": True
+                            }
+                        
+                        if decision.strategy == StrategyType.DECOMPOSE and decision.tasks:
+                            return {
+                                "propagate_to_executor": True,
+                                "error_code": "TASK_TOO_COMPLEX",
+                                "reason": decision.reason,
+                                "dynamic_tasks": decision.tasks,
+                                "llm_used": True,
+                            }
+                
+                except Exception as e:
+                    logger.warning(f"[Recovery] DynamicResolver failed: {e}")
+        
+        # ============================================================
+        # Phase 3: 原有逻辑 - 瞬态重试 + LLM Recovery Planner
+        # ============================================================
+        
         # Local retry for transient failures (Attempt 2)
         if self._rules.is_transient_error(error_code) and attempt_count < 2:
             logger.info(f"[Recovery] Transient error, retrying same action: {error_code}")

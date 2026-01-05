@@ -77,15 +77,32 @@ class UniversalRunnerFactory(IRunnerFactory):
         """
         from .universal_runner import UniversalRunner
         from .kb_resolver import KBOnlyResolver
+        from .prerequisite_resolver import PrerequisiteResolver
         
         recovery_planner = None
+        dynamic_resolver = None
+        
         if self._llm_client:
             from .llm_recovery_planner import LLMRecoveryPlanner
+            from .dynamic_resolver import DynamicResolver
+            
             recovery_planner = LLMRecoveryPlanner(llm_client=self._llm_client)
+            
+            # 创建 DynamicResolver (Slow Path)
+            try:
+                from ..bot.tag_resolver import get_tag_resolver
+                tag_resolver = get_tag_resolver()
+            except Exception:
+                tag_resolver = None
+            dynamic_resolver = DynamicResolver(
+                llm_client=self._llm_client, 
+                tag_resolver=tag_resolver
+            )
+        
+        # 创建 PrerequisiteResolver (Fast Path)
+        prerequisite_resolver = PrerequisiteResolver()
         
         # 创建 Resolver (注入 KnowledgeBase)
-        # 注意：测试/无 KB 场景下 self._kb 可能为 None，此时不应强行构造 KBOnlyResolver(kb=None)
-        # 让 UniversalRunner 自己走 fallback resolver（透传/轻量 resolver），避免 normalize_step 崩溃。
         resolver = None
         if self._kb is not None:
             resolver = KBOnlyResolver(kb=self._kb)
@@ -95,6 +112,8 @@ class UniversalRunnerFactory(IRunnerFactory):
             resolver=resolver,
             rules=self._rules,
             recovery_planner=recovery_planner,
+            dynamic_resolver=dynamic_resolver,
+            prerequisite_resolver=prerequisite_resolver,
         )
 
 

@@ -388,11 +388,59 @@ async def lifespan(app: FastAPI):
         # 先创建 BotContext
         bot_context = BotContext(
             runtime=None,  # 稍后回填 RuntimeContext
-            executor=None, # MockBot 模式下暂不需要 Executor (或者由于没有 Java 连接无法工作)
+            executor=None, # 稍后注入
             actions=None,  # MockBot 暂无 Actions
             llm=llm_client,
             bot=mock_bot,  # 表演动作 (MockBot)
         )
+        
+        # Mock 模式下仍然尝试创建 Executor（如果有 LLM）
+        # 这样任务至少可以在规划层运行（虽然无法执行实际动作）
+        if llm_client:
+            try:
+                from task.llm_planner import LLMTaskPlanner
+                from task.prerequisite_resolver import PrerequisiteResolver
+                from task.executor import TaskExecutor
+                from task.behavior_rules import BehaviorRules
+                from task.runner_factory import create_runner_factory
+                from perception.knowledge_base import JsonKnowledgeBase
+                from task.actor import LLMTaskActor
+                from task.action_resolver import SemanticActionResolver
+                
+                planner = LLMTaskPlanner(llm_client)
+                prereq_resolver = PrerequisiteResolver()
+                
+                async def on_progress(msg: str) -> None:
+                    await bot_context.update_hologram_throttled(f"🔧 {msg}")
+                
+                # 初始化知识库
+                knowledge_base = JsonKnowledgeBase()
+                
+                # 初始化 Actor 和 Resolver
+                actor = LLMTaskActor(llm_client, knowledge_base)
+                resolver_semantic = SemanticActionResolver(knowledge_base)
+                
+                rules = BehaviorRules()
+                runner_factory = create_runner_factory(
+                    rules=rules,
+                    actor=actor,
+                    resolver=resolver_semantic,
+                    llm_client=llm_client,
+                )
+                
+                # Note: Mock 模式下 actions=None，实际动作无法执行
+                # 但至少任务栈会正常运转并报告"缺少动作执行器"的具体错误
+                executor_mock = TaskExecutor(
+                    planner,
+                    None,  # actions=None
+                    prereq_resolver,
+                    on_progress=on_progress,
+                    runner_factory=runner_factory,
+                )
+                bot_context.executor = executor_mock
+                logger.info("TaskExecutor initialized (MockBot mode, actions=None)")
+            except Exception as e:
+                logger.warning(f"Failed to initialize TaskExecutor in MockBot mode: {e}")
 
         state_machine = StateMachine(
             config_path=config_path,
@@ -404,7 +452,7 @@ async def lifespan(app: FastAPI):
         # 回填 runtime 到 BotContext
         bot_context.runtime = state_machine._context
         
-        logger.info(f"State machine initialized (MockBot): state={state_machine.current_state.name}")
+        logger.info(f"State machine initialized (MockBot): state={state_machine.current_state.name}, executor={'✓ (limited)' if bot_context.executor else '✗'}")
         
         # 创建 WebSocket 发送回调函数 (MockBot 模式)
         async def ws_send_func(msg: dict):
