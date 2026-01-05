@@ -203,6 +203,31 @@ class LinearPlanRunner(ITaskRunner):
             if "block_type" not in params and "target" in params and isinstance(params["target"], str):
                 params["block_type"] = params.pop("target")
         
+        # goto 参数归一化: {'x', 'y', 'z'} -> {'target': {'x', 'y', 'z'}}
+        if action_name == "goto":
+            # 如果没有 target 参数，但有 x, y, z 参数，则封装为 target 字典
+            if "target" not in params and all(k in params for k in ("x", "y", "z")):
+                params["target"] = {
+                    "x": params.pop("x"),
+                    "y": params.pop("y"),
+                    "z": params.pop("z")
+                }
+                logger.debug(f"Normalized goto params: {params}")
+        
+        # craft 参数归一化: {'item': 'xxx'} -> {'item_name': 'xxx'}
+        if action_name == "craft":
+            if "item" in params and "item_name" not in params:
+                params["item_name"] = params.pop("item")
+                logger.debug(f"Normalized craft params: {params}")
+        
+        # give 参数归一化: {'player': 'xxx', 'item': 'xxx'} -> {'player_name': 'xxx', 'item_name': 'xxx'}
+        if action_name == "give":
+            if "player" in params and "player_name" not in params:
+                params["player_name"] = params.pop("player")
+            if "item" in params and "item_name" not in params:
+                params["item_name"] = params.pop("item")
+            logger.debug(f"Normalized give params: {params}")
+        
         # 处理超时参数
         if "timeout_sec" in params:
             params["timeout"] = params.pop("timeout_sec")

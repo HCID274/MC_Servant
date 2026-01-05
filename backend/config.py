@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     ws_heartbeat_timeout_seconds: int = 30  # 心跳超时阈值（秒）
 
     # UniversalRunner 实验性开关
-    use_universal_runner: bool = False  # 启用 UniversalRunner (Phase 3 MVP)
+    use_universal_runner: bool = True  # Phase 3+ 新架构 (UniversalRunner + LLM Recovery)
     
     # PostgreSQL 数据库配置
     db_host: str = "localhost"

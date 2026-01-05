@@ -1,3 +1,8 @@
 Keep actions simple and safe.
-If stuck, consider "unstuck" or "look_around" before retrying.
+If stuck underground or in a hole:
+  - DO NOT use "place" to stack blocks under feet (it will fail)
+  - Use "goto" to a nearby safe location (try y+10 from current position)
+  - Or "clarify" and ask the player for help
+If "place" action fails repeatedly, stop trying and ask for clarification.
 Never change the user's target silently; ask to clarify instead.
+If NO_TOOL error: suggest crafting the required tool first.

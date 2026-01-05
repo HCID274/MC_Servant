@@ -385,18 +385,23 @@ class UniversalRunner(ITaskRunner):
             else:
                 logger.warning(f"[UniversalRunner] Step failed: {result.action} - {result.message}")
                 
-                recovery_result = await self._handle_failure(
-                    result=result,
-                    tick=tick,
-                    actions=actions,
-                    context=context,
-                    cached_action=cached_action,
-                    bot_state=bot_state,
-                    completed_steps=completed_steps,
-                    attempt_count=attempt_count,
-                    task_goal=task.goal or "",
-                    llm_recovery_used=llm_recovery_used,
-                )
+                try:
+                    recovery_result = await self._handle_failure(
+                        result=result,
+                        tick=tick,
+                        actions=actions,
+                        context=context,
+                        cached_action=cached_action,
+                        bot_state=bot_state,
+                        completed_steps=completed_steps,
+                        attempt_count=attempt_count,
+                        task_goal=task.goal or "",
+                        llm_recovery_used=llm_recovery_used,
+                    )
+                except Exception as e:
+                    # Recovery 失败，降级为 clarify
+                    logger.error(f"[UniversalRunner] Recovery failed with exception: {e}")
+                    recovery_result = {"clarify": True, "message": f"恢复失败: {e}"}
 
                 if recovery_result.get("llm_used"):
                     llm_recovery_used = True
@@ -861,6 +866,12 @@ class UniversalRunner(ITaskRunner):
         user_reply: Optional[str],
         task_goal: str,
     ) -> Any:
+        # 恢复阶段允许的动作列表（不含 place，因为 place 不适合解困）
+        RECOVERY_ALLOWED_ACTIONS = [
+            "goto", "mine", "mine_tree", "scan", "craft", 
+            "equip", "give", "pickup", "find_location", "patrol"
+        ]
+        
         # RecoveryContext 已在文件顶部导入
         return RecoveryContext(
             goal=task_goal,
@@ -872,6 +883,7 @@ class UniversalRunner(ITaskRunner):
             attempt=attempt_count,
             max_attempts=max_attempts,
             user_reply=user_reply,
+            allowed_actions=RECOVERY_ALLOWED_ACTIONS,
         )
 
     def _default_clarify_message(self, error_code: str) -> str:

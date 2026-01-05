@@ -131,8 +131,32 @@ class PlayerMessageHandler(IMessageHandler):
             except Exception as e:
                 logger.warning(f"Failed to record user message: {e}")
         
-        # 1. 意图识别
-        intent, metadata = await self._intent_recognizer.recognize(msg.content)
+        # 1. 获取对话历史上下文（用于意图识别）
+        conversation_context = None
+        if self._ctx_manager:
+            try:
+                # 获取最近的对话历史（用于理解上下文）
+                llm_context = await self._ctx_manager.get_llm_context(
+                    player_uuid=player_uuid,
+                    bot_name=bot_name,
+                    depth="fast"  # 只需要最近对话，不需要深度记忆
+                )
+                if llm_context:
+                    # 格式化为文本上下文
+                    context_lines = []
+                    for msg_item in llm_context[-6:]:  # 最近3轮对话
+                        role = msg_item.get("role", "user")
+                        content = msg_item.get("content", "")[:100]  # 截断长内容
+                        if role != "system":  # 跳过 system 消息
+                            context_lines.append(f"[{role}] {content}")
+                    if context_lines:
+                        conversation_context = "\n".join(context_lines)
+                        logger.debug(f"Conversation context: {conversation_context[:200]}...")
+            except Exception as e:
+                logger.warning(f"Failed to get conversation context: {e}")
+        
+        # 2. 意图识别（带上下文）
+        intent, metadata = await self._intent_recognizer.recognize(msg.content, context=conversation_context)
         logger.info(f"Intent: {intent.value}, metadata: {metadata}")
         
         # 2. 构造事件
@@ -245,8 +269,29 @@ class PlayerMessageHandler(IMessageHandler):
             except Exception as e:
                 logger.warning(f"Failed to record user message: {e}")
         
-        # 识别意图
-        intent, metadata = await self._intent_recognizer.recognize(msg.content)
+        # 获取对话历史上下文（用于意图识别）
+        conversation_context = None
+        if self._ctx_manager:
+            try:
+                llm_context = await self._ctx_manager.get_llm_context(
+                    player_uuid=player_uuid,
+                    bot_name=bot_name,
+                    depth="fast"
+                )
+                if llm_context:
+                    context_lines = []
+                    for msg_item in llm_context[-6:]:
+                        role = msg_item.get("role", "user")
+                        content = msg_item.get("content", "")[:100]
+                        if role != "system":
+                            context_lines.append(f"[{role}] {content}")
+                    if context_lines:
+                        conversation_context = "\n".join(context_lines)
+            except Exception as e:
+                logger.warning(f"Failed to get conversation context: {e}")
+        
+        # 识别意图（带上下文）
+        intent, metadata = await self._intent_recognizer.recognize(msg.content, context=conversation_context)
         confidence = metadata.get("confidence", 0)
         entities = metadata.get("entities", {})
         

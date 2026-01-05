@@ -162,6 +162,180 @@ class MineflayerActions(IBotActions):
         return still_running
     
     # ========================================================================
+    # Tool Selection Helpers (Python-side, Neuro-Symbolic approach)
+    # ========================================================================
+    
+    async def _get_block_harvest_info(self, block) -> dict:
+        """
+        安全获取方块的可采集性信息
+        
+        使用 asyncio.to_thread 包装 JS 调用，避免阻塞主线程和 JSPyBridge 崩溃
+        
+        Returns:
+            {
+                "name": str,           # 方块名
+                "harvestTools": dict,  # {item_id: True} 可以采集此方块的工具 ID
+                "can_hand_harvest": bool  # 是否可以徒手采集
+            }
+        """
+        def _sync_get():
+            try:
+                harvest_tools = getattr(block, 'harvestTools', None)
+                # harvestTools 是 JS 对象，格式为 {itemId: true}
+                # 如果为 None/undefined，表示可以徒手采集
+                tools_dict = {}
+                can_hand = True
+                
+                if harvest_tools:
+                    can_hand = False
+                    # 将 JS 对象转为 Python dict
+                    try:
+                        for key in harvest_tools:
+                            tools_dict[int(key)] = True
+                    except Exception:
+                        # 可能是迭代失败，尝试 Object.keys
+                        pass
+                
+                return {
+                    "name": getattr(block, 'name', 'unknown'),
+                    "harvestTools": tools_dict,
+                    "can_hand_harvest": can_hand
+                }
+            except Exception as e:
+                logger.warning(f"Failed to get harvest info: {e}")
+                return {"name": "unknown", "harvestTools": {}, "can_hand_harvest": True}
+        
+        return await asyncio.get_event_loop().run_in_executor(None, _sync_get)
+    
+    async def _select_best_harvest_tool(self, block) -> Optional[dict]:
+        """
+        Python 侧选择最佳采集工具
+        
+        简单接口：只需传入方块，返回最佳工具 item 对象
+        
+        深度功能：
+        - 利用 minecraft-data 的 harvestTools 数据
+        - 按工具等级排序（钻石 > 铁 > 石 > 木）
+        - 如果该方块可以徒手采集，返回 None（表示不需要换工具）
+        - 如果需要工具但背包没有，返回 {"error": "NO_TOOL", "required": [...]}
+        
+        Returns:
+            - None: 不需要换工具（可徒手或已装备最佳）
+            - {"item": item_obj}: 需要装备的工具
+            - {"error": "NO_TOOL", "required": [item_names]}: 没有合适工具
+        """
+        # 工具等级优先级（从高到低）
+        TOOL_TIERS = {
+            "netherite": 5,
+            "diamond": 4,
+            "iron": 3,
+            "stone": 2,
+            "golden": 1,  # 金工具速度快但耐久低
+            "wooden": 0,
+        }
+        
+        def _sync_select():
+            try:
+                harvest_tools = getattr(block, 'harvestTools', None)
+                
+                # 如果没有 harvestTools 限制，表示可以徒手采集
+                if not harvest_tools:
+                    logger.debug(f"Block {block.name} can be harvested by hand")
+                    return None
+                
+                # 获取需要的工具 ID 列表
+                required_tool_ids = set()
+                try:
+                    for key in harvest_tools:
+                        required_tool_ids.add(int(key))
+                except Exception:
+                    pass
+                
+                if not required_tool_ids:
+                    return None
+                
+                # 扫描背包，找出匹配的工具
+                inventory_items = list(self._bot.inventory.items())
+                available_tools = []
+                
+                for item in inventory_items:
+                    if item.type in required_tool_ids:
+                        # 计算工具等级
+                        tier = 0
+                        item_name = item.name.lower()
+                        for tier_name, tier_value in TOOL_TIERS.items():
+                            if tier_name in item_name:
+                                tier = tier_value
+                                break
+                        available_tools.append((tier, item))
+                
+                if not available_tools:
+                    # 没有合适工具！Fail Fast
+                    # 尝试获取需要的工具名称（方便 LLM 理解）
+                    required_names = []
+                    for tool_id in list(required_tool_ids)[:5]:  # 最多列5个
+                        try:
+                            item_info = self._mcData.items[tool_id]
+                            required_names.append(item_info.name)
+                        except:
+                            required_names.append(f"item_{tool_id}")
+                    
+                    return {
+                        "error": "NO_TOOL",
+                        "required": required_names,
+                        "block": block.name
+                    }
+                
+                # 按等级降序排序，选择最好的工具
+                available_tools.sort(key=lambda x: x[0], reverse=True)
+                best_tool = available_tools[0][1]
+                
+                # 检查是否已经装备（避免不必要的切换）
+                held_item = self._bot.heldItem
+                if held_item and held_item.type == best_tool.type:
+                    logger.debug(f"Already holding best tool: {best_tool.name}")
+                    return None
+                
+                logger.info(f"Selected tool: {best_tool.name} (tier {available_tools[0][0]}) for {block.name}")
+                return {"item": best_tool}
+                
+            except Exception as e:
+                logger.error(f"Tool selection failed: {e}")
+                return None
+        
+        return await asyncio.get_event_loop().run_in_executor(None, _sync_select)
+    
+    def _equip_axe_sync(self) -> bool:
+        """
+        同步装备斧头（用于砍树场景）
+        
+        优先选择高等级斧头，避免调用 JS 侧的 equipForBlock 减少线程压力
+        """
+        AXE_PRIORITY = [
+            "netherite_axe", "diamond_axe", "iron_axe", 
+            "stone_axe", "golden_axe", "wooden_axe"
+        ]
+        
+        try:
+            # 检查当前手持是否已经是斧头
+            held = self._bot.heldItem
+            if held and "axe" in held.name:
+                return True
+            
+            # 扫描背包找斧头
+            for axe_name in AXE_PRIORITY:
+                for item in self._bot.inventory.items():
+                    if item.name == axe_name:
+                        self._bot.equip(item, "hand")
+                        logger.debug(f"Equipped {axe_name} for tree mining")
+                        return True
+            
+            return False  # 没找到斧头，徒手也行
+        except Exception as e:
+            logger.warning(f"Axe equip failed: {e}")
+            return False
+    
+    # ========================================================================
     # Core Actions
     # ========================================================================
     
@@ -335,18 +509,48 @@ class MineflayerActions(IBotActions):
                 # 记录采集前状态，用于检测采集是否成功
                 inventory_before = self._get_inventory_count(block_type)
                 
-                # 自动选择合适的工具
-                try:
-                    await asyncio.wait_for(
-                        asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: self._bot.tool.equipForBlock(target_block)
-                        ),
-                        timeout=5.0
+                # ============================================================
+                # Python 侧智能工具选择 (替代 JS 侧 equipForBlock)
+                # 
+                # 设计原则：Fail Fast
+                # - 如果需要特定工具但背包没有，直接返回错误
+                # - 让 LLM 决定是合成工具、寻找工具、还是放弃任务
+                # ============================================================
+                tool_result = await self._select_best_harvest_tool(target_block)
+                
+                if tool_result and "error" in tool_result:
+                    # 没有合适工具！立即失败，反馈给 LLM
+                    required_tools = tool_result.get("required", ["pickaxe"])
+                    return ActionResult(
+                        success=False,
+                        action="mine",
+                        message=f"无法采集 {block_type}：需要合适的工具 (如 {', '.join(required_tools[:3])})",
+                        status=ActionStatus.FAILED,
+                        error_code="NO_TOOL",
+                        data={
+                            "block": block_type,
+                            "required_tools": required_tools,
+                            "hint": "建议先合成或获取合适的工具"
+                        },
+                        duration_ms=int((time.time() - start_time) * 1000)
                     )
-                    self._progress_timer.reset("tool_equipped")
-                except Exception as e:
-                    logger.warning(f"Auto-equip tool failed: {e}")
+                
+                if tool_result and "item" in tool_result:
+                    # 需要切换工具
+                    try:
+                        best_tool = tool_result["item"]
+                        await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: self._bot.equip(best_tool, "hand")
+                            ),
+                            timeout=3.0
+                        )
+                        self._progress_timer.reset("tool_equipped")
+                        logger.info(f"Equipped {best_tool.name} for mining {block_type}")
+                    except Exception as e:
+                        logger.warning(f"Failed to equip tool: {e}")
+                        # 装备失败不阻止挖掘，可能仍然能挖（只是更慢）
                 
                 # 启动采集 (非阻塞)
                 collect_done = False
@@ -615,9 +819,10 @@ class MineflayerActions(IBotActions):
                             logger.debug(f"[mine_tree] Direct dig at ({x},{y},{z}), distance={distance:.1f}")
                             dig_attempted = True
                             try:
-                                # 装备工具
+                                # 装备斧头（同步简化版）
+                                # 原木可以徒手采集，但斧头更快
                                 try:
-                                    self._bot.tool.equipForBlock(block)
+                                    self._equip_axe_sync()
                                 except Exception:
                                     pass
                                 
@@ -681,7 +886,7 @@ class MineflayerActions(IBotActions):
                                 block = self._bot.blockAt(self._Vec3(x, y, z))
                                 if block and block.name == first_log_type:
                                     try:
-                                        self._bot.tool.equipForBlock(block)
+                                        self._equip_axe_sync()
                                     except Exception:
                                         pass
                                     
@@ -2269,9 +2474,32 @@ class MineflayerActions(IBotActions):
     # Helper Methods
     # ========================================================================
     
-    def _parse_goal(self, target: str):
-        """解析目标字符串为 Goal 对象"""
+    def _parse_goal(self, target):
+        """
+        解析目标为 Goal 对象
+        
+        支持的格式:
+        - 字符串: "@PlayerName" 或 "x,y,z"
+        - 字典: {"x": int, "y": int, "z": int}
+        """
         goals = self._pathfinder.goals
+        
+        # 字典格式: {"x": int, "y": int, "z": int}
+        if isinstance(target, dict):
+            try:
+                x = int(target.get("x", 0))
+                y = int(target.get("y", 64))
+                z = int(target.get("z", 0))
+                logger.info(f"[DEBUG] goto dict target: ({x}, {y}, {z})")
+                return goals.GoalBlock(x, y, z)
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid dict coordinates: {target}, error: {e}")
+                return None
+        
+        # 确保是字符串
+        if not isinstance(target, str):
+            logger.warning(f"Unsupported target type: {type(target)}")
+            return None
         
         # 玩家目标: @PlayerName
         if target.startswith("@"):
@@ -2313,8 +2541,9 @@ class MineflayerActions(IBotActions):
                 if saved_goal and self._is_goal_reached(saved_goal):
                     logger.info("[DEBUG] Already at goal, no movement needed")
                     return
-                logger.warning("Pathfinder did not start moving within 2s")
-                break
+                # 🔴 修复: 没有开始移动也没在目标，说明路径有问题
+                logger.warning("Pathfinder did not start moving within 2s, path may be blocked")
+                raise RuntimeError("Pathfinder failed to start - path may be blocked or unreachable")
             await asyncio.sleep(0.1)
         
         logger.info(f"[DEBUG] Pathfinder started moving: {self._bot.pathfinder.isMoving()}")
@@ -2341,9 +2570,10 @@ class MineflayerActions(IBotActions):
                 if goal is None and saved_goal is None:
                     logger.info("[DEBUG] Goal is None, pathfinder stopped (no saved goal)")
                     return
-                # 没有到达但停止了，可能是路径被阻挡或已到达
-                logger.warning(f"[DEBUG] Pathfinder stopped, goal={goal is not None}, saved_goal={saved_goal is not None}")
-                return
+                # 🔴 修复: 没有到达但停止了 → 抛出异常让 goto 返回失败
+                pos = self._bot.entity.position
+                logger.warning(f"[DEBUG] Pathfinder stopped without reaching goal! pos=({pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f})")
+                raise RuntimeError("Pathfinder stopped before reaching goal - path blocked or unreachable")
             
             await asyncio.sleep(0.1)
     

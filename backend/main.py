@@ -29,11 +29,70 @@ from bot.lifecycle_manager import BotLifecycleManager
 from state.context import BotContext
 from text_utils import split_to_segments
 
-# 配置日志
-logging.basicConfig(
-    level=getattr(logging, settings.log_level),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# ============================================================================
+# 日志配置 - 简洁可读
+# ============================================================================
+
+# 自定义简洁格式
+class SimpleFormatter(logging.Formatter):
+    """简洁日志格式器 - 只显示关键信息"""
+    
+    # ANSI 颜色代码
+    COLORS = {
+        'DEBUG': '\033[36m',    # 青色
+        'INFO': '\033[32m',     # 绿色
+        'WARNING': '\033[33m',  # 黄色
+        'ERROR': '\033[31m',    # 红色
+        'CRITICAL': '\033[35m', # 紫色
+        'RESET': '\033[0m',
+    }
+    
+    def format(self, record):
+        # 简化模块名（只取最后两级）
+        name_parts = record.name.split('.')
+        short_name = '.'.join(name_parts[-2:]) if len(name_parts) > 1 else record.name
+        
+        # 时间只显示 时:分:秒
+        time_str = time.strftime('%H:%M:%S', time.localtime(record.created))
+        
+        # 级别简写
+        level_short = record.levelname[0]  # I/D/W/E
+        color = self.COLORS.get(record.levelname, '')
+        reset = self.COLORS['RESET']
+        
+        # 格式: [时间] 级别 模块: 消息
+        return f"{color}[{time_str}] {level_short} {short_name}: {record.getMessage()}{reset}"
+
+# 配置根日志器
+root_logger = logging.getLogger()
+root_logger.setLevel(getattr(logging, settings.log_level))
+
+# 清除默认处理器
+for handler in root_logger.handlers[:]:
+    root_logger.removeHandler(handler)
+
+# 添加控制台处理器
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(SimpleFormatter())
+root_logger.addHandler(console_handler)
+
+# 抑制嘈杂的第三方库日志
+QUIET_LOGGERS = [
+    'openai',
+    'httpx',
+    'httpcore',
+    'asyncio',
+    'uvicorn.access',
+    'uvicorn.error',
+    'websockets',
+    'javascript',
+    'aiosqlite',
+    'sqlalchemy',
+]
+for name in QUIET_LOGGERS:
+    logging.getLogger(name).setLevel(logging.WARNING)
+
+# 主模块日志器
 logger = logging.getLogger(__name__)
 
 # 全局管理器
@@ -696,14 +755,23 @@ async def handle_online_players_sync(message: dict, client_id: str):
 
 if __name__ == "__main__":
     # 默认关闭热重载：
-    # - 采集/移动等“长动作”期间热重载会强制断开 websocket、kill mineflayer 进程，表现为“动了一下就不砍/不继续”
+    # - 采集/移动等"长动作"期间热重载会强制断开 websocket、kill mineflayer 进程，表现为"动了一下就不砍/不继续"
     # - 需要开发热重载时，显式设置环境变量 MC_SERVANT_RELOAD=1
     import os
     reload_enabled = os.getenv("MC_SERVANT_RELOAD", "0") == "1"
+    
+    # uvicorn 日志配置
+    log_config = uvicorn.config.LOGGING_CONFIG
+    log_config["formatters"]["default"]["fmt"] = "[%(asctime)s] %(levelname)s: %(message)s"
+    log_config["formatters"]["default"]["datefmt"] = "%H:%M:%S"
+    log_config["formatters"]["access"]["fmt"] = '[%(asctime)s] %(levelname)s: %(client_addr)s - "%(request_line)s" %(status_code)s'
+    log_config["formatters"]["access"]["datefmt"] = "%H:%M:%S"
+    
     uvicorn.run(
         "main:app",
         host=settings.ws_host,
         port=settings.ws_port,
         reload=reload_enabled,
-        log_level=settings.log_level.lower()
+        log_level="warning",  # uvicorn 只输出 warning 以上
+        log_config=log_config,
     )
