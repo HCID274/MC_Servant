@@ -663,13 +663,26 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             item = await business_queue.get()
             try:
                 if message_router:
-                    response = await message_router.route(item)
+                    # 增加超时保护，防止单个请求卡死 Worker
+                    response = await asyncio.wait_for(
+                        message_router.route(item),
+                        timeout=settings.business_process_timeout_seconds
+                    )
                     if response:
                         response_json = json.dumps(response, ensure_ascii=False)
                         await manager.send_personal(response_json, client_id)
                         logger.debug(f"Sent to {client_id}: {response_json}")
             except asyncio.CancelledError:
                 raise
+            except asyncio.TimeoutError:
+                logger.warning(f"Business logic timeout for {client_id}, item={item.get('type')}")
+                # 发送超时提示
+                error_resp = {
+                    "type": MessageType.ERROR.value,
+                    "code": "timeout",
+                    "message": "服务器处理超时",
+                }
+                await manager.send_personal(json.dumps(error_resp, ensure_ascii=False), client_id)
             except Exception as e:
                 logger.warning(f"Business worker error for {client_id}: {e}")
             finally:

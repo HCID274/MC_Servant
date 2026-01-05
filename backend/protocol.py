@@ -29,10 +29,10 @@ class MessageType(str, Enum):
 class PlayerMessage(BaseModel):
     """玩家消息 (Java → Python)"""
     type: MessageType = MessageType.PLAYER_MESSAGE
-    player: str
+    player: Optional[str] = "Unknown"
     npc: Optional[str] = None
-    content: str
-    timestamp: int
+    content: Optional[str] = ""
+    timestamp: Optional[int] = 0
     # 玩家实时位置 (由 Java 插件提供，比 Mineflayer 更准确)
     player_x: Optional[float] = None
     player_y: Optional[float] = None
@@ -42,9 +42,9 @@ class PlayerMessage(BaseModel):
 class NpcResponse(BaseModel):
     """NPC 回复 (Python → Java)"""
     type: MessageType = MessageType.NPC_RESPONSE
-    npc: str
-    target_player: str
-    content: str
+    npc: Optional[str] = "UnknownBot"
+    target_player: Optional[str] = "Unknown"
+    content: Optional[str] = ""
     segments: Optional[list[str]] = None  # 分段显示内容
     hologram_text: Optional[str] = None
     action: Optional[str] = None
@@ -53,23 +53,23 @@ class NpcResponse(BaseModel):
 class BotCommand(BaseModel):
     """Bot 动作指令 (Python → Java or internal)"""
     type: MessageType = MessageType.BOT_COMMAND
-    npc: str
-    command: str  # jump, chat, move_to, etc.
+    npc: Optional[str] = "UnknownBot"
+    command: Optional[str] = "idle"  # jump, chat, move_to, etc.
     args: dict = Field(default_factory=dict)
 
 
 class BotStatus(BaseModel):
     """Bot 状态 (Python → Java)"""
     type: MessageType = MessageType.BOT_STATUS
-    npc: str
-    status: str  # idle, busy, offline
+    npc: Optional[str] = "UnknownBot"
+    status: Optional[str] = "idle"  # idle, busy, offline
     position: Optional[list[float]] = None
 
 
 class Heartbeat(BaseModel):
     """心跳消息"""
     type: MessageType = MessageType.HEARTBEAT
-    timestamp: int
+    timestamp: Optional[int] = 0
 
 
 class ErrorMessage(BaseModel):
@@ -85,11 +85,11 @@ class ServantCommandMessage(BaseModel):
     用于 claim/release/list 等管理命令
     """
     type: MessageType = MessageType.SERVANT_COMMAND
-    player: str
+    player: Optional[str] = "Unknown"
     player_uuid: Optional[str] = None
-    command: str  # "claim" | "release" | "list"
+    command: Optional[str] = "help"  # "claim" | "release" | "list"
     target_bot: Optional[str] = None  # 目标 Bot 名称
-    timestamp: int
+    timestamp: Optional[int] = 0
 
 
 class HologramUpdate(BaseModel):

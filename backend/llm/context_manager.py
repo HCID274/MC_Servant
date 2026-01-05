@@ -694,8 +694,8 @@ class ContextManager(IContextManager):
         
         messages.append({"role": "system", "content": system_prompt})
         
-        # 2. 添加 L0 对话历史
-        messages.extend(ctx.raw_buffer)
+        # 2. 添加 L0 对话历史 (Move to Step 4 for token trimming)
+        # messages.extend(ctx.raw_buffer)
         
         # 3. 构建记忆快照（用于调试）
         if ctx.core_memory:
@@ -706,9 +706,38 @@ class ContextManager(IContextManager):
         
         memory_snapshot = "\n---\n".join(memory_parts)
         
-        # 4. 估算 Token 数
-        total_text = system_prompt + "".join(m.get("content", "") for m in ctx.raw_buffer)
-        token_count = estimate_tokens(total_text)
+        # 4. 估算 Token 数并防止爆炸
+        from config import settings
+
+        # 估算 System Prompt 的 Token
+        system_tokens = estimate_tokens(system_prompt)
+        current_tokens = system_tokens
+
+        # 倒序添加消息，直到达到 Token 上限
+        valid_messages = []
+        reversed_buffer = list(reversed(ctx.raw_buffer))
+
+        for msg in reversed_buffer:
+            msg_content = msg.get("content", "")
+            msg_tokens = estimate_tokens(msg_content) + 4  # +4 overhead per message
+
+            if current_tokens + msg_tokens <= settings.llm_max_context_tokens:
+                valid_messages.append(msg)
+                current_tokens += msg_tokens
+            else:
+                # 超过上限，停止添加（相当于修剪了最早的消息）
+                # 这里可以做一个优化：如果是 assistant 的长回复，可以考虑保留一部分摘要？
+                # 暂时简单直接丢弃
+                logger.warning(
+                    f"Trimming chat context for {bot_name}: total {current_tokens + msg_tokens} > {settings.llm_max_context_tokens}"
+                )
+                break
+
+        # 恢复顺序
+        valid_messages.reverse()
+        messages.extend(valid_messages)
+
+        token_count = current_tokens
         
         # 5. 确定记忆深度
         if ctx.core_memory:
