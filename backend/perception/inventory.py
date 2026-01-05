@@ -48,11 +48,16 @@ class BotInventoryProvider(IInventoryProvider):
         summary: Dict[str, int] = {}
         
         try:
+            # 获取所有非空物品槽
             items = self._bot.inventory.items()
-            for item in items:
-                name = item.name
-                count = item.count
-                summary[name] = summary.get(name, 0) + count
+
+            # 容错处理: items 可能为 None
+            if items:
+                for item in items:
+                    name = item.name
+                    # 确认: item.count 是堆叠数量, 不是槽位索引
+                    count = item.count
+                    summary[name] = summary.get(name, 0) + count
                 
         except Exception as e:
             logger.warning(f"[InventoryProvider] Failed to get items: {e}")
@@ -85,9 +90,13 @@ class BotInventoryProvider(IInventoryProvider):
         try:
             total = 0
             items = self._bot.inventory.items()
-            for item in items:
-                if item.name == item_id:
-                    total += item.count
+
+            # 容错处理: items 可能为 None
+            if items:
+                for item in items:
+                    if item.name == item_id:
+                        # 确认: item.count 是堆叠数量
+                        total += item.count
             return total
             
         except Exception as e:

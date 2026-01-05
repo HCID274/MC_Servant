@@ -10,6 +10,7 @@ import logging
 from typing import List, Dict, Any, Optional
 
 from .interfaces import IScanner, ScanResult
+from .knowledge_base import get_knowledge_base
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,10 @@ class MineflayerScanner(IScanner):
             return []
         
         results: List[ScanResult] = []
+        # 安全检查: bot.entity 可能会在初始化期间为 None
+        if not self._bot.entity:
+            return []
+
         bot_pos = self._bot.entity.position
         bot_username = self._bot.username
         
@@ -148,10 +153,15 @@ class MineflayerScanner(IScanner):
         
         try:
             # 遍历所有实体
+            # 容错处理: 确保 entities 是有效字典
             entities_dict = dict(self._bot.entities) if self._bot.entities else {}
             
             for entity_id, entity in entities_dict.items():
                 try:
+                    # 容错处理: 实体对象可能为 None
+                    if not entity:
+                        continue
+
                     # 跳过自己
                     if hasattr(entity, 'username') and entity.username == bot_username:
                         continue
@@ -175,6 +185,10 @@ class MineflayerScanner(IScanner):
                     
                     # 计算距离
                     entity_pos = entity.position
+                    # 容错处理: 实体位置可能为 None
+                    if not entity_pos:
+                        continue
+
                     distance = bot_pos.distanceTo(entity_pos)
                     
                     if distance > radius:
@@ -195,7 +209,7 @@ class MineflayerScanner(IScanner):
                     ))
                     
                 except Exception as e:
-                    logger.debug(f"[Scanner] Error processing entity: {e}")
+                    logger.debug(f"[Scanner] Error processing entity {entity_id}: {e}")
                     continue
                     
         except Exception as e:
@@ -284,7 +298,7 @@ class MineflayerScanner(IScanner):
         简单接口：一次调用获取附近资源摘要
         
         深度功能：
-        - 扫描常用资源方块
+        - 扫描常用资源方块 (从知识库获取)
         - 计算最近距离
         - Top-N 截断避免 Token 溢出
         - 返回格式化的自然语言描述
@@ -305,21 +319,20 @@ class MineflayerScanner(IScanner):
                 "summary_text": "Nearby: cherry_log x15 (3m), ..."
             }
         """
-        # 常用资源方块类型
-        RESOURCE_BLOCKS = [
-            # 原木 (优先)
-            "oak_log", "birch_log", "spruce_log", "jungle_log",
-            "acacia_log", "dark_oak_log", "mangrove_log", "cherry_log",
-            "crimson_stem", "warped_stem",
-            # 矿石
-            "coal_ore", "iron_ore", "gold_ore", "diamond_ore", "copper_ore",
-            # 石材
-            "stone", "cobblestone",
-            # 工作站
-            "crafting_table", "furnace", "chest",
-            # 其他
-            "sand", "gravel", "clay",
-        ]
+        # 从知识库加载资源列表
+        kb = get_knowledge_base()
+        resource_blocks = set()
+
+        # 添加各类资源
+        resource_blocks.update(kb.get_candidates("logs"))
+        resource_blocks.update(kb.get_candidates("ores"))
+        resource_blocks.update(kb.get_candidates("stone_variants"))
+        resource_blocks.update(kb.get_candidates("sand_gravel"))
+        # 工作站 (KB中可能不完整，暂时手动补充常用)
+        resource_blocks.update(["crafting_table", "furnace", "chest", "barrel", "smoker", "blast_furnace"])
+
+        # 移除不可见或无效的
+        valid_resources = [b for b in resource_blocks if getattr(self._mcData.blocksByName, b, None)]
         
         bot_pos = self._bot.entity.position
         result = {
@@ -335,44 +348,65 @@ class MineflayerScanner(IScanner):
         }
         
         try:
-            # 扫描资源方块
-            for block_name in RESOURCE_BLOCKS:
-                try:
-                    block_info = getattr(self._mcData.blocksByName, block_name, None)
-                    if not block_info:
-                        continue
-                    
-                    # 使用 executor 执行 findBlocks
-                    blocks_proxy = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda bid=block_info.id: self._bot.findBlocks({
-                            "matching": bid,
-                            "maxDistance": radius,
-                            "count": 32  # 限制数量
-                        })
-                    )
-                    
-                    blocks = list(blocks_proxy) if blocks_proxy else []
-                    if blocks:
-                        # 计算最近距离
-                        min_distance = float('inf')
-                        for block_pos in blocks:
-                            try:
-                                dist = bot_pos.distanceTo(block_pos)
-                                if dist < min_distance:
-                                    min_distance = dist
-                            except:
-                                pass
-                        
-                        result["nearby_resources"][block_name] = {
-                            "count": len(blocks),
-                            "distance": round(min_distance, 1)
-                        }
-                        
-                except Exception as e:
-                    logger.debug(f"[Scanner] Error scanning {block_name}: {e}")
-                    continue
+            # 优化: 批量扫描
+            # Mineflayer findBlocks 支持传入 ID 数组，但这里我们按类别分组扫描或保持循环
+            # 为了准确统计每种方块的数量，分别扫描是较简单的实现
+            # 如果性能成为瓶颈，可以按 ID 列表扫描然后本地分类
             
+            # 筛选出要扫描的 ID 列表
+            target_ids = []
+            block_name_map = {} # id -> name
+
+            for block_name in valid_resources:
+                block_info = getattr(self._mcData.blocksByName, block_name, None)
+                if block_info:
+                    target_ids.append(block_info.id)
+                    block_name_map[block_info.id] = block_name
+
+            if target_ids:
+                # 批量扫描所有关注的方块
+                # 注意: count 限制可能会导致某些稀有资源被忽略，如果有大量常见资源
+                # 这里为了性能，我们设置一个较大的 count
+                blocks_proxy = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self._bot.findBlocks({
+                        "matching": target_ids,
+                        "maxDistance": radius,
+                        "count": 256
+                    })
+                )
+
+                blocks = list(blocks_proxy) if blocks_proxy else []
+
+                # 本地分类统计
+                for block_pos in blocks:
+                    try:
+                        # findBlocks 返回的是 Vec3，需要获取 blockAt 才能知道具体 ID
+                        # 但 findBlocks 本身不返回 ID。
+                        # 这是一个性能权衡: findBlocks 很快，但我们需要再次 blockAt
+                        # 或者我们可以假设 mineflayer 内部已经访问了 chunk
+
+                        # 优化: blockAt 是同步且快速的 (内存查表)
+                        block = self._bot.blockAt(block_pos)
+                        if block and block.type in block_name_map:
+                            name = block_name_map[block.type]
+
+                            if name not in result["nearby_resources"]:
+                                result["nearby_resources"][name] = {
+                                    "count": 0,
+                                    "distance": float('inf')
+                                }
+
+                            res = result["nearby_resources"][name]
+                            res["count"] += 1
+
+                            dist = bot_pos.distanceTo(block_pos)
+                            if dist < res["distance"]:
+                                res["distance"] = round(dist, 1)
+
+                    except Exception as e:
+                        continue
+
             # 扫描附近实体
             try:
                 entities_dict = dict(self._bot.entities) if self._bot.entities else {}

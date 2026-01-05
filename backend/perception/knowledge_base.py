@@ -88,11 +88,25 @@ class JsonKnowledgeBase(IKnowledgeBase):
             )
             
         except FileNotFoundError:
-            logger.error(f"[KnowledgeBase] File not found: {self._kb_path}")
-            raise
+            logger.error(f"[KnowledgeBase] File not found: {self._kb_path} - Using empty knowledge base")
+            # 容错处理：文件不存在时不崩溃，使用空数据
+            self._tags = {}
+            self._items = {}
+            self._aliases = {}
+            self._all_item_ids = set()
         except json.JSONDecodeError as e:
-            logger.error(f"[KnowledgeBase] JSON parse error: {e}")
-            raise
+            logger.error(f"[KnowledgeBase] JSON parse error: {e} - Using empty knowledge base")
+            # 容错处理：JSON 解析失败时不崩溃，使用空数据
+            self._tags = {}
+            self._items = {}
+            self._aliases = {}
+            self._all_item_ids = set()
+        except Exception as e:
+            logger.error(f"[KnowledgeBase] Unexpected error loading KB: {e}")
+            self._tags = {}
+            self._items = {}
+            self._aliases = {}
+            self._all_item_ids = set()
     
     def get_candidates(self, concept: str) -> List[str]:
         """
