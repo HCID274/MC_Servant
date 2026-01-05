@@ -800,7 +800,8 @@ class WorkingState(IState):
                 
         except asyncio.CancelledError:
             logger.info("Task execution cancelled")
-            raise
+            # 不在这里重新抛出，或者抛出也没关系，外层已结束
+            # raise
         except Exception as e:
             logger.error(f"Task execution error: {e}")
             if self._ctx:
@@ -811,23 +812,36 @@ class WorkingState(IState):
     
     async def on_exit(self, context: RuntimeContext) -> None:
         """退出时取消执行任务并清理"""
-        # 取消后台任务
+        logger.debug("WorkingState.on_exit: Starting cleanup...")
+        
+        # 1. 首先尝试取消 TaskExecutor 内部的执行逻辑
+        if self._ctx and self._ctx.executor:
+            try:
+                # 明确调用 cancel，确保底层任务被通知
+                if hasattr(self._ctx.executor, "cancel"):
+                    logger.info("Cancelling task executor...")
+                    # 如果 executor.cancel 是 async，需要 await
+                    if asyncio.iscoroutinefunction(self._ctx.executor.cancel):
+                        await self._ctx.executor.cancel()
+                    else:
+                        self._ctx.executor.cancel()
+            except Exception as e:
+                logger.warning(f"Failed to cancel executor: {e}")
+
+        # 2. 取消后台包装任务
         if self._executor_task and not self._executor_task.done():
             self._executor_task.cancel()
             try:
-                await self._executor_task
-            except asyncio.CancelledError:
-                pass
-        
-        # 取消 executor (如果正在运行)
-        if self._ctx and self._ctx.executor:
-            try:
-                self._ctx.executor.cancel()
+                # 设置超时，防止死锁或长时间挂起
+                await asyncio.wait_for(self._executor_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                logger.info("Background executor task cancelled (or timed out).")
             except Exception as e:
-                logger.warning(f"Failed to cancel executor: {e}")
+                logger.error(f"Error while cancelling background task: {e}")
         
-        # 清理任务（无论成功还是失败）
+        # 3. 彻底清理任务状态（无论成功还是失败）
         context.clear_task()
+        logger.debug("WorkingState.on_exit: Task context cleared.")
     
     async def handle_event(self, event: Event, context: RuntimeContext) -> StateResult:
         if event.type == EventType.TASK_COMPLETE:
@@ -892,4 +906,3 @@ class WorkingState(IState):
             return StateResult(response="正在工作中喵~")
         
         return StateResult()
-
