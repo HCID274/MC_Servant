@@ -30,6 +30,10 @@ class MockBotActions:
     def __init__(self, inventory: Dict[str, int] = None):
         self._inventory = inventory or {"oak_log": 10}
         self._position = {"x": 100, "y": 64, "z": -200}
+        # 可编程返回序列（用于失败/重试用例）
+        self.mine_results: List[BotActionResult] = []
+        self.craft_results: List[BotActionResult] = []
+        self.goto_results: List[BotActionResult] = []
     
     def get_state(self) -> Dict[str, Any]:
         return {
@@ -42,6 +46,8 @@ class MockBotActions:
     
     async def mine(self, block_type: str, count: int = 1, timeout: float = 120.0) -> BotActionResult:
         """模拟采集"""
+        if self.mine_results:
+            return self.mine_results.pop(0)
         return BotActionResult(
             success=True,
             action="mine",
@@ -52,6 +58,8 @@ class MockBotActions:
     
     async def craft(self, item_name: str, count: int = 1, timeout: float = 30.0) -> BotActionResult:
         """模拟合成"""
+        if self.craft_results:
+            return self.craft_results.pop(0)
         return BotActionResult(
             success=True,
             action="craft",
@@ -62,6 +70,8 @@ class MockBotActions:
     
     async def goto(self, target: str, timeout: float = 60.0) -> BotActionResult:
         """模拟导航"""
+        if self.goto_results:
+            return self.goto_results.pop(0)
         return BotActionResult(
             success=True,
             action="goto",
@@ -78,32 +88,25 @@ class MockTaskPlanner(ITaskPlanner):
     设计原则：Mock 应该是一个"可编程的演员"，完全服从测试用例的设定。
     
     Args:
-        plan_steps: plan() 返回的步骤列表
-        replan_steps: replan() 返回的步骤列表
-                      - None: 返回空计划（模拟 LLM 放弃/无法修复）
-                      - []: 显式返回空计划
-                      - [...]: 返回指定步骤（模拟 LLM 修复成功）
+        steps: act() 依次返回的步骤列表（执行完后返回 done=True）
     """
     
     def __init__(
         self, 
-        plan_steps: List[ActionStep] = None,
-        replan_steps: List[ActionStep] = None
+        steps: List[ActionStep] = None,
+        done_message: str = "任务完成"
     ):
-        self._plan_steps = plan_steps or [
+        self._steps = list(steps) if steps is not None else [
             ActionStep(action="mine", params={"block_type": "oak_log", "count": 5}, description="采集木头")
         ]
-        # replan_steps 默认为可执行的备选方案（向后兼容）
-        # 设置为 None 表示 replan 返回空计划（LLM 放弃）
-        self._replan_steps = replan_steps
-        self._plan_call_count = 0
-        self._replan_call_count = 0
+        self._done_message = done_message
+        self.act_call_count = 0
     
     async def plan(self, task_description: str, bot_state: Dict[str, Any]) -> ActionPlan:
-        self._plan_call_count += 1
+        # UniversalRunner 不使用 plan()；保留实现仅为满足接口
         return ActionPlan(
             task_description=task_description,
-            steps=self._plan_steps,
+            steps=[],
             estimated_time=60
         )
     
@@ -114,22 +117,24 @@ class MockTaskPlanner(ITaskPlanner):
         failed_result: BotActionResult,
         completed_steps: List[BotActionResult]
     ) -> ActionPlan:
-        self._replan_call_count += 1
-        
-        # 如果 replan_steps 为 None，返回空计划（模拟 LLM 放弃）
-        if self._replan_steps is None:
-            return ActionPlan(
-                task_description=task_description,
-                steps=[],
-                estimated_time=0
-            )
-        
-        # 否则返回指定的步骤
+        # UniversalRunner 不使用 replan()；保留实现仅为满足接口
         return ActionPlan(
             task_description=task_description,
-            steps=self._replan_steps,
+            steps=[],
             estimated_time=30
         )
+
+    async def act(
+        self,
+        task_description: str,
+        bot_state: Dict[str, Any],
+        completed_steps: List[BotActionResult],
+    ):
+        self.act_call_count += 1
+        if self._steps:
+            step = self._steps.pop(0)
+            return step, False, None
+        return ActionStep(action="noop", params={}, description="done"), True, self._done_message
 
 
 class MockPrerequisiteResolver(IPrerequisiteResolver):
@@ -176,7 +181,7 @@ class TestTaskExecutorBasic:
         
         assert result.success
         assert len(result.completed_steps) == 1
-        assert planner._plan_call_count == 1
+        assert planner.act_call_count >= 1
     
     @pytest.mark.asyncio
     async def test_multi_step_task(self):
@@ -229,66 +234,36 @@ class TestTaskExecutorFailure:
     
     @pytest.mark.asyncio
     async def test_action_failure_with_replan(self):
-        """测试动作失败后重规划 - LLM 成功修复"""
+        """测试动作失败后的行为（UniversalRunner 无恢复规划器时会终止）"""
         actions = MockBotActions()
-        call_count = 0
-        
-        async def failing_then_success(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return BotActionResult(
-                    success=False, action="mine", message="失败",
-                    status=ActionStatus.FAILED, error_code="TARGET_NOT_FOUND"
-                )
-            return BotActionResult(
-                success=True, action="mine", message="成功", status=ActionStatus.SUCCESS
-            )
-        
-        actions.mine = failing_then_success
-        # replan 返回可执行的备选方案（LLM 成功修复）
-        planner = MockTaskPlanner(
-            replan_steps=[ActionStep(action="mine", params={"block_type": "cobblestone", "count": 1}, description="备选方案")]
-        )
-        
-        executor = TaskExecutor(planner=planner, actions=actions, max_retries=3)
+        actions.mine_results = [
+            BotActionResult(success=False, action="mine", message="失败", status=ActionStatus.FAILED, error_code="TARGET_NOT_FOUND")
+        ]
+        planner = MockTaskPlanner([ActionStep(action="mine", params={"block_type": "oak_log", "count": 1}, description="采集")])
+        executor = TaskExecutor(planner=planner, actions=actions, max_retries=1)
         result = await executor.execute("采集任务")
-        
-        # 应该触发 replan 且最终成功
-        assert planner._replan_call_count >= 1
-        assert result.success
+        assert not result.success
+        assert "任务失败" in result.message
     
     @pytest.mark.asyncio
     async def test_max_retries_exceeded(self):
-        """测试超过最大重试次数 - replan 持续返回失败的动作"""
+        """测试失败时会返回失败结果（无恢复规划器）"""
         actions = MockBotActions()
-        
-        async def always_fail(*args, **kwargs):
-            return BotActionResult(
-                success=False, action="mine", message="总是失败",
-                status=ActionStatus.FAILED, error_code="UNKNOWN"
-            )
-        
-        actions.mine = always_fail
-        # replan 返回同样会失败的动作（模拟 LLM 尝试修复但仍然失败）
-        planner = MockTaskPlanner(
-            replan_steps=[ActionStep(action="mine", params={"block_type": "stone", "count": 1}, description="重试采集")]
-        )
-        
-        executor = TaskExecutor(planner=planner, actions=actions, max_retries=2)
+        actions.mine_results = [
+            BotActionResult(success=False, action="mine", message="总是失败", status=ActionStatus.FAILED, error_code="UNKNOWN")
+        ]
+        planner = MockTaskPlanner([ActionStep(action="mine", params={"block_type": "stone", "count": 1}, description="重试采集")])
+        executor = TaskExecutor(planner=planner, actions=actions, max_retries=1)
         result = await executor.execute("会失败的任务")
         
         assert not result.success
-        assert "重试" in result.message
+        assert "任务失败" in result.message
     
     @pytest.mark.asyncio
     async def test_unknown_action(self):
         """测试未知动作 - 即使 replan 也无法修复"""
         actions = MockBotActions()
-        planner = MockTaskPlanner(
-            plan_steps=[ActionStep(action="fly_to_moon", params={}, description="飞到月球")],
-            replan_steps=None  # LLM 放弃，返回空计划
-        )
+        planner = MockTaskPlanner([ActionStep(action="fly_to_moon", params={}, description="飞到月球")])
         
         executor = TaskExecutor(planner=planner, actions=actions, max_retries=3)
         result = await executor.execute("不可能的任务")
@@ -331,11 +306,7 @@ class TestTaskExecutorPrerequisite:
         actions.craft = craft_with_prereq
         actions.mine = mine_success
         
-        # Planner 返回 craft 计划，replan 返回空（LLM 放弃，交给符号层处理）
-        planner = MockTaskPlanner(
-            plan_steps=[ActionStep(action="craft", params={"item_name": "stick", "count": 4}, description="合成木棍")],
-            replan_steps=None  # LLM 放弃，让符号层接管
-        )
+        planner = MockTaskPlanner([ActionStep(action="craft", params={"item_name": "stick", "count": 4}, description="合成木棍")])
         
         # Resolver 返回前置任务
         prereq = MockPrerequisiteResolver(should_return_task=True)

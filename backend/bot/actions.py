@@ -84,6 +84,7 @@ def _coerce_js_int(value: Any) -> int:
 
     raise TypeError(f"cannot coerce {type(value)} to int: {value!r}")
 
+
 class ProgressTimer:
     """
     进度感知超时计时器
@@ -1271,6 +1272,37 @@ class MineflayerActions(IBotActions):
         start_time = time.time()
         
         try:
+            # 如果目标位置已经是该方块，直接成功（避免重复放置导致 blockUpdate 不触发）
+            try:
+                existing = self._bot.blockAt(self._Vec3(x, y, z))
+                if existing and getattr(existing, "name", None) == block_type:
+                    return ActionResult(
+                        success=True,
+                        action="place",
+                        message=f"{block_type} 已在 ({x},{y},{z})，无需重复放置",
+                        status=ActionStatus.SUCCESS,
+                        data={"placed_at": [x, y, z], "already_there": True},
+                        duration_ms=int((time.time() - start_time) * 1000),
+                    )
+            except Exception:
+                pass
+
+            # 确保距离足够近（mineflayer 放置需要在可达范围内；否则可能超时等不到 blockUpdate）
+            try:
+                pos = self._bot.entity.position
+                dx = float(pos.x) - float(x)
+                dy = float(pos.y) - float(y)
+                dz = float(pos.z) - float(z)
+                dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+            except Exception:
+                dist = 9999.0
+            if dist > 4.5:
+                # 用较短超时靠近；失败不立即返回，让 placeBlock 自身决定
+                try:
+                    await self.goto(f"{x},{y},{z}", timeout=min(10.0, max(3.0, timeout / 2)))
+                except Exception:
+                    pass
+
             # 检查背包中是否有该方块
             item = self._find_inventory_item(block_type)
             if not item:
@@ -1279,7 +1311,9 @@ class MineflayerActions(IBotActions):
                     action="place",
                     message=f"背包中没有 {block_type}",
                     status=ActionStatus.FAILED,
-                    error_code="INSUFFICIENT_MATERIALS"
+                    error_code="INSUFFICIENT_MATERIALS",
+                    # 🔴 修复: 添加 missing 数据供 PrerequisiteResolver 使用
+                    data={"missing": {block_type: 1}, "item": block_type}
                 )
             
             # 装备方块
@@ -1312,6 +1346,14 @@ class MineflayerActions(IBotActions):
                 ),
                 timeout=timeout
             )
+
+            # 二次确认（某些服务器/延迟下 blockUpdate 事件可能不可靠，但方块已放下）
+            try:
+                placed = self._bot.blockAt(self._Vec3(x, y, z))
+                if placed and getattr(placed, "name", None) != block_type:
+                    logger.debug(f"[place] Post-check mismatch: expected={block_type}, got={getattr(placed,'name',None)}")
+            except Exception:
+                pass
             
             return ActionResult(
                 success=True,
@@ -1323,6 +1365,20 @@ class MineflayerActions(IBotActions):
             )
             
         except asyncio.TimeoutError:
+            # 超时也做一次 world-state 校验：若实际已放置则返回成功
+            try:
+                placed = self._bot.blockAt(self._Vec3(x, y, z))
+                if placed and getattr(placed, "name", None) == block_type:
+                    return ActionResult(
+                        success=True,
+                        action="place",
+                        message=f"成功放置 {block_type} 在 ({x},{y},{z})（事件超时但已确认落地）",
+                        status=ActionStatus.SUCCESS,
+                        data={"placed_at": [x, y, z], "event_timeout_but_placed": True},
+                        duration_ms=int((time.time() - start_time) * 1000),
+                    )
+            except Exception:
+                pass
             return ActionResult(
                 success=False,
                 action="place",
@@ -1332,6 +1388,31 @@ class MineflayerActions(IBotActions):
                 duration_ms=int((time.time() - start_time) * 1000)
             )
         except Exception as e:
+            # 兼容 mineflayer placeBlock 的 blockUpdate 超时异常（它不是 asyncio.TimeoutError）
+            msg = str(e)
+            if "blockupdate" in msg.lower() and "did not fire within timeout" in msg.lower():
+                try:
+                    placed = self._bot.blockAt(self._Vec3(x, y, z))
+                    if placed and getattr(placed, "name", None) == block_type:
+                        return ActionResult(
+                            success=True,
+                            action="place",
+                            message=f"成功放置 {block_type} 在 ({x},{y},{z})（blockUpdate 超时但已确认落地）",
+                            status=ActionStatus.SUCCESS,
+                            data={"placed_at": [x, y, z], "blockupdate_timeout_but_placed": True},
+                            duration_ms=int((time.time() - start_time) * 1000),
+                        )
+                except Exception:
+                    pass
+                return ActionResult(
+                    success=False,
+                    action="place",
+                    message=msg,
+                    status=ActionStatus.TIMEOUT,
+                    error_code="TIMEOUT",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
             logger.error(f"place failed: {e}")
             return ActionResult(
                 success=False,
@@ -1380,7 +1461,16 @@ class MineflayerActions(IBotActions):
             # 如果 recipesAll 失败，回退到 recipesFor
             if not all_recipes:
                 try:
-                    recipes_proxy = self._bot.recipesFor(item_info.id)
+                    # mineflayer: recipesFor(itemType[, metadata[, minResultCount[, craftingTable]]])
+                    # 兼容不同版本/桥接层签名差异：依次尝试更完整的参数
+                    recipes_proxy = None
+                    try:
+                        recipes_proxy = self._bot.recipesFor(item_info.id, None, int(count), None)
+                    except Exception:
+                        try:
+                            recipes_proxy = self._bot.recipesFor(item_info.id, None, int(count))
+                        except Exception:
+                            recipes_proxy = self._bot.recipesFor(item_info.id)
                     all_recipes = list(recipes_proxy) if recipes_proxy else []
                 except:
                     pass
@@ -1396,6 +1486,9 @@ class MineflayerActions(IBotActions):
             
             # 获取当前背包状态
             inventory = self._get_inventory_summary()
+            
+            # 🔴 调试日志：显示配方数量
+            logger.info(f"[craft] Found {len(all_recipes)} recipe variants for {item_name}")
             
             # 尝试找到可执行的配方
             executable_recipe, missing_materials = self._find_executable_recipe(all_recipes, inventory, count)
@@ -1447,14 +1540,48 @@ class MineflayerActions(IBotActions):
                         error_code="NO_TOOL"
                     )
             
-            # 执行合成
-            await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self._bot.craft(executable_recipe, count, crafting_table)
-                ),
-                timeout=timeout
-            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self._bot.craft(executable_recipe, count, crafting_table)
+                    ),
+                    timeout=timeout
+                )
+            except Exception as craft_exc:
+                # Mineflayer 对 recipe 示例材料做严格检查（不理解 #planks），会在这里抛 missing ingredient。
+                # 对 crafting_table（2x2，无需工作台）我们提供一个“手动摆盘”的兜底路径，避免任务进入“Tag 满足但不可解”死循环。
+                msg_lower = str(craft_exc).lower()
+                if "missing ingredient" in msg_lower and item_name == "crafting_table" and crafting_table is None:
+                    try:
+                        from bot.tag_resolver import get_tag_resolver
+                        tag_resolver = get_tag_resolver()
+                        need = int(count) * 4
+                        total_planks = int(tag_resolver.get_available_count("planks", inventory))
+                        plank_item = tag_resolver.find_available("planks", inventory)
+                        if plank_item and total_planks >= need:
+                            logger.warning(
+                                f"[craft] bot.craft() strict missing ingredient. Falling back to manual craft crafting_table "
+                                f"using {plank_item} (have={total_planks}, need={need})"
+                            )
+                            await asyncio.wait_for(
+                                asyncio.get_event_loop().run_in_executor(
+                                    None,
+                                    lambda: self._manual_craft_crafting_table_sync(plank_item, int(count))
+                                ),
+                                timeout=timeout
+                            )
+                            return ActionResult(
+                                success=True,
+                                action="craft",
+                                message=f"成功合成 {count} 个 {item_name}",
+                                status=ActionStatus.SUCCESS,
+                                data={"crafted": {item_name: count}, "mode": "manual_clickwindow", "material": plank_item},
+                                duration_ms=int((time.time() - start_time) * 1000)
+                            )
+                    except Exception as manual_exc:
+                        logger.error(f"[craft] Manual craft fallback failed: {manual_exc}")
+                raise craft_exc
             
             return ActionResult(
                 success=True,
@@ -1515,7 +1642,97 @@ class MineflayerActions(IBotActions):
                 data=data,
                 duration_ms=int((time.time() - start_time) * 1000)
             )
-    
+
+    # -------------------------------------------------------------------------
+    # Manual crafting fallback (safe, protocol-compliant)
+    # -------------------------------------------------------------------------
+    def _manual_craft_crafting_table_sync(self, plank_item_name: str, count: int = 1) -> None:
+        """
+        手动摆盘合成 crafting_table（2x2）
+
+        适用场景：
+        - Mineflayer 的 recipe 示例材料导致 strict missing ingredient
+        - 服务器允许 tag(#planks) 变体，但 Mineflayer 不会自动替代
+
+        实现方式：
+        - 通过 bot.clickWindow 操作玩家自身 2x2 crafting grid
+        - 放入 4 个 plank_item_name
+        - shift-click 结果槽取出 crafting_table
+
+        注意：
+        - 该方法是阻塞的，必须在 executor 中调用
+        - Slot 约定基于 prismarine-windows 的 player inventory window：
+          0: crafting output, 1-4: crafting input
+        """
+        import time as _time
+
+        OUTPUT_SLOT = 0
+        INPUT_SLOTS = [1, 2, 3, 4]
+
+        def _item_name(it) -> Optional[str]:
+            if it is None:
+                return None
+            try:
+                return it.name
+            except Exception:
+                try:
+                    return it.get("name")
+                except Exception:
+                    return None
+
+        def _item_count(it) -> int:
+            if it is None:
+                return 0
+            try:
+                return int(it.count)
+            except Exception:
+                try:
+                    return int(it.get("count", 0))
+                except Exception:
+                    return 0
+
+        def _slots_list() -> List[Any]:
+            try:
+                slots = getattr(self._bot.inventory, "slots", None)
+                return list(slots) if slots is not None else []
+            except Exception:
+                return []
+
+        def _find_source_slot(min_needed: int) -> int:
+            slots = _slots_list()
+            best_idx = -1
+            best_count = 0
+            for idx, it in enumerate(slots):
+                if _item_name(it) == plank_item_name:
+                    c = _item_count(it)
+                    if c >= min_needed and c > best_count:
+                        best_idx = idx
+                        best_count = c
+            return best_idx
+
+        # 每次 craft 需要 4 个木板
+        for _ in range(int(count)):
+            source = _find_source_slot(4)
+            if source < 0:
+                raise RuntimeError(f"manual craft missing material: {plank_item_name} x4")
+
+            # 1) 拿起整叠木板
+            self._bot.clickWindow(source, 0, 0)  # left click
+            _time.sleep(0.05)
+
+            # 2) 右键依次放 1 个到 2x2 合成格
+            for slot in INPUT_SLOTS:
+                self._bot.clickWindow(slot, 1, 0)  # right click place 1
+                _time.sleep(0.05)
+
+            # 3) 把剩余木板放回原槽位（避免鼠标光标持物导致后续 desync）
+            self._bot.clickWindow(source, 0, 0)
+            _time.sleep(0.05)
+
+            # 4) shift-click 取走结果（工作台）
+            self._bot.clickWindow(OUTPUT_SLOT, 0, 1)  # mode=1 shift-click
+            _time.sleep(0.1)
+
     def _find_executable_recipe(
         self, 
         recipes: list, 
@@ -1580,9 +1797,15 @@ class MineflayerActions(IBotActions):
 
             parseable_recipes += 1
             
-            # 检查每种材料是否有足够的具体物品（严格匹配）
+            # Tag-aware 材料检查
+            # Mineflayer 只返回 1 个通用配方（如 oak_planks），但游戏允许任何 #planks
+            # 我们使用 TagResolver 让背包中的 cherry_planks 通过 oak_planks 的检查
+            # Mineflayer 的 craft() 会自动使用背包中可用的材料
             can_craft = True
             recipe_missing = {}
+            
+            from bot.tag_resolver import get_tag_resolver
+            tag_resolver = get_tag_resolver()
             
             for material_id, required_count in required_materials.items():
                 # 将 ID 转换为物品名
@@ -1592,15 +1815,47 @@ class MineflayerActions(IBotActions):
                     recipe_missing[f"id:{material_id}"] = required_count * craft_count
                     continue
 
-                available_count = int(inventory.get(material_name, 0))
                 needed = int(required_count) * int(craft_count)
+                
+                # 1. 先尝试精确匹配
+                available_count = int(inventory.get(material_name, 0))
+                
+                # 2. 如果精确匹配不足，尝试 Tag 等价物品
+                # 注意：Minecraft 的 Tag 允许“混用”多种等价物品填充配方格（例如 2 oak + 2 cherry 也能合成工作台）
+                # 因此不能只找一种替代物品并要求其数量 >= needed；应统计等价集合的总数量。
+                if available_count < needed:
+                    try:
+                        total_equiv = int(tag_resolver.get_available_count(material_name, inventory))
+                    except Exception:
+                        total_equiv = available_count
 
-                if available_count < int(needed):
+                    if total_equiv >= needed:
+                        tag_name = None
+                        try:
+                            tag_name = tag_resolver.get_tag_for_item(material_name)
+                        except Exception:
+                            tag_name = None
+
+                        if tag_name:
+                            logger.info(
+                                f"[craft] Tag-aware total: #{tag_name} provides {total_equiv}/{needed} for {material_name}"
+                            )
+                        else:
+                            logger.info(
+                                f"[craft] Tag-aware total provides {total_equiv}/{needed} for {material_name}"
+                            )
+
+                        available_count = total_equiv
+                    else:
+                        # 记录等价集合总量，用于缺料计算（而不是仅记录精确匹配）
+                        available_count = total_equiv
+
+                if available_count < needed:
                     can_craft = False
-                    # missing 字典必须保持 machine-readable（供 PrerequisiteResolver 使用）
-                    recipe_missing[material_name] = int(needed) - int(available_count)
+                    recipe_missing[material_name] = needed - available_count
             
             if can_craft:
+                logger.info(f"[craft] Recipe check passed (Tag-aware). Calling bot.craft()...")
                 return (recipe, {})
             
             # 记录最接近成功的配方

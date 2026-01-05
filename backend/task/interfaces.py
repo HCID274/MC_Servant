@@ -240,6 +240,21 @@ class ITaskPlanner(ABC):
         """
         pass
 
+    @abstractmethod
+    async def act(
+        self,
+        task_description: str,
+        bot_state: Dict[str, Any],
+        completed_steps: List["ActionResult"],
+    ) -> Any:
+        """
+        Tick Loop 决策接口：每次只产出 1 个 ActionStep，或 done=true。
+
+        Returns:
+            (step: ActionStep, done: bool, message: Optional[str])
+        """
+        pass
+
 
 class IPrerequisiteResolver(ABC):
     """

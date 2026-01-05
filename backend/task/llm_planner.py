@@ -172,6 +172,13 @@ find_location, patrol, mine_tree, mine, scan, goto, craft, equip, give, pickup
 7) **材料不足先采集**：缺原木 → mine_tree；缺其他材料 → mine
 8) **单步完成**：craft 成功后 → done: true
 
+### 资源等价物规则 ⭐⭐ 关键改进！
+背包中的等价物品可以互换使用，不要死守名字！
+- **木板等价**: oak_planks = birch_planks = spruce_planks = cherry_planks = ... (任何木板)
+- **原木等价**: oak_log = birch_log = cherry_log = ... (任何原木)
+- **规则**: 如果配方需要"木板"，背包有 cherry_planks 就直接用，**不要去采集 oak_log**！
+- 如果 bot_state.nearby_resources 有 cherry_log 而没有 oak_log，就砍 cherry_log，不要跑远路！
+
 ### 交付类任务 (给/give)
 9) **检查背包**：inventory 有目标物品 → 直接 give
 10) **物品不足**：先合成/采集所需物品
@@ -180,9 +187,21 @@ find_location, patrol, mine_tree, mine, scan, goto, craft, equip, give, pickup
 ### 导航类任务 (来/goto)
 12) **单步完成**：goto 成功后 → done: true
 
+### 放置/建造类任务 (放/摆/build/place)
+13) **必须包含 place 动作**：任务是"放XX"/"摆XX"/"地上放一个XX"时，最终必须执行 place 动作！
+14) **绝对禁止只有 goto**：goto 只是子步骤，不是终点！即使走到位置也不能 done: true
+15) **完整动作链**：
+    - 检查背包是否有目标物品
+    - 没有则先 craft 合成
+    - 合成后选择放置位置（基于 owner_position 或 bot 位置偏移一格）
+    - 执行 place 放置方块
+    - place 成功后才能 done: true
+16) **place 参数**：{"block_type": "crafting_table", "x": int, "y": int, "z": int}
+    - 坐标选在玩家脚边一格，如 (owner_x+1, owner_y, owner_z)
+
 ### 多步闭环任务
-13) **不要提前 done**：只有所有子步骤都完成才能 done: true
-14) **放置优先于交付**：如果任务语义是“放/摆/放地上”，最后一步必须是 place，而不是 give。
+17) **不要提前 done**：只有所有子步骤都完成才能 done: true
+18) **放置优先于交付**：如果任务语义是"放/摆/放地上"，最后一步必须是 place，而不是 give。
 
 ## 参数格式
 - find_location: {"feature": "highest", "radius": 64}  ⭐ 模糊位置必用！
@@ -194,6 +213,7 @@ find_location, patrol, mine_tree, mine, scan, goto, craft, equip, give, pickup
 - goto: {"target": "100,64,200"}
 - scan: {"target_type": "oak_log", "radius": 32}
 - pickup: {"target": "apple"} 或 {} 捡所有
+- place: {"block_type": "crafting_table", "x": 100, "y": 64, "z": 200}  ⭐ 放置任务必用！
 
 ## 输出格式（纯 JSON）
 必须是以下结构之一：
@@ -207,6 +227,7 @@ find_location, patrol, mine_tree, mine, scan, goto, craft, equip, give, pickup
 - goto 必须用真实坐标 "x,y,z"
 - player_name 必须用 owner_name 的值！
 - 多步任务不要提前 done！
+- 放置任务（放/摆/build）必须执行 place 动作，绝不能只 goto 就 done！
 """
 
 REPLAN_SYSTEM_PROMPT = """你是 Minecraft 任务规划专家。之前的执行计划失败了，请根据错误信息重新规划。

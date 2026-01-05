@@ -272,6 +272,153 @@ class MineflayerScanner(IScanner):
             logger.debug(f"[Scanner] Error getting entity metadata: {e}")
         
         return metadata
+    
+    async def get_environment_summary(
+        self,
+        radius: int = 10,
+        max_resources: int = 10
+    ) -> Dict[str, Any]:
+        """
+        获取环境感知摘要 (Phase 2: LocalPerception)
+        
+        简单接口：一次调用获取附近资源摘要
+        
+        深度功能：
+        - 扫描常用资源方块
+        - 计算最近距离
+        - Top-N 截断避免 Token 溢出
+        - 返回格式化的自然语言描述
+        
+        Args:
+            radius: 扫描半径 (格)
+            max_resources: 最多返回的资源种类数
+            
+        Returns:
+            {
+                "position": {"x": float, "y": float, "z": float},
+                "nearby_resources": {
+                    "cherry_log": {"count": 15, "distance": 3.2},
+                    ...
+                },
+                "nearby_entities": ["player", "cow"],
+                "scan_radius": 10,
+                "summary_text": "Nearby: cherry_log x15 (3m), ..."
+            }
+        """
+        # 常用资源方块类型
+        RESOURCE_BLOCKS = [
+            # 原木 (优先)
+            "oak_log", "birch_log", "spruce_log", "jungle_log",
+            "acacia_log", "dark_oak_log", "mangrove_log", "cherry_log",
+            "crimson_stem", "warped_stem",
+            # 矿石
+            "coal_ore", "iron_ore", "gold_ore", "diamond_ore", "copper_ore",
+            # 石材
+            "stone", "cobblestone",
+            # 工作站
+            "crafting_table", "furnace", "chest",
+            # 其他
+            "sand", "gravel", "clay",
+        ]
+        
+        bot_pos = self._bot.entity.position
+        result = {
+            "position": {
+                "x": float(bot_pos.x),
+                "y": float(bot_pos.y),
+                "z": float(bot_pos.z)
+            },
+            "nearby_resources": {},
+            "nearby_entities": [],
+            "scan_radius": radius,
+            "summary_text": ""
+        }
+        
+        try:
+            # 扫描资源方块
+            for block_name in RESOURCE_BLOCKS:
+                try:
+                    block_info = getattr(self._mcData.blocksByName, block_name, None)
+                    if not block_info:
+                        continue
+                    
+                    # 使用 executor 执行 findBlocks
+                    blocks_proxy = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda bid=block_info.id: self._bot.findBlocks({
+                            "matching": bid,
+                            "maxDistance": radius,
+                            "count": 32  # 限制数量
+                        })
+                    )
+                    
+                    blocks = list(blocks_proxy) if blocks_proxy else []
+                    if blocks:
+                        # 计算最近距离
+                        min_distance = float('inf')
+                        for block_pos in blocks:
+                            try:
+                                dist = bot_pos.distanceTo(block_pos)
+                                if dist < min_distance:
+                                    min_distance = dist
+                            except:
+                                pass
+                        
+                        result["nearby_resources"][block_name] = {
+                            "count": len(blocks),
+                            "distance": round(min_distance, 1)
+                        }
+                        
+                except Exception as e:
+                    logger.debug(f"[Scanner] Error scanning {block_name}: {e}")
+                    continue
+            
+            # 扫描附近实体
+            try:
+                entities_dict = dict(self._bot.entities) if self._bot.entities else {}
+                bot_username = self._bot.username
+                
+                for entity_id, entity in entities_dict.items():
+                    try:
+                        if hasattr(entity, 'username') and entity.username == bot_username:
+                            continue
+                        
+                        entity_pos = entity.position
+                        distance = bot_pos.distanceTo(entity_pos)
+                        
+                        if distance <= radius:
+                            entity_name = getattr(entity, 'name', None) or getattr(entity, 'type', 'unknown')
+                            if entity_name not in result["nearby_entities"]:
+                                result["nearby_entities"].append(entity_name)
+                    except:
+                        continue
+            except Exception as e:
+                logger.debug(f"[Scanner] Error scanning entities: {e}")
+            
+            # 生成自然语言摘要
+            if result["nearby_resources"]:
+                # 按数量排序，取 Top-N
+                sorted_resources = sorted(
+                    result["nearby_resources"].items(),
+                    key=lambda x: x[1]["count"],
+                    reverse=True
+                )[:max_resources]
+                
+                summary_parts = []
+                for name, info in sorted_resources:
+                    summary_parts.append(f"{name}: {info['count']} ({info['distance']}m)")
+                
+                result["summary_text"] = f"Nearby ({radius}m): " + ", ".join(summary_parts)
+            else:
+                result["summary_text"] = f"Nearby ({radius}m): No resources found"
+            
+            logger.info(f"[Scanner] Environment summary: {result['summary_text'][:100]}...")
+            
+        except Exception as e:
+            logger.error(f"[Scanner] get_environment_summary failed: {e}")
+            result["summary_text"] = "Environment scan failed"
+        
+        return result
 
 
 class MockScanner(IScanner):

@@ -47,6 +47,31 @@ class TaskIntentAnalyzer:
         return "来" in goal or "过来" in goal or "goto" in goal or "go to" in goal
 
     @staticmethod
+    def is_build_task(task: StackTask) -> bool:
+        """检测是否是建造/放置任务"""
+        goal = (task.goal or "").lower()
+        # 检测放置意图
+        place_keywords = [
+            "放", "摆", "放下", "摆放", "放地上", "放在", "放到",
+            "place", "put", "build", "set down", "lay down"
+        ]
+        return any(kw in goal for kw in place_keywords)
+
+    @staticmethod
+    def is_place_task(task: StackTask) -> bool:
+        """检测是否是放置方块任务（比 build 更具体）"""
+        goal = (task.goal or "").lower()
+        from .interfaces import TaskType
+        # 任务类型是 BUILD 或者目标包含放置关键词
+        if task.task_type == TaskType.BUILD:
+            return True
+        place_keywords = [
+            "放一个", "摆一个", "放个", "摆个", "放地上", "放在地上",
+            "place", "put down"
+        ]
+        return any(kw in goal for kw in place_keywords)
+
+    @staticmethod
     def should_anchor_to_owner(task_goal: str) -> bool:
         """
         判断是否应该锚定到主人位置
@@ -74,8 +99,26 @@ class TaskIntentAnalyzer:
         复合任务 = 包含多个动作意图，如:
         - "做点木板给我" (craft + give)
         - "砍棵树给我木头" (mine + give)
+        - "地上放一个工作台" (可能需要 craft + goto + place)
+        
+        🔴 重要: build/place 类型任务永远不是纯单步任务！
+        因为这类任务必须包含实际的 place 动作，不能仅靠 goto 完成。
         """
         goal = (task.goal or "").lower()
+        
+        # 🔴 关键: build/place 任务永远不是纯单步任务
+        # 避免 goto 成功就提前终止，必须等待 LLM done=true
+        from .interfaces import TaskType
+        if task.task_type == TaskType.BUILD:
+            return False
+        
+        # 检测放置意图 - 这类任务也不是纯单步
+        place_keywords = [
+            "放", "摆", "放下", "摆放", "放地上", "放在", "放到",
+            "place", "put", "build", "set down"
+        ]
+        if any(kw in goal for kw in place_keywords):
+            return False
 
         # 检测复合意图关键词
         has_give_intent = "给" in goal or "give" in goal or "交" in goal

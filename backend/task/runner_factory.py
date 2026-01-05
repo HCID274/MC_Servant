@@ -84,7 +84,11 @@ class UniversalRunnerFactory(IRunnerFactory):
             recovery_planner = LLMRecoveryPlanner(llm_client=self._llm_client)
         
         # 创建 Resolver (注入 KnowledgeBase)
-        resolver = KBOnlyResolver(kb=self._kb)
+        # 注意：测试/无 KB 场景下 self._kb 可能为 None，此时不应强行构造 KBOnlyResolver(kb=None)
+        # 让 UniversalRunner 自己走 fallback resolver（透传/轻量 resolver），避免 normalize_step 崩溃。
+        resolver = None
+        if self._kb is not None:
+            resolver = KBOnlyResolver(kb=self._kb)
 
         logger.debug(f"Creating UniversalRunner for task: {task.name}")
         return UniversalRunner(

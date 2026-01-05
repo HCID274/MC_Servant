@@ -42,6 +42,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _safe_debug_text(payload: Any, limit: int = 600) -> str:
+    """
+    将复杂对象序列化为简短字符串用于日志。
+    避免因为不可序列化对象或超长文本导致日志失败。
+    """
+    try:
+        text = json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception:
+        text = str(payload)
+    if len(text) > limit:
+        return text[:limit] + "...(truncated)"
+    return text
+
+
 class _FallbackKBResolver:
     """无 KB 场景下的兜底 Resolver，直接透传概念名。"""
 
@@ -250,17 +264,86 @@ class UniversalRunner(ITaskRunner):
                         completed_steps=completed_steps[-8:],
                     )
                 except Exception as e:
-                    logger.error(f"[UniversalRunner] planner.act() failed: {e}")
+                    err_msg = str(e).strip() or e.__class__.__name__
+                    logger.exception(
+                        "[UniversalRunner] planner.act() failed | context=%s",
+                        _safe_debug_text({
+                            "task": task.goal,
+                            "bot_state_keys": list(bot_state.keys()),
+                            "gather_progress": bot_state.get("gather_progress"),
+                            "completed_step_actions": [s.action for s in completed_steps[-8:] if hasattr(s, 'action')],
+                            "tick": tick,
+                        })
+                    )
                     return TaskResult(
                         success=False,
                         task_description=task.goal,
                         completed_steps=completed_steps,
                         failed_step=last_result,
-                        message=f"决策失败: {str(e)}"
+                        message=f"决策失败: {err_msg}"
+                    )
+
+                # planner 返回值校验：避免出现“无异常但 step 为空/结构不合法”导致上层报空白错误
+                # 常见于：LLM 返回空 JSON / schema 解析失败被吞 / act 实现返回 (None, False, None)
+                if not isinstance(done, bool):
+                    logger.error(
+                        "[UniversalRunner] planner.act() invalid return: done is not bool | ret=%s",
+                        _safe_debug_text({"step": step, "done": done, "done_message": done_message})
+                    )
+                    return TaskResult(
+                        success=False,
+                        task_description=task.goal,
+                        completed_steps=completed_steps,
+                        failed_step=last_result,
+                        message="决策失败: PLANNER_INVALID_RETURN(done)"
+                    )
+
+                if step is None and not done:
+                    logger.error(
+                        "[UniversalRunner] planner.act() empty step | context=%s ret=%s",
+                        _safe_debug_text({"task": task.goal, "tick": tick}),
+                        _safe_debug_text({"step": step, "done": done, "done_message": done_message})
+                    )
+                    return TaskResult(
+                        success=False,
+                        task_description=task.goal,
+                        completed_steps=completed_steps,
+                        failed_step=last_result,
+                        message="决策失败: PLANNER_EMPTY_RESPONSE"
+                    )
+
+                if step is not None and (not hasattr(step, "action") or not getattr(step, "action", None)):
+                    logger.error(
+                        "[UniversalRunner] planner.act() invalid step (missing action) | step=%s",
+                        _safe_debug_text(step)
+                    )
+                    return TaskResult(
+                        success=False,
+                        task_description=task.goal,
+                        completed_steps=completed_steps,
+                        failed_step=last_result,
+                        message="决策失败: PLANNER_INVALID_STEP(action)"
                     )
 
                 # LLM 声明完成
                 if done:
+                    # 🔴 关键校验: BUILD 类型任务必须有 place 动作才能真正完成
+                    # 防止 LLM "出工不出力"，只走了 goto 就说任务完成
+                    if task.task_type == TaskType.BUILD or TaskIntentAnalyzer.is_build_task(task):
+                        has_place = any(
+                            s.action == "place" and s.success 
+                            for s in completed_steps
+                        )
+                        if not has_place:
+                            logger.warning(
+                                f"[UniversalRunner] BUILD task declared done but no 'place' action found! "
+                                f"completed_steps: {[s.action for s in completed_steps]}. "
+                                f"Forcing LLM to generate place step."
+                            )
+                            # 不接受 done=true，让循环继续
+                            # LLM 可能在下一轮给出正确的 place 步骤
+                            continue
+                    
                     return TaskResult(
                         success=True,
                         task_description=task.goal,
@@ -414,6 +497,18 @@ class UniversalRunner(ITaskRunner):
                         status=TaskResultStatus.WAITING_FOR_USER,
                     )
 
+                # 🔴 新增: 前置条件错误传递给 TaskExecutor 处理
+                if recovery_result.get("propagate_to_executor"):
+                    # 返回失败结果，让 TaskExecutor._handle_task_failure() 
+                    # 有机会调用 PrerequisiteResolver 生成前置任务
+                    return TaskResult(
+                        success=False,
+                        task_description=task.goal,
+                        completed_steps=completed_steps,
+                        failed_step=result,
+                        message=recovery_result.get("reason", "前置条件不足")
+                    )
+
                 if recovery_result.get("abort"):
                     return TaskResult(
                         success=False,
@@ -485,6 +580,13 @@ class UniversalRunner(ITaskRunner):
         if any(kw in goal for kw in multi_keywords):
             return False
         return False
+
+    def _parse_gather_spec(self, task: StackTask) -> tuple:
+        """
+        兼容测试的 gather 规格解析入口。
+        底层使用 TaskIntentAnalyzer.parse_gather_spec，方便未来替换实现。
+        """
+        return TaskIntentAnalyzer.parse_gather_spec(task)
 
     def _compute_action_signature(self, step: ActionStep) -> str:
         """动作签名: action + resolved params (sorted JSON)"""
@@ -699,6 +801,9 @@ class UniversalRunner(ITaskRunner):
         判断纯单步任务是否完成
         
         仅在 _is_pure_single_step_task() 返回 True 时才会调用
+        
+        🔴 重要: BUILD 类型任务只有 place 成功才算完成
+        绝不能因为 goto 成功就提前终止！
         """
         if not result.success:
             return False
@@ -710,6 +815,9 @@ class UniversalRunner(ITaskRunner):
         if task_type == TaskType.CRAFT and step.action == "craft":
             return True
         if task_type == TaskType.GOTO and step.action == "goto":
+            return True
+        # 🔴 BUILD 类型任务必须执行 place 才算完成
+        if task_type == TaskType.BUILD and step.action == "place":
             return True
         
         return False
@@ -844,9 +952,14 @@ class UniversalRunner(ITaskRunner):
         error_code = result.error_code or "UNKNOWN"
         max_attempts = self._rules.max_retries_per_action
 
-        # Skip LLM recovery for prerequisite errors; let prerequisite resolver handle them.
+        # 🔴 修复: 对于前置条件错误，不直接 abort，而是向上传递给 TaskExecutor
+        # 让 PrerequisiteResolver 有机会生成前置任务（如合成工作台）
         if error_code in ("NO_TOOL", "INSUFFICIENT_MATERIALS"):
-            return {"abort": True, "reason": f"前置条件不足 ({error_code})"}
+            return {
+                "propagate_to_executor": True, 
+                "error_code": error_code,
+                "reason": f"前置条件不足 ({error_code})"
+            }
 
         # Local retry for transient failures (Attempt 2)
         if self._rules.is_transient_error(error_code) and attempt_count < 2:

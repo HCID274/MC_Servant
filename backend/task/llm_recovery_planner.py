@@ -102,13 +102,14 @@ class LLMRecoveryPlanner(IRecoveryPlanner):
                     
             except Exception as e:
                 last_error = e
-                logger.warning(f"[Recovery] Attempt {attempt}/{MAX_RETRIES} failed: {e}")
+                err_msg = str(e).strip() or e.__class__.__name__
+                logger.exception(f"[Recovery] Attempt {attempt}/{MAX_RETRIES} failed: {err_msg}")
                 
                 # 添加格式修正提示
                 if attempt < MAX_RETRIES:
                     messages.append({
                         "role": "assistant",
-                        "content": f"(parse error: {e})"
+                        "content": f"(parse error: {err_msg})"
                     })
                     messages.append({
                         "role": "user", 

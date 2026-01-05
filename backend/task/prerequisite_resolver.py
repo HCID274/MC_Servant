@@ -5,9 +5,12 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, TYPE_CHECKING
 
 from .interfaces import StackTask, TaskStatus, IPrerequisiteResolver
+
+if TYPE_CHECKING:
+    from bot.tag_resolver import ITagResolver
 
 
 logger = logging.getLogger(__name__)
@@ -31,18 +34,26 @@ class PrerequisiteResolver(IPrerequisiteResolver):
     - 返回 None 表示交给 LLM (Slow Path)
     """
     
-    def __init__(self, rules_path: Optional[str] = None):
+    def __init__(self, rules_path: Optional[str] = None, tag_resolver: Optional["ITagResolver"] = None):
         """
         初始化解析器
         
         Args:
             rules_path: 规则库路径，默认 data/prerequisite_rules.json
+            tag_resolver: Tag 解析器，用于查找等价物品
         """
         if rules_path is None:
             rules_path = Path(__file__).parent.parent / "data" / "prerequisite_rules.json"
         
         self._rules = self._load_rules(rules_path)
         self._tag_index = self._build_tag_index()
+        
+        # 运行时导入避免循环依赖
+        if tag_resolver is None:
+            from bot.tag_resolver import get_tag_resolver
+            tag_resolver = get_tag_resolver()
+        self._tag_resolver = tag_resolver
+        
         logger.info(f"PrerequisiteResolver initialized with {len(self._rules.get('craftable_items', {}))} crafting rules")
     
     def _load_rules(self, path: Union[str, Path]) -> Dict[str, Any]:
@@ -110,6 +121,7 @@ class PrerequisiteResolver(IPrerequisiteResolver):
         解析材料不足的前置任务
         
         优先级：
+        0. 🆕 检查背包是否有等价物品（Tag 系统）
         1. 如果材料可以合成 → 返回合成任务
         2. 如果材料可以采集 → 返回采集任务
         3. 否则返回 None (交给 LLM)
@@ -120,6 +132,19 @@ class PrerequisiteResolver(IPrerequisiteResolver):
         
         # 取第一个缺失的材料
         item_name, required_count = next(iter(missing.items()))
+        
+        # 🆕 Phase 1 修复：使用 TagResolver 查找背包中的等价物品
+        available_item = self._tag_resolver.find_available(item_name, inventory)
+        if available_item:
+            available_count = inventory.get(available_item, 0)
+            if available_count >= required_count:
+                # 背包已有足够等价物品，无需前置任务！
+                logger.info(f"✅ Tag match: {available_item} x{available_count} satisfies {item_name} x{required_count}")
+                return None  # 返回 None 表示无需前置任务
+            else:
+                # 部分满足，只需补充差额
+                logger.info(f"⚡ Partial tag match: {available_item} x{available_count}, need {required_count - available_count} more")
+                required_count -= available_count
         
         # 检查是否为 Tag (如 "planks")，尝试解析为具体物品
         concrete_item = self._resolve_tag_to_concrete(item_name, inventory)

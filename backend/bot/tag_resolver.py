@@ -70,6 +70,25 @@ class ITagResolver(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_available_count(self, item_name: str, inventory: Dict[str, int]) -> int:
+        """
+        获取背包中“等价物品集合”的总数量
+
+        Args:
+            item_name: 物品名或 Tag 名称
+            inventory: 背包物品字典 {item_name: count}
+
+        Returns:
+            所有等价物品数量之和。若无 Tag/等价物品，则返回自身数量。
+        """
+        pass
+
+    @abstractmethod
+    def get_tag_for_item(self, item_name: str) -> Optional[str]:
+        """返回物品所属 Tag 名（若没有则返回 None）"""
+        pass
+
 
 class TagResolver(ITagResolver):
     """
@@ -92,6 +111,20 @@ class TagResolver(ITagResolver):
         self._tags: Dict[str, List[str]] = {}
         self._reverse_index: Dict[str, str] = {}  # item -> tag_name
         self._load_tags()
+
+    @staticmethod
+    def _normalize_name(name: Optional[str]) -> str:
+        """
+        统一名称格式：
+        - 去掉 minecraft: 前缀
+        - 去掉首尾空白
+        """
+        if not name:
+            return ""
+        n = str(name).strip()
+        if n.startswith("minecraft:"):
+            n = n.split("minecraft:", 1)[1]
+        return n
     
     def _load_tags(self) -> None:
         """加载 Tag 定义并构建反向索引"""
@@ -100,12 +133,21 @@ class TagResolver(ITagResolver):
                 data = json.load(f)
             
             # 过滤掉注释字段
-            self._tags = {k: v for k, v in data.items() if not k.startswith('_')}
+            # 规范化 Tag 与物品名，避免 minecraft: 前缀/空白导致匹配失败
+            tags: Dict[str, List[str]] = {}
+            for raw_tag_name, raw_items in data.items():
+                if str(raw_tag_name).startswith("_"):
+                    continue
+                tag_name = self._normalize_name(raw_tag_name)
+                items = [self._normalize_name(x) for x in (raw_items or []) if self._normalize_name(x)]
+                if tag_name and items:
+                    tags[tag_name] = items
+            self._tags = tags
             
             # 构建反向索引 (item -> tag_name)
             for tag_name, items in self._tags.items():
                 for item in items:
-                    self._reverse_index[item] = tag_name
+                    self._reverse_index[self._normalize_name(item)] = tag_name
             
             logger.info(f"TagResolver loaded {len(self._tags)} tags, {len(self._reverse_index)} items")
             
@@ -120,21 +162,44 @@ class TagResolver(ITagResolver):
     
     def get_equivalents(self, item_name: str) -> List[str]:
         """获取某物品的所有等价物品 (同 Tag 组)"""
-        tag_name = self._reverse_index.get(item_name)
+        norm = self._normalize_name(item_name)
+        tag_name = self._reverse_index.get(norm)
         if tag_name:
             return self._tags[tag_name]
-        return [item_name]  # 无 Tag，返回自身
+        return [norm] if norm else [item_name]  # 无 Tag，返回自身
     
     def get_tag_members(self, tag_name: str) -> List[str]:
         """获取某 Tag 组的所有成员"""
-        return self._tags.get(tag_name, [])
+        return self._tags.get(self._normalize_name(tag_name), [])
+
+    def get_tag_for_item(self, item_name: str) -> Optional[str]:
+        return self._reverse_index.get(self._normalize_name(item_name))
     
     def find_available(self, item_name: str, inventory: Dict[str, int]) -> Optional[str]:
-        """在背包中查找等价物品"""
-        equivalents = self.get_equivalents(item_name)
+        """在背包中查找等价物品
+        
+        支持两种输入：
+        - Tag 名称 (如 "planks") -> 检查所有 Tag 成员
+        - 物品名称 (如 "oak_planks") -> 检查同 Tag 组的等价物品
+        """
+        norm_item = self._normalize_name(item_name)
+
+        # 规范化 inventory key（但不改变原 dict）
+        inv_norm: Dict[str, int] = {}
+        for k, v in (inventory or {}).items():
+            nk = self._normalize_name(k)
+            if not nk:
+                continue
+            inv_norm[nk] = inv_norm.get(nk, 0) + int(v or 0)
+
+        # 如果 item_name 是 Tag 名称，直接获取其成员
+        if norm_item in self._tags:
+            equivalents = self._tags[norm_item]
+        else:
+            equivalents = self.get_equivalents(norm_item)
         
         # 按背包中数量排序，优先返回数量最多的
-        available = [(name, inventory.get(name, 0)) for name in equivalents]
+        available = [(name, inv_norm.get(name, 0)) for name in equivalents]
         available = [(name, count) for name, count in available if count > 0]
         
         if available:
@@ -145,9 +210,20 @@ class TagResolver(ITagResolver):
         return None
     
     def get_available_count(self, item_name: str, inventory: Dict[str, int]) -> int:
-        """获取背包中所有等价物品的总数量"""
-        equivalents = self.get_equivalents(item_name)
-        return sum(inventory.get(name, 0) for name in equivalents)
+        """获取背包中所有等价物品的总数量（支持 Tag 名称或物品名）"""
+        norm_item = self._normalize_name(item_name)
+        inv_norm: Dict[str, int] = {}
+        for k, v in (inventory or {}).items():
+            nk = self._normalize_name(k)
+            if not nk:
+                continue
+            inv_norm[nk] = inv_norm.get(nk, 0) + int(v or 0)
+
+        if norm_item in self._tags:
+            equivalents = self._tags[norm_item]
+        else:
+            equivalents = self.get_equivalents(norm_item)
+        return sum(int(inv_norm.get(name, 0)) for name in equivalents)
 
 
 # 全局单例 (延迟初始化)

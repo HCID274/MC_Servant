@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     bot_password: Optional[str] = None  # AuthMe 密码，必须通过环境变量配置
     
     # 日志级别
-    log_level: str = "INFO"
+    log_level: str = "DEBUG"
     
     # LLM 配置 (OpenAI Compatible API - 通义千问)
     openai_api_key: str = ""  # DashScope API Key (格式: sk-xxxxxxxx)
