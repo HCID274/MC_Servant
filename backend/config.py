@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     llm_compression_timeout_seconds: float = 25.0
     llm_http_timeout_seconds: float = 63.0  # HTTP 层兜底（给 AsyncOpenAI/httpx）
 
+    # LLM 上下文限制
+    llm_max_context_tokens: int = 4000  # 防止 Token 爆炸，超过则修剪历史
+
+    # 业务逻辑超时配置
+    business_process_timeout_seconds: int = 120  # 防止 _business_worker 卡死
+
     # UniversalRunner 实验性开关
     use_universal_runner: bool = True  # Phase 3+ 新架构 (UniversalRunner + LLM Recovery)
     

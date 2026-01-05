@@ -78,7 +78,8 @@ class ConnectionManager(IConnectionManager):
         if websocket:
             try:
                 await websocket.send_text(message)
-                self._last_seen[client_id] = time.time()
+                # Note: Do NOT update _last_seen here.
+                # Heartbeat timeout should depend on CLIENT activity, not server sends.
             except Exception as e:
                 logger.error(f"Failed to send to {client_id}: {e}")
                 await self._close_connection(client_id, code=1011, reason="Send failed")
@@ -90,7 +91,7 @@ class ConnectionManager(IConnectionManager):
         for client_id, websocket in list(self._connections.items()):
             try:
                 await websocket.send_text(message)
-                self._last_seen[client_id] = time.time()
+                # Note: Do NOT update _last_seen here.
             except Exception as e:
                 logger.error(f"Failed to send to {client_id}: {e}")
                 await self._close_connection(client_id, code=1011, reason="Broadcast send failed")
