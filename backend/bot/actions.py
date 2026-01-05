@@ -305,6 +305,33 @@ class MineflayerActions(IBotActions):
         
         return await asyncio.get_event_loop().run_in_executor(None, _sync_select)
     
+    def _infer_tool_requirements(self, required_tools: List[str]) -> tuple[Optional[str], Optional[str]]:
+        """Infer tool type and minimum tier from required tool names."""
+        tier_order = ["wooden", "stone", "iron", "diamond", "netherite"]
+        tool_type = None
+        min_tier = None
+
+        for tool in required_tools or []:
+            if not isinstance(tool, str):
+                continue
+            name = tool.lower()
+            parts = name.split("_")
+            if len(parts) < 2:
+                continue
+            tier = parts[0]
+            kind = parts[-1]
+
+            if tool_type is None:
+                tool_type = kind
+            if tier in tier_order:
+                if min_tier is None or tier_order.index(tier) < tier_order.index(min_tier):
+                    min_tier = tier
+
+        if tool_type and min_tier is None:
+            min_tier = "wooden"
+
+        return tool_type, min_tier
+
     def _equip_axe_sync(self) -> bool:
         """
         同步装备斧头（用于砍树场景）
@@ -339,6 +366,14 @@ class MineflayerActions(IBotActions):
     # Core Actions
     # ========================================================================
     
+    async def chat(self, message: str) -> bool:
+        """发送聊天消息"""
+        try:
+            return await self._mf_bot.chat(message)
+        except Exception as e:
+            logger.error(f"chat failed: {e}")
+            return False
+
     async def goto(self, target: str, timeout: float = 60.0) -> ActionResult:
         """导航到目标位置"""
         start_time = time.time()
@@ -521,6 +556,7 @@ class MineflayerActions(IBotActions):
                 if tool_result and "error" in tool_result:
                     # 没有合适工具！立即失败，反馈给 LLM
                     required_tools = tool_result.get("required", ["pickaxe"])
+                    tool_type, min_tier = self._infer_tool_requirements(required_tools)
                     return ActionResult(
                         success=False,
                         action="mine",
@@ -530,6 +566,8 @@ class MineflayerActions(IBotActions):
                         data={
                             "block": block_type,
                             "required_tools": required_tools,
+                            "tool_type": tool_type,
+                            "min_tier": min_tier,
                             "hint": "建议先合成或获取合适的工具"
                         },
                         duration_ms=int((time.time() - start_time) * 1000)
@@ -2581,8 +2619,46 @@ class MineflayerActions(IBotActions):
         """检查目标是否达成"""
         try:
             pos = self._bot.entity.position
-            return goal.isEnd(pos.x, pos.y, pos.z)
-        except:
+            bx = math.floor(pos.x)
+            by = math.floor(pos.y)
+            bz = math.floor(pos.z)
+
+            # GoalBlock: use block coords to avoid float mismatch (and handle negatives)
+            if hasattr(goal, "x") and hasattr(goal, "y") and hasattr(goal, "z"):
+                try:
+                    gx = int(goal.x)
+                    gy = int(goal.y)
+                    gz = int(goal.z)
+                    if bx == gx and by == gy and bz == gz:
+                        return True
+                except Exception:
+                    pass
+
+            # GoalNear: tolerate within range if present
+            if hasattr(goal, "range") and hasattr(goal, "x") and hasattr(goal, "y") and hasattr(goal, "z"):
+                try:
+                    dx = pos.x - float(goal.x)
+                    dy = pos.y - float(goal.y)
+                    dz = pos.z - float(goal.z)
+                    if (dx * dx + dy * dy + dz * dz) <= (float(goal.range) ** 2):
+                        return True
+                except Exception:
+                    pass
+
+            # Fallbacks for other goal types
+            try:
+                if goal.isEnd(self._Vec3(bx, by, bz)):
+                    return True
+            except Exception:
+                pass
+            try:
+                if goal.isEnd(bx, by, bz):
+                    return True
+            except Exception:
+                pass
+
+            return False
+        except Exception:
             return False
     
     def _find_nearest_block(self, block_id: int, center, radius: int):

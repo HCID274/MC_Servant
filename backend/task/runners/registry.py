@@ -100,12 +100,9 @@ class RunnerRegistry:
         if settings.use_universal_runner:
             # Phase 3 MVP: UniversalRunner 接管全部
             from ..universal_runner import UniversalRunner
-            from ..recovery_coordinator import RecoveryCoordinator
             
-            # ✅ 修复 Hotfix #1: 正确初始化 RecoveryCoordinator (需要传入 rules)
             rules = BehaviorRules()
-            recovery = RecoveryCoordinator(rules=rules)
-            universal_runner = UniversalRunner(rules=rules, recovery=recovery)
+            universal_runner = UniversalRunner(rules=rules)
             registry.register_for_types(universal_runner)
             
             logger.info(

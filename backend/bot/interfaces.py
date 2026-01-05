@@ -284,9 +284,14 @@ class IBotActions(ABC):
             data: {
                 "waypoints_visited": int,
                 "total_distance": float,
-                "duration_actual": float
-            }
+            "duration_actual": float
+        }
         """
+        pass
+
+    @abstractmethod
+    async def chat(self, message: str) -> bool:
+        """发送聊天消息"""
         pass
     
     @abstractmethod

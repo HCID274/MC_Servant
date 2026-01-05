@@ -90,7 +90,7 @@ class UniversalRunnerFactory(IRunnerFactory):
         return UniversalRunner(
             resolver=resolver,
             rules=self._rules,
-            recovery=recovery_planner  # 注意参数名是 recovery
+            recovery_planner=recovery_planner,
         )
 
 
