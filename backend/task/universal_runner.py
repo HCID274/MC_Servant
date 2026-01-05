@@ -232,7 +232,7 @@ class UniversalRunner(ITaskRunner):
                 )
             
             # 1. Observe: 获取 Bot 状态
-            bot_state = self._get_bot_state(actions, context, last_scan, last_result)
+            bot_state = self._get_bot_state(actions, context, last_scan, last_result, last_find_location)
             
             # 初始化 Inventory Delta (第一个 tick)
             if tick == 1:
@@ -456,7 +456,8 @@ class UniversalRunner(ITaskRunner):
         actions: "IBotActions",
         context: RunContext,
         last_scan: Optional[dict],
-        last_result: Optional["ActionResult"]
+        last_result: Optional["ActionResult"],
+        last_find_location: Optional[dict] = None
     ) -> dict:
         """获取 Bot 状态，注入上下文"""
         bot_state = actions.get_state()
@@ -467,6 +468,8 @@ class UniversalRunner(ITaskRunner):
             bot_state["owner_position"] = context.owner_position
         if last_scan:
             bot_state["last_scan"] = last_scan
+        if last_find_location:
+            bot_state["last_find_location"] = last_find_location
         if last_result:
             bot_state["last_result"] = {
                 "action": last_result.action,
