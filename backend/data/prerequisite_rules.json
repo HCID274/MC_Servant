@@ -12,6 +12,8 @@
     "jungle_planks": {"materials": {"jungle_log": 1}, "output_count": 4},
     "acacia_planks": {"materials": {"acacia_log": 1}, "output_count": 4},
     "dark_oak_planks": {"materials": {"dark_oak_log": 1}, "output_count": 4},
+    "mangrove_planks": {"materials": {"mangrove_log": 1}, "output_count": 4},
+    "cherry_planks": {"materials": {"cherry_log": 1}, "output_count": 4},
     
     "crafting_table": {"materials": {"planks": 4}, "output_count": 1, "requires_table": false},
     "chest": {"materials": {"planks": 8}, "output_count": 1},
@@ -58,6 +60,8 @@
     "jungle_log": {"drops": "jungle_log", "tool": null},
     "acacia_log": {"drops": "acacia_log", "tool": null},
     "dark_oak_log": {"drops": "dark_oak_log", "tool": null},
+    "mangrove_log": {"drops": "mangrove_log", "tool": null},
+    "cherry_log": {"drops": "cherry_log", "tool": null},
     
     "stone": {"drops": "cobblestone", "tool": "pickaxe"},
     "cobblestone": {"drops": "cobblestone", "tool": "pickaxe"},
@@ -97,8 +101,8 @@
   "tag_equivalents": {
     "_comment": "Tag 等价组 - 用于材料匹配",
     
-    "planks": ["oak_planks", "birch_planks", "spruce_planks", "jungle_planks", "acacia_planks", "dark_oak_planks"],
-    "logs": ["oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log", "dark_oak_log"],
+    "planks": ["oak_planks", "spruce_planks", "birch_planks", "jungle_planks", "acacia_planks", "dark_oak_planks", "mangrove_planks", "cherry_planks", "bamboo_planks", "crimson_planks", "warped_planks"],
+    "logs": ["oak_log", "spruce_log", "birch_log", "jungle_log", "acacia_log", "dark_oak_log", "mangrove_log", "cherry_log", "crimson_stem", "warped_stem"],
     "wool": ["white_wool", "orange_wool", "magenta_wool", "light_blue_wool", "yellow_wool", "lime_wool", "pink_wool", "gray_wool", "light_gray_wool", "cyan_wool", "purple_wool", "blue_wool", "brown_wool", "green_wool", "red_wool", "black_wool"],
     "pickaxe": ["wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "netherite_pickaxe"],
     "axe": ["wooden_axe", "stone_axe", "iron_axe", "diamond_axe", "netherite_axe"]

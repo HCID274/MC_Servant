@@ -151,6 +151,10 @@ class ContextManager(IContextManager):
         self._llm = llm_client
         self._compressor = compressor or (MemoryCompressor(llm_client) if llm_client else None)
         self._personality = personality_provider
+
+        # 可选：状态通知回调（用于“记忆整理中…”等用户可见提示）
+        # callback(bot_name: str, text: str) -> Awaitable[None]
+        self._status_callback = None
         
         # LRU 缓存: key -> CachedContext
         self._cache: OrderedDict[str, CachedContext] = OrderedDict()
@@ -164,6 +168,23 @@ class ContextManager(IContextManager):
         self._shutdown_event = asyncio.Event()
         
         logger.info("ContextManager initialized")
+
+    def set_status_callback(self, callback) -> None:
+        """
+        设置状态通知回调（可选）
+
+        用途：压缩触发/完成时，向外部 UI（如全息）推送“我在整理记忆…”等提示。
+        """
+        self._status_callback = callback
+
+    def _notify_status(self, bot_name: str, text: str) -> None:
+        if not self._status_callback:
+            return
+        try:
+            asyncio.create_task(self._status_callback(bot_name, text))
+        except Exception:
+            # 这里绝不能影响主流程
+            pass
     
     def _get_key(self, player_uuid: str, bot_name: str) -> str:
         """生成缓存 key"""
@@ -409,6 +430,9 @@ class ContextManager(IContextManager):
         snapshot = list(ctx.raw_buffer)
         ctx.raw_buffer = []  # 清空 buffer，新消息会写入新的 buffer
         ctx.is_compressing = True
+
+        # 用户友好提示：后台整理记忆（不阻塞主对话/任务）
+        self._notify_status(ctx.bot_name, "🧠 我先捋捋思绪…（整理记忆中）")
         
         # 放入压缩队列（不等待）
         compression_task = {
@@ -520,6 +544,13 @@ class ContextManager(IContextManager):
                     await self._trigger_l1_to_l2_compression(ctx, key)
         
         logger.info(f"L0→L1 compression completed for {key}")
+        # 轻提示：整理完成
+        try:
+            bot_name = key.split(":", 1)[1] if ":" in key else ""
+        except Exception:
+            bot_name = ""
+        if bot_name:
+            self._notify_status(bot_name, "✅ 记忆整理完成")
     
     async def _do_l1_to_l2_compression(self, key: str, ctx_id: int) -> None:
         """执行 L1→L2 压缩"""

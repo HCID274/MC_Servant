@@ -2,9 +2,11 @@
 # LLM 任务规划器 - Neuro-Symbolic 架构的 Neural 组件
 
 import json
+import asyncio
 import logging
 from typing import Dict, Any, List, TYPE_CHECKING, Tuple
 
+from config import settings
 from .interfaces import (
     ActionPlan, 
     ActionStep, 
@@ -130,6 +132,9 @@ PLAN_SYSTEM_PROMPT = """你是 Minecraft 任务规划专家。根据用户任务
 5. "山上/山顶" = 先 find_location(feature="highest")，再 goto
 6. "水边/河边/海边" = 先 find_location(feature="water")，再 goto
 7. "跑一圈/转悠/巡逻" = 用 patrol
+8. **放置/摆放/放地上**：用户说“放/摆/放地上/摆一个XX/放一个XX”时，成品不要 give！应使用 place。
+   - place 的坐标请基于 owner_position 或 bot 当前 position 选一个“旁边一格”的落点，避免放在玩家脚下：
+   - 例如目标点 = (owner_x+1, owner_y, owner_z)；若失败可尝试 (owner_x-1, owner_y, owner_z) 或 (owner_x, owner_y, owner_z+1)
 
 ## 输出格式 (纯 JSON)
 {"steps": [{"action":"动作名","params":{...},"description":"描述"}], "estimated_time": 秒数}
@@ -177,6 +182,7 @@ find_location, patrol, mine_tree, mine, scan, goto, craft, equip, give, pickup
 
 ### 多步闭环任务
 13) **不要提前 done**：只有所有子步骤都完成才能 done: true
+14) **放置优先于交付**：如果任务语义是“放/摆/放地上”，最后一步必须是 place，而不是 give。
 
 ## 参数格式
 - find_location: {"feature": "highest", "radius": 64}  ⭐ 模糊位置必用！
@@ -277,10 +283,13 @@ class LLMTaskPlanner(ITaskPlanner):
         
         try:
             # 调用 LLM
-            response = await self._llm.chat_json(
-                messages=messages,
-                max_tokens=1024,
-                temperature=0.3
+            response = await asyncio.wait_for(
+                self._llm.chat_json(
+                    messages=messages,
+                    max_tokens=1024,
+                    temperature=0.3,
+                ),
+                timeout=settings.llm_chat_timeout_seconds,
             )
             
             # 解析响应
@@ -341,10 +350,13 @@ class LLMTaskPlanner(ITaskPlanner):
         ]
         
         try:
-            response = await self._llm.chat_json(
-                messages=messages,
-                max_tokens=1024,
-                temperature=0.3
+            response = await asyncio.wait_for(
+                self._llm.chat_json(
+                    messages=messages,
+                    max_tokens=1024,
+                    temperature=0.3,
+                ),
+                timeout=settings.llm_chat_timeout_seconds,
             )
             
             return self._parse_plan_response(task_description, response)
@@ -396,10 +408,13 @@ class LLMTaskPlanner(ITaskPlanner):
             {"role": "user", "content": user_message},
         ]
 
-        response = await self._llm.chat_json(
-            messages=messages,
-            max_tokens=512,
-            temperature=0.2,
+        response = await asyncio.wait_for(
+            self._llm.chat_json(
+                messages=messages,
+                max_tokens=512,
+                temperature=0.2,
+            ),
+            timeout=settings.llm_chat_timeout_seconds,
         )
 
         if isinstance(response, dict) and response.get("done") is True:

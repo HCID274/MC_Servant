@@ -8,10 +8,12 @@
 # - 依赖抽象：依赖 ILLMClient 接口，而非具体实现
 
 import logging
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
+from config import settings
 from .interfaces import ILLMClient
 
 logger = logging.getLogger(__name__)
@@ -165,15 +167,21 @@ class MemoryCompressor(IMemoryCompressor):
         prompt = L0_TO_L1_PROMPT.format(conversation=conversation_text)
         
         try:
-            result = await self._llm.chat(
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=800,
-                temperature=0.3,  # 低温度保证稳定输出
+            result = await asyncio.wait_for(
+                self._llm.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=800,
+                    temperature=0.3,  # 低温度保证稳定输出
+                ),
+                timeout=settings.llm_compression_timeout_seconds,
             )
             
             logger.info(f"L0→L1 compression: {len(conversation_text)} chars → {len(result)} chars")
             return result.strip()
-            
+
+        except asyncio.TimeoutError:
+            logger.warning("L0→L1 compression timeout, fallback")
+            return self._fallback_l0_to_l1(raw_buffer)
         except Exception as e:
             logger.error(f"L0→L1 compression failed: {e}")
             # 降级：返回简单拼接
@@ -198,15 +206,21 @@ class MemoryCompressor(IMemoryCompressor):
         )
         
         try:
-            result = await self._llm.chat(
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=600,
-                temperature=0.3,
+            result = await asyncio.wait_for(
+                self._llm.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=600,
+                    temperature=0.3,
+                ),
+                timeout=settings.llm_compression_timeout_seconds,
             )
             
             logger.info(f"L1→L2 compression: {len(episodic)+len(old_core)} chars → {len(result)} chars")
             return result.strip()
-            
+
+        except asyncio.TimeoutError:
+            logger.warning("L1→L2 compression timeout, keep old core")
+            return old_core or ""
         except Exception as e:
             logger.error(f"L1→L2 compression failed: {e}")
             # 降级：保留旧核心

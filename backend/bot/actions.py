@@ -17,6 +17,7 @@ Bot 动作实现层 (Layer 2: Python Actions)
 import asyncio
 import logging
 import math
+import re
 import time
 from typing import Optional, List, Dict, Any, Callable
 
@@ -30,6 +31,58 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Progress-Aware Timeout Utility
 # ============================================================================
+
+_INT_RE = re.compile(r"-?\d+")
+
+
+def _coerce_js_int(value: Any) -> int:
+    """
+    将 JSPyBridge / JS Proxy 返回的“看起来像数字”的对象尽可能稳健地转换为 int。
+
+    经验法则：
+    - 直接 int(x) 往往对 Proxy 失败
+    - str(x) 通常更稳定（很多 Proxy 会把 JS number 格式化为字符串）
+    - 最后回退用正则从 repr/str 中抽取第一个整数
+    """
+    if value is None:
+        raise TypeError("cannot coerce None to int")
+
+    # bool 是 int 的子类，避免把 True/False 当作 1/0 误用
+    if isinstance(value, bool):
+        raise TypeError("cannot coerce bool to int")
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, float):
+        return int(value)
+
+    if isinstance(value, str):
+        s = value.strip()
+        if s == "":
+            raise ValueError("empty string")
+        try:
+            return int(s)
+        except ValueError:
+            # 允许 "1.0" 这类
+            return int(float(s))
+
+    # 常见 Proxy：int(proxy) 失败，但 str(proxy) 是 "123"
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except Exception:
+        pass
+
+    try:
+        return _coerce_js_int(str(value))
+    except Exception:
+        pass
+
+    m = _INT_RE.search(repr(value))
+    if m:
+        return int(m.group(0))
+
+    raise TypeError(f"cannot coerce {type(value)} to int: {value!r}")
 
 class ProgressTimer:
     """
@@ -1291,15 +1344,19 @@ class MineflayerActions(IBotActions):
     
     async def craft(self, item_name: str, count: int = 1, timeout: float = 30.0) -> ActionResult:
         """
-        合成物品 (Tag-aware 版本)
+        合成物品
         
         增强功能:
         - 自动尝试所有配方变体
-        - Tag 等价材料匹配 (如 birch_planks 可替代 oak_planks 合成 stick)
-        - 返回详细的缺失材料信息
+        - 基于 recipe.delta 解析材料消耗（负数=消耗，正数=产出），避免 JSPyBridge Proxy 解析不稳定
+        - 返回详细的缺失材料信息（machine-readable: data.missing）
         """
         start_time = time.time()
         
+        executable_recipe = None
+        inventory: Dict[str, int] = {}
+        missing_materials: Dict[str, int] = {}
+
         try:
             # 获取物品信息
             item_info = self._mcData.itemsByName[item_name] if hasattr(self._mcData.itemsByName, item_name) else None
@@ -1340,8 +1397,24 @@ class MineflayerActions(IBotActions):
             # 获取当前背包状态
             inventory = self._get_inventory_summary()
             
-            # 尝试找到可执行的配方 (Tag-aware)
+            # 尝试找到可执行的配方
             executable_recipe, missing_materials = self._find_executable_recipe(all_recipes, inventory, count)
+
+            # 如果所有配方都无法解析（delta 缺失/Proxy 解析失败），给出明确错误码
+            if not executable_recipe and "__recipe_parse_failed__" in missing_materials:
+                return ActionResult(
+                    success=False,
+                    action="craft",
+                    message=f"合成 {item_name} 失败：配方解析失败 (delta)",
+                    status=ActionStatus.FAILED,
+                    error_code="RECIPE_PARSE_FAILED",
+                    data={
+                        "item": item_name,
+                        "parse_failures": missing_materials.get("__recipe_parse_failed__", 0),
+                        "recipe_count": len(all_recipes),
+                    },
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
             
             if not executable_recipe:
                 # 所有配方都不可行，返回详细的缺失材料信息
@@ -1351,7 +1424,7 @@ class MineflayerActions(IBotActions):
                     message=f"合成 {item_name} 材料不足: {missing_materials}",
                     status=ActionStatus.FAILED,
                     error_code="INSUFFICIENT_MATERIALS",
-                    data={"missing": missing_materials},
+                    data={"missing": missing_materials, "item": item_name},
                     duration_ms=int((time.time() - start_time) * 1000)
                 )
             
@@ -1405,14 +1478,41 @@ class MineflayerActions(IBotActions):
             logger.error(f"craft failed: {e}")
             error_msg = str(e)
             error_code = "UNKNOWN"
+            data = None
             if "missing" in error_msg.lower():
                 error_code = "INSUFFICIENT_MATERIALS"
+
+                # 尽可能把缺失材料补齐到 data.missing，避免上层拿到空上下文
+                missing: Dict[str, int] = {}
+                try:
+                    if executable_recipe is not None:
+                        required = self._extract_recipe_materials(executable_recipe)
+                        for material_id, required_count in required.items():
+                            material_name = self._get_item_name_by_id(material_id)
+                            if not material_name:
+                                continue
+                            have = int(inventory.get(material_name, 0))
+                            need = int(required_count) * int(count)
+                            if have < need:
+                                missing[material_name] = need - have
+                except Exception:
+                    pass
+
+                # 兜底：从错误文本里解析出 missing ingredient XXX
+                if not missing:
+                    m = re.search(r"missing ingredient\s+([a-z0-9_]+)", error_msg.lower())
+                    if m:
+                        missing[m.group(1)] = 1
+
+                if missing:
+                    data = {"missing": missing, "item": item_name}
             return ActionResult(
                 success=False,
                 action="craft",
                 message=error_msg,
                 status=ActionStatus.FAILED,
                 error_code=error_code,
+                data=data,
                 duration_ms=int((time.time() - start_time) * 1000)
             )
     
@@ -1423,7 +1523,10 @@ class MineflayerActions(IBotActions):
         craft_count: int = 1
     ) -> tuple:
         """
-        找到第一个可执行的配方 (Tag-aware)
+        找到第一个可执行的配方
+
+        重要：为避免“误判可合成 → 盲目 craft() → Mineflayer 报 missing ingredient”，
+        这里使用 recipe.delta 做材料推导，并按 **具体物品** 与背包严格匹配。
         
         Args:
             recipes: 配方列表
@@ -1435,17 +1538,49 @@ class MineflayerActions(IBotActions):
             - 成功: (recipe, {})
             - 失败: (None, {material_name: required_count})
         """
-        from bot.tag_resolver import get_tag_resolver
-        tag_resolver = get_tag_resolver()
-        
+        parse_failures = 0
+        parseable_recipes = 0
         best_missing = {}  # 记录最接近成功的配方缺少什么
+        best_score = None  # (needs_mining_penalty, total_missing, missing_types)
+
+        def _missing_score(missing: Dict[str, int]) -> tuple:
+            """
+            配方选择启发式：
+            1) 优先选择“不需要额外采集”的缺料（例如缺 cherry_planks 且背包已有 cherry_log）
+            2) 其次总缺口数量最小
+            3) 再其次缺料种类最少
+            """
+            needs_mining = 0
+            total = 0
+            for k, v in missing.items():
+                if k.startswith("id:"):
+                    # 未知 ID 一律视为“需要额外处理”，优先级最低
+                    needs_mining += 1
+                    total += int(v)
+                    continue
+
+                total += int(v)
+
+                # 木板缺料：如果背包里已有对应 log/stem，则不需要采集，只需要 craft 一步
+                if k.endswith("_planks"):
+                    base = k[: -len("_planks")]
+                    if inventory.get(f"{base}_log", 0) > 0 or inventory.get(f"{base}_stem", 0) > 0:
+                        continue
+
+                needs_mining += 1
+
+            return (needs_mining, total, len(missing))
         
         for recipe in recipes:
-            required_materials = self._extract_recipe_materials(recipe)
-            if not required_materials:
+            try:
+                required_materials = self._extract_recipe_materials(recipe)
+            except Exception:
+                parse_failures += 1
                 continue
+
+            parseable_recipes += 1
             
-            # 检查每种材料是否有足够的等价物品
+            # 检查每种材料是否有足够的具体物品（严格匹配）
             can_craft = True
             recipe_missing = {}
             
@@ -1456,25 +1591,28 @@ class MineflayerActions(IBotActions):
                     can_craft = False
                     recipe_missing[f"id:{material_id}"] = required_count * craft_count
                     continue
-                
-                # 使用 TagResolver 查找背包中的等价物品总数
-                available_count = tag_resolver.get_available_count(material_name, inventory)
-                needed = required_count * craft_count
-                
-                if available_count < needed:
+
+                available_count = int(inventory.get(material_name, 0))
+                needed = int(required_count) * int(craft_count)
+
+                if available_count < int(needed):
                     can_craft = False
-                    # 记录需要的 Tag 组名（更友好的提示）
-                    equivalents = tag_resolver.get_equivalents(material_name)
-                    tag_hint = material_name if len(equivalents) == 1 else f"{material_name} (或其他变体)"
-                    recipe_missing[tag_hint] = needed - available_count
+                    # missing 字典必须保持 machine-readable（供 PrerequisiteResolver 使用）
+                    recipe_missing[material_name] = int(needed) - int(available_count)
             
             if can_craft:
                 return (recipe, {})
             
             # 记录最接近成功的配方
-            if not best_missing or len(recipe_missing) < len(best_missing):
+            score = _missing_score(recipe_missing)
+            if best_score is None or score < best_score:
                 best_missing = recipe_missing
-        
+                best_score = score
+
+        # 所有配方都解析失败（delta 不可用/Proxy 无法读取）
+        if parseable_recipes == 0 and parse_failures > 0:
+            return (None, {"__recipe_parse_failed__": parse_failures})
+
         return (None, best_missing)
     
     def _extract_recipe_materials(self, recipe) -> Dict[int, int]:
@@ -1486,29 +1624,34 @@ class MineflayerActions(IBotActions):
         """
         materials: Dict[int, int] = {}
         
-        try:
-            # 处理 inShape (有形状配方)
-            if hasattr(recipe, 'inShape') and recipe.inShape:
-                for row in recipe.inShape:
-                    for cell in row:
-                        if cell and cell > 0:  # 有效的物品 ID
-                            materials[cell] = materials.get(cell, 0) + 1
-            
-            # 处理 ingredients (无形状配方)
-            if hasattr(recipe, 'ingredients') and recipe.ingredients:
-                for ingredient in recipe.ingredients:
-                    if ingredient and ingredient > 0:
-                        materials[ingredient] = materials.get(ingredient, 0) + 1
-            
-            # 处理 delta 格式 (某些配方使用 delta)
-            if hasattr(recipe, 'delta') and recipe.delta:
-                for delta_item in recipe.delta:
-                    if hasattr(delta_item, 'id') and hasattr(delta_item, 'count'):
-                        if delta_item.count < 0:  # 负数表示消耗
-                            materials[delta_item.id] = materials.get(delta_item.id, 0) + abs(delta_item.count)
-                            
-        except Exception as e:
-            logger.warning(f"Failed to extract recipe materials: {e}")
+        # 🔴 只依赖 delta：避免 JSPyBridge 对 inShape/ingredients 的 Proxy/RecipeItem 解析不稳定
+        if not hasattr(recipe, "delta") or not recipe.delta:
+            raise ValueError("recipe has no delta")
+
+        delta_items = list(recipe.delta)  # JS Proxy -> Python list（若不可迭代会抛）
+        for delta_item in delta_items:
+            try:
+                # 兼容 dict / proxy-object 两种形态
+                if isinstance(delta_item, dict):
+                    raw_id = delta_item.get("id")
+                    raw_count = delta_item.get("count")
+                else:
+                    raw_id = getattr(delta_item, "id", None)
+                    raw_count = getattr(delta_item, "count", None)
+
+                item_id = _coerce_js_int(raw_id)
+                count = _coerce_js_int(raw_count)
+            except Exception as exc:
+                # 任一项解析失败：整条 recipe 不可信，避免“漏材料 → 误判可合成”
+                raise TypeError(f"failed to parse recipe.delta item: {delta_item!r}") from exc
+
+            if count < 0:  # 负数表示消耗
+                if item_id > 0:
+                    materials[item_id] = materials.get(item_id, 0) + abs(int(count))
+
+        # 安全阀：delta 没有任何消耗项时，不把它当作“无需材料即可合成”
+        if not materials:
+            raise ValueError("recipe.delta has no consumptions")
         
         return materials
     
@@ -1549,18 +1692,49 @@ class MineflayerActions(IBotActions):
                     status=ActionStatus.FAILED,
                     error_code="INSUFFICIENT_MATERIALS"
                 )
-            
-            # 先走到玩家附近
-            goto_result = await self.goto(f"@{player_name}", timeout=timeout/2)
-            if not goto_result.success:
-                return ActionResult(
-                    success=False,
-                    action="give",
-                    message=f"无法走到玩家 {player_name} 身边",
-                    status=goto_result.status,
-                    error_code=goto_result.error_code,
-                    duration_ms=int((time.time() - start_time) * 1000)
-                )
+
+            # 距离足够近时，直接给（避免“已贴脸但 pathfinder 认为没到达”导致 give 失败）
+            reach_distance = 3.0
+            try:
+                bot_pos = self._bot.entity.position
+                target_pos = player.entity.position
+                try:
+                    dist = float(bot_pos.distanceTo(target_pos))
+                except Exception:
+                    dx = float(bot_pos.x) - float(target_pos.x)
+                    dy = float(bot_pos.y) - float(target_pos.y)
+                    dz = float(bot_pos.z) - float(target_pos.z)
+                    dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+            except Exception:
+                dist = 9999.0
+
+            if dist > reach_distance:
+                # 先走到玩家附近
+                goto_result = await self.goto(f"@{player_name}", timeout=timeout/2)
+                if not goto_result.success:
+                    # goto 失败但如果此刻已经足够近，仍然尝试 toss（常见于高低差/小障碍）
+                    try:
+                        bot_pos = self._bot.entity.position
+                        target_pos = player.entity.position
+                        try:
+                            dist2 = float(bot_pos.distanceTo(target_pos))
+                        except Exception:
+                            dx = float(bot_pos.x) - float(target_pos.x)
+                            dy = float(bot_pos.y) - float(target_pos.y)
+                            dz = float(bot_pos.z) - float(target_pos.z)
+                            dist2 = (dx * dx + dy * dy + dz * dz) ** 0.5
+                    except Exception:
+                        dist2 = 9999.0
+
+                    if dist2 > reach_distance:
+                        return ActionResult(
+                            success=False,
+                            action="give",
+                            message=f"无法走到玩家 {player_name} 身边",
+                            status=goto_result.status,
+                            error_code=goto_result.error_code,
+                            duration_ms=int((time.time() - start_time) * 1000)
+                        )
             
             # 面向玩家 (实时获取玩家位置)
             try:
@@ -1784,6 +1958,8 @@ class MineflayerActions(IBotActions):
         start_time = time.time()
         picked_up: Dict[str, int] = {}
         total_picked = 0
+        unreachable_entities: Dict[int, int] = {}
+        MAX_UNREACHABLE_ATTEMPTS = 3
         
         # 进度感知超时 (30秒无进度)
         self._progress_timer = ProgressTimer(timeout_seconds=30.0)
@@ -1827,10 +2003,10 @@ class MineflayerActions(IBotActions):
                         duration_ms=int((time.time() - start_time) * 1000)
                     )
                 
-                # 1. 寻找附近的掉落物实体
-                item_entity = self._find_nearest_item_entity(target_item_name, radius)
+                # 1. 收集附近掉落物并按距离排序
+                item_entities = self._list_item_entities(target_item_name, radius)
                 
-                if not item_entity:
+                if not item_entities:
                     # 没有更多掉落物了
                     if total_picked > 0:
                         msg = f"附近没有更多掉落物了，共捡起 {total_picked} 个物品"
@@ -1855,80 +2031,79 @@ class MineflayerActions(IBotActions):
                             duration_ms=int((time.time() - start_time) * 1000)
                         )
                 
-                # 2. 获取掉落物信息
-                item_pos = item_entity.get("position")
-                item_name = item_entity.get("name", "unknown")
-                entity_id = item_entity.get("entity_id")
+                # 过滤掉重复失败的目标，避免原地卡死
+                available_entities = [
+                    entity for entity in item_entities
+                    if unreachable_entities.get(entity["entity_id"], 0) < MAX_UNREACHABLE_ATTEMPTS
+                ]
                 
-                logger.info(f"[pickup] Found item: {item_name} at ({item_pos['x']:.1f}, {item_pos['y']:.1f}, {item_pos['z']:.1f})")
-                
-                # 3. 记录拾取前的背包状态
-                inventory_before = self._get_inventory_count(item_name)
-                
-                # 4. 走向掉落物（会自动拾取）
-                try:
-                    target_str = f"{int(item_pos['x'])},{int(item_pos['y'])},{int(item_pos['z'])}"
-                    
-                    # 使用 pathfinder 导航到掉落物位置
-                    goal = self._pathfinder.goals.GoalNear(
-                        int(item_pos['x']), 
-                        int(item_pos['y']), 
-                        int(item_pos['z']), 
-                        1  # 到达 1 格内即可（会自动拾取）
+                if not available_entities:
+                    msg = f"附近掉落物均不可达，已捡起 {total_picked} 个物品"
+                    return ActionResult(
+                        success=total_picked > 0,
+                        action="pickup",
+                        message=msg,
+                        status=ActionStatus.SUCCESS if total_picked > 0 else ActionStatus.FAILED,
+                        error_code=None if total_picked > 0 else "ITEM_UNREACHABLE",
+                        data={"picked_up": picked_up, "total": total_picked},
+                        duration_ms=int((time.time() - start_time) * 1000)
                     )
-                    self._bot.pathfinder.setGoal(goal)
-                    
-                    # 等待到达或物品消失（表示被捡起）
-                    pickup_start = time.time()
-                    pickup_timeout = 10.0  # 单个物品最多等 10 秒
-                    
-                    while time.time() - pickup_start < pickup_timeout:
-                        await asyncio.sleep(0.3)
-                        
-                        # 检查物品是否已经消失（被捡起）
-                        if entity_id and not self._entity_exists(entity_id):
-                            logger.debug(f"[pickup] Entity {entity_id} disappeared (picked up)")
-                            break
-                        
-                        # 检查是否已经到达
-                        if not self._bot.pathfinder.isMoving():
-                            # 再等一小会儿让拾取发生
-                            await asyncio.sleep(0.5)
-                            break
-                    
-                    # 停止寻路
-                    try:
-                        self._bot.pathfinder.stop()
-                    except:
-                        pass
-                    
-                except Exception as e:
-                    logger.warning(f"[pickup] Navigation to item failed: {e}")
-                    await asyncio.sleep(0.5)
-                    continue
                 
-                # 5. 检测是否真的捡到了（通过 inventory 变化）
-                await asyncio.sleep(0.3)  # 等待 inventory 同步
-                inventory_after = self._get_inventory_count(item_name)
-                actually_picked = inventory_after - inventory_before
+                progress_this_cycle = False
                 
-                if actually_picked > 0:
-                    picked_up[item_name] = picked_up.get(item_name, 0) + actually_picked
-                    total_picked += actually_picked
-                    remaining -= actually_picked
-                    self._progress_timer.reset("item_picked")
-                    logger.info(f"[pickup] Picked up {actually_picked} x {item_name}, total: {total_picked}")
-                else:
-                    # 物品可能消失了但没进背包（被其他玩家捡走或消失）
-                    # 也可能是背包满了
-                    if not self._entity_exists(entity_id):
-                        logger.debug(f"[pickup] Item {item_name} disappeared but not in inventory")
-                        self._progress_timer.reset("item_disappeared")
+                for item_entity in available_entities:
+                    if remaining <= 0:
+                        break
+                    
+                    item_pos = item_entity.get("position")
+                    item_name = item_entity.get("name", "unknown")
+                    entity_id = item_entity.get("entity_id")
+                    
+                    logger.info(
+                        f"[pickup] Target item: {item_name} at ({item_pos['x']:.1f}, {item_pos['y']:.1f}, {item_pos['z']:.1f}) "
+                        f"(attempt {unreachable_entities.get(entity_id, 0)+1})"
+                    )
+                    
+                    inventory_before = self._get_inventory_count(item_name)
+                    
+                    moved_close = await self._navigate_close_to_position(
+                        item_pos,
+                        timeout=10.0,
+                        reach=1.0
+                    )
+                    
+                    if not moved_close:
+                        unreachable_entities[entity_id] = unreachable_entities.get(entity_id, 0) + 1
+                        logger.debug(f"[pickup] Failed to reach {item_name} ({entity_id}), mark unreachable={unreachable_entities[entity_id]}")
+                        continue
+                    
+                    # 等待 inventory 同步
+                    await asyncio.sleep(0.3)
+                    inventory_after = self._get_inventory_count(item_name)
+                    actually_picked = inventory_after - inventory_before
+                    
+                    if actually_picked > 0:
+                        picked_up[item_name] = picked_up.get(item_name, 0) + actually_picked
+                        total_picked += actually_picked
+                        remaining -= actually_picked
+                        self._progress_timer.reset("item_picked")
+                        unreachable_entities.pop(entity_id, None)
+                        progress_this_cycle = True
+                        logger.info(f"[pickup] Picked up {actually_picked} x {item_name}, total: {total_picked}")
+                        break
                     else:
-                        logger.debug(f"[pickup] Item {item_name} still exists, may be unreachable")
+                        if not self._entity_exists(entity_id):
+                            logger.debug(f"[pickup] Item {item_name} disappeared but not in inventory")
+                            self._progress_timer.reset("item_disappeared")
+                            progress_this_cycle = True
+                        else:
+                            unreachable_entities[entity_id] = unreachable_entities.get(entity_id, 0) + 1
+                            logger.debug(f"[pickup] Item {item_name} still exists after close approach")
+                    
+                    await asyncio.sleep(0.2)
                 
-                # 短暂等待避免过于频繁的循环
-                await asyncio.sleep(0.2)
+                if not progress_this_cycle:
+                    await asyncio.sleep(0.2)
             
             # 达到目标数量
             msg = f"成功捡起 {total_picked} 个物品"
@@ -1955,96 +2130,133 @@ class MineflayerActions(IBotActions):
         finally:
             self._progress_timer = None
     
-    def _find_nearest_item_entity(
-        self, 
-        target_name: Optional[str] = None, 
+    def _list_item_entities(
+        self,
+        target_name: Optional[str] = None,
         radius: int = 16
-    ) -> Optional[Dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         """
-        寻找最近的掉落物实体
-        
-        Args:
-            target_name: 目标物品类型 (可选，None 表示任意物品)
-            radius: 搜索半径
-            
-        Returns:
-            {"entity_id": int, "name": str, "position": {x, y, z}, "distance": float}
-            或 None
+        获取附近掉落物实体列表（按距离升序）。
         """
+        entities: List[Dict[str, Any]] = []
         try:
             bot_pos = self._bot.entity.position
-            nearest = None
-            nearest_dist = float('inf')
             
             for entity_id in self._bot.entities:
                 entity = self._bot.entities[entity_id]
                 
-                # 检查是否是掉落物实体
                 if entity.name != "item":
                     continue
                 
-                # 获取物品名称
                 item_name = None
                 try:
-                    # Mineflayer 中 item entity 有 metadata 包含物品信息
                     if hasattr(entity, 'metadata') and entity.metadata:
                         for meta in entity.metadata:
                             if isinstance(meta, dict) and 'itemId' in meta:
-                                # 通过 itemId 获取物品名称
                                 item_id = meta.get('itemId')
                                 item_info = self._mcData.items[item_id]
                                 if item_info:
                                     item_name = item_info.name
                                 break
                             elif isinstance(meta, dict) and 'nbtData' in meta:
-                                # 某些版本可能有 nbtData
                                 pass
                     
-                    # 备用方法：尝试从 entity.getDroppedItem() 获取
                     if not item_name:
                         try:
                             dropped_item = entity.getDroppedItem()
                             if dropped_item:
                                 item_name = dropped_item.name
-                        except:
+                        except Exception:
                             pass
                     
-                    # 再次备用：使用 displayName 或 name
                     if not item_name:
                         item_name = getattr(entity, 'displayName', None) or "unknown"
-                        
                 except Exception as e:
                     logger.debug(f"Failed to get item name for entity {entity_id}: {e}")
                     item_name = "unknown"
                 
-                # 过滤：如果指定了目标类型，检查是否匹配
                 if target_name:
-                    # 模糊匹配：target_name 可以是物品名的一部分
                     if item_name and target_name.lower() not in item_name.lower():
                         continue
                 
-                # 计算距离
                 try:
                     e_pos = entity.position
-                    dist = ((e_pos.x - bot_pos.x)**2 + (e_pos.y - bot_pos.y)**2 + (e_pos.z - bot_pos.z)**2) ** 0.5
+                    dist = ((e_pos.x - bot_pos.x) ** 2 + (e_pos.y - bot_pos.y) ** 2 + (e_pos.z - bot_pos.z) ** 2) ** 0.5
                     
-                    if dist <= radius and dist < nearest_dist:
-                        nearest_dist = dist
-                        nearest = {
+                    if dist <= radius:
+                        entities.append({
                             "entity_id": entity_id,
                             "name": item_name or "unknown",
                             "position": {"x": e_pos.x, "y": e_pos.y, "z": e_pos.z},
                             "distance": dist
-                        }
+                        })
                 except Exception as e:
                     logger.debug(f"Failed to get position for entity {entity_id}: {e}")
                     continue
             
-            return nearest
-            
+            entities.sort(key=lambda e: e["distance"])
+            return entities
         except Exception as e:
-            logger.warning(f"_find_nearest_item_entity failed: {e}")
-            return None
+            logger.warning(f"_list_item_entities failed: {e}")
+            return []
+    
+    def _find_nearest_item_entity(
+        self,
+        target_name: Optional[str] = None,
+        radius: int = 16
+    ) -> Optional[Dict[str, Any]]:
+        items = self._list_item_entities(target_name, radius)
+        return items[0] if items else None
+    
+    async def _navigate_close_to_position(
+        self,
+        position: Dict[str, float],
+        timeout: float = 10.0,
+        reach: float = 1.0
+    ) -> bool:
+        """
+        主动贴脸导航到指定坐标附近（默认 1 格内）。
+        """
+        try:
+            goals = self._pathfinder.goals
+            target_x = math.floor(position["x"])
+            target_y = math.floor(position["y"])
+            target_z = math.floor(position["z"])
+            
+            goal = None
+            if hasattr(goals, "GoalBlock"):
+                goal = goals.GoalBlock(target_x, target_y, target_z)
+            else:
+                goal = goals.GoalNear(target_x, target_y, target_z, max(1, int(math.ceil(reach))))
+            
+            self._bot.pathfinder.setGoal(goal)
+            
+            try:
+                await asyncio.wait_for(
+                    self._wait_for_goal_reached(saved_goal=goal),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                logger.debug(f"[pickup] Navigation to ({target_x},{target_y},{target_z}) timed out")
+                return False
+            except RuntimeError as e:
+                logger.debug(f"[pickup] Navigation runtime error: {e}")
+                return False
+            finally:
+                try:
+                    self._bot.pathfinder.stop()
+                except Exception:
+                    pass
+            
+            # double-check距离，确保确实贴近
+            pos = self._bot.entity.position
+            dx = pos.x - position["x"]
+            dy = pos.y - position["y"]
+            dz = pos.z - position["z"]
+            return (dx * dx + dy * dy + dz * dz) <= max(reach, 1.25) ** 2
+        except Exception as e:
+            logger.debug(f"[pickup] _navigate_close_to_position failed: {e}")
+            return False
     
     def _entity_exists(self, entity_id) -> bool:
         """检查实体是否仍然存在"""
@@ -2550,8 +2762,13 @@ class MineflayerActions(IBotActions):
             if player and player.entity:
                 pos = player.entity.position
                 logger.info(f"[DEBUG] goto @{player_name}: found at ({pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f})")
-                # 使用 GoalBlock 到达玩家脚下的方块位置
-                return goals.GoalBlock(int(pos.x), int(pos.y), int(pos.z))
+                # 重要：到玩家附近即可（GoalBlock 过于严格，容易出现“0.5 格还要精确踩点”的误判失败）
+                # give/toss 等交互也不需要踩到同一格
+                try:
+                    return goals.GoalNear(int(pos.x), int(pos.y), int(pos.z), 2)
+                except Exception:
+                    # 兼容极端情况：GoalNear 不可用则退回 GoalBlock
+                    return goals.GoalBlock(int(pos.x), int(pos.y), int(pos.z))
             logger.warning(f"Player not found: {player_name}")
             return None
         

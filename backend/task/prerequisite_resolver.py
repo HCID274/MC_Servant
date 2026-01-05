@@ -3,6 +3,7 @@
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union
 
@@ -125,6 +126,11 @@ class PrerequisiteResolver(IPrerequisiteResolver):
         if concrete_item != item_name:
             logger.debug(f"Resolved tag '{item_name}' to concrete item '{concrete_item}'")
             item_name = concrete_item
+
+        # 泛化兜底（高优先级）：对常见命名规律直接推导前置任务，降低规则库维护成本
+        inferred = self._infer_generic_prerequisite(item_name=item_name, need=required_count, inventory=inventory)
+        if inferred:
+            return inferred
         
         # 尝试合成
         craft_task = self._try_craft_prerequisite(item_name, required_count)
@@ -173,6 +179,14 @@ class PrerequisiteResolver(IPrerequisiteResolver):
                 context={"source": "prerequisite", "original_need": count},
                 status=TaskStatus.PENDING
             )
+
+        # ----------------------------
+        # 泛化兜底：无需手写每个版本的木头/木板规则
+        # 例：cherry_planks -> craft cherry_planks（默认 4/次），其材料可由 cherry_log/cherry_stem 推导
+        # ----------------------------
+        inferred = self._infer_generic_craft(item_name=item_name, need=count)
+        if inferred:
+            return inferred
         
         return None
     
@@ -198,7 +212,104 @@ class PrerequisiteResolver(IPrerequisiteResolver):
                     context={"source": "prerequisite", "target_drop": item_name},
                     status=TaskStatus.PENDING
                 )
+
+        # 泛化兜底：log/stem 缺失时，直接尝试采集（即使规则库未收录）
+        if item_name.endswith("_log") or item_name.endswith("_stem"):
+            return StackTask(
+                name=f"采集 {item_name} x{count}",
+                goal=f"mine {item_name} {count}",
+                context={"source": "prerequisite", "inferred": True},
+                status=TaskStatus.PENDING
+            )
         
+        return None
+
+    # ======================================================================
+    # Generic inference (fuzzy rules)
+    # ======================================================================
+
+    def _infer_generic_craft(self, item_name: str, need: int) -> Optional[StackTask]:
+        """
+        当规则库缺少明确 craftable_items 时，尝试用稳定的命名规律推导。
+
+        当前覆盖：
+        - *_planks: 4/次
+        - *_slab: 6/次
+        - *_stairs: 4/次
+        - *_fence: 3/次
+        - *_fence_gate: 1/次
+        - *_door: 3/次
+        - *_trapdoor: 2/次
+        - *_button: 1/次
+        - *_pressure_plate: 1/次
+
+        注意：此处只生成“合成缺失物品”的任务，材料不足会在下一轮错误中继续被推导。
+        """
+        if need <= 0:
+            return None
+
+        # 输出数量启发式（只影响 craft 次数，不影响材料计算）
+        output_map = {
+            "_planks": 4,
+            "_slab": 6,
+            "_stairs": 4,
+            "_fence": 3,
+            "_fence_gate": 1,
+            "_door": 3,
+            "_trapdoor": 2,
+            "_button": 1,
+            "_pressure_plate": 1,
+        }
+
+        for suffix, output_count in output_map.items():
+            if item_name.endswith(suffix):
+                craft_count = int(math.ceil(need / output_count))
+                return StackTask(
+                    name=f"合成 {item_name} x{craft_count * output_count}",
+                    goal=f"craft {item_name} {craft_count}",
+                    context={"source": "prerequisite", "original_need": need, "inferred": True},
+                    status=TaskStatus.PENDING,
+                )
+
+        return None
+
+    def _infer_generic_prerequisite(self, item_name: str, need: int, inventory: Dict[str, int]) -> Optional[StackTask]:
+        """
+        更高层的泛化推导：根据缺失物品与背包现状，直接给出“最可能正确”的前置任务。
+
+        目标：减少“先 craft 再失败一轮”的震荡。
+        """
+        if need <= 0:
+            return None
+
+        # 1) 木板缺失：优先判断是否有同源 log/stem；没有就直接去采集 log/stem
+        if item_name.endswith("_planks"):
+            base = item_name[: -len("_planks")]
+
+            # 特殊：下界木头用 stem；其余默认 log
+            prefer_stem = base in ("crimson", "warped")
+            source_ids = ([f"{base}_stem", f"{base}_log"] if prefer_stem else [f"{base}_log", f"{base}_stem"])
+
+            # 如果背包已有任一来源（log/stem），直接合成木板（4/次）
+            if any(inventory.get(src, 0) > 0 for src in source_ids):
+                return self._infer_generic_craft(item_name=item_name, need=need)
+
+            # 否则直接采集对应来源：按 4/次反推需要的 log/stem 数量
+            src = source_ids[0]
+            mine_count = int(math.ceil(need / 4))
+            return StackTask(
+                name=f"采集 {src} x{mine_count}",
+                goal=f"mine {src} {mine_count}",
+                context={"source": "prerequisite", "target": item_name, "original_need": need, "inferred": True},
+                status=TaskStatus.PENDING,
+            )
+
+        # 2) 其他木制衍生物：优先返回 craft（Mineflayer 会给出具体配方变体）
+        if any(item_name.endswith(s) for s in (
+            "_slab", "_stairs", "_fence", "_fence_gate", "_door", "_trapdoor", "_button", "_pressure_plate"
+        )):
+            return self._infer_generic_craft(item_name=item_name, need=need)
+
         return None
     
     def _resolve_missing_tool(

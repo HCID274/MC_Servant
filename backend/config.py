@@ -50,7 +50,20 @@ class Settings(BaseSettings):
 
     # WebSocket 安全配置
     ws_access_token: str = ""  # WebSocket 访问 Token（必填）
-    ws_heartbeat_timeout_seconds: int = 30  # 心跳超时阈值（秒）
+    # 心跳超时阈值（秒）
+    # 说明：Java 侧通常 30s 一次心跳/WS ping，服务端也用 30s 容易被抖动/短暂卡顿误杀
+    ws_heartbeat_timeout_seconds: int = 60
+    ws_client_queue_size: int = 200  # 每个 WS 客户端的业务消息队列上限（心跳不入队）
+    ws_thinking_hologram_min_interval_seconds: float = 1.5  # “思考中”全息提示的最小间隔，防刷屏
+
+    # LLM 超时配置（秒）
+    # - intent：必须快，超时就降级到规则匹配
+    # - chat：闲聊可以更慢一点
+    # - compression：记忆压缩后台跑，允许更久，但必须可超时/可降级
+    llm_intent_timeout_seconds: float = 5.0
+    llm_chat_timeout_seconds: float = 15.0
+    llm_compression_timeout_seconds: float = 25.0
+    llm_http_timeout_seconds: float = 30.0  # HTTP 层兜底（给 AsyncOpenAI/httpx）
 
     # UniversalRunner 实验性开关
     use_universal_runner: bool = True  # Phase 3+ 新架构 (UniversalRunner + LLM Recovery)

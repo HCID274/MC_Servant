@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 
 from openai import AsyncOpenAI
 
+from config import settings
 from .call_logger import LLMCallLogger
 from .interfaces import ILLMClient
 
@@ -24,6 +25,7 @@ class OpenRouterClient(ILLMClient):
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
+            timeout=settings.llm_http_timeout_seconds,
         )
         self._model = model
         self._reasoning_enabled = reasoning_enabled

@@ -878,7 +878,22 @@ class UniversalRunner(ITaskRunner):
             decision = await self._recovery_planner.recover(recovery_ctx)
         except Exception as e:
             logger.error(f"[Recovery] Planner error: {e}")
-            return {"abort": True, "reason": f"恢复失败: {e}"}
+            # 恢复规划器自身故障时：不要直接崩任务（避免“物理路径受阻→恢复解析崩溃→任务结束”链式灾难）
+            # 改为进入澄清模式，等待用户一句话指示，同时保留快照用于后续恢复。
+            snapshot = {
+                "goal": task_goal,
+                "last_result": result,
+                "bot_state": bot_state or {},
+                "completed_steps": completed_steps or [],
+                "last_action": cached_action,
+                "attempt_count": attempt_count,
+            }
+            return {
+                "clarify": True,
+                "message": "我遇到点麻烦（恢复模块故障）。你希望我怎么做：1) 站远一点再给 2) 你走近我来拿 3) 换个地方放下？",
+                "llm_used": False,
+                "recovery_snapshot": snapshot,
+            }
         logger.info(
             f"[Recovery] Decision: {decision.decision.value if decision else 'none'} "
             f"(attempt={recovery_ctx.attempt}/{max_attempts})"
@@ -922,7 +937,11 @@ class UniversalRunner(ITaskRunner):
             task_goal=task_goal
         )
         
-        decision = await self._recovery_planner.recover(recovery_ctx)
+        try:
+            decision = await self._recovery_planner.recover(recovery_ctx)
+        except Exception as e:
+            logger.error(f"[Recovery] Planner error (user_reply): {e}")
+            return {"clarify": True, "message": "我还是没能理解/恢复成功。你可以直接告诉我：重试 / 你来接我 / 我把东西放地上？"}
         
         if decision.decision == RecoveryDecisionType.RETRY_SAME:
              if snapshot.get("last_action"):

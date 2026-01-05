@@ -1,6 +1,7 @@
 # LLM Recovery Planner
 # LLM-driven recovery decisions (Phase 3+)
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -19,6 +20,7 @@ from .recovery_planner import (
 )
 from .interfaces import ActionStep
 from .prompts.recovery import RECOVERY_SYSTEM_PROMPT
+from config import settings
 
 if TYPE_CHECKING:
     from ..llm.interfaces import ILLMClient
@@ -69,10 +71,13 @@ class LLMRecoveryPlanner(IRecoveryPlanner):
             try:
                 # 使用 chat() 获取原始文本，而非 chat_json()
                 # 这样可以在 Python 侧用 json_repair 处理格式问题
-                raw_response = await self._llm.chat(
-                    messages=messages,
-                    max_tokens=512,
-                    temperature=0.2,
+                raw_response = await asyncio.wait_for(
+                    self._llm.chat(
+                        messages=messages,
+                        max_tokens=512,
+                        temperature=0.2,
+                    ),
+                    timeout=settings.llm_chat_timeout_seconds,
                 )
                 
                 if not raw_response or not raw_response.strip():

@@ -5,10 +5,12 @@
 # - 只输出语义意图，不输出坐标
 # - 每次决策只产出 1 个 ActorDecision
 
+import asyncio
 import json
 import logging
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 
+from config import settings
 from .actor_interfaces import (
     ActorDecision,
     ActorActionType,
@@ -173,10 +175,13 @@ class LLMTaskActor(ITaskActor):
         ]
         
         try:
-            response = await self._llm.chat_json(
-                messages=messages,
-                max_tokens=256,
-                temperature=0.2,
+            response = await asyncio.wait_for(
+                self._llm.chat_json(
+                    messages=messages,
+                    max_tokens=256,
+                    temperature=0.2,
+                ),
+                timeout=settings.llm_chat_timeout_seconds,
             )
             
             result = self._parse_response(response)

@@ -329,11 +329,30 @@ class IdleState(IState):
             
             # 开始任务，转换到规划状态
             context.start_task(task_type, description, event.payload)
-            
+
+            # 用户可见提示：避免“只会说思考不干活”的观感
+            response_text = "收到！我开始处理啦~"
+            hologram_text = "💭 规划中..."
+            if task_type == "goto":
+                response_text = "好的主人！我这就过去~"
+                hologram_text = "🚶 移动中..."
+            elif task_type == "mine":
+                response_text = "收到！我去帮您采集/挖矿~"
+                hologram_text = "⛏️ 采集中..."
+            elif task_type == "craft":
+                response_text = "好的！我去合成需要的东西~"
+                hologram_text = "🧰 合成中..."
+            elif task_type == "give":
+                response_text = "收到！我准备把东西交给您~"
+                hologram_text = "📦 准备交付..."
+            elif task_type == "build":
+                response_text = "好耶！我来规划建造步骤~"
+                hologram_text = "🏗️ 规划中..."
+
             return StateResult(
                 next_state=PlanningState(bot_context=self._ctx, llm_client=self._llm),
-                response="好的主人，让我想想怎么做...",
-                hologram_text="💭 思考中...",
+                response=response_text,
+                hologram_text=hologram_text,
             )
         
         elif event.type == EventType.CHAT:
@@ -637,6 +656,16 @@ class PlanningState(IState):
                 hologram_text="💤 待命中",
             )
         
+        elif event.type == EventType.TASK_REQUEST:
+            # 避免重复下发任务导致“反复思考”的无效循环
+            task = context.current_task
+            if task:
+                return StateResult(
+                    response=f"我正在规划「{task.description}」，稍等一下喵~（想换任务请先说“取消/停”）",
+                    hologram_text="💭 思考中...",
+                )
+            return StateResult(response="我正在规划中喵~", hologram_text="💭 思考中...")
+
         elif event.type == EventType.CHAT:
             # 规划中，简短回复
             return StateResult(
@@ -825,6 +854,16 @@ class WorkingState(IState):
                 hologram_text="💤 待命中",
             )
         
+        elif event.type == EventType.TASK_REQUEST:
+            # 工作中收到新任务：引导用户先停止/取消，避免任务编排乱序导致“只回复不执行”
+            task = context.current_task
+            if task:
+                return StateResult(
+                    response=f"我正在执行「{task.description}」，想换任务的话先说“停/取消”喵~",
+                    hologram_text="🔨 工作中",
+                )
+            return StateResult(response="我在忙着呢喵~", hologram_text="🔨 工作中")
+
         elif event.type == EventType.CHAT:
             # 工作中，简短回复（不中断工作）
             task = context.current_task

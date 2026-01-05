@@ -455,6 +455,19 @@ async def lifespan(app: FastAPI):
         bot_context.on_chat_message = on_chat_message
         bot_context.on_npc_response = on_npc_response
 
+        # 让 ContextManager 的后台压缩可以发“整理记忆中/完成”的用户提示（不阻塞主流程）
+        if context_manager:
+            async def _on_ctx_status(bot_name: str, text: str) -> None:
+                msg = {
+                    "type": MessageType.HOLOGRAM_UPDATE.value,
+                    "npc": bot_name,
+                    "hologram_text": text,
+                    "identity_line": None,
+                }
+                await ws_send_func(msg)
+
+            context_manager.set_status_callback(_on_ctx_status)
+
         async def on_event_queued(event_type, payload):
             logger.debug(f"Event queued: {event_type}, triggering process_pending_events")
             await state_machine.process_pending_events()
@@ -577,48 +590,98 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     await send_request_sync(websocket)
     manager.touch(client_id)
     
-    try:
+    # 每个客户端一个“业务消息队列 + 单 worker”，避免 LLM/任务执行阻塞心跳收包
+    business_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=settings.ws_client_queue_size)
+    last_thinking_ts: float = 0.0
+
+    async def _send_thinking_hologram(npc_name: Optional[str]) -> None:
+        nonlocal last_thinking_ts
+        if not npc_name:
+            return
+        now = time.time()
+        if (now - last_thinking_ts) < settings.ws_thinking_hologram_min_interval_seconds:
+            return
+        last_thinking_ts = now
+        hologram_msg = {
+            "type": MessageType.HOLOGRAM_UPDATE.value,
+            "npc": npc_name,
+            "hologram_text": "🧠 我先捋捋思绪…",
+            "identity_line": None,
+        }
+        await manager.send_personal(json.dumps(hologram_msg, ensure_ascii=False), client_id)
+
+    async def _business_worker() -> None:
         while True:
-            # 接收消息
-            data = await websocket.receive_text()
-            manager.touch(client_id)
-            logger.debug(f"Received from {client_id}: {data}")
-            
+            item = await business_queue.get()
             try:
-                # 解析 JSON
-                message = json.loads(data)
-                msg_type = message.get("type")
-                
-                # 特殊事件处理
-                if msg_type == "bot_spawned":
-                    await handle_bot_spawned(message, client_id)
-                    continue
-                elif msg_type in ("player_join", "player_quit"):
-                    # 生命周期管理器处理 (Bot 上下线逻辑)
-                    await handle_player_event(message, client_id)
-                    # player_quit 还需要更新数据库，继续到 MessageRouter
-                    if msg_type == "player_quit" and message_router:
-                        await message_router.route(message)
-                    continue
-                elif msg_type in ("player_login", "init_sync"):
-                    # 数据库同步处理 (通过 MessageRouter)
-                    if message_router:
-                        await message_router.route(message)
-                    continue
-                elif msg_type == "online_players_sync":
-                    await handle_online_players_sync(message, client_id)
-                    continue
-                
-                # 路由到处理器
                 if message_router:
-                    response = await message_router.route(message)
-                    
+                    response = await message_router.route(item)
                     if response:
-                        # 发送响应
                         response_json = json.dumps(response, ensure_ascii=False)
                         await manager.send_personal(response_json, client_id)
                         logger.debug(f"Sent to {client_id}: {response_json}")
-                        
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"Business worker error for {client_id}: {e}")
+            finally:
+                business_queue.task_done()
+
+    business_task = asyncio.create_task(_business_worker())
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            manager.touch(client_id)
+            logger.debug(f"Received from {client_id}: {data}")
+
+            try:
+                message = json.loads(data)
+                msg_type = message.get("type")
+
+                # 1) 心跳必须“立即响应”，不进业务队列
+                if msg_type == MessageType.HEARTBEAT.value:
+                    heartbeat = {"type": MessageType.HEARTBEAT.value, "timestamp": int(time.time())}
+                    await manager.send_personal(json.dumps(heartbeat, ensure_ascii=False), client_id)
+                    continue
+
+                # 2) 特殊事件：保持原逻辑（快速且需要即时生效）
+                if msg_type == "bot_spawned":
+                    await handle_bot_spawned(message, client_id)
+                    continue
+                if msg_type in ("player_join", "player_quit"):
+                    await handle_player_event(message, client_id)
+                    if msg_type == "player_quit":
+                        try:
+                            business_queue.put_nowait(message)
+                        except asyncio.QueueFull:
+                            logger.warning(f"Business queue full for {client_id}, drop player_quit")
+                    continue
+                if msg_type in ("player_login", "init_sync"):
+                    try:
+                        business_queue.put_nowait(message)
+                    except asyncio.QueueFull:
+                        logger.warning(f"Business queue full for {client_id}, drop {msg_type}")
+                    continue
+                if msg_type == "online_players_sync":
+                    await handle_online_players_sync(message, client_id)
+                    continue
+
+                # 3) 业务消息：入队（LLM/规划/数据库等都可能很慢）
+                if msg_type == MessageType.PLAYER_MESSAGE.value:
+                    await _send_thinking_hologram(message.get("npc") or settings.bot_username)
+
+                try:
+                    business_queue.put_nowait(message)
+                except asyncio.QueueFull:
+                    logger.warning(f"Business queue full for {client_id}, dropping msg_type={msg_type}")
+                    error_response = {
+                        "type": MessageType.ERROR.value,
+                        "code": "server_busy",
+                        "message": "服务器正在忙，请稍后再试",
+                    }
+                    await manager.send_personal(json.dumps(error_response, ensure_ascii=False), client_id)
+
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON from {client_id}: {e}")
                 error_response = {
@@ -626,13 +689,18 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     "code": "invalid_json",
                     "message": str(e)
                 }
-                await manager.send_personal(json.dumps(error_response), client_id)
-                
+                await manager.send_personal(json.dumps(error_response, ensure_ascii=False), client_id)
+
     except WebSocketDisconnect:
-        await manager.disconnect(client_id)
         logger.info(f"Client {client_id} disconnected")
     except Exception as e:
         logger.error(f"WebSocket error for {client_id}: {e}")
+    finally:
+        business_task.cancel()
+        try:
+            await business_task
+        except asyncio.CancelledError:
+            pass
         await manager.disconnect(client_id)
 
 

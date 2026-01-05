@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Optional, List, TYPE_CHECKING
 
+from config import settings
 from protocol import (
     MessageType, PlayerMessage, NpcResponse, BotCommand,
     BotStatus, Heartbeat, ServantCommandMessage, parse_message
@@ -156,7 +157,31 @@ class PlayerMessageHandler(IMessageHandler):
                 logger.warning(f"Failed to get conversation context: {e}")
         
         # 2. 意图识别（带上下文）
-        intent, metadata = await self._intent_recognizer.recognize(msg.content, context=conversation_context)
+        # 关键：意图识别必须“快”。先规则快速判断，LLM 超时就降级，避免卡住 WS 收包。
+        fallback_intent = self._intent_recognizer.recognize_simple(msg.content)
+        use_fast_path = len((msg.content or "").strip()) <= 8 and fallback_intent not in (Intent.CHAT, Intent.UNKNOWN)
+
+        if use_fast_path:
+            intent, metadata = fallback_intent, {
+                "confidence": 0.95,
+                "entities": {},
+                "reason": "short_command_fast_path",
+                "fallback": True,
+            }
+        else:
+            try:
+                intent, metadata = await asyncio.wait_for(
+                    self._intent_recognizer.recognize(msg.content, context=conversation_context),
+                    timeout=settings.llm_intent_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Intent recognition timeout, fallback to rule-based intent")
+                intent, metadata = fallback_intent, {
+                    "confidence": 0.0,
+                    "entities": {},
+                    "reason": "intent_timeout_fallback",
+                    "fallback": True,
+                }
         logger.info(f"Intent: {intent.value}, metadata: {metadata}")
         
         # 2. 构造事件
@@ -291,7 +316,30 @@ class PlayerMessageHandler(IMessageHandler):
                 logger.warning(f"Failed to get conversation context: {e}")
         
         # 识别意图（带上下文）
-        intent, metadata = await self._intent_recognizer.recognize(msg.content, context=conversation_context)
+        fallback_intent = self._intent_recognizer.recognize_simple(msg.content)
+        use_fast_path = len((msg.content or "").strip()) <= 8 and fallback_intent not in (Intent.CHAT, Intent.UNKNOWN)
+
+        if use_fast_path:
+            intent, metadata = fallback_intent, {
+                "confidence": 0.95,
+                "entities": {},
+                "reason": "short_command_fast_path",
+                "fallback": True,
+            }
+        else:
+            try:
+                intent, metadata = await asyncio.wait_for(
+                    self._intent_recognizer.recognize(msg.content, context=conversation_context),
+                    timeout=settings.llm_intent_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Intent recognition timeout, fallback to rule-based intent")
+                intent, metadata = fallback_intent, {
+                    "confidence": 0.0,
+                    "entities": {},
+                    "reason": "intent_timeout_fallback",
+                    "fallback": True,
+                }
         confidence = metadata.get("confidence", 0)
         entities = metadata.get("entities", {})
         
@@ -441,13 +489,19 @@ class PlayerMessageHandler(IMessageHandler):
                     {"role": "user", "content": user_input}
                 ]
             
-            response = await self._llm.chat(
-                messages=messages,
-                max_tokens=150,
-                temperature=0.8,
+            response = await asyncio.wait_for(
+                self._llm.chat(
+                    messages=messages,
+                    max_tokens=150,
+                    temperature=0.8,
+                ),
+                timeout=settings.llm_chat_timeout_seconds,
             )
             return response.strip()
             
+        except asyncio.TimeoutError:
+            logger.warning("Chat generation timeout")
+            return f"我在想…给我一点点时间好吗，{player_name}？"
         except Exception as e:
             logger.error(f"Chat generation failed: {e}")
             return f"你好呀 {player_name}~ 有什么可以帮你的吗？"

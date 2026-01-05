@@ -17,11 +17,11 @@ Rules:
 Output JSON ONLY. No code fences.
 
 Output schema:
-{
+{{
   "decision": "act|clarify|abort|retry_same",
-  "step": {"action": "...", "params": {...}, "description": "..."},
+  "step": {{"action": "...", "params": {{"...": "..." }}, "description": "..."}},
   "message": "..."
-}
+}}
 
 Behavior hints:
 {behavior_hints}
