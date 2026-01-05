@@ -68,7 +68,7 @@ class RecoveryActionType(Enum):
 # ============================================================================
 
 @dataclass
-class RecoveryDecision:
+class CoordinatorRecoveryDecision:
     """
     恢复决策结果
     
@@ -83,9 +83,13 @@ class RecoveryDecision:
 
     def __repr__(self) -> str:
         return (
-            f"RecoveryDecision({self.level.value}, {self.action_type.value}, "
+            f"CoordinatorRecoveryDecision({self.level.value}, {self.action_type.value}, "
             f"inline={self.is_inline}, reason={self.reason!r})"
         )
+
+
+# Backward-compatible alias
+RecoveryDecision = CoordinatorRecoveryDecision
 
 
 @dataclass

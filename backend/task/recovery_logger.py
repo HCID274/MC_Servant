@@ -16,7 +16,7 @@ from logging.handlers import RotatingFileHandler
 
 from .recovery_interfaces import (
     IRecoveryLogger,
-    RecoveryDecision,
+    CoordinatorRecoveryDecision,
     RecoveryActionType,
     FailureContext,
 )
@@ -145,7 +145,7 @@ class JsonRecoveryLogger(IRecoveryLogger):
     def log_recovery_decision(
         self,
         tick: int,
-        decision: RecoveryDecision,
+        decision: CoordinatorRecoveryDecision,
         context: FailureContext
     ) -> None:
         """记录恢复决策"""

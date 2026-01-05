@@ -147,7 +147,6 @@ class BehaviorRules:
         "PATH_INTERRUPTED",
         "ENTITY_NOT_FOUND",
         "BLOCK_NOT_FOUND",
-        "INVENTORY_FULL",
     }
 
     def is_transient_error(self, error_code: str) -> bool:

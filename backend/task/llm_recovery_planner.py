@@ -154,26 +154,56 @@ class LLMRecoveryPlanner(IRecoveryPlanner):
 
     def _build_payload(self, context: RecoveryContext) -> Dict[str, Any]:
         # 简化 last_result（避免传递过大的对象）
-        last_result_summary = None
-        if context.last_result:
-            if hasattr(context.last_result, 'action'):
-                last_result_summary = {
-                    "action": context.last_result.action,
-                    "success": context.last_result.success,
-                    "error_code": getattr(context.last_result, 'error_code', None),
-                    "message": getattr(context.last_result, 'message', ''),
-                }
-            elif isinstance(context.last_result, dict):
-                last_result_summary = context.last_result
-        
+        last_result_summary = self._summarize_action_result(context.last_result)
+
+        last_action = context.last_action or context.cached_action
+        last_action_summary = self._summarize_action_step(last_action)
+
+        recent_steps = []
+        for step in (context.recent_steps or [])[-5:]:
+            summary = self._summarize_action_result(step) or self._summarize_action_step(step)
+            if summary:
+                recent_steps.append(summary)
+
         return {
             "goal": context.goal,
+            "bot_state": context.bot_state,
+            "last_action": last_action_summary,
             "last_result": last_result_summary,
+            "recent_steps": recent_steps,
             "allowed_actions": context.allowed_actions,
             "attempt": context.attempt,
             "max_attempts": context.max_attempts,
+            "is_final_attempt": context.is_final_attempt,
             "user_reply": context.user_reply,
         }
+
+    def _summarize_action_result(self, result: Any) -> Optional[Dict[str, Any]]:
+        if result is None:
+            return None
+        if hasattr(result, "action"):
+            return {
+                "action": getattr(result, "action", None),
+                "success": getattr(result, "success", None),
+                "error_code": getattr(result, "error_code", None),
+                "message": getattr(result, "message", ""),
+            }
+        if isinstance(result, dict):
+            return result
+        return {"raw": str(result)}
+
+    def _summarize_action_step(self, step: Any) -> Optional[Dict[str, Any]]:
+        if step is None:
+            return None
+        if hasattr(step, "action"):
+            return {
+                "action": getattr(step, "action", None),
+                "params": getattr(step, "params", {}) or {},
+                "description": getattr(step, "description", "") or "",
+            }
+        if isinstance(step, dict):
+            return step
+        return {"raw": str(step)}
 
     def _parse_response(self, context: RecoveryContext, response: Dict[str, Any]) -> RecoveryDecision:
         if not isinstance(response, dict):
@@ -219,12 +249,12 @@ class LLMRecoveryPlanner(IRecoveryPlanner):
             description=step_data.get("description", "") or "",
         )
 
-        return RecoveryDecision(decision=RecoveryDecisionType.NEW_STEP, step=step, raw=response)
+        return RecoveryDecision(decision=decision, step=step, raw=response)
 
     def _parse_decision_type(self, raw: str) -> Optional[RecoveryDecisionType]:
         # 支持多种别名
         mapping = {
-            "act": RecoveryDecisionType.NEW_STEP,
+            "act": RecoveryDecisionType.ACT,
             "new_step": RecoveryDecisionType.NEW_STEP,
             "retry_same": RecoveryDecisionType.RETRY_SAME,
             "retry": RecoveryDecisionType.RETRY_SAME,

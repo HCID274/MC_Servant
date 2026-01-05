@@ -27,7 +27,6 @@ from .interfaces import (
 from .behavior_rules import BehaviorRules
 from .intent_analyzer import TaskIntentAnalyzer
 from .kb_resolver import KBOnlyResolver
-from .recovery_interfaces import RecoveryActionType
 from .recovery_planner import (
     RecoveryDecision,
     RecoveryDecisionType,
@@ -186,6 +185,14 @@ class UniversalRunner(ITaskRunner):
             recovery_snapshot = task.context.pop("recovery_snapshot", None)
 
         if context.user_reply and recovery_snapshot and self._recovery_planner:
+            if actions is None:
+                return TaskResult(
+                    success=False,
+                    task_description=task.goal,
+                    completed_steps=completed_steps,
+                    failed_step=last_result,
+                    message="未连接到 Minecraft，无法执行动作"
+                )
             recovery_result = await self._recover_from_user_reply(
                 task_goal=task.goal or "",
                 user_reply=context.user_reply,
@@ -276,10 +283,17 @@ class UniversalRunner(ITaskRunner):
             
             if stuck_ticks >= STUCK_MAX_TICKS and is_moving_action:
                 logger.warning(f"[StuckMonitor] Triggering emergency recovery: stuck={stuck_ticks}")
-                # 构造异步脱困动作并执行
-                climb_res = await actions.climb_to_surface()
+                # 构造脱困动作并执行（走统一执行通道，便于记录）
+                climb_step = ActionStep(
+                    action="climb_to_surface",
+                    params={"timeout": 60.0},
+                    description="Emergency recovery: climb to surface"
+                )
+                climb_res = await self._execute_step(actions, climb_step)
+                last_result = climb_res
                 if climb_res.success:
-                    stuck_ticks = 0 # 重置监测
+                    completed_steps.append(climb_res)
+                    stuck_ticks = 0  # 重置监测
                     # 脱困成功后，重新观察状态
                     bot_state = self._get_bot_state(actions, context, last_scan, last_result, last_find_location)
                 else:
@@ -530,13 +544,16 @@ class UniversalRunner(ITaskRunner):
                 if recovery_result.get("clarify"):
                     message = recovery_result.get("message", "需要澄清")
                     if isinstance(task.context, dict):
-                        task.context["recovery_snapshot"] = {
-                            "last_action": cached_action,
-                            "last_result": result,
-                            "bot_state": bot_state,
-                            "completed_steps": completed_steps[-5:],
-                            "attempt_count": attempt_count,
-                        }
+                        snapshot = recovery_result.get("recovery_snapshot")
+                        if not snapshot:
+                            snapshot = self._build_recovery_snapshot(
+                                last_action=cached_action,
+                                last_result=result,
+                                bot_state=bot_state,
+                                completed_steps=completed_steps,
+                                attempt_count=attempt_count,
+                            )
+                        task.context["recovery_snapshot"] = snapshot
                     if message:
                         await actions.chat(message)
                     return TaskResult(
@@ -612,6 +629,68 @@ class UniversalRunner(ITaskRunner):
             }
         
         return bot_state
+
+    def _serialize_action_step(self, step: Optional[ActionStep]) -> Optional[Dict[str, Any]]:
+        if step is None:
+            return None
+        if isinstance(step, dict):
+            return step
+        if hasattr(step, "action"):
+            return {
+                "action": step.action,
+                "params": step.params or {},
+                "description": step.description or "",
+            }
+        return {"raw": str(step)}
+
+    def _deserialize_action_step(self, payload: Any) -> Optional[ActionStep]:
+        if payload is None:
+            return None
+        if isinstance(payload, ActionStep):
+            return payload
+        if isinstance(payload, dict):
+            action = payload.get("action")
+            if action:
+                return ActionStep(
+                    action=action,
+                    params=payload.get("params", {}) or {},
+                    description=payload.get("description", "") or "",
+                )
+        return None
+
+    def _serialize_action_result(self, result: Any) -> Optional[Dict[str, Any]]:
+        if result is None:
+            return None
+        if isinstance(result, dict):
+            return result
+        if hasattr(result, "action"):
+            return {
+                "action": result.action,
+                "success": result.success,
+                "status": getattr(result.status, "value", str(result.status)),
+                "message": result.message,
+                "error_code": result.error_code,
+                "data": result.data,
+            }
+        return {"raw": str(result)}
+
+    def _build_recovery_snapshot(
+        self,
+        last_action: Optional[ActionStep],
+        last_result: Any,
+        bot_state: Optional[dict],
+        completed_steps: List[Any],
+        attempt_count: int,
+    ) -> Dict[str, Any]:
+        return {
+            "last_action": self._serialize_action_step(last_action),
+            "last_result": self._serialize_action_result(last_result),
+            "bot_state": bot_state if isinstance(bot_state, dict) else {},
+            "completed_steps": [
+                self._serialize_action_result(step) for step in (completed_steps or [])[-5:]
+            ],
+            "attempt_count": attempt_count,
+        }
     
     def _is_single_tree_goal(self, task_goal: str) -> bool:
         """Heuristic: user wants exactly one tree."""
@@ -927,6 +1006,21 @@ class UniversalRunner(ITaskRunner):
         # 执行
         try:
             result = await action_method(**params)
+            if isinstance(result, bool):
+                return _ActionResult(
+                    success=result,
+                    action=action_name,
+                    message="ok" if result else "failed",
+                    status=_ActionStatus.SUCCESS if result else _ActionStatus.FAILED,
+                )
+            if result is None:
+                return _ActionResult(
+                    success=False,
+                    action=action_name,
+                    message="empty result",
+                    status=_ActionStatus.FAILED,
+                    error_code="EMPTY_RESULT"
+                )
             return result
         except TypeError as e:
             logger.error(f"Action parameter error: {e}")
@@ -962,22 +1056,27 @@ class UniversalRunner(ITaskRunner):
         user_reply: Optional[str],
         task_goal: str,
     ) -> Any:
-        # 恢复阶段允许的动作列表（不含 place，因为 place 不适合解困）
+        # 恢复阶段允许的动作列表
         RECOVERY_ALLOWED_ACTIONS = [
-            "goto", "mine", "mine_tree", "scan", "craft", 
-            "equip", "give", "pickup", "find_location", "patrol"
+            "goto", "mine", "mine_tree", "scan", "craft",
+            "equip", "give", "pickup", "find_location", "patrol",
+            "place", "climb_to_surface",
         ]
+
+        last_action = self._serialize_action_step(cached_action)
         
         # RecoveryContext 已在文件顶部导入
         return RecoveryContext(
             goal=task_goal,
             task_goal=task_goal,
+            last_action=last_action,
             last_result=result,
             bot_state=bot_state,
             completed_steps=completed_steps,
             cached_action=cached_action,
             attempt=attempt_count,
             max_attempts=max_attempts,
+            is_final_attempt=attempt_count >= max_attempts,
             user_reply=user_reply,
             allowed_actions=RECOVERY_ALLOWED_ACTIONS,
         )
@@ -1134,10 +1233,6 @@ class UniversalRunner(ITaskRunner):
         if llm_recovery_used:
             return {"clarify": True, "message": self._default_clarify_message(error_code)}
 
-        # Hard stop after max attempts
-        if attempt_count >= max_attempts:
-            return {"clarify": True, "message": self._default_clarify_message(error_code)}
-
         if not self._recovery_planner:
             return {"abort": True, "reason": f"恢复规划器不可用 ({error_code})"}
 
@@ -1158,14 +1253,13 @@ class UniversalRunner(ITaskRunner):
             logger.error(f"[Recovery] Planner error: {e}")
             # 恢复规划器自身故障时：不要直接崩任务（避免“物理路径受阻→恢复解析崩溃→任务结束”链式灾难）
             # 改为进入澄清模式，等待用户一句话指示，同时保留快照用于后续恢复。
-            snapshot = {
-                "goal": task_goal,
-                "last_result": result,
-                "bot_state": bot_state or {},
-                "completed_steps": completed_steps or [],
-                "last_action": cached_action,
-                "attempt_count": attempt_count,
-            }
+            snapshot = self._build_recovery_snapshot(
+                last_action=cached_action,
+                last_result=result,
+                bot_state=bot_state or {},
+                completed_steps=completed_steps or [],
+                attempt_count=attempt_count,
+            )
             return {
                 "clarify": True,
                 "message": "我遇到点麻烦（恢复模块故障）。你希望我怎么做：1) 站远一点再给 2) 你走近我来拿 3) 换个地方放下？",
@@ -1178,6 +1272,12 @@ class UniversalRunner(ITaskRunner):
         )
 
         if decision.decision == RecoveryDecisionType.RETRY_SAME:
+            if attempt_count >= max_attempts:
+                return {
+                    "clarify": True,
+                    "message": self._default_clarify_message(error_code),
+                    "llm_used": True
+                }
             if not cached_action:
                 return {"clarify": True, "message": self._default_clarify_message(error_code), "llm_used": True}
             return {"retry_same": True, "llm_used": True}
@@ -1189,7 +1289,7 @@ class UniversalRunner(ITaskRunner):
         if decision.decision == RecoveryDecisionType.ABORT:
             return {"abort": True, "reason": decision.message or "任务无法继续", "llm_used": True}
         
-        if decision.decision == RecoveryDecisionType.NEW_STEP:
+        if decision.decision in (RecoveryDecisionType.NEW_STEP, RecoveryDecisionType.ACT):
             step = decision.next_step
             # Normalize new step
             step = self._normalize_step(step, context, task_goal)
@@ -1204,11 +1304,12 @@ class UniversalRunner(ITaskRunner):
         snapshot: dict,
     ) -> Dict[str, Any]:
         """User replied context, ask planner for new step"""
+        last_action = self._deserialize_action_step(snapshot.get("last_action"))
         recovery_ctx = self._build_recovery_context(
             result=snapshot.get("last_result"),
             bot_state=snapshot.get("bot_state", {}),
             completed_steps=snapshot.get("completed_steps", []),
-            cached_action=snapshot.get("last_action"),
+            cached_action=last_action,
             attempt_count=snapshot.get("attempt_count", 99),
             max_attempts=99,
             user_reply=user_reply,
@@ -1222,11 +1323,11 @@ class UniversalRunner(ITaskRunner):
             return {"clarify": True, "message": "我还是没能理解/恢复成功。你可以直接告诉我：重试 / 你来接我 / 我把东西放地上？"}
         
         if decision.decision == RecoveryDecisionType.RETRY_SAME:
-             if snapshot.get("last_action"):
-                 return {"next_step": snapshot["last_action"]}
+             if last_action:
+                 return {"next_step": last_action}
              return {"clarify": True, "message": "无法重试"}
              
-        if decision.decision == RecoveryDecisionType.NEW_STEP:
+        if decision.decision in (RecoveryDecisionType.NEW_STEP, RecoveryDecisionType.ACT):
              return {"next_step": decision.next_step}
              
         if decision.decision == RecoveryDecisionType.ABORT:

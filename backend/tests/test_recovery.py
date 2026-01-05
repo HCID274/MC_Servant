@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from task.recovery_interfaces import (
     IRecoveryCoordinator,
-    RecoveryDecision,
+    CoordinatorRecoveryDecision,
     RecoveryLevel,
     RecoveryActionType,
     FailureContext,
@@ -186,7 +186,7 @@ class TestRecoveryDecision:
     
     def test_repr(self):
         """测试 repr 输出"""
-        decision = RecoveryDecision(
+        decision = CoordinatorRecoveryDecision(
             level=RecoveryLevel.L1_ACTION_RETRY,
             action_type=RecoveryActionType.MICRO_MOVE,
             is_inline=True,
@@ -199,7 +199,7 @@ class TestRecoveryDecision:
     
     def test_default_values(self):
         """测试默认值"""
-        decision = RecoveryDecision(
+        decision = CoordinatorRecoveryDecision(
             level=RecoveryLevel.L1_ACTION_RETRY,
             action_type=RecoveryActionType.RETRY_SAME
         )

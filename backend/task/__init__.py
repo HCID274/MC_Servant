@@ -24,6 +24,7 @@ from .behavior_rules import BehaviorRules, BehaviorThresholds
 from .recovery_interfaces import (
     RecoveryLevel,
     RecoveryActionType,
+    CoordinatorRecoveryDecision,
     RecoveryDecision,
     FailureContext,
     IRecoveryCoordinator,
@@ -51,6 +52,7 @@ __all__ = [
     "ActionPlan",
     "TaskResult",
     "RunContext",
+    "CoordinatorRecoveryDecision",
     "RecoveryDecision",
     "FailureContext",
     "BehaviorThresholds",

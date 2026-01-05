@@ -12,7 +12,7 @@ from typing import Optional, Set, TYPE_CHECKING
 from .recovery_interfaces import (
     IRecoveryCoordinator,
     IRecoveryLogger,
-    RecoveryDecision,
+    CoordinatorRecoveryDecision,
     RecoveryLevel,
     RecoveryActionType,
     FailureContext,
@@ -70,7 +70,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
         self,
         result: "ActionResult",
         tick: int
-    ) -> RecoveryDecision:
+    ) -> CoordinatorRecoveryDecision:
         """
         处理动作结果，返回恢复决策
         
@@ -83,7 +83,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
         # 1. 成功 -> 重置
         if result.success:
             self._reset_counters()
-            return RecoveryDecision(
+            return CoordinatorRecoveryDecision(
                 level=RecoveryLevel.L0_SUCCESS,
                 action_type=RecoveryActionType.NO_RECOVERY,
                 should_retry=False,
@@ -152,7 +152,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
         self,
         result: "ActionResult",
         context: FailureContext
-    ) -> RecoveryDecision:
+    ) -> CoordinatorRecoveryDecision:
         """
         L1 决策: 动作级重试
         
@@ -165,7 +165,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
         if self._l1_retry_count >= max_retries:
             # L1 重试次数用尽，但还没到 L2 阈值
             self._l1_retry_count = 0
-            return RecoveryDecision(
+            return CoordinatorRecoveryDecision(
                 level=RecoveryLevel.L1_ACTION_RETRY,
                 action_type=RecoveryActionType.MICRO_MOVE,
                 should_retry=True,
@@ -178,7 +178,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
         
         # 首次失败直接重试，后续失败加微移位
         if self._l1_retry_count == 1:
-            return RecoveryDecision(
+            return CoordinatorRecoveryDecision(
                 level=RecoveryLevel.L1_ACTION_RETRY,
                 action_type=RecoveryActionType.RETRY_SAME,
                 should_retry=True,
@@ -186,7 +186,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
                 reason=f"L1 重试 #{self._l1_retry_count}"
             )
         else:
-            return RecoveryDecision(
+            return CoordinatorRecoveryDecision(
                 level=RecoveryLevel.L1_ACTION_RETRY,
                 action_type=RecoveryActionType.MICRO_MOVE,
                 should_retry=True,
@@ -199,7 +199,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
         self,
         result: "ActionResult",
         context: FailureContext
-    ) -> RecoveryDecision:
+    ) -> CoordinatorRecoveryDecision:
         """
         L2 决策: 脱困策略
         
@@ -221,7 +221,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
              action_type = RecoveryActionType.CLIMB_TO_SURFACE
              reason = "L2 脱困: 基础恢复失败，尝试垂直爬向地面"
         
-        return RecoveryDecision(
+        return CoordinatorRecoveryDecision(
             level=RecoveryLevel.L2_UNSTUCK,
             action_type=action_type,
             should_retry=True,
@@ -234,7 +234,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
         self,
         result: "ActionResult",
         context: FailureContext
-    ) -> RecoveryDecision:
+    ) -> CoordinatorRecoveryDecision:
         """
         L3 决策: 报告并阻塞
         
@@ -245,7 +245,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
         }
         reason = reason_map.get(result.error_code, f"遇到不可恢复错误: {result.error_code}")
         
-        return RecoveryDecision(
+        return CoordinatorRecoveryDecision(
             level=RecoveryLevel.L3_REPORT_BLOCK,
             action_type=RecoveryActionType.REPORT_AND_BLOCK,
             should_retry=False,
@@ -253,13 +253,13 @@ class RecoveryCoordinator(IRecoveryCoordinator):
             reason=reason
         )
     
-    def make_l4_decision(self, reason: str = "超时") -> RecoveryDecision:
+    def make_l4_decision(self, reason: str = "超时") -> CoordinatorRecoveryDecision:
         """
         L4 决策: 超时兜底
         
         回到主人身边待命 (外部调用，如超时检测)
         """
-        return RecoveryDecision(
+        return CoordinatorRecoveryDecision(
             level=RecoveryLevel.L4_TIMEOUT_FALLBACK,
             action_type=RecoveryActionType.GOTO_OWNER,
             should_retry=False,
@@ -270,7 +270,7 @@ class RecoveryCoordinator(IRecoveryCoordinator):
     def _log_decision(
         self,
         tick: int,
-        decision: RecoveryDecision,
+        decision: CoordinatorRecoveryDecision,
         context: FailureContext
     ) -> None:
         """记录决策日志"""
