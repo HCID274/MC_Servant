@@ -247,7 +247,10 @@ class PostgresExperienceRetriever(IExperienceRetriever):
     ) -> List["ExperienceDTO"]:
         """检索相似经验"""
         
-        from db.experience_repository import EnvironmentFingerprint
+        try:
+            from ..db.experience_repository import EnvironmentFingerprint
+        except ImportError:
+             from db.experience_repository import EnvironmentFingerprint
         
         # 提取环境指纹
         fingerprint = EnvironmentFingerprint.from_bot_state(bot_state)
