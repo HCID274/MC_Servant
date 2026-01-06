@@ -79,10 +79,10 @@
     *   目标：Bot 开始做笔记，记录成功案例。
     *   动作：实现 `TaskExperience` 模型、`IExperienceRepository` (Postgres+pgvector) 和 `ExperienceRecorder`。
 
-3.  **Phase 3: RAG 集成 (RAG Integration) [In Progress]**
+3.  **Phase 3: RAG 集成 (RAG Integration) [Done]**
     *   目标：Bot 学会查阅笔记，变聪明。
-    *   动作：实现 Retrieval 模块 (已完成存储与索引)，修改 Prompt 引入历史经验。
+    *   动作：实现 `IExperienceRetriever`, `LRUCache`, `PostgresExperienceRetriever`，并集成到 `LLMTaskPlanner`。
 
-4.  **Phase 4: 工具库重构 (Tooling Refactor)**
+4.  **Phase 4: 工具库重构 (Tooling Refactor) [In Progress]**
     *   目标：Bot 的手脚更灵活，能做复杂动作。
-    *   动作：参考 VillagerAgent 移植/重写工具函数。
+    *   动作：建立 `MetaAction` 框架，实现 `Navigate`, `Gather`, `Scan`, `Craft` 等核心动作，并在 Runner 中集成动态分发。

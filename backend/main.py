@@ -175,7 +175,7 @@ async def lifespan(app: FastAPI):
         from state.config import BotConfig
         from bot.actions import MineflayerActions
         from task.executor import TaskExecutor
-        from task.llm_planner import LLMTaskPlanner
+        from task.runner_factory import create_task_planner, create_runner_factory
         from task.prerequisite_resolver import PrerequisiteResolver
         
         config_path = Path("data/bot_config.json")
@@ -215,7 +215,7 @@ async def lifespan(app: FastAPI):
         # Layer 3: 规划/执行层 (如果有 LLM)
         executor = None
         if llm_client:
-            planner = LLMTaskPlanner(llm_client)
+            planner = create_task_planner(llm_client)
             prereq_resolver = PrerequisiteResolver()
             async def on_progress(msg: str) -> None:
                 await bot_context.update_hologram_throttled(f"🔧 {msg}")
@@ -235,8 +235,6 @@ async def lifespan(app: FastAPI):
             
                         # 🆕 Phase 3+ RunnerFactory (根据 Feature Flag 自动切换)
             from task.behavior_rules import BehaviorRules
-            from task.runner_factory import create_runner_factory
-            
             rules = BehaviorRules()
             runner_factory = create_runner_factory(
                 rules=rules,
@@ -459,16 +457,15 @@ async def lifespan(app: FastAPI):
         # 这样任务至少可以在规划层运行（虽然无法执行实际动作）
         if llm_client:
             try:
-                from task.llm_planner import LLMTaskPlanner
                 from task.prerequisite_resolver import PrerequisiteResolver
                 from task.executor import TaskExecutor
                 from task.behavior_rules import BehaviorRules
-                from task.runner_factory import create_runner_factory
+                from task.runner_factory import create_runner_factory, create_task_planner
                 from perception.knowledge_base import JsonKnowledgeBase
                 from task.actor import LLMTaskActor
                 from task.action_resolver import SemanticActionResolver
                 
-                planner = LLMTaskPlanner(llm_client)
+                planner = create_task_planner(llm_client)
                 prereq_resolver = PrerequisiteResolver()
                 
                 async def on_progress(msg: str) -> None:

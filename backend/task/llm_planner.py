@@ -16,6 +16,7 @@ from .interfaces import (
 if TYPE_CHECKING:
     from ..llm.interfaces import ILLMClient
     from ..bot.interfaces import ActionResult
+    from .experience_retriever import IExperienceRetriever
 
 
 logger = logging.getLogger(__name__)
@@ -273,19 +274,28 @@ class LLMTaskPlanner(ITaskPlanner):
     职责：
     - 调用大模型生成可执行的动作计划
     - 失败后根据错误信息重新规划
+    - [RAG] 检索历史经验注入 Prompt
     
     这是 Neuro-Symbolic 架构的 Neural 组件 (Slow Path)
     """
     
-    def __init__(self, llm_client: "ILLMClient"):
+    def __init__(
+        self, 
+        llm_client: "ILLMClient",
+        experience_retriever: "IExperienceRetriever" = None
+    ):
         """
         初始化规划器
         
         Args:
             llm_client: LLM 客户端
+            experience_retriever: 经验检索器 (RAG, 可选)
         """
         self._llm = llm_client
-        logger.info(f"LLMTaskPlanner initialized with model: {llm_client.model_name}")
+        self._retriever = experience_retriever
+        
+        rag_status = "enabled" if experience_retriever else "disabled"
+        logger.info(f"LLMTaskPlanner initialized with model: {llm_client.model_name}, RAG: {rag_status}")
     
     async def plan(
         self, 
@@ -304,8 +314,46 @@ class LLMTaskPlanner(ITaskPlanner):
         """
         logger.info(f"Planning task: {task_description}")
         
+        # [RAG] 检索历史经验
+        experience_context = ""
+        if self._retriever:
+            try:
+                experiences = await self._retriever.retrieve(
+                    goal=task_description,
+                    bot_state=bot_state,
+                    top_k=3,
+                    min_score=0.5
+                )
+                if experiences:
+                    experience_context = self._retriever.format_for_prompt(experiences)
+                    logger.info(f"[RAG] Retrieved {len(experiences)} relevant experiences")
+                else:
+                    logger.debug("[RAG] No relevant experiences found")
+            except Exception as e:
+                logger.warning(f"[RAG] Experience retrieval failed: {e}")
+        
+        # [MetaAction] 动态工具注入
+        actions_context = ""
+        try:
+            from ..bot.meta_actions import MetaActionRegistry
+
+            available_actions = MetaActionRegistry.get_available(bot_state)
+            if available_actions:
+                actions_context = MetaActionRegistry.format_for_prompt(
+                    available_actions,
+                    style="xml"
+                )
+                logger.info(f"[MetaAction] Injected {len(available_actions)} actions into prompt")
+        except Exception as e:
+            logger.warning(f"[MetaAction] Action lookup failed: {e}")
+
         # 构建用户消息
-        user_message = self._build_plan_message(task_description, bot_state)
+        user_message = self._build_plan_message(
+            task_description,
+            bot_state,
+            experience_context,
+            actions_context
+        )
         
         messages = [
             {"role": "system", "content": PLAN_SYSTEM_PROMPT},
@@ -464,16 +512,52 @@ class LLMTaskPlanner(ITaskPlanner):
         )
         return step, False, ""
     
-    def _build_plan_message(self, task: str, bot_state: Dict[str, Any]) -> str:
-        """构建规划请求消息"""
+    def _build_plan_message(
+        self, 
+        task: str, 
+        bot_state: Dict[str, Any],
+        experience_context: str = "",
+        actions_context: str = ""
+    ) -> str:
+        """
+        构建规划请求消息
+        
+        Args:
+            task: 任务描述
+            bot_state: Bot 状态
+            experience_context: [RAG] 历史经验 XML (可选)
+            actions_context: [MetaAction] 可用动作列表 (可选)
+        """
         state_str = json.dumps(bot_state, ensure_ascii=False, indent=2)
-        return f"""## 任务
+        sections = []
+        if experience_context:
+            sections.append(experience_context.strip())
+        if actions_context:
+            sections.append(actions_context.strip())
+        
+        # [RAG] 如果有历史经验，注入到 Prompt
+        if experience_context:
+            sections.append(f"""<context>
+  <current_state>
+{state_str}
+  </current_state>
+</context>
+
+<instruction>
+Based on the historical experience above (if relevant) and your knowledge, generate a plan for: "{task}"
+You may adapt the successful plan from history, but adjust parameters for current context.
+</instruction>""")
+            return "\n\n".join(sections)
+        else:
+            # 无历史经验，使用原有格式
+            sections.append(f"""## 任务
 {task}
 
 ## Bot 当前状态
 {state_str}
 
-请规划执行步骤。"""
+请规划执行步骤。You are a Minecraft expert. Rely on your internal knowledge.""")
+            return "\n\n".join(sections)
     
     def _parse_plan_response(self, task: str, response: Dict[str, Any]) -> ActionPlan:
         """解析规划响应"""

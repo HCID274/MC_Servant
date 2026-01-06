@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from .action_resolver import SemanticActionResolver
     from ..llm.interfaces import ILLMClient
     from ..perception.interfaces import IKnowledgeBase
+    from .experience_retriever import IExperienceRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,47 @@ class ClassicRunnerFactory(IRunnerFactory):
             return TaskType.GATHER
         
         return None
+
+
+def _create_experience_retriever() -> Optional["IExperienceRetriever"]:
+    try:
+        from config import settings
+        from db.database import db
+
+        if getattr(db, "_engine", None) is None:
+            logger.info("[ExperienceRetriever] Database not initialized, retriever disabled")
+            return None
+
+        from db.experience_repository import PostgresExperienceRepository
+        from .experience_retriever import create_experience_retriever
+
+        embedding_service = None
+        try:
+            from llm.embedding import create_embedding_service
+            embedding_service = create_embedding_service(settings.openai_api_key)
+        except Exception as e:
+            logger.warning(f"[ExperienceRetriever] Embedding service unavailable: {e}")
+        repository = PostgresExperienceRepository(
+            db_manager=db,
+            embedding_service=embedding_service
+        )
+        return create_experience_retriever(repository=repository)
+    except Exception as e:
+        logger.warning(f"[ExperienceRetriever] Initialization failed: {e}")
+        return None
+
+
+def create_task_planner(
+    llm_client: "ILLMClient",
+    experience_retriever: Optional["IExperienceRetriever"] = None,
+) -> "LLMTaskPlanner":
+    from .llm_planner import LLMTaskPlanner
+
+    retriever = experience_retriever or _create_experience_retriever()
+    return LLMTaskPlanner(
+        llm_client=llm_client,
+        experience_retriever=retriever
+    )
 
 
 def create_runner_factory(

@@ -1028,6 +1028,27 @@ class UniversalRunner(ITaskRunner):
         # some actions do not accept timeout
         if action_name in {"scan", "chat", "look_around", "find_location"} and "timeout" in params:
             params.pop("timeout")
+
+        # MetaAction dispatch
+        try:
+            from ..bot.meta_actions import MetaActionRegistry
+        except Exception:
+            MetaActionRegistry = None
+
+        if MetaActionRegistry:
+            meta_action = MetaActionRegistry.get(action_name)
+            if meta_action:
+                try:
+                    return await meta_action.execute(actions, **params)
+                except Exception as e:
+                    logger.exception(f"MetaAction execution error: {e}")
+                    return _ActionResult(
+                        success=False,
+                        action=action_name,
+                        message=str(e),
+                        status=_ActionStatus.FAILED,
+                        error_code="META_ACTION_ERROR"
+                    )
         
         # 获取动作方法
         action_method = getattr(actions, action_name, None)
