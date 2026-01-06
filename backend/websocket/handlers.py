@@ -119,18 +119,8 @@ class PlayerMessageHandler(IMessageHandler):
         player_uuid = getattr(msg, 'player_uuid', None) or msg.player
         bot_name = self._get_bot_name()
         
-        # 0. 记录用户消息到记忆系统
-        if self._ctx_manager:
-            try:
-                await self._ctx_manager.add_message(
-                    player_uuid=player_uuid,
-                    player_name=msg.player,
-                    bot_name=bot_name,
-                    role="user",
-                    content=msg.content,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record user message: {e}")
+        # Note: 用户消息记录现在由状态机内部的 MemoryFacade 处理
+        # 不再在 handlers 层直接调用 ContextManager
         
         # 1. 获取对话历史上下文（用于意图识别）
         conversation_context = None
@@ -234,19 +224,7 @@ class PlayerMessageHandler(IMessageHandler):
             response.setdefault("target_player", msg.player)
             response.setdefault("type", "npc_response")
             
-            # 5. 记录助手响应到记忆系统
-            if self._ctx_manager:
-                try:
-                    response_content = response.get("content", "")
-                    await self._ctx_manager.add_message(
-                        player_uuid=player_uuid,
-                        player_name=msg.player,
-                        bot_name=bot_name,
-                        role="assistant",
-                        content=response_content,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to record assistant message: {e}")
+            # Note: 助手响应记录现在由状态机内部的 MemoryFacade 处理
         
         return response
     

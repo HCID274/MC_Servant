@@ -403,9 +403,16 @@ class IdleState(IState):
         user_input = event.payload.get("raw_input", "")
         
         try:
-            # 添加用户消息到历史
+            # 添加用户消息到统一记忆服务
             user_input = event.payload.get("raw_input", "")
-            context.add_message("user", user_input, event.source_player)
+            sender_uuid = event.source_player_uuid or event.source_player
+            if self._ctx and self._ctx.memory:
+                self._ctx.memory.add_message(
+                    role="user",
+                    content=user_input,
+                    sender_uuid=sender_uuid,
+                    sender_name=event.source_player,
+                )
             
             # 构建消息 - 增强版 prompt 支持表演动作
             system_prompt = f"""你是一个可爱的 Minecraft 女仆助手，说话要可爱俏皮，每句话结尾都要加上「喵~」。
@@ -439,9 +446,15 @@ class IdleState(IState):
             last_response = None
             
             for attempt in range(1, MAX_RETRIES + 1):
+                # 获取对话历史 (优先使用 MemoryFacade)
+                if self._ctx and self._ctx.memory:
+                    chat_history = self._ctx.memory.get_hot_buffer()
+                else:
+                    chat_history = context.get_conversation_for_llm()
+                
                 messages = [
                     {"role": "system", "content": system_prompt},
-                    *context.get_conversation_for_llm()
+                    *chat_history
                 ]
                 
                 # 重试时追加格式修正提示
@@ -462,7 +475,14 @@ class IdleState(IState):
                 parsed_result = self._try_parse_json_response(response)
                 if parsed_result is not None:
                     logger.info(f"[Chat] JSON parsed successfully on attempt {attempt}")
-                    context.add_message("assistant", parsed_result["text"])
+                    # 记录助手回复到统一记忆服务
+                    if self._ctx and self._ctx.memory:
+                        self._ctx.memory.add_message(
+                            role="assistant",
+                            content=parsed_result["text"],
+                            sender_uuid=self._ctx.bot.username if self._ctx.bot else "bot",
+                            sender_name=self._ctx.bot.username if self._ctx.bot else "Bot",
+                        )
                     return parsed_result
                 else:
                     logger.warning(f"[Chat] JSON parse failed (attempt {attempt}/{MAX_RETRIES})")
@@ -470,7 +490,13 @@ class IdleState(IState):
             # 所有重试都失败，使用最后一次响应作为纯文字
             logger.warning(f"[Chat] All {MAX_RETRIES} attempts failed, using plain text fallback")
             fallback_text = last_response.strip() if last_response else "喵？"
-            context.add_message("assistant", fallback_text)
+            if self._ctx and self._ctx.memory:
+                self._ctx.memory.add_message(
+                    role="assistant",
+                    content=fallback_text,
+                    sender_uuid=self._ctx.bot.username if self._ctx.bot else "bot",
+                    sender_name=self._ctx.bot.username if self._ctx.bot else "Bot",
+                )
             return {"text": fallback_text, "actions": []}
             
         except Exception as e:

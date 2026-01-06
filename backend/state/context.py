@@ -147,6 +147,9 @@ class BotContext:
     llm: Optional[Any] = None       # ILLMClient
     bot: Optional[Any] = None       # IBotController (表演动作：spin, look_at, jump)
     
+    # 统一记忆服务 (Phase 5: Unified Memory System)
+    memory: Optional[Any] = None    # IMemoryService (MemoryFacade)
+    
     # 全息显示节流器
     _last_hologram_update: float = field(default=0.0)
     _hologram_throttle_ms: int = field(default=500)  # 最小更新间隔

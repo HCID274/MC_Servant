@@ -105,12 +105,13 @@ lifecycle_manager = None  # 生命周期管理器 (Optional)
 player_repo = None  # 玩家数据仓库 (Optional)
 bot_repo = None  # Bot 数据仓库 (Optional)
 ws_cleanup_task: Optional[asyncio.Task] = None
+task_manager = None  # 后台任务管理器 (Phase 5: Unified Memory)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global bot_manager, message_router, llm_client, state_machine, context_manager, lifecycle_manager, player_repo, bot_repo, ws_cleanup_task
+    global bot_manager, message_router, llm_client, state_machine, context_manager, lifecycle_manager, player_repo, bot_repo, ws_cleanup_task, task_manager
     
     # 启动时初始化
     logger.info("Initializing MC_Servant Backend...")
@@ -195,6 +196,21 @@ async def lifespan(app: FastAPI):
             llm=llm_client,
             bot=default_bot,  # 表演动作：spin, look_at, jump
         )
+        
+        # 初始化后台任务管理器 (Phase 5: Unified Memory)
+        from utils.background_task_manager import BackgroundTaskManager
+        task_manager = BackgroundTaskManager()
+        logger.info("BackgroundTaskManager initialized")
+        
+        # 初始化统一记忆服务 (Phase 5: Unified Memory)
+        if context_manager:
+            from state.memory_facade import MemoryFacade
+            bot_context.memory = MemoryFacade(
+                context_manager=context_manager,
+                task_manager=task_manager,
+                bot_name=default_bot.username,
+            )
+            logger.info(f"MemoryFacade initialized for {default_bot.username}")
         
         # Layer 3: 规划/执行层 (如果有 LLM)
         executor = None
@@ -394,6 +410,22 @@ async def lifespan(app: FastAPI):
             bot=mock_bot,  # 表演动作 (MockBot)
         )
         
+        # 初始化后台任务管理器 (Phase 5: Unified Memory - MockBot 模式)
+        if task_manager is None:
+            from utils.background_task_manager import BackgroundTaskManager
+            task_manager = BackgroundTaskManager()
+            logger.info("BackgroundTaskManager initialized (MockBot mode)")
+        
+        # 初始化统一记忆服务 (Phase 5: Unified Memory - MockBot 模式)
+        if context_manager:
+            from state.memory_facade import MemoryFacade
+            bot_context.memory = MemoryFacade(
+                context_manager=context_manager,
+                task_manager=task_manager,
+                bot_name=mock_bot.username,
+            )
+            logger.info(f"MemoryFacade initialized for {mock_bot.username} (MockBot mode)")
+        
         # Mock 模式下仍然尝试创建 Executor（如果有 LLM）
         # 这样任务至少可以在规划层运行（虽然无法执行实际动作）
         if llm_client:
@@ -562,6 +594,19 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         ws_cleanup_task = None
+    
+    # 等待后台任务完成 (Phase 5: Unified Memory)
+    if task_manager:
+        count = await task_manager.wait_all_pending(timeout=30.0)
+        logger.info(f"BackgroundTaskManager: {count} tasks completed")
+    
+    # 刷新 MemoryFacade 剩余数据
+    if state_machine and state_machine._bot_context and state_machine._bot_context.memory:
+        try:
+            await state_machine._bot_context.memory.flush_pending()
+            logger.info("MemoryFacade flushed")
+        except Exception as e:
+            logger.warning(f"MemoryFacade flush failed: {e}")
     
     # 停止 ContextManager Worker
     if context_manager:
