@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from .recovery_planner import IRecoveryPlanner
     from .dynamic_resolver import DynamicResolver
     from .prerequisite_resolver import PrerequisiteResolver
+    from .experience_recorder import ExperienceRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ class UniversalRunner(ITaskRunner):
         recovery_planner: Optional["IRecoveryPlanner"] = None,
         dynamic_resolver: Optional["DynamicResolver"] = None,
         prerequisite_resolver: Optional["PrerequisiteResolver"] = None,
+        experience_recorder: Optional["ExperienceRecorder"] = None,
     ):
         """
         初始化 UniversalRunner
@@ -99,11 +101,13 @@ class UniversalRunner(ITaskRunner):
             recovery_planner: LLM 恢复规划器 (可选)
             dynamic_resolver: LLM 动态任务解析器 (Slow Path)
             prerequisite_resolver: 符号层前置任务解析器 (Fast Path)
+            experience_recorder: 经验记录器 (可选，用于 RAG)
         """
         self._rules = rules or BehaviorRules()
         self._recovery_planner = recovery_planner
         self._dynamic_resolver = dynamic_resolver
         self._prerequisite_resolver = prerequisite_resolver
+        self._experience_recorder = experience_recorder
         self._resolver = resolver or self._create_default_resolver()
 
     def _create_default_resolver(self) -> Any:
@@ -413,32 +417,39 @@ class UniversalRunner(ITaskRunner):
                             # LLM 可能在下一轮给出正确的 place 步骤
                             continue
                     
-                    return TaskResult(
+                    # 🆕 记录成功经验到 RAG 库
+                    success_result = TaskResult(
                         success=True,
                         task_description=task.goal,
                         completed_steps=completed_steps,
                         message=done_message or "任务完成"
                     )
+                    await self._record_experience(task, success_result, bot_state, start_time)
+                    return success_result
             
             # 3. Normalize: 参数归一化
             if tree_single_goal and tree_done:
                 allow_give_flow = TaskIntentAnalyzer.is_give_task(task)
                 if allow_give_flow:
                     if step.action not in ("goto", "give"):
-                        return TaskResult(
+                        tree_result = TaskResult(
                             success=True,
                             task_description=task.goal,
                             completed_steps=completed_steps,
                             message="Single-tree task complete"
                         )
+                        await self._record_experience(task, tree_result, bot_state, start_time)
+                        return tree_result
                 else:
                     if step.action != "give":
-                        return TaskResult(
+                        tree_result = TaskResult(
                             success=True,
                             task_description=task.goal,
                             completed_steps=completed_steps,
                             message="Single-tree task complete"
                         )
+                        await self._record_experience(task, tree_result, bot_state, start_time)
+                        return tree_result
 
             step = self._normalize_step(step, context, task.goal or "")
             
@@ -489,12 +500,14 @@ class UniversalRunner(ITaskRunner):
                 if tree_single_goal and is_tree_intent and step.action in ("mine_tree", "mine"):
                     tree_done = True
                 if tree_single_goal and tree_done and step.action == "give":
-                    return TaskResult(
+                    give_result = TaskResult(
                         success=True,
                         task_description=task.goal,
                         completed_steps=completed_steps,
                         message="Single-tree task complete"
                     )
+                    await self._record_experience(task, give_result, bot_state, start_time)
+                    return give_result
                 
                 # 成功后清空缓存与计数
                 cached_action = None
@@ -506,12 +519,14 @@ class UniversalRunner(ITaskRunner):
                 # 🔴 修复: 仅对「纯单步」任务启用非LLM完成判据
                 # 复合任务必须依赖 LLM done=true，避免提前终止
                 if is_pure_single_step and self._is_single_step_task_complete(step, result, task):
-                    return TaskResult(
+                    single_result = TaskResult(
                         success=True,
                         task_description=task.goal,
                         completed_steps=completed_steps,
                         message=f"{step.action} 完成"
                     )
+                    await self._record_experience(task, single_result, bot_state, start_time)
+                    return single_result
                 
             else:
                 logger.warning(f"[UniversalRunner] Step failed: {result.action} - {result.message}")
@@ -602,6 +617,33 @@ class UniversalRunner(ITaskRunner):
     # ========================================================================
     # Helper Methods
     # ========================================================================
+    
+    async def _record_experience(
+        self,
+        task: StackTask,
+        result: TaskResult,
+        bot_state: Dict[str, Any],
+        start_time: float,
+    ) -> None:
+        """
+        记录任务经验到经验库
+        
+        在任务成功或部分成功时调用，用于 RAG 检索
+        """
+        if not self._experience_recorder:
+            return
+        
+        try:
+            duration = asyncio.get_event_loop().time() - start_time
+            await self._experience_recorder.record(
+                task=task,
+                result=result,
+                bot_state=bot_state,
+                duration_sec=duration,
+            )
+        except Exception as e:
+            # 记录失败不应影响主流程
+            logger.warning(f"[UniversalRunner] Failed to record experience: {e}")
     
     def _get_bot_state(
         self,

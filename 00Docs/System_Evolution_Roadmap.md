@@ -75,13 +75,13 @@
     *   目标：Bot 重启后记得我是谁。
     *   动作：打通 `RuntimeContext` -> `ContextManager` (已实现 MemoryFacade, Session, BackgroundTaskManager)。
 
-2.  **Phase 2: 经验记录器 (Experience Recorder)**
+2.  **Phase 2: 经验记录器 (Experience Recorder) [Done]**
     *   目标：Bot 开始做笔记，记录成功案例。
-    *   动作：实现 `TaskExperience` 模型和 `UniversalRunner` 的记录逻辑。
+    *   动作：实现 `TaskExperience` 模型、`IExperienceRepository` (Postgres+pgvector) 和 `ExperienceRecorder`。
 
-3.  **Phase 3: RAG 集成 (RAG Integration)**
+3.  **Phase 3: RAG 集成 (RAG Integration) [In Progress]**
     *   目标：Bot 学会查阅笔记，变聪明。
-    *   动作：实现 Retrieve 模块，修改 Prompt 引入历史经验。
+    *   动作：实现 Retrieval 模块 (已完成存储与索引)，修改 Prompt 引入历史经验。
 
 4.  **Phase 4: 工具库重构 (Tooling Refactor)**
     *   目标：Bot 的手脚更灵活，能做复杂动作。

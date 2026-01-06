@@ -7,3 +7,10 @@ from .factory import create_llm_client
 from .intent import Intent, IntentRecognizer
 from .compression import IMemoryCompressor, MemoryCompressor, CompressionResult
 from .context_manager import IContextManager, ContextManager
+from .embedding import (
+    IEmbeddingService,
+    DashScopeEmbeddingService,
+    MockEmbeddingService,
+    EmbeddingError,
+    create_embedding_service,
+)
