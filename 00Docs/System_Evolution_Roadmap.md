@@ -71,9 +71,9 @@
 
 ## 5. 实施阶段 (Implementation Stages)
 
-1.  **Phase 1: 持久化修复 (Persistence)**
+1.  **Phase 1: 持久化修复 (Persistence) [Done]**
     *   目标：Bot 重启后记得我是谁。
-    *   动作：打通 `RuntimeContext` -> `ContextManager`。
+    *   动作：打通 `RuntimeContext` -> `ContextManager` (已实现 MemoryFacade, Session, BackgroundTaskManager)。
 
 2.  **Phase 2: 经验记录器 (Experience Recorder)**
     *   目标：Bot 开始做笔记，记录成功案例。
