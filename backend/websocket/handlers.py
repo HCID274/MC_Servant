@@ -119,10 +119,16 @@ class PlayerMessageHandler(IMessageHandler):
         player_uuid = getattr(msg, 'player_uuid', None) or msg.player
         bot_name = self._get_bot_name()
         
-        # Note: 用户消息记录现在由状态机内部的 MemoryFacade 处理
-        # 不再在 handlers 层直接调用 ContextManager
+        # 1. 记录用户消息到记忆系统 (MemoryFacade)
+        if self._fsm and self._fsm.bot_context and self._fsm.bot_context.memory:
+             self._fsm.bot_context.memory.add_message(
+                 role="user",
+                 content=msg.content,
+                 sender_uuid=player_uuid,
+                 sender_name=msg.player,
+             )
         
-        # 1. 获取对话历史上下文（用于意图识别）
+        # 2. 获取对话历史上下文（用于意图识别）
         conversation_context = None
         if self._ctx_manager:
             try:
@@ -224,7 +230,16 @@ class PlayerMessageHandler(IMessageHandler):
             response.setdefault("target_player", msg.player)
             response.setdefault("type", "npc_response")
             
-            # Note: 助手响应记录现在由状态机内部的 MemoryFacade 处理
+            # 记录助手响应到记忆系统 (MemoryFacade)
+            # IdleState通常返回 'text'，但也可能在其它地方使用 'content'
+            content = response.get("content") or response.get("text")
+            if content and self._fsm and self._fsm.bot_context and self._fsm.bot_context.memory:
+                self._fsm.bot_context.memory.add_message(
+                    role="assistant",
+                    content=content,
+                    sender_uuid=bot_name, # Bot 自己
+                    sender_name=bot_name,
+                )
         
         return response
     

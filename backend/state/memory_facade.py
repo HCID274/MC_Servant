@@ -163,7 +163,8 @@ class MemoryFacade(IMemoryService):
             if len(self._session_summaries) > 10:
                 self._session_summaries = self._session_summaries[-10:]
         
-        # 异步持久化所有剩余消息
+        # 持久化 Session 更新 (包括 Summary)
+        # 注意: 即使消息是 fire-and-forget，Session 对象的元数据更新仍需保存
         self._flush_session_to_db(session)
         
         logger.info(
