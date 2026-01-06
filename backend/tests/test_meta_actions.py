@@ -376,3 +376,167 @@ class TestCraftItemAction:
         await action.execute(mock_actions, item_name="oak_planks", count=4)
         
         mock_actions.craft.assert_called_once_with(item_name="oak_planks", count=4)
+
+
+# ============================================================================
+# SmeltItemAction Tests
+# ============================================================================
+
+class TestSmeltItemAction:
+    """冶炼物品动作测试"""
+    
+    def test_name_and_description(self):
+        """测试名称和描述"""
+        from bot.meta_actions.smelt_item import SmeltItemAction
+        action = SmeltItemAction()
+        
+        assert action.name == "smelt_item"
+        assert "smelt" in action.description.lower()
+    
+    def test_can_execute_with_raw_iron(self):
+        """测试有生铁时可冶炼"""
+        from bot.meta_actions.smelt_item import SmeltItemAction
+        action = SmeltItemAction()
+        bot_state = {"inventory": {"raw_iron": 5}}
+        
+        result = action.can_execute(bot_state)
+        
+        assert result is True
+    
+    def test_can_execute_with_sand(self):
+        """测试有沙子时可冶炼"""
+        from bot.meta_actions.smelt_item import SmeltItemAction
+        action = SmeltItemAction()
+        bot_state = {"inventory": {"sand": 16}}
+        
+        result = action.can_execute(bot_state)
+        
+        assert result is True
+    
+    def test_can_execute_without_smeltable(self):
+        """测试无可冶炼物品时不可用"""
+        from bot.meta_actions.smelt_item import SmeltItemAction
+        action = SmeltItemAction()
+        bot_state = {"inventory": {"iron_ingot": 5, "diamond": 2}}
+        
+        result = action.can_execute(bot_state)
+        
+        assert result is False
+    
+    @pytest.mark.asyncio
+    async def test_execute_calls_smelt(self, mock_actions):
+        """测试执行调用 smelt"""
+        from bot.meta_actions.smelt_item import SmeltItemAction
+        action = SmeltItemAction()
+        mock_actions.smelt = AsyncMock(return_value=MagicMock(success=True))
+        
+        await action.execute(mock_actions, item="raw_iron", count=3)
+        
+        mock_actions.smelt.assert_called_once_with("raw_iron", count=3)
+
+
+# ============================================================================
+# RetreatSafeAction Tests
+# ============================================================================
+
+class TestRetreatSafeAction:
+    """紧急避险动作测试"""
+    
+    def test_name_and_description(self):
+        """测试名称和描述"""
+        from bot.meta_actions.retreat_safe import RetreatSafeAction
+        action = RetreatSafeAction()
+        
+        assert action.name == "retreat_safe"
+        assert "retreat" in action.description.lower()
+    
+    def test_can_execute_low_health(self):
+        """测试低血量时可用"""
+        from bot.meta_actions.retreat_safe import RetreatSafeAction
+        action = RetreatSafeAction()
+        bot_state = {"health": 4}  # 2颗心
+        
+        result = action.can_execute(bot_state)
+        
+        assert result is True
+    
+    def test_can_execute_hostile_nearby(self):
+        """测试附近有敌对生物时可用"""
+        from bot.meta_actions.retreat_safe import RetreatSafeAction
+        action = RetreatSafeAction()
+        bot_state = {
+            "health": 20,
+            "nearby_entities": [{"type": "zombie", "distance": 5}]
+        }
+        
+        result = action.can_execute(bot_state)
+        
+        assert result is True
+    
+    def test_can_execute_safe_state(self):
+        """测试安全状态时不可用"""
+        from bot.meta_actions.retreat_safe import RetreatSafeAction
+        action = RetreatSafeAction()
+        bot_state = {
+            "health": 20,
+            "nearby_entities": []
+        }
+        
+        result = action.can_execute(bot_state)
+        
+        assert result is False
+    
+    @pytest.mark.asyncio
+    async def test_execute_calls_goto(self, mock_actions):
+        """测试执行调用 goto 避险"""
+        from bot.meta_actions.retreat_safe import RetreatSafeAction
+        action = RetreatSafeAction()
+        mock_actions.get_state = MagicMock(return_value={
+            "position": {"x": 100, "y": 64, "z": 200}
+        })
+        mock_actions.goto = AsyncMock(return_value=MagicMock(success=True))
+        
+        result = await action.execute(mock_actions)
+        
+        mock_actions.goto.assert_called_once()
+        assert result.success is True
+
+
+# ============================================================================
+# MetaActionDispatcher Tests
+# ============================================================================
+
+class TestMetaActionDispatcher:
+    """元动作分发器测试"""
+    
+    def test_dispatch_to_meta_action(self):
+        """测试路由到 MetaAction"""
+        from bot.meta_actions.dispatcher import MetaActionDispatcher
+        
+        dispatcher = MetaActionDispatcher()
+        
+        # 验证 dispatch 方法存在
+        assert hasattr(dispatcher, 'dispatch')
+    
+    def test_default_timeouts(self):
+        """测试默认超时配置"""
+        from bot.meta_actions.dispatcher import MetaActionDispatcher
+        
+        assert MetaActionDispatcher.DEFAULT_TIMEOUTS.get("smelt_item") == 120.0
+        assert MetaActionDispatcher.DEFAULT_TIMEOUTS.get("retreat_safe") == 30.0
+    
+    @pytest.mark.asyncio
+    async def test_dispatch_unknown_action(self):
+        """测试未知动作返回错误"""
+        from bot.meta_actions.dispatcher import MetaActionDispatcher
+        
+        # 使用 MagicMock 并显式设置属性不存在
+        mock_actions = MagicMock()
+        del mock_actions.unknown_action_xyz  # 确保属性不存在
+        
+        dispatcher = MetaActionDispatcher()
+        result = await dispatcher.dispatch("unknown_action_xyz", {}, mock_actions)
+        
+        assert result.success is False
+        assert result.error_code == "UNKNOWN_ACTION"
+

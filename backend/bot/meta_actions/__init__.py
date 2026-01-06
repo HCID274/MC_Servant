@@ -5,19 +5,27 @@
 
 from .interface import IMetaAction, MetaActionResult
 from .registry import MetaActionRegistry
+from .dispatcher import MetaActionDispatcher
 
 # 导入具体实现以触发注册
 from .navigate import NavigateAction
 from .gather_block import GatherBlockAction
 from .scan_environment import ScanEnvironmentAction
 from .craft_item import CraftItemAction
+from .smelt_item import SmeltItemAction
+from .retreat_safe import RetreatSafeAction
 
 __all__ = [
     "IMetaAction",
     "MetaActionResult",
     "MetaActionRegistry",
+    "MetaActionDispatcher",
     "NavigateAction",
     "GatherBlockAction",
     "ScanEnvironmentAction",
     "CraftItemAction",
+    "SmeltItemAction",
+    "RetreatSafeAction",
 ]
+
+

@@ -79,6 +79,9 @@ class MineflayerActions(IBotActions):
     async def craft(self, item_name: str, count: int = 1, timeout: float = 30.0) -> ActionResult:
         return await self._crafting.craft(item_name, count=count, timeout=timeout)
 
+    async def smelt(self, item_name: str, count: int = 1, timeout: float = 120.0) -> ActionResult:
+        return await self._crafting.smelt(item_name, count=count, timeout=timeout)
+
     async def give(self, player_name: str, item_name: str, count: int = 1, timeout: float = 30.0) -> ActionResult:
         return await self._inventory.give(player_name, item_name, count=count, timeout=timeout)
 

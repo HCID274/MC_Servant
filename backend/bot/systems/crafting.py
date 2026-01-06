@@ -592,3 +592,314 @@ class CraftingSystem:
             return item.name if item else None
         except Exception:
             return None
+
+    # =========================================================================
+    # Smelting System
+    # =========================================================================
+    
+    # Smeltable items: raw -> product
+    SMELTABLE_ITEMS = {
+        "raw_iron": "iron_ingot",
+        "raw_gold": "gold_ingot",
+        "raw_copper": "copper_ingot",
+        "iron_ore": "iron_ingot",  # Legacy
+        "gold_ore": "gold_ingot",
+        "copper_ore": "copper_ingot",
+        "sand": "glass",
+        "cobblestone": "stone",
+        "oak_log": "charcoal",
+        "spruce_log": "charcoal",
+        "birch_log": "charcoal",
+        "jungle_log": "charcoal",
+        "acacia_log": "charcoal",
+        "dark_oak_log": "charcoal",
+        "cherry_log": "charcoal",
+        "mangrove_log": "charcoal",
+        "clay_ball": "brick",
+        "netherrack": "nether_brick",
+        "wet_sponge": "sponge",
+        "kelp": "dried_kelp",
+        "cactus": "green_dye",
+        "ancient_debris": "netherite_scrap",
+    }
+    
+    # Valid fuels with burn time (items smelted per fuel)
+    FUEL_PRIORITY = [
+        ("coal", 8),
+        ("charcoal", 8),
+        ("coal_block", 80),
+        ("oak_log", 1.5),
+        ("oak_planks", 1.5),
+        ("stick", 0.5),
+        ("dried_kelp_block", 20),
+        ("blaze_rod", 12),
+        ("lava_bucket", 100),
+    ]
+
+    async def smelt(
+        self,
+        item_name: str,
+        count: int = 1,
+        timeout: float = 120.0
+    ) -> ActionResult:
+        """
+        Smelt items in a furnace.
+        
+        Flow:
+        1. Validate item is smeltable
+        2. Check inventory for raw materials
+        3. Find nearby furnace (or craft one if possible)
+        4. Navigate to furnace
+        5. Open furnace and put fuel + input
+        6. Wait for smelting to complete
+        7. Take output
+        
+        Args:
+            item_name: Raw item to smelt (e.g. "raw_iron")
+            count: Number of items to smelt
+            timeout: Maximum time for entire operation
+        
+        Returns:
+            ActionResult with smelted items data
+        """
+        start_time = time.time()
+        
+        # Normalize item name
+        smelt_input = item_name.replace("minecraft:", "")
+        
+        # Check if smeltable
+        if smelt_input not in self.SMELTABLE_ITEMS:
+            return ActionResult(
+                success=False,
+                action="smelt",
+                message=f"{smelt_input} 不是可冶炼的物品",
+                status=ActionStatus.FAILED,
+                error_code="INVALID_TARGET"
+            )
+        
+        output_item = self.SMELTABLE_ITEMS[smelt_input]
+        
+        # Check inventory for raw materials
+        inventory = self._inventory.get_inventory_summary()
+        available = inventory.get(smelt_input, 0)
+        
+        if available < count:
+            return ActionResult(
+                success=False,
+                action="smelt",
+                message=f"材料不足: 需要 {count} 个 {smelt_input}，只有 {available} 个",
+                status=ActionStatus.FAILED,
+                error_code="INSUFFICIENT_MATERIALS",
+                data={"missing": {smelt_input: count - available}}
+            )
+        
+        # Find fuel in inventory
+        fuel_item = None
+        fuel_count_needed = (count + 7) // 8  # Rough estimate
+        for fuel_name, burn_rate in self.FUEL_PRIORITY:
+            if inventory.get(fuel_name, 0) > 0:
+                fuel_item = fuel_name
+                break
+        
+        if not fuel_item:
+            return ActionResult(
+                success=False,
+                action="smelt",
+                message=f"没有燃料可用于冶炼",
+                status=ActionStatus.FAILED,
+                error_code="INSUFFICIENT_MATERIALS",
+                data={"missing": {"fuel": 1}}
+            )
+        
+        try:
+            # Find furnace nearby
+            furnace_block = None
+            furnace_types = ["furnace", "blast_furnace", "smoker"]
+            
+            for furnace_type in furnace_types:
+                try:
+                    block_info = self._mcData.blocksByName.get(furnace_type)
+                    if block_info:
+                        furnace_block = self._bot.findBlock({
+                            "matching": block_info.id,
+                            "maxDistance": 32
+                        })
+                        if furnace_block:
+                            logger.info(f"[smelt] Found {furnace_type} at {furnace_block.position}")
+                            break
+                except Exception:
+                    continue
+            
+            if not furnace_block:
+                # Check if we can craft a furnace
+                if inventory.get("cobblestone", 0) >= 8:
+                    logger.info("[smelt] No furnace found, attempting to craft one...")
+                    craft_result = await self.craft("furnace", 1)
+                    if not craft_result.success:
+                        return ActionResult(
+                            success=False,
+                            action="smelt",
+                            message="附近没有熔炉，且无法合成",
+                            status=ActionStatus.FAILED,
+                            error_code="NO_TOOL",
+                            data={"station": "furnace"}
+                        )
+                    # Need to place the furnace - this requires placing logic
+                    return ActionResult(
+                        success=False,
+                        action="smelt",
+                        message="已合成熔炉，请先放置后再冶炼",
+                        status=ActionStatus.FAILED,
+                        error_code="STATION_NOT_PLACED",
+                        data={"station": "furnace", "action_needed": "place"}
+                    )
+                else:
+                    return ActionResult(
+                        success=False,
+                        action="smelt",
+                        message="附近没有熔炉",
+                        status=ActionStatus.FAILED,
+                        error_code="NO_TOOL",
+                        data={"station": "furnace"}
+                    )
+            
+            # Navigate to furnace
+            pos = furnace_block.position
+            nav_result = await self._movement.navigate_to_block(
+                int(pos.x), int(pos.y), int(pos.z)
+            )
+            if not nav_result:
+                logger.warning(f"[smelt] Navigation to furnace failed, trying anyway...")
+            
+            # Open furnace using mineflayer API
+            furnace = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self._bot.openFurnace(furnace_block)
+                ),
+                timeout=10.0
+            )
+            
+            if not furnace:
+                return ActionResult(
+                    success=False,
+                    action="smelt",
+                    message="无法打开熔炉",
+                    status=ActionStatus.FAILED,
+                    error_code="EXECUTION_ERROR"
+                )
+            
+            try:
+                # Get item type IDs
+                input_item_info = self._mcData.itemsByName.get(smelt_input)
+                fuel_item_info = self._mcData.itemsByName.get(fuel_item)
+                
+                if not input_item_info:
+                    raise RuntimeError(f"Unknown item: {smelt_input}")
+                
+                # Put fuel first
+                if fuel_item_info:
+                    logger.info(f"[smelt] Putting fuel: {fuel_item}")
+                    await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: furnace.putFuel(fuel_item_info.id, None, fuel_count_needed)
+                        ),
+                        timeout=5.0
+                    )
+                
+                # Put input
+                logger.info(f"[smelt] Putting input: {count}x {smelt_input}")
+                await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: furnace.putInput(input_item_info.id, None, count)
+                    ),
+                    timeout=5.0
+                )
+                
+                # Wait for smelting - poll furnace.outputItem()
+                # Each item takes ~10 seconds to smelt
+                smelt_time_per_item = 10.0
+                max_wait = min(count * smelt_time_per_item + 10, timeout - (time.time() - start_time))
+                
+                logger.info(f"[smelt] Waiting up to {max_wait:.1f}s for smelting...")
+                smelted_count = 0
+                poll_start = time.time()
+                
+                while time.time() - poll_start < max_wait:
+                    await asyncio.sleep(2.0)
+                    
+                    output = furnace.outputItem()
+                    if output and output.count > 0:
+                        smelted_count = output.count
+                        if smelted_count >= count:
+                            break
+                    
+                    # Check if input is empty and output has items
+                    input_remaining = furnace.inputItem()
+                    if (not input_remaining or input_remaining.count == 0) and smelted_count > 0:
+                        break
+                
+                # Take output
+                if smelted_count > 0:
+                    logger.info(f"[smelt] Taking output: {smelted_count}x {output_item}")
+                    await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: furnace.takeOutput()
+                        ),
+                        timeout=5.0
+                    )
+                
+                # Close furnace
+                try:
+                    furnace.close()
+                except Exception:
+                    pass
+                
+                if smelted_count == 0:
+                    return ActionResult(
+                        success=False,
+                        action="smelt",
+                        message=f"冶炼超时，没有产出",
+                        status=ActionStatus.TIMEOUT,
+                        error_code="TIMEOUT",
+                        duration_ms=int((time.time() - start_time) * 1000)
+                    )
+                
+                return ActionResult(
+                    success=True,
+                    action="smelt",
+                    message=f"成功冶炼 {smelted_count} 个 {output_item}",
+                    status=ActionStatus.SUCCESS,
+                    data={"smelted": {output_item: smelted_count}},
+                    duration_ms=int((time.time() - start_time) * 1000)
+                )
+                
+            finally:
+                try:
+                    furnace.close()
+                except Exception:
+                    pass
+        
+        except asyncio.TimeoutError:
+            return ActionResult(
+                success=False,
+                action="smelt",
+                message=f"冶炼 {smelt_input} 超时",
+                status=ActionStatus.TIMEOUT,
+                error_code="TIMEOUT",
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
+        except Exception as e:
+            logger.error(f"[smelt] Failed: {e}")
+            return ActionResult(
+                success=False,
+                action="smelt",
+                message=str(e),
+                status=ActionStatus.FAILED,
+                error_code="EXECUTION_ERROR",
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
+

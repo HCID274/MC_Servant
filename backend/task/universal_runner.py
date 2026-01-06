@@ -1002,113 +1002,24 @@ class UniversalRunner(ITaskRunner):
         return False
     
     async def _execute_step(self, actions: "IBotActions", step: ActionStep) -> "ActionResult":
-        """执行单个动作步骤"""
-        import inspect
+        """
+        执行单个动作步骤
         
+        使用 MetaActionDispatcher 作为主分发层:
+        1. 尝试 MetaAction (navigate, gather_block, smelt_item 等)
+        2. Fallback 到 BotActions 原生方法
+        """
         try:
-            from ..bot.interfaces import ActionResult as _ActionResult, ActionStatus as _ActionStatus
+            from ..bot.meta_actions import MetaActionDispatcher
         except ImportError:
-            from bot.interfaces import ActionResult as _ActionResult, ActionStatus as _ActionStatus
+            from bot.meta_actions import MetaActionDispatcher
         
         action_name = step.action
         params = step.params.copy() if step.params else {}
         
-        # 处理超时参数
-        DEFAULT_TIMEOUTS = {
-            "goto": 60.0, "mine": 120.0, "mine_tree": 120.0,
-            "craft": 30.0, "place": 10.0, "give": 30.0, "equip": 5.0, "scan": 10.0,
-            "chat": 5.0, "look_around": 10.0, "unstuck": 5.0, "pickup": 60.0,
-            "find_location": 30.0, "patrol": 90.0,
-        }
-        if "timeout_sec" in params:
-            params["timeout"] = params.pop("timeout_sec")
-        elif "timeout" not in params:
-            params["timeout"] = DEFAULT_TIMEOUTS.get(action_name, 30.0)
-        
-        # some actions do not accept timeout
-        if action_name in {"scan", "chat", "look_around", "find_location"} and "timeout" in params:
-            params.pop("timeout")
-
-        # MetaAction dispatch
-        try:
-            from ..bot.meta_actions import MetaActionRegistry
-        except Exception:
-            MetaActionRegistry = None
-
-        if MetaActionRegistry:
-            meta_action = MetaActionRegistry.get(action_name)
-            if meta_action:
-                try:
-                    return await meta_action.execute(actions, **params)
-                except Exception as e:
-                    logger.exception(f"MetaAction execution error: {e}")
-                    return _ActionResult(
-                        success=False,
-                        action=action_name,
-                        message=str(e),
-                        status=_ActionStatus.FAILED,
-                        error_code="META_ACTION_ERROR"
-                    )
-        
-        # 获取动作方法
-        action_method = getattr(actions, action_name, None)
-        if action_method is None:
-            return _ActionResult(
-                success=False,
-                action=action_name,
-                message=f"未知动作: {action_name}",
-                status=_ActionStatus.FAILED,
-                error_code="UNKNOWN_ACTION"
-            )
-        
-        # 过滤未知参数
-        try:
-            sig = inspect.signature(action_method)
-            accepted = set(sig.parameters.keys())
-            accepted.discard("self")
-            has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-            if not has_var_kw:
-                params = {k: v for k, v in params.items() if k in accepted}
-        except Exception:
-            pass
-        
-        # 执行
-        try:
-            result = await action_method(**params)
-            if isinstance(result, bool):
-                return _ActionResult(
-                    success=result,
-                    action=action_name,
-                    message="ok" if result else "failed",
-                    status=_ActionStatus.SUCCESS if result else _ActionStatus.FAILED,
-                )
-            if result is None:
-                return _ActionResult(
-                    success=False,
-                    action=action_name,
-                    message="empty result",
-                    status=_ActionStatus.FAILED,
-                    error_code="EMPTY_RESULT"
-                )
-            return result
-        except TypeError as e:
-            logger.error(f"Action parameter error: {e}")
-            return _ActionResult(
-                success=False,
-                action=action_name,
-                message=f"参数错误: {str(e)}",
-                status=_ActionStatus.FAILED,
-                error_code="INVALID_PARAMS"
-            )
-        except Exception as e:
-            logger.exception(f"Action execution error: {e}")
-            return _ActionResult(
-                success=False,
-                action=action_name,
-                message=str(e),
-                status=_ActionStatus.FAILED,
-                error_code="EXECUTION_ERROR"
-            )
+        # 使用 MetaActionDispatcher 统一分发
+        dispatcher = MetaActionDispatcher()
+        return await dispatcher.dispatch(action_name, params, actions)
     
     # ========================================================================
     # Recovery Methods

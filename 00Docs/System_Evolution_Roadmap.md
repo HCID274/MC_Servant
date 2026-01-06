@@ -83,6 +83,6 @@
     *   目标：Bot 学会查阅笔记，变聪明。
     *   动作：实现 `IExperienceRetriever`, `LRUCache`, `PostgresExperienceRetriever`，并集成到 `LLMTaskPlanner`。
 
-4.  **Phase 4: 工具库重构 (Tooling Refactor) [In Progress]**
+4.  **Phase 4: 工具库重构 (Tooling Refactor) [Done]**
     *   目标：Bot 的手脚更灵活，能做复杂动作。
-    *   动作：建立 `MetaAction` 框架，实现 `Navigate`, `Gather`, `Scan`, `Craft` 等核心动作，并在 Runner 中集成动态分发。
+    *   动作：建立 `MetaAction` 框架，实现 `MetaActionDispatcher`, `SmeltItem`, `RetreatSafe` 等动作，并在 Runner 中集成动态分发。
