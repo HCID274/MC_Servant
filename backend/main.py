@@ -332,6 +332,17 @@ async def lifespan(app: FastAPI):
             if not target_player:
                 logger.debug("No target player for chat message, skipping send")
                 return
+
+            # Note: on_chat_message 通常用于 TaskExecutor 的主动发言
+            # 这些消息也会被 WS 客户端显示，我们在这里记录它们到记忆系统
+            if bot_context.memory:
+                 bot_context.memory.add_message(
+                     role="assistant",
+                     content=content,
+                     sender_uuid=bot_config.bot_name,
+                     sender_name=bot_config.bot_name,
+                 )
+
             response = NpcResponse(
                 npc=bot_config.bot_name,
                 target_player=target_player,
@@ -347,6 +358,24 @@ async def lifespan(app: FastAPI):
                     response["target_player"] = target_player
             response.setdefault("type", MessageType.NPC_RESPONSE.value)
             response.setdefault("npc", bot_config.bot_name)
+
+            # Note: on_npc_response 用于状态机返回的响应
+            # 状态机内部(IdleState等)的响应由 PlayerMessageHandler 记录
+            # 但 TaskExecutor 的 internal events 也会触发这里，需要区分吗？
+            # 实际上，PlayerMessageHandler 返回的响应不会走这里
+            # 走这里的是 process_pending_events (后台任务)
+            # 所以这里需要记录
+
+            # 记录到记忆系统 (internal events)
+            content = response.get("content") or response.get("text")
+            if content and bot_context.memory:
+                 bot_context.memory.add_message(
+                     role="assistant",
+                     content=content,
+                     sender_uuid=bot_config.bot_name,
+                     sender_name=bot_config.bot_name,
+                 )
+
             await ws_send_func(response)
 
         bot_context.on_hologram_update = on_hologram_update
