@@ -17,7 +17,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Header, HTTPException, Depends
 import uvicorn
 
 from config import settings
@@ -659,6 +659,14 @@ app = FastAPI(
 )
 
 
+import secrets
+
+async def verify_token(x_access_token: str = Header(None)):
+    """验证访问令牌"""
+    if not x_access_token or not secrets.compare_digest(x_access_token, settings.ws_access_token):
+        raise HTTPException(status_code=401, detail="Invalid or missing token")
+
+
 @app.get("/")
 async def root():
     """健康检查"""
@@ -669,7 +677,7 @@ async def root():
     }
 
 
-@app.get("/bots")
+@app.get("/bots", dependencies=[Depends(verify_token)])
 async def list_bots():
     """列出所有活跃的 Bot"""
     if bot_manager:
@@ -677,7 +685,7 @@ async def list_bots():
     return {"bots": []}
 
 
-@app.get("/state")
+@app.get("/state", dependencies=[Depends(verify_token)])
 async def get_state():
     """获取状态机状态（调试用）"""
     if state_machine:
