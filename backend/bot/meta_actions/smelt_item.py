@@ -92,6 +92,7 @@ class SmeltItemAction(IMetaAction):
         """
         # Normalize parameter names
         item_name = item or kwargs.get("item_name", "")
+        timeout = kwargs.get("timeout")
         
         if not item_name:
             from ..interfaces import ActionResult as AR, ActionStatus as AS
@@ -103,4 +104,6 @@ class SmeltItemAction(IMetaAction):
                 error_code="INVALID_PARAMS"
             )
         
-        return await actions.smelt(item_name, count=count)
+        if timeout is None:
+            return await actions.smelt(item_name, count=count)
+        return await actions.smelt(item_name, count=count, timeout=timeout)

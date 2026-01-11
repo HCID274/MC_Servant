@@ -116,6 +116,9 @@ DYNAMIC_RESOLVER_PROMPT = """你是 Minecraft Bot 的任务恢复规划器。当
 2. 物品名必须使用 Minecraft 内部 ID (如 oak_planks，不要用"木板")
 3. 优先使用背包中已有的材料，参考知识库提示
 4. 如果知识库提示说有等价物品，优先使用它们
+5. **禁止连续 replan 为 explore/patrol** - 如果已尝试次数 >= 2 且原任务是移动/拾取类，应返回 escalate 请求用户帮助
+6. 如果失败的动作是 pickup 且错误是 TARGET_NOT_FOUND，优先返回 retry (物品可能因延迟未加载)
+7. 如果连续失败 3 次以上，优先返回 escalate 而不是继续 replan
 """
 
 

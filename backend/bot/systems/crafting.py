@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 from typing import Optional, Dict, Any, List, Tuple
@@ -622,6 +623,16 @@ class CraftingSystem:
         "cactus": "green_dye",
         "ancient_debris": "netherite_scrap",
     }
+
+    # Furnace type compatibility (subset of smeltable items)
+    BLAST_FURNACE_ITEMS = {
+        "raw_iron", "raw_gold", "raw_copper",
+        "iron_ore", "gold_ore", "copper_ore",
+        "ancient_debris",
+    }
+    SMOKER_ITEMS = {
+        "kelp",
+    }
     
     # Valid fuels with burn time (items smelted per fuel)
     FUEL_PRIORITY = [
@@ -693,19 +704,44 @@ class CraftingSystem:
                 data={"missing": {smelt_input: count - available}}
             )
         
-        # Find fuel in inventory
+        # Find fuel in inventory (ensure enough for count)
         fuel_item = None
-        fuel_count_needed = (count + 7) // 8  # Rough estimate
+        fuel_count_needed = 0
+        best_candidate = None
+        best_missing = None
         for fuel_name, burn_rate in self.FUEL_PRIORITY:
-            if inventory.get(fuel_name, 0) > 0:
+            available_fuel = inventory.get(fuel_name, 0)
+            if available_fuel <= 0:
+                continue
+
+            required = int(math.ceil(count / burn_rate))
+            if available_fuel >= required:
                 fuel_item = fuel_name
+                fuel_count_needed = required
                 break
-        
+
+            missing = required - available_fuel
+            if best_missing is None or missing < best_missing:
+                best_missing = missing
+                best_candidate = (fuel_name, available_fuel, required)
+
         if not fuel_item:
+            if best_candidate:
+                fuel_name, available_fuel, required = best_candidate
+                return ActionResult(
+                    success=False,
+                    action="smelt",
+                    message=(
+                        f"燃料不足: 需要 {required} 个 {fuel_name}，只有 {available_fuel} 个"
+                    ),
+                    status=ActionStatus.FAILED,
+                    error_code="INSUFFICIENT_MATERIALS",
+                    data={"missing": {fuel_name: required - available_fuel}}
+                )
             return ActionResult(
                 success=False,
                 action="smelt",
-                message=f"没有燃料可用于冶炼",
+                message="没有燃料可用于冶炼",
                 status=ActionStatus.FAILED,
                 error_code="INSUFFICIENT_MATERIALS",
                 data={"missing": {"fuel": 1}}
@@ -714,7 +750,12 @@ class CraftingSystem:
         try:
             # Find furnace nearby
             furnace_block = None
-            furnace_types = ["furnace", "blast_furnace", "smoker"]
+            furnace_kind = None
+            furnace_types = ["furnace"]
+            if smelt_input in self.BLAST_FURNACE_ITEMS:
+                furnace_types.append("blast_furnace")
+            if smelt_input in self.SMOKER_ITEMS:
+                furnace_types.append("smoker")
             
             for furnace_type in furnace_types:
                 try:
@@ -725,6 +766,7 @@ class CraftingSystem:
                             "maxDistance": 32
                         })
                         if furnace_block:
+                            furnace_kind = furnace_type
                             logger.info(f"[smelt] Found {furnace_type} at {furnace_block.position}")
                             break
                 except Exception:
@@ -772,10 +814,16 @@ class CraftingSystem:
                 logger.warning(f"[smelt] Navigation to furnace failed, trying anyway...")
             
             # Open furnace using mineflayer API
+            loop = asyncio.get_running_loop()
+            open_method = self._bot.openFurnace
+            if furnace_kind == "blast_furnace" and hasattr(self._bot, "openBlastFurnace"):
+                open_method = self._bot.openBlastFurnace
+            elif furnace_kind == "smoker" and hasattr(self._bot, "openSmoker"):
+                open_method = self._bot.openSmoker
             furnace = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(
+                loop.run_in_executor(
                     None,
-                    lambda: self._bot.openFurnace(furnace_block)
+                    lambda: open_method(furnace_block)
                 ),
                 timeout=10.0
             )
@@ -801,7 +849,7 @@ class CraftingSystem:
                 if fuel_item_info:
                     logger.info(f"[smelt] Putting fuel: {fuel_item}")
                     await asyncio.wait_for(
-                        asyncio.get_event_loop().run_in_executor(
+                        loop.run_in_executor(
                             None,
                             lambda: furnace.putFuel(fuel_item_info.id, None, fuel_count_needed)
                         ),
@@ -811,7 +859,7 @@ class CraftingSystem:
                 # Put input
                 logger.info(f"[smelt] Putting input: {count}x {smelt_input}")
                 await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(
+                    loop.run_in_executor(
                         None,
                         lambda: furnace.putInput(input_item_info.id, None, count)
                     ),
@@ -845,7 +893,7 @@ class CraftingSystem:
                 if smelted_count > 0:
                     logger.info(f"[smelt] Taking output: {smelted_count}x {output_item}")
                     await asyncio.wait_for(
-                        asyncio.get_event_loop().run_in_executor(
+                        loop.run_in_executor(
                             None,
                             lambda: furnace.takeOutput()
                         ),
@@ -902,4 +950,3 @@ class CraftingSystem:
                 error_code="EXECUTION_ERROR",
                 duration_ms=int((time.time() - start_time) * 1000)
             )
-

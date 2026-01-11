@@ -196,6 +196,18 @@ class MetaActionDispatcher:
         params: Dict[str, Any]
     ) -> Dict[str, Any]:
         """为 MetaAction 过滤参数"""
+        try:
+            sig = inspect.signature(meta_action.execute)
+            has_var_kw = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in sig.parameters.values()
+            )
+        except Exception:
+            has_var_kw = True
+
+        if has_var_kw:
+            return params
+
         # MetaAction.execute 使用 **kwargs，所以大部分参数都可以传递
         # 但我们仍然可以基于 parameters 属性做智能过滤
         accepted = set()

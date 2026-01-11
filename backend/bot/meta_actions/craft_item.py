@@ -127,6 +127,7 @@ class CraftItemAction(IMetaAction):
         
         item_name = params.get("item_name")
         count = params.get("count", 1)
+        timeout = params.get("timeout")
         
         if not item_name:
             return ActionResult(
@@ -154,4 +155,7 @@ class CraftItemAction(IMetaAction):
         
         logger.info(f"[CraftItemAction] Crafting {count}x {item_name}")
         
-        return await actions.craft(item_name=item_name, count=count)
+        kwargs = {"item_name": item_name, "count": count}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return await actions.craft(**kwargs)

@@ -33,6 +33,8 @@ class MiningSystem:
         self._movement = movement
         self._inventory = inventory
         self._progress_timer: Optional[ProgressTimer] = None
+        # 🔧 Fix: 持久化 cheats 状态，一旦无权限就永久禁用
+        self._can_use_cheats: bool = False
 
     async def _get_block_harvest_info(self, block) -> dict:
         def _sync_get():
@@ -180,6 +182,9 @@ class MiningSystem:
                         logger.debug(f"Equipped {axe_name} for tree mining")
                         return True
 
+            return False
+        except Exception as e:
+            logger.warning(f"Failed to equip axe: {e}")
             return False
 
     async def mine(
@@ -412,102 +417,154 @@ class MiningSystem:
             pass
         return None
 
+
     async def climb_to_surface(self, timeout: float = 60.0) -> ActionResult:
         start_time = time.time()
-        logger.info("[climb_to_surface] Starting enhanced recovery to surface")
+        logger.info("[climb_to_surface] Starting physical recovery to surface")
 
-        can_use_cheats = True
+        def is_air(block) -> bool:
+            try:
+                return block is None or block.name in ("air", "cave_air", "void_air")
+            except Exception:
+                return True
+
+        def find_pillar_item():
+            for name in (
+                "dirt", "cobblestone", "stone",
+                "oak_planks", "spruce_planks", "birch_planks"
+            ):
+                item = self._inventory.find_inventory_item(name)
+                if item:
+                    return item
+            return None
+
+        async def try_pillar_up(cur_x: int, current_y: int, cur_z: int) -> bool:
+            item = find_pillar_item()
+            if not item:
+                return False
+
+            ref_block = self._bot.blockAt(self._Vec3(cur_x, current_y - 1, cur_z))
+            if is_air(ref_block):
+                return False
+
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self._bot.equip(item, "hand")
+                )
+            except Exception:
+                return False
+
+            try:
+                self._bot.setControlState("jump", True)
+                await asyncio.sleep(0.2)
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self._bot.placeBlock(ref_block, self._Vec3(0, 1, 0))
+                )
+                await asyncio.sleep(0.2)
+                return True
+            except Exception:
+                return False
+            finally:
+                try:
+                    self._bot.setControlState("jump", False)
+                except Exception:
+                    pass
+
+        async def try_spiral_step(cur_x: int, current_y: int, cur_z: int) -> tuple[bool, int, int]:
+            directions = [(1, 0), (0, 1), (-1, 0), (0, -1)]
+            for dx, dz in directions:
+                head_pos = self._Vec3(cur_x + dx, current_y + 1, cur_z + dz)
+                head_block = self._bot.blockAt(head_pos)
+                if head_block and not is_air(head_block) and getattr(head_block, "diggable", True):
+                    try:
+                        await self._bot.dig(head_block)
+                    except Exception:
+                        pass
+
+                foot_block = self._bot.blockAt(self._Vec3(cur_x + dx, current_y, cur_z + dz))
+                if is_air(foot_block) and is_air(head_block):
+                    try:
+                        self._bot.lookAt(self._Vec3(cur_x + dx + 0.5, current_y + 1.0, cur_z + dz + 0.5))
+                    except Exception:
+                        pass
+                    await self._movement.unstuck_move(duration=0.6)
+                    return True, cur_x + dx, cur_z + dz
+
+            return False, cur_x, cur_z
 
         try:
             pos = self._bot.entity.position
             cur_x, cur_z = int(pos.x), int(pos.z)
             target_y = self._get_highest_block_y_at(cur_x, cur_z)
 
-            if target_y is None or target_y <= pos.y:
+            if target_y is None:
+                target_y = int(pos.y)
+
+            if target_y <= pos.y:
                 for dx, dz in [(2, 0), (-2, 0), (0, 2), (0, -2)]:
-                    target_y = self._get_highest_block_y_at(cur_x + dx, cur_z + dz)
-                    if target_y and target_y > pos.y:
+                    candidate = self._get_highest_block_y_at(cur_x + dx, cur_z + dz)
+                    if candidate and candidate > target_y:
+                        target_y = candidate
                         cur_x += dx
                         cur_z += dz
                         break
 
-            if target_y is None or target_y <= pos.y:
-                target_y = int(pos.y) + 10
+            head_block = self._bot.blockAt(self._Vec3(cur_x, int(pos.y) + 2, cur_z))
+            if int(pos.y) >= target_y and is_air(head_block):
+                await self._movement.unstuck_move(duration=0.8)
+                return ActionResult(
+                    success=True,
+                    action="climb_to_surface",
+                    message="Surface level; no climb required",
+                    status=ActionStatus.SUCCESS,
+                    data={"final_y": int(pos.y), "skipped": True},
+                )
 
-            logger.info(f"[climb_to_surface] Target: ({cur_x}, {target_y}, {cur_z})")
-
-            goto_result = await self._movement.goto(
-                f"{cur_x},{target_y},{cur_z}",
-                timeout=timeout / 3
-            )
-            if goto_result.success:
-                return ActionResult(success=True, action="climb_to_surface", message="脱困成功")
-
-            current_y = int(self._bot.entity.position.y)
-            while current_y < target_y:
+            while True:
                 if time.time() - start_time > timeout:
                     break
 
+                pos_now = self._bot.entity.position
+                current_y = int(pos_now.y)
                 head_pos = self._Vec3(cur_x, current_y + 2, cur_z)
                 block_head = self._bot.blockAt(head_pos)
 
-                if block_head and block_head.name not in ["air", "cave_air", "water"]:
-                    if can_use_cheats:
-                        self._bot.chat(f"/setblock {cur_x} {current_y + 2} {cur_z} air")
-                        await asyncio.sleep(0.1)
-                        block_head_check = self._bot.blockAt(head_pos)
-                        if block_head_check and block_head_check.name not in ["air", "cave_air", "water"]:
-                            logger.info("[climb_to_surface] /setblock failed (no permission?), disabling cheats")
-                            can_use_cheats = False
+                if current_y >= target_y and is_air(block_head):
+                    break
 
-                    block_head = self._bot.blockAt(head_pos)
-                    if block_head and block_head.name not in ["air", "cave_air", "water"]:
-                        try:
-                            await self._bot.dig(block_head)
-                        except Exception:
-                            for dx, dz in [(1, 0), (0, 1), (-1, 0), (0, -1)]:
-                                side_head = self._bot.blockAt(
-                                    self._Vec3(cur_x + dx, current_y + 2, cur_z + dz)
-                                )
-                                if side_head and side_head.name in ["air", "cave_air"]:
-                                    cur_x += dx
-                                    cur_z += dz
-                                    logger.info(f"[climb_to_surface] Spiraling to ({cur_x}, {cur_z})")
-                                    break
-
-                old_y = current_y
-
-                if can_use_cheats:
+                if block_head and not is_air(block_head):
                     try:
-                        self._bot.chat(f"/setblock {cur_x} {current_y} {cur_z} dirt")
-                        self._bot.chat(f"/tp @s {cur_x} {current_y + 1} {cur_z}")
+                        await self._bot.dig(block_head)
                         await asyncio.sleep(0.1)
-
-                        new_pos = self._bot.entity.position
-                        if int(new_pos.y) <= old_y:
-                            logger.info("[climb_to_surface] /tp failed (no permission?), disabling cheats")
-                            can_use_cheats = False
                     except Exception:
-                        can_use_cheats = False
+                        pass
 
-                new_pos = self._bot.entity.position
-                current_y = int(new_pos.y)
+                if await try_pillar_up(cur_x, current_y, cur_z):
+                    continue
 
-                if current_y <= old_y:
-                    self._bot.setControlState("jump", True)
-                    await asyncio.sleep(0.3)
-                    self._bot.setControlState("jump", False)
-                    current_y = int(self._bot.entity.position.y)
+                moved, cur_x, cur_z = await try_spiral_step(cur_x, current_y, cur_z)
+                if moved:
+                    continue
+
+                await self._movement.unstuck_move(duration=0.6)
 
             final_pos = self._bot.entity.position
             return ActionResult(
-                success=final_pos.y >= target_y - 2,
+                success=final_pos.y >= target_y - 1,
                 action="climb_to_surface",
-                message=f"脱困结束，最终 Y: {int(final_pos.y)}",
-                data={"final_y": int(final_pos.y)}
+                message=f"Climb finished at y={int(final_pos.y)}",
+                status=ActionStatus.SUCCESS if final_pos.y >= target_y - 1 else ActionStatus.FAILED,
+                data={"final_y": int(final_pos.y), "target_y": int(target_y)},
             )
         except Exception as e:
-            return ActionResult(success=False, action="climb_to_surface", message=f"执行崩溃: {str(e)}")
+            return ActionResult(
+                success=False,
+                action="climb_to_surface",
+                message=f"climb_to_surface failed: {e}",
+                status=ActionStatus.FAILED,
+            )
 
     async def mine_tree(
         self,

@@ -305,9 +305,16 @@ class InventorySystem:
                         )
                         continue
 
-                    await asyncio.sleep(0.3)
+                    # 🔧 Fix: 增加等待时间，让 Mineflayer 有时间自动拾取
+                    await asyncio.sleep(0.8)
                     inventory_after = self.get_inventory_count(item_name)
                     actually_picked = inventory_after - inventory_before
+
+                    # 🔧 Fix: 二次检测 - 如果第一次没检测到，延迟后再确认
+                    if actually_picked <= 0:
+                        await asyncio.sleep(0.5)
+                        inventory_after_retry = self.get_inventory_count(item_name)
+                        actually_picked = inventory_after_retry - inventory_before
 
                     if actually_picked > 0:
                         picked_up[item_name] = picked_up.get(item_name, 0) + actually_picked

@@ -79,7 +79,7 @@ class TaskExecutor(ITaskExecutor):
         actions: "IBotActions",
         prereq_resolver: Optional[IPrerequisiteResolver] = None,
         runner_registry: Optional["RunnerRegistry"] = None,
-        runner_factory: Optional[IRunnerFactory] = None,  # 🆕 Phase 3+: 推荐使用
+        runner_factory: Optional[IRunnerFactory] = None,  #  Phase 3+: 推荐使用
         max_retries: int = 3,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
         owner_name: Optional[str] = None,  # 用于 give 命令的玩家名
@@ -108,7 +108,7 @@ class TaskExecutor(ITaskExecutor):
         # 并发锁，防止多任务重入导致状态不一致
         self._lock = asyncio.Lock()
 
-        # 🆕 Phase 3+ RunnerFactory 优先
+        #  Phase 3+ RunnerFactory 优先
         # 兼容性：支持 runner_registry 或自动创建默认 factory
         if runner_factory is not None:
             self._runner_factory = runner_factory
@@ -399,7 +399,7 @@ class TaskExecutor(ITaskExecutor):
             on_progress=self._on_progress,
         )
         
-        # 🆕 Phase 3+: 使用 RunnerFactory
+        #  Phase 3+: 使用 RunnerFactory
         if self._runner_factory is not None:
             try:
                 runner = self._runner_factory.create(task)
@@ -450,21 +450,39 @@ class TaskExecutor(ITaskExecutor):
         task_type = ctx.get("task_type")
         return task_type == "mine"
     
-    async def _execute_step(self, step: ActionStep) -> "ActionResult":
+    def _is_duplicate_explore_task(self, new_task: str) -> bool:
         """
-        执行单个动作步骤 (Legacy, 仅供 _execute_task_linear_fallback 使用，
-        虽然 _execute_task_linear_fallback 已移除，但为了防止某些极端边缘情况下的引用，保留此基础方法作为 utility 也可以。
-        但在当前设计中，只有 Runner 会调用 BotActions。TaskExecutor 不再直接调用 actions。)
+        🔧 Fix: 检测是否是重复的 explore/patrol 任务
         
-        实际上，如果 TaskExecutor 不再直接执行 step，这个方法也可以移除。
-        但为了保险起见，或者给子类/其他组件使用，暂时保留，或者根据架构文档应该清理。
-
-        这里选择暂时保留但作为 protected utility，或者如果有引用则移除。
-        TaskExecutor 类目前没有地方调用它了。
+        防止 LLM 无限推入 explore 50 → explore 100 → ... 死循环
+        
+        Args:
+            new_task: 待推入的任务描述
+            
+        Returns:
+            True 如果检测到重复的探索任务
         """
-        # ... 实现略 (因为不再被调用，可以选择删除)
-        # 为保持代码整洁，删除之。
-        pass
+        explore_keywords = ["explore", "patrol", "search", "scout", "巡逻", "探索", "搜索"]
+        new_lower = new_task.lower()
+        
+        # 新任务是否是探索类
+        new_is_explore = any(kw in new_lower for kw in explore_keywords)
+        if not new_is_explore:
+            return False
+        
+        # 检查栈中是否已有探索类任务
+        explore_count = 0
+        for task in self._stack._stack:
+            task_lower = (task.goal or "").lower()
+            if any(kw in task_lower for kw in explore_keywords):
+                explore_count += 1
+        
+        # 如果栈中已有 2 个以上的探索任务，拒绝新增
+        if explore_count >= 2:
+            logger.warning(f"[Dedup] Stack already has {explore_count} explore tasks, blocking new: {new_task}")
+            return True
+        
+        return False
     
     async def _handle_task_failure(self, result: TaskResult) -> bool:
         """
@@ -481,12 +499,30 @@ class TaskExecutor(ITaskExecutor):
             True 如果成功压入前置任务
             False 如果无法解决
         """
-        # 🆕 优先处理 dynamic_tasks (来自 DynamicResolver)
+        #  优先处理 dynamic_tasks (来自 DynamicResolver)
         if result.dynamic_tasks:
-            logger.info(f"[DynamicResolver] Pushing {len(result.dynamic_tasks)} prerequisite tasks")
+            # 🔧 Fix: 去重检测 - 防止无限 explore 死循环
+            filtered_tasks = []
+            for task_str in result.dynamic_tasks:
+                if self._is_duplicate_explore_task(task_str):
+                    logger.warning(f"[Dedup] Blocked duplicate explore task: {task_str}")
+                    # 🔧 Fix: 发送 escalate 消息给玩家
+                    if self._actions and hasattr(self._actions, 'chat'):
+                        try:
+                            await self._actions.chat("主人，这一片我找遍了也没发现目标，要不换个地方或者帮我指个路？")
+                        except Exception:
+                            pass
+                    continue
+                filtered_tasks.append(task_str)
+            
+            if not filtered_tasks:
+                logger.info("[Dedup] All dynamic_tasks blocked as duplicates, escalating to user")
+                return False  # 触发 escalate 逻辑
+            
+            logger.info(f"[DynamicResolver] Pushing {len(filtered_tasks)} prerequisite tasks")
             try:
                 # 反向压入栈（确保第一个任务先执行）
-                for task_str in reversed(result.dynamic_tasks):
+                for task_str in reversed(filtered_tasks):
                     prereq = StackTask(
                         name=task_str,
                         goal=task_str,

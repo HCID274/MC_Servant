@@ -7,7 +7,7 @@ import logging
 import math
 import random
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 from bot.drivers.interfaces import IDriverAdapter
 from bot.interfaces import ActionResult, ActionStatus
@@ -56,12 +56,71 @@ class MovementSystem:
                     error_code="TIMEOUT",
                     duration_ms=int((time.time() - start_time) * 1000)
                 )
+            except RuntimeError as e:
+                logger.warning(f"[goto] Pathfinder error: {e}. Trying simple fallback move.")
+                try:
+                    self._bot.pathfinder.stop()
+                except Exception:
+                    pass
+
+                fallback_moved = await self._simple_move_step(goal, duration=1.2)
+                if self._is_goal_reached(goal):
+                    pos = self._bot.entity.position
+                    return ActionResult(
+                        success=True,
+                        action="goto",
+                        message=f"Arrived at {target}",
+                        status=ActionStatus.SUCCESS,
+                        data={"arrived_at": [int(pos.x), int(pos.y), int(pos.z)]},
+                        duration_ms=int((time.time() - start_time) * 1000)
+                    )
+
+                remaining = max(0.0, timeout - (time.time() - start_time))
+                if fallback_moved and remaining > 0.1:
+                    try:
+                        self._bot.pathfinder.setGoal(goal)
+                        await asyncio.wait_for(
+                            self._wait_for_goal_reached(saved_goal=goal),
+                            timeout=remaining
+                        )
+                        pos = self._bot.entity.position
+                        return ActionResult(
+                            success=True,
+                            action="goto",
+                            message=f"Arrived at {target}",
+                            status=ActionStatus.SUCCESS,
+                            data={"arrived_at": [int(pos.x), int(pos.y), int(pos.z)]},
+                            duration_ms=int((time.time() - start_time) * 1000)
+                        )
+                    except asyncio.TimeoutError:
+                        try:
+                            self._bot.pathfinder.stop()
+                        except Exception:
+                            pass
+                        return ActionResult(
+                            success=False,
+                            action="goto",
+                            message=f"Navigation to {target} timed out ({timeout}s)",
+                            status=ActionStatus.TIMEOUT,
+                            error_code="TIMEOUT",
+                            duration_ms=int((time.time() - start_time) * 1000)
+                        )
+                    except Exception as retry_err:
+                        logger.warning(f"[goto] Pathfinder retry failed after fallback: {retry_err}")
+                return ActionResult(
+                    success=False,
+                    action="goto",
+                    message=f"Pathfinder failed: {e}",
+                    status=ActionStatus.FAILED,
+                    error_code="PATH_BLOCKED",
+                    duration_ms=int((time.time() - start_time) * 1000)
+                )
 
             pos = self._bot.entity.position
             return ActionResult(
                 success=True,
                 action="goto",
-                message=f"已到达 {target}",
+                message=f"Arrived at {target}",
                 status=ActionStatus.SUCCESS,
                 data={"arrived_at": [int(pos.x), int(pos.y), int(pos.z)]},
                 duration_ms=int((time.time() - start_time) * 1000)
@@ -78,6 +137,104 @@ class MovementSystem:
                 error_code="PATH_BLOCKED",
                 duration_ms=int((time.time() - start_time) * 1000)
             )
+
+    async def unstuck_move(self, duration: float = 0.8) -> bool:
+        return await self._simple_move_step(goal=None, duration=duration)
+
+    async def _simple_move_step(self, goal=None, duration: float = 0.8) -> bool:
+        try:
+            pos_before = self._bot.entity.position
+            target = self._extract_goal_coords(goal) if goal else None
+            if target:
+                try:
+                    self._bot.lookAt(self._Vec3(target[0] + 0.5, pos_before.y + 1.6, target[2] + 0.5))
+                except Exception:
+                    pass
+
+            if target:
+                await self._try_clear_front_block(target)
+
+            if self._has_moved(pos_before):
+                return True
+
+            for direction in ("forward", "left", "right", "back"):
+                if await self._nudge_move(direction, duration=duration):
+                    return True
+
+            return self._has_moved(pos_before)
+        except Exception as e:
+            logger.debug(f"[simple_move] fallback failed: {e}")
+            return False
+
+    async def _nudge_move(self, direction: str, duration: float = 0.6) -> bool:
+        pos_before = self._bot.entity.position
+        try:
+            self._bot.setControlState(direction, True)
+            self._bot.setControlState("jump", True)
+            await asyncio.sleep(max(0.2, duration))
+        finally:
+            try:
+                self._bot.setControlState(direction, False)
+                self._bot.setControlState("jump", False)
+            except Exception:
+                pass
+
+        return self._has_moved(pos_before)
+
+    async def _try_clear_front_block(self, target: Optional[Tuple[int, int, int]]) -> None:
+        try:
+            pos = self._bot.entity.position
+            bx = int(math.floor(pos.x))
+            by = int(math.floor(pos.y))
+            bz = int(math.floor(pos.z))
+
+            step_x = 0
+            step_z = 0
+            if target:
+                dx = target[0] - pos.x
+                dz = target[2] - pos.z
+                if abs(dx) >= abs(dz):
+                    step_x = 1 if dx > 0.3 else -1 if dx < -0.3 else 0
+                else:
+                    step_z = 1 if dz > 0.3 else -1 if dz < -0.3 else 0
+            if step_x == 0 and step_z == 0:
+                step_x = 1
+
+            head_pos = self._Vec3(bx + step_x, by + 1, bz + step_z)
+            head_block = self._bot.blockAt(head_pos)
+            if head_block and not self._is_air_block(head_block) and getattr(head_block, "diggable", True):
+                try:
+                    await self._bot.dig(head_block)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _extract_goal_coords(self, goal) -> Optional[Tuple[int, int, int]]:
+        if not goal:
+            return None
+        if hasattr(goal, "x") and hasattr(goal, "y") and hasattr(goal, "z"):
+            try:
+                return int(goal.x), int(goal.y), int(goal.z)
+            except Exception:
+                return None
+        return None
+
+    def _is_air_block(self, block) -> bool:
+        try:
+            return block is None or block.name in ("air", "cave_air", "void_air")
+        except Exception:
+            return True
+
+    def _has_moved(self, pos_before, threshold: float = 0.2) -> bool:
+        try:
+            pos_after = self._bot.entity.position
+            dx = pos_after.x - pos_before.x
+            dy = pos_after.y - pos_before.y
+            dz = pos_after.z - pos_before.z
+            return (dx * dx + dy * dy + dz * dz) >= (threshold * threshold)
+        except Exception:
+            return False
 
     async def navigate_to_block(self, x: int, y: int, z: int) -> None:
         """Navigate near a block position for interaction."""
@@ -192,15 +349,25 @@ class MovementSystem:
                 if wy is not None:
                     waypoints.append((wx, wy, wz))
 
+            # 🔧 Fix: Fallback - 如果随机点都无效，使用机器人当前位置附近的简单偏移
             if not waypoints:
-                return ActionResult(
-                    success=False,
-                    action="patrol",
-                    message="Failed to generate valid waypoints",
-                    status=ActionStatus.FAILED,
-                    error_code="TARGET_NOT_FOUND",
-                    duration_ms=int((time.time() - start_time) * 1000)
-                )
+                logger.warning("[patrol] Random waypoints failed, using fallback near bot position")
+                bot_pos = self._bot.entity.position
+                bot_y = int(bot_pos.y)
+                for dx, dz in [(5, 0), (-5, 0), (0, 5), (0, -5), (3, 3), (-3, -3)]:
+                    fallback_x = int(bot_pos.x) + dx
+                    fallback_z = int(bot_pos.z) + dz
+                    waypoints.append((fallback_x, bot_y, fallback_z))
+                
+                if not waypoints:
+                    return ActionResult(
+                        success=False,
+                        action="patrol",
+                        message="Failed to generate valid waypoints",
+                        status=ActionStatus.FAILED,
+                        error_code="TARGET_NOT_FOUND",
+                        duration_ms=int((time.time() - start_time) * 1000)
+                    )
 
             logger.info(f"[patrol] Generated {len(waypoints)} waypoints")
 
@@ -272,16 +439,60 @@ class MovementSystem:
         if target.startswith("@"):
             player_name = target[1:]
             try:
-                player = self._bot.players.get(player_name)
-                if player and player.entity:
+                # 🔧 Fix: 安全的玩家查找
+                player = None
+                
+                # 方法 1: 直接获取 (精确匹配)
+                try:
+                    player = self._bot.players[player_name]
+                except (KeyError, TypeError):
+                    pass
+                
+                # 方法 2: 使用 .get() 如果可用
+                if not player:
+                    try:
+                        if hasattr(self._bot.players, 'get'):
+                            player = self._bot.players.get(player_name)
+                    except Exception:
+                        pass
+                
+                # 方法 3: 大小写不敏感匹配 (安全遍历)
+                if not player or not getattr(player, 'entity', None):
+                    try:
+                        # 尝试获取所有玩家名的列表
+                        player_names = []
+                        if hasattr(self._bot.players, 'keys'):
+                            player_names = list(self._bot.players.keys())
+                        elif hasattr(self._bot.players, '__iter__'):
+                            player_names = list(self._bot.players)
+                        
+                        for pname in player_names:
+                            if str(pname).lower() == player_name.lower():
+                                try:
+                                    candidate = self._bot.players[pname]
+                                    if candidate and getattr(candidate, 'entity', None):
+                                        player = candidate
+                                        logger.debug(f"Found player via case-insensitive match: {pname}")
+                                        break
+                                except Exception:
+                                    continue
+                    except Exception as iter_err:
+                        logger.debug(f"Could not iterate players: {iter_err}")
+                
+                if player and getattr(player, 'entity', None):
                     pos = player.entity.position
                     try:
                         return goals.GoalNear(int(pos.x), int(pos.y), int(pos.z), 2)
                     except Exception:
                         return goals.GoalBlock(int(pos.x), int(pos.y), int(pos.z))
-            except Exception:
-                pass
-            logger.warning(f"Player not found: {player_name}")
+                
+                # 记录更详细的日志
+                if player and not getattr(player, 'entity', None):
+                    logger.warning(f"Player {player_name} exists but entity not loaded (may be too far)")
+                else:
+                    logger.warning(f"Player {player_name} not found in bot.players")
+            except Exception as e:
+                logger.warning(f"Error finding player {player_name}: {e}")
             return None
 
         if "," in target:

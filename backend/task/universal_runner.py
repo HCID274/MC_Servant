@@ -1064,6 +1064,50 @@ class UniversalRunner(ITaskRunner):
     def _default_clarify_message(self, error_code: str) -> str:
         return f"任务遇到问题 ({error_code})，请指示怎么办喵~"
 
+    def _estimate_height_gap(
+        self,
+        cached_action: Optional[ActionStep],
+        bot_state: Optional[dict],
+        context: RunContext,
+    ) -> Optional[int]:
+        try:
+            current_y = int((bot_state or {}).get("position", {}).get("y"))
+        except Exception:
+            current_y = None
+
+        target_y = None
+        params = cached_action.params if cached_action and hasattr(cached_action, "params") else {}
+
+        for key in ("target_position", "near_position", "position"):
+            pos = params.get(key)
+            if isinstance(pos, dict) and "y" in pos:
+                try:
+                    target_y = int(pos.get("y"))
+                    break
+                except Exception:
+                    pass
+
+        if target_y is None and isinstance(params.get("target"), str):
+            target = params.get("target", "")
+            if "," in target:
+                parts = target.replace(" ", "").split(",")
+                if len(parts) == 3:
+                    try:
+                        target_y = int(parts[1])
+                    except Exception:
+                        pass
+            elif target.startswith("@"):
+                owner_pos = (bot_state or {}).get("owner_position") or getattr(context, "owner_position", None)
+                if isinstance(owner_pos, dict) and "y" in owner_pos:
+                    try:
+                        target_y = int(owner_pos.get("y"))
+                    except Exception:
+                        pass
+
+        if target_y is None or current_y is None:
+            return None
+        return target_y - current_y
+
     async def _handle_failure(
         self,
         result: "ActionResult",
@@ -1089,16 +1133,24 @@ class UniversalRunner(ITaskRunner):
         # ============================================================
         # 如果寻路/移动失败，无论高度如何，优先尝试垂直脱困
         if error_code != "SUCCESS" and attempt_count >= 1:
-            # 条件：属于移动/寻路相关的失败
             move_errors = ["PATH_BLOCKED", "TARGET_NOT_FOUND", "TIMEOUT", "RECOVERY_FAILED", "EXECUTION_ERROR"]
             if error_code in move_errors:
-                logger.info(f"[Recovery] Bot potentially stuck (error: {error_code}), triggering climb_to_surface")
-                climb_step = ActionStep(
-                    action="climb_to_surface",
-                    params={"timeout": 60.0},
-                    description=f"检测到移动失败 ({error_code})，强制尝试垂直爬升回地面"
+                height_gap = self._estimate_height_gap(cached_action, bot_state or {}, context)
+                if height_gap is not None and height_gap >= 4:
+                    logger.info(
+                        f"[Recovery] Vertical gap {height_gap} detected (error: {error_code}), "
+                        "triggering climb_to_surface"
+                    )
+                    climb_step = ActionStep(
+                        action="climb_to_surface",
+                        params={"timeout": 60.0},
+                        description=f"Vertical gap {height_gap} with move error ({error_code}), climb to surface"
+                    )
+                    return {"next_step": climb_step}
+                logger.info(
+                    f"[Recovery] Move error without vertical gap (error: {error_code}, gap={height_gap}), "
+                    "skipping climb_to_surface"
                 )
-                return {"next_step": climb_step}
 
         # Local retry for transient failures (Attempt 2)
         if self._rules.is_transient_error(error_code) and attempt_count < 2:

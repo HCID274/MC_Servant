@@ -70,6 +70,7 @@ class NavigateAction(IMetaAction):
     ) -> "ActionResult":
         """执行导航"""
         target = params.get("target")
+        timeout = params.get("timeout")
         
         if not target:
             from ..interfaces import ActionResult
@@ -81,4 +82,7 @@ class NavigateAction(IMetaAction):
             )
         
         logger.info(f"[NavigateAction] Moving to: {target}")
-        return await actions.goto(target=target)
+        kwargs = {"target": target}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return await actions.goto(**kwargs)

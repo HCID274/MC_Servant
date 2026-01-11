@@ -86,8 +86,12 @@ class ScanEnvironmentAction(IMetaAction):
             f"(radius={radius}, count={count})"
         )
         
-        return await actions.scan(
+        result = await actions.scan(
             target_type=target_type,
-            radius=radius,
-            count=count
+            radius=radius
         )
+        if result and result.success and isinstance(count, int) and count > 0 and isinstance(result.data, dict):
+            targets = result.data.get("targets")
+            if isinstance(targets, list) and len(targets) > count:
+                result.data["targets"] = targets[:count]
+        return result

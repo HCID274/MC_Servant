@@ -136,6 +136,7 @@ class GatherBlockAction(IMetaAction, ToolMatcherMixin):
         block_type = params.get("block_type")
         count = params.get("count", 1)
         near_position = params.get("near_position")
+        timeout = params.get("timeout")
         
         if not block_type:
             return ActionResult(
@@ -174,5 +175,7 @@ class GatherBlockAction(IMetaAction, ToolMatcherMixin):
         kwargs = {"block_type": block_type, "count": count}
         if near_position:
             kwargs["near_position"] = near_position
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         
         return await actions.mine(**kwargs)
