@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from typing import Optional, List, Dict, Any
@@ -25,16 +26,12 @@ class MiningSystem:
         inventory: InventorySystem,
     ) -> None:
         self._driver = driver
-        self._bot = driver.bot
-        self._mcData = driver.mcdata
-        self._pathfinder = driver.pathfinder
         self._Vec3 = driver.vec3
         self._background = background
         self._movement = movement
         self._inventory = inventory
         self._progress_timer: Optional[ProgressTimer] = None
         # 🔧 Fix: 持久化 cheats 状态，一旦无权限就永久禁用
-        self._can_use_cheats: bool = False
         
         # 地下方块列表（从知识库加载 + 基础石头类）
         # 这些方块通常在地下，找不到时应该尝试向下探测
@@ -131,7 +128,7 @@ class MiningSystem:
                 if not required_tool_ids:
                     return None
 
-                inventory_items = list(self._bot.inventory.items())
+                inventory_items = list(self._driver.get_inventory_items())
                 available_tools = []
 
                 for item in inventory_items:
@@ -148,8 +145,11 @@ class MiningSystem:
                     required_names = []
                     for tool_id in list(required_tool_ids)[:5]:
                         try:
-                            item_info = self._mcData.items[tool_id]
-                            required_names.append(item_info.name)
+                            item_name = self._driver.get_item_name(tool_id)
+                            if item_name:
+                                required_names.append(item_name)
+                            else:
+                                required_names.append(f"item_{tool_id}")
                         except Exception:
                             required_names.append(f"item_{tool_id}")
 
@@ -162,7 +162,7 @@ class MiningSystem:
                 available_tools.sort(key=lambda x: x[0], reverse=True)
                 best_tool = available_tools[0][1]
 
-                held_item = self._bot.heldItem
+                held_item = self._driver.get_held_item()
                 if held_item and held_item.type == best_tool.type:
                     logger.debug(f"Already holding best tool: {best_tool.name}")
                     return None
@@ -212,14 +212,14 @@ class MiningSystem:
         ]
 
         try:
-            held = self._bot.heldItem
+            held = self._driver.get_held_item()
             if held and "axe" in held.name:
                 return True
 
             for axe_name in AXE_PRIORITY:
-                for item in self._bot.inventory.items():
+                for item in self._driver.get_inventory_items():
                     if item.name == axe_name:
-                        self._bot.equip(item, "hand")
+                        self._driver.equip_item(item, "hand")
                         logger.debug(f"Equipped {axe_name} for tree mining")
                         return True
 
@@ -227,6 +227,21 @@ class MiningSystem:
         except Exception as e:
             logger.warning(f"Failed to equip axe: {e}")
             return False
+
+    def _dig_sync(self, block) -> None:
+        try:
+            result = self._driver.dig(block)
+            if inspect.isawaitable(result):
+                try:
+                    asyncio.run(result)
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    try:
+                        loop.run_until_complete(result)
+                    finally:
+                        loop.close()
+        except Exception as e:
+            raise e
 
     async def mine(
         self,
@@ -244,11 +259,11 @@ class MiningSystem:
         if near_position:
             search_center = self._Vec3(near_position["x"], near_position["y"], near_position["z"])
         else:
-            search_center = self._bot.entity.position
+            search_center = self._driver.get_position()
 
         try:
-            block_info = self._mcData.blocksByName[block_type] if hasattr(self._mcData.blocksByName, block_type) else None
-            if not block_info:
+            block_id = self._driver.get_block_id(block_type)
+            if block_id is None:
                 return ActionResult(
                     success=False,
                     action="mine",
@@ -256,8 +271,6 @@ class MiningSystem:
                     status=ActionStatus.FAILED,
                     error_code="TARGET_NOT_FOUND"
                 )
-
-            block_id = block_info.id
             remaining = count if count > 0 else float("inf")
             unlimited_mode = (count <= 0)
             last_location = None
@@ -348,7 +361,7 @@ class MiningSystem:
                         await asyncio.wait_for(
                             asyncio.get_event_loop().run_in_executor(
                                 None,
-                                lambda: self._bot.equip(best_tool, "hand")
+                                lambda: self._driver.equip_item(best_tool, "hand")
                             ),
                             timeout=3.0
                         )
@@ -365,7 +378,7 @@ class MiningSystem:
                     try:
                         if self._background.shutdown_requested:
                             return
-                        self._bot.collectBlock.collect(target_block)
+                        self._driver.collect_block(target_block)
                         collect_done = True
                     except Exception as e:
                         collect_error = e
@@ -448,164 +461,6 @@ class MiningSystem:
                 duration_ms=int((time.time() - start_time) * 1000)
             )
 
-    def _get_highest_block_y_at(self, x: int, z: int) -> Optional[int]:
-        try:
-            for y in range(120, -64, -1):
-                block = self._bot.blockAt(self._Vec3(x, y, z))
-                if block and block.name not in ("air", "cave_air"):
-                    return int(y)
-        except Exception:
-            pass
-        return None
-
-
-    async def climb_to_surface(self, timeout: float = 60.0) -> ActionResult:
-        start_time = time.time()
-        logger.info("[climb_to_surface] Starting physical recovery to surface")
-
-        def is_air(block) -> bool:
-            try:
-                return block is None or block.name in ("air", "cave_air", "void_air")
-            except Exception:
-                return True
-
-        def find_pillar_item():
-            for name in (
-                "dirt", "cobblestone", "stone",
-                "oak_planks", "spruce_planks", "birch_planks"
-            ):
-                item = self._inventory.find_inventory_item(name)
-                if item:
-                    return item
-            return None
-
-        async def try_pillar_up(cur_x: int, current_y: int, cur_z: int) -> bool:
-            item = find_pillar_item()
-            if not item:
-                return False
-
-            ref_block = self._bot.blockAt(self._Vec3(cur_x, current_y - 1, cur_z))
-            if is_air(ref_block):
-                return False
-
-            try:
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self._bot.equip(item, "hand")
-                )
-            except Exception:
-                return False
-
-            try:
-                self._bot.setControlState("jump", True)
-                await asyncio.sleep(0.2)
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self._bot.placeBlock(ref_block, self._Vec3(0, 1, 0))
-                )
-                await asyncio.sleep(0.2)
-                return True
-            except Exception:
-                return False
-            finally:
-                try:
-                    self._bot.setControlState("jump", False)
-                except Exception:
-                    pass
-
-        async def try_spiral_step(cur_x: int, current_y: int, cur_z: int) -> tuple[bool, int, int]:
-            directions = [(1, 0), (0, 1), (-1, 0), (0, -1)]
-            for dx, dz in directions:
-                head_pos = self._Vec3(cur_x + dx, current_y + 1, cur_z + dz)
-                head_block = self._bot.blockAt(head_pos)
-                if head_block and not is_air(head_block) and getattr(head_block, "diggable", True):
-                    try:
-                        await self._bot.dig(head_block)
-                    except Exception:
-                        pass
-
-                foot_block = self._bot.blockAt(self._Vec3(cur_x + dx, current_y, cur_z + dz))
-                if is_air(foot_block) and is_air(head_block):
-                    try:
-                        self._bot.lookAt(self._Vec3(cur_x + dx + 0.5, current_y + 1.0, cur_z + dz + 0.5))
-                    except Exception:
-                        pass
-                    await self._movement.unstuck_move(duration=0.6)
-                    return True, cur_x + dx, cur_z + dz
-
-            return False, cur_x, cur_z
-
-        try:
-            pos = self._bot.entity.position
-            cur_x, cur_z = int(pos.x), int(pos.z)
-            target_y = self._get_highest_block_y_at(cur_x, cur_z)
-
-            if target_y is None:
-                target_y = int(pos.y)
-
-            if target_y <= pos.y:
-                for dx, dz in [(2, 0), (-2, 0), (0, 2), (0, -2)]:
-                    candidate = self._get_highest_block_y_at(cur_x + dx, cur_z + dz)
-                    if candidate and candidate > target_y:
-                        target_y = candidate
-                        cur_x += dx
-                        cur_z += dz
-                        break
-
-            head_block = self._bot.blockAt(self._Vec3(cur_x, int(pos.y) + 2, cur_z))
-            if int(pos.y) >= target_y and is_air(head_block):
-                await self._movement.unstuck_move(duration=0.8)
-                return ActionResult(
-                    success=True,
-                    action="climb_to_surface",
-                    message="Surface level; no climb required",
-                    status=ActionStatus.SUCCESS,
-                    data={"final_y": int(pos.y), "skipped": True},
-                )
-
-            while True:
-                if time.time() - start_time > timeout:
-                    break
-
-                pos_now = self._bot.entity.position
-                current_y = int(pos_now.y)
-                head_pos = self._Vec3(cur_x, current_y + 2, cur_z)
-                block_head = self._bot.blockAt(head_pos)
-
-                if current_y >= target_y and is_air(block_head):
-                    break
-
-                if block_head and not is_air(block_head):
-                    try:
-                        await self._bot.dig(block_head)
-                        await asyncio.sleep(0.1)
-                    except Exception:
-                        pass
-
-                if await try_pillar_up(cur_x, current_y, cur_z):
-                    continue
-
-                moved, cur_x, cur_z = await try_spiral_step(cur_x, current_y, cur_z)
-                if moved:
-                    continue
-
-                await self._movement.unstuck_move(duration=0.6)
-
-            final_pos = self._bot.entity.position
-            return ActionResult(
-                success=final_pos.y >= target_y - 1,
-                action="climb_to_surface",
-                message=f"Climb finished at y={int(final_pos.y)}",
-                status=ActionStatus.SUCCESS if final_pos.y >= target_y - 1 else ActionStatus.FAILED,
-                data={"final_y": int(final_pos.y), "target_y": int(target_y)},
-            )
-        except Exception as e:
-            return ActionResult(
-                success=False,
-                action="climb_to_surface",
-                message=f"climb_to_surface failed: {e}",
-                status=ActionStatus.FAILED,
-            )
 
     async def mine_tree(
         self,
@@ -628,22 +483,21 @@ class MiningSystem:
                     "z": int(near_position.get("z", 0))
                 }
             else:
-                pos = self._bot.entity.position
+                pos = self._driver.get_position()
                 search_center = {"x": int(pos.x), "y": int(pos.y), "z": int(pos.z)}
             search_point = self._Vec3(search_center["x"], search_center["y"], search_center["z"])
 
             logger.info(f"[mine_tree] Searching for tree near {search_center}, radius={search_radius}")
 
-            mcData = self._mcData
             first_log = None
             first_log_type = None
 
             for log_type in LOG_TYPES:
                 try:
-                    block_id = mcData.blocksByName[log_type]
-                    if block_id:
-                        block = self._bot.findBlock({
-                            "matching": block_id.id,
+                    block_id = self._driver.get_block_id(log_type)
+                    if block_id is not None:
+                        block = self._driver.find_block({
+                            "matching": block_id,
                             "maxDistance": search_radius,
                             "point": search_point
                         })
@@ -677,7 +531,7 @@ class MiningSystem:
                     error_code="NO_TARGET"
                 )
 
-            tree_logs = self._find_connected_logs(first_log, first_log_type, mcData)
+            tree_logs = self._find_connected_logs(first_log, first_log_type)
             logger.info(f"[mine_tree] Found tree with {len(tree_logs)} logs of type {first_log_type}")
 
             if not tree_logs:
@@ -692,7 +546,7 @@ class MiningSystem:
             tree_logs.sort(key=lambda pos: pos[1])
 
             try:
-                bot_pos = self._bot.entity.position
+                bot_pos = self._driver.get_position()
                 tx, ty, tz = tree_logs[0]
                 dist = ((bot_pos.x - tx) ** 2 + (bot_pos.y - ty) ** 2 + (bot_pos.z - tz) ** 2) ** 0.5
                 if dist > 5.0:
@@ -714,7 +568,7 @@ class MiningSystem:
                 x, y, z = log_pos
 
                 try:
-                    block = self._bot.blockAt(self._Vec3(x, y, z))
+                    block = self._driver.block_at(self._Vec3(x, y, z))
                     if not block or block.name != first_log_type:
                         logger.debug(
                             f"[mine_tree] Block at ({x},{y},{z}) is no longer {first_log_type}, skipping"
@@ -724,7 +578,7 @@ class MiningSystem:
                     logger.debug(f"[mine_tree] Error checking block at ({x},{y},{z}): {e}")
                     continue
 
-                bot_pos = self._bot.entity.position
+                bot_pos = self._driver.get_position()
                 distance = (
                     (bot_pos.x - x) ** 2 +
                     (bot_pos.y - y) ** 2 +
@@ -739,12 +593,12 @@ class MiningSystem:
                     import threading
 
                     for attempt in range(1, max_collect_retries + 1):
-                        block = self._bot.blockAt(self._Vec3(x, y, z))
+                        block = self._driver.block_at(self._Vec3(x, y, z))
                         if not block or block.name != first_log_type:
                             mined_this_log = True
                             break
 
-                        bot_pos = self._bot.entity.position
+                        bot_pos = self._driver.get_position()
                         distance = (
                             (bot_pos.x - x) ** 2 +
                             (bot_pos.y - y) ** 2 +
@@ -771,7 +625,7 @@ class MiningSystem:
                                     try:
                                         if self._background.shutdown_requested:
                                             return
-                                        self._bot.dig(block)
+                                        self._dig_sync(block)
                                         dig_done = True
                                     except Exception as e:
                                         dig_error = e
@@ -815,14 +669,14 @@ class MiningSystem:
                             )
                             try:
                                 try:
-                                    self._bot.pathfinder.stop()
+                                    self._driver.stop_pathfinder()
                                 except Exception:
                                     pass
 
                                 await self._movement.navigate_to_block(x, y, z)
                                 await asyncio.sleep(0.3)
 
-                                block = self._bot.blockAt(self._Vec3(x, y, z))
+                                block = self._driver.block_at(self._Vec3(x, y, z))
                                 if block and block.name == first_log_type:
                                     try:
                                         self._equip_axe_sync()
@@ -837,7 +691,7 @@ class MiningSystem:
                                         try:
                                             if self._background.shutdown_requested:
                                                 return
-                                            self._bot.dig(block)
+                                            self._dig_sync(block)
                                             dig_done = True
                                         except Exception as e:
                                             dig_error = e
@@ -898,12 +752,11 @@ class MiningSystem:
                 for attempt in range(3):
                     items_to_pickup = []
                     try:
-                        bot_pos = self._bot.entity.position
+                        bot_pos = self._driver.get_position()
                         total_entities = 0
                         item_entities = 0
 
-                        for entity_id in self._bot.entities:
-                            entity = self._bot.entities[entity_id]
+                        for entity_id, entity in self._driver.get_entities().items():
                             total_entities += 1
 
                             if entity.name == "item":
@@ -991,7 +844,7 @@ class MiningSystem:
                 duration_ms=int((time.time() - start_time) * 1000)
             )
 
-    def _find_connected_logs(self, start_block, log_type: str, mcData) -> list:
+    def _find_connected_logs(self, start_block, log_type: str) -> list:
         from collections import deque
 
         visited = set()
@@ -1019,9 +872,8 @@ class MiningSystem:
             (1, 1, 1), (-1, 1, 1), (1, 1, -1), (-1, 1, -1),
         ]
 
-        try:
-            log_block_id = mcData.blocksByName[log_type].id
-        except Exception:
+        log_block_id = self._driver.get_block_id(log_type)
+        if log_block_id is None:
             return [start_pos]
 
         while queue:
@@ -1043,8 +895,8 @@ class MiningSystem:
                 visited.add((nx, ny, nz))
 
                 try:
-                    block = self._bot.blockAt(self._Vec3(nx, ny, nz))
-                    if block and block.name == log_type:
+                    block = self._driver.block_at(self._Vec3(nx, ny, nz))
+                    if block and block.type == log_block_id:
                         queue.append((nx, ny, nz))
                 except Exception:
                     continue
@@ -1062,7 +914,7 @@ class MiningSystem:
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                block = self._bot.blockAt(self._Vec3(x, y, z))
+                block = self._driver.block_at(self._Vec3(x, y, z))
             except Exception:
                 block = None
             if block is not None and block.name != expected_name:
@@ -1095,8 +947,8 @@ class MiningSystem:
         
         try:
             # 获取目标方块 ID
-            block_data = self._mcData.blocksByName.get(target_block)
-            if not block_data:
+            block_id = self._driver.get_block_id(target_block)
+            if block_id is None:
                 return ActionResult(
                     success=False,
                     action="expose_underground",
@@ -1104,14 +956,14 @@ class MiningSystem:
                     status=ActionStatus.FAILED,
                     error_code="UNKNOWN_BLOCK"
                 )
-            target_block_id = block_data.id
+            target_block_id = block_id
             
             # 获取当前位置
-            pos = self._bot.entity.position
+            pos = self._driver.get_position()
             bot_x, bot_y, bot_z = int(pos.x), int(pos.y), int(pos.z)
             
             # 获取机器人朝向，确定"前方"位置
-            yaw = self._bot.entity.yaw
+            yaw = self._driver.get_yaw()
             import math
             # 朝向向量
             dx = -math.sin(yaw)
@@ -1146,12 +998,12 @@ class MiningSystem:
                 for dx_offset in [0, 1]:
                     dig_x = front_x + dx_offset
                     
-                    block = self._bot.blockAt(self._Vec3(dig_x, dig_y, front_z))
+                    block = self._driver.block_at(self._Vec3(dig_x, dig_y, front_z))
                     if not block or block.name in ("air", "cave_air", "water", "lava"):
                         continue
                     
                     # 危险检测：如果下方是岩浆，停止
-                    below = self._bot.blockAt(self._Vec3(dig_x, dig_y - 1, front_z))
+                    below = self._driver.block_at(self._Vec3(dig_x, dig_y - 1, front_z))
                     if below and below.name == "lava":
                         logger.warning(f"[expose_underground] Lava detected at ({dig_x}, {dig_y-1}, {front_z}), stopping")
                         return ActionResult(
@@ -1170,7 +1022,7 @@ class MiningSystem:
                     try:
                         await asyncio.wait_for(
                             asyncio.get_event_loop().run_in_executor(
-                                None, lambda b=block: self._bot.dig(b)
+                                None, lambda b=block: self._dig_sync(b)
                             ),
                             timeout=5.0
                         )
@@ -1236,7 +1088,7 @@ class MiningSystem:
 
         try:
             try:
-                existing = self._bot.blockAt(self._Vec3(x, y, z))
+                existing = self._driver.block_at(self._Vec3(x, y, z))
                 if existing and getattr(existing, "name", None) == block_type:
                     return ActionResult(
                         success=True,
@@ -1250,7 +1102,7 @@ class MiningSystem:
                 pass
 
             try:
-                pos = self._bot.entity.position
+                pos = self._driver.get_position()
                 dx = float(pos.x) - float(x)
                 dy = float(pos.y) - float(y)
                 dz = float(pos.z) - float(z)
@@ -1277,18 +1129,18 @@ class MiningSystem:
             await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self._bot.equip(item, "hand")
+                    lambda: self._driver.equip_item(item, "hand")
                 ),
                 timeout=3.0
             )
 
             target_pos = self._Vec3(x, y - 1, z)
-            ref_block = self._bot.blockAt(target_pos)
+            ref_block = self._driver.block_at(target_pos)
 
             await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self._bot.placeBlock(ref_block, self._Vec3(0, 1, 0))
+                    lambda: self._driver.place_block(ref_block, self._Vec3(0, 1, 0))
                 ),
                 timeout=timeout
             )
@@ -1304,7 +1156,7 @@ class MiningSystem:
 
         except asyncio.TimeoutError:
             try:
-                placed = self._bot.blockAt(self._Vec3(x, y, z))
+                placed = self._driver.block_at(self._Vec3(x, y, z))
                 if placed and getattr(placed, "name", None) == block_type:
                     return ActionResult(
                         success=True,
@@ -1328,7 +1180,7 @@ class MiningSystem:
             msg = str(e)
             if "blockupdate" in msg.lower() and "did not fire within timeout" in msg.lower():
                 try:
-                    placed = self._bot.blockAt(self._Vec3(x, y, z))
+                    placed = self._driver.block_at(self._Vec3(x, y, z))
                     if placed and getattr(placed, "name", None) == block_type:
                         return ActionResult(
                             success=True,
@@ -1364,7 +1216,7 @@ class MiningSystem:
 
     def _find_nearest_block(self, block_id: int, center, radius: int):
         try:
-            blocks = self._bot.findBlocks({
+            blocks = self._driver.find_blocks({
                 "matching": block_id,
                 "maxDistance": radius,
                 "count": 256
@@ -1381,7 +1233,7 @@ class MiningSystem:
                     dist = center.distanceTo(block_pos)
                     if dist < nearest_dist:
                         nearest_dist = dist
-                        nearest_block = self._bot.blockAt(block_pos)
+                        nearest_block = self._driver.block_at(block_pos)
                 except Exception:
                     pass
 

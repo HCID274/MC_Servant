@@ -24,8 +24,6 @@ class InventorySystem:
         movement: MovementSystem,
     ) -> None:
         self._driver = driver
-        self._bot = driver.bot
-        self._mcData = driver.mcdata
         self._movement = movement
         self._background = background
         self._progress_timer: Optional[ProgressTimer] = None
@@ -35,8 +33,8 @@ class InventorySystem:
 
         try:
             try:
-                player = self._bot.players[player_name]
-            except (KeyError, TypeError):
+                player = self._driver.get_player(player_name)
+            except Exception:
                 player = None
             if not player or not player.entity:
                 return ActionResult(
@@ -59,7 +57,7 @@ class InventorySystem:
 
             reach_distance = 3.0
             try:
-                bot_pos = self._bot.entity.position
+                bot_pos = self._driver.get_position()
                 target_pos = player.entity.position
                 try:
                     dist = float(bot_pos.distanceTo(target_pos))
@@ -75,7 +73,7 @@ class InventorySystem:
                 goto_result = await self._movement.goto(f"@{player_name}", timeout=timeout / 2)
                 if not goto_result.success:
                     try:
-                        bot_pos = self._bot.entity.position
+                        bot_pos = self._driver.get_position()
                         target_pos = player.entity.position
                         try:
                             dist2 = float(bot_pos.distanceTo(target_pos))
@@ -98,23 +96,23 @@ class InventorySystem:
                         )
 
             try:
-                player = self._bot.players[player_name]
+                player = self._driver.get_player(player_name)
                 if player and player.entity:
                     await asyncio.wait_for(
                         asyncio.get_event_loop().run_in_executor(
                             None,
-                            lambda: self._bot.lookAt(player.entity.position)
+                            lambda: self._driver.look_at(player.entity.position)
                         ),
                         timeout=2.0
                     )
-            except (KeyError, TypeError):
+            except Exception:
                 pass
 
             actual_count = min(count, item.count)
             await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self._bot.toss(item.type, None, actual_count)
+                    lambda: self._driver.toss_item(item.type, None, actual_count)
                 ),
                 timeout=5.0
             )
@@ -156,7 +154,7 @@ class InventorySystem:
             await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self._bot.equip(item, "hand")
+                    lambda: self._driver.equip_item(item, "hand")
                 ),
                 timeout=timeout
             )
@@ -372,10 +370,9 @@ class InventorySystem:
     ) -> List[Dict[str, Any]]:
         entities: List[Dict[str, Any]] = []
         try:
-            bot_pos = self._bot.entity.position
+            bot_pos = self._driver.get_position()
 
-            for entity_id in self._bot.entities:
-                entity = self._bot.entities[entity_id]
+            for entity_id, entity in self._driver.get_entities().items():
 
                 if entity.name != "item":
                     continue
@@ -386,9 +383,7 @@ class InventorySystem:
                         for meta in entity.metadata:
                             if isinstance(meta, dict) and "itemId" in meta:
                                 item_id = meta.get("itemId")
-                                item_info = self._mcData.items[item_id]
-                                if item_info:
-                                    item_name = item_info.name
+                                item_name = self._driver.get_item_name(item_id)
                                 break
                             if isinstance(meta, dict) and "nbtData" in meta:
                                 pass
@@ -434,14 +429,14 @@ class InventorySystem:
 
     def _entity_exists(self, entity_id) -> bool:
         try:
-            return entity_id in self._bot.entities
+            return entity_id in self._driver.get_entities()
         except Exception:
             return False
 
     def get_inventory_count(self, item_name: str) -> int:
         try:
             total = 0
-            for item in self._bot.inventory.items():
+            for item in self._driver.get_inventory_items():
                 if item.name == item_name:
                     total += item.count
             return total
@@ -450,7 +445,7 @@ class InventorySystem:
 
     def find_inventory_item(self, item_name: str):
         try:
-            items = self._bot.inventory.items()
+            items = self._driver.get_inventory_items()
             for item in items:
                 if item.name == item_name:
                     return item
@@ -461,7 +456,7 @@ class InventorySystem:
     def get_inventory_summary(self) -> Dict[str, int]:
         summary: Dict[str, int] = {}
         try:
-            items = self._bot.inventory.items()
+            items = self._driver.get_inventory_items()
             for item in items:
                 name = item.name
                 count = item.count
@@ -472,7 +467,7 @@ class InventorySystem:
 
     def get_equipped_item(self) -> Optional[str]:
         try:
-            held_item = self._bot.heldItem
+            held_item = self._driver.get_held_item()
             return held_item.name if held_item else None
         except Exception:
             return None

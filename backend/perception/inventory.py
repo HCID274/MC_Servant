@@ -8,6 +8,8 @@
 import logging
 from typing import Dict, Optional
 
+from bot.drivers.interfaces import IDriverAdapter
+
 from .interfaces import IInventoryProvider
 
 logger = logging.getLogger(__name__)
@@ -26,16 +28,14 @@ class BotInventoryProvider(IInventoryProvider):
     - Mineflayer bot 实例
     """
     
-    def __init__(self, bot):
+    def __init__(self, driver: IDriverAdapter):
         """
         初始化背包提供者
         
         Args:
-            bot: MineflayerBot 实例 (backend/bot/mineflayer_adapter.py)
-                 需要有 _bot (原始 mineflayer bot) 属性
+            driver: IDriverAdapter instance.
         """
-        self._mf_bot = bot       # MineflayerBot wrapper
-        self._bot = bot._bot     # 原始 mineflayer bot 对象
+        self._driver = driver
     
     def get_items(self) -> Dict[str, int]:
         """
@@ -49,7 +49,7 @@ class BotInventoryProvider(IInventoryProvider):
         
         try:
             # 获取所有非空物品槽
-            items = self._bot.inventory.items()
+            items = self._driver.get_inventory_items()
 
             # 容错处理: items 可能为 None
             if items:
@@ -89,7 +89,7 @@ class BotInventoryProvider(IInventoryProvider):
         """
         try:
             total = 0
-            items = self._bot.inventory.items()
+            items = self._driver.get_inventory_items()
 
             # 容错处理: items 可能为 None
             if items:
@@ -114,7 +114,7 @@ class BotInventoryProvider(IInventoryProvider):
             Mineflayer Item 对象，没有则返回 None
         """
         try:
-            items = self._bot.inventory.items()
+            items = self._driver.get_inventory_items()
             for item in items:
                 if item.name == item_id:
                     return item

@@ -9,6 +9,8 @@ import asyncio
 import logging
 from typing import List, Dict, Any, Optional
 
+from bot.drivers.interfaces import IDriverAdapter
+
 from .interfaces import IScanner, ScanResult
 from .knowledge_base import get_knowledge_base
 
@@ -28,17 +30,14 @@ class MineflayerScanner(IScanner):
     - Mineflayer bot 实例 (已加载 minecraft-data)
     """
     
-    def __init__(self, bot):
+    def __init__(self, driver: IDriverAdapter):
         """
         初始化扫描器
         
         Args:
-            bot: MineflayerBot 实例 (backend/bot/mineflayer_adapter.py)
-                 需要有 _bot (原始 mineflayer bot) 和 _mcData 属性
+            driver: IDriverAdapter instance.
         """
-        self._mf_bot = bot           # MineflayerBot wrapper
-        self._bot = bot._bot         # 原始 mineflayer bot 对象
-        self._mcData = bot._mcData   # minecraft-data
+        self._driver = driver
     
     async def scan_blocks(
         self, 
@@ -59,20 +58,25 @@ class MineflayerScanner(IScanner):
             return []
         
         results: List[ScanResult] = []
-        bot_pos = self._bot.entity.position
+        try:
+            bot_pos = self._driver.get_position()
+        except Exception:
+            return []
+        if not bot_pos:
+            return []
         
         for block_id in block_ids:
             try:
                 # 获取方块类型信息
-                block_info = getattr(self._mcData.blocksByName, block_id, None)
-                if not block_info:
+                block_type_id = self._driver.get_block_id(block_id)
+                if block_type_id is None:
                     logger.debug(f"[Scanner] Unknown block type: {block_id}")
                     continue
                 
                 # 使用 executor 执行同步的 findBlocks 调用
                 blocks_proxy = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda bid=block_info.id: self._bot.findBlocks({
+                    lambda bid=block_type_id: self._driver.find_blocks({
                         "matching": bid,
                         "maxDistance": radius,
                         "count": 64  # 限制返回数量
@@ -139,12 +143,15 @@ class MineflayerScanner(IScanner):
             return []
         
         results: List[ScanResult] = []
-        # 安全检查: bot.entity 可能会在初始化期间为 None
-        if not self._bot.entity:
+        # 安全检查: position 可能会在初始化期间为 None
+        try:
+            bot_pos = self._driver.get_position()
+        except Exception:
+            return []
+        if not bot_pos:
             return []
 
-        bot_pos = self._bot.entity.position
-        bot_username = self._bot.username
+        bot_username = self._driver.username
         
         # 将 entity_types 转为小写集合，方便匹配
         target_types = {t.lower() for t in entity_types}
@@ -154,7 +161,7 @@ class MineflayerScanner(IScanner):
         try:
             # 遍历所有实体
             # 容错处理: 确保 entities 是有效字典
-            entities_dict = dict(self._bot.entities) if self._bot.entities else {}
+            entities_dict = self._driver.get_entities()
             
             for entity_id, entity in entities_dict.items():
                 try:
@@ -234,7 +241,7 @@ class MineflayerScanner(IScanner):
         metadata = {}
         
         try:
-            block = self._bot.blockAt(block_pos)
+            block = self._driver.block_at(block_pos)
             if block:
                 # 方块状态 (如 facing, powered 等)
                 if hasattr(block, 'stateId'):
@@ -332,9 +339,20 @@ class MineflayerScanner(IScanner):
         resource_blocks.update(["crafting_table", "furnace", "chest", "barrel", "smoker", "blast_furnace"])
 
         # 移除不可见或无效的
-        valid_resources = [b for b in resource_blocks if getattr(self._mcData.blocksByName, b, None)]
+        valid_resources = [b for b in resource_blocks if self._driver.get_block_id(b) is not None]
         
-        bot_pos = self._bot.entity.position
+        try:
+            bot_pos = self._driver.get_position()
+        except Exception:
+            bot_pos = None
+        if not bot_pos:
+            return {
+                "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "nearby_resources": {},
+                "nearby_entities": [],
+                "scan_radius": radius,
+                "summary_text": "Environment scan failed"
+            }
         result = {
             "position": {
                 "x": float(bot_pos.x),
@@ -358,18 +376,18 @@ class MineflayerScanner(IScanner):
             block_name_map = {} # id -> name
 
             for block_name in valid_resources:
-                block_info = getattr(self._mcData.blocksByName, block_name, None)
-                if block_info:
-                    target_ids.append(block_info.id)
-                    block_name_map[block_info.id] = block_name
-
-            if target_ids:
+                block_id = self._driver.get_block_id(block_name)
+                if block_id is not None:
+                    target_ids.append(block_id)
+                    block_name_map[block_id] = block_name
+        
+            if target_ids and bot_pos:
                 # 批量扫描所有关注的方块
                 # 注意: count 限制可能会导致某些稀有资源被忽略，如果有大量常见资源
                 # 这里为了性能，我们设置一个较大的 count
                 blocks_proxy = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self._bot.findBlocks({
+                    lambda: self._driver.find_blocks({
                         "matching": target_ids,
                         "maxDistance": radius,
                         "count": 256
@@ -387,7 +405,7 @@ class MineflayerScanner(IScanner):
                         # 或者我们可以假设 mineflayer 内部已经访问了 chunk
 
                         # 优化: blockAt 是同步且快速的 (内存查表)
-                        block = self._bot.blockAt(block_pos)
+                        block = self._driver.block_at(block_pos)
                         if block and block.type in block_name_map:
                             name = block_name_map[block.type]
 
@@ -409,8 +427,8 @@ class MineflayerScanner(IScanner):
 
             # 扫描附近实体
             try:
-                entities_dict = dict(self._bot.entities) if self._bot.entities else {}
-                bot_username = self._bot.username
+                entities_dict = self._driver.get_entities()
+                bot_username = self._driver.username
                 
                 for entity_id, entity in entities_dict.items():
                     try:

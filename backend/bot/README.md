@@ -17,9 +17,14 @@
 -   处理 AuthMe 登录逻辑（密码自动隐藏）。
 -   提供底层的事件监听（如 `chat`, `spawn`, `kicked`）。
 
-### 3. `actions.py` - 动作实现 (Layer 2)
+### 3. `drivers/` - Driver 适配层
+定义对底层驱动的抽象边界（`IDriverAdapter`），并由 Mineflayer 实现。
+-   系统层只依赖适配器接口，不直接访问原始 bot 实例。
+-   负责把 Mineflayer 能力映射成稳定的方法（寻路、方块、实体、窗口等）。
+
+### 4. `actions.py` - 动作实现 (Layer 2)
 实现了 `IBotActions` 接口 (`MineflayerActions` 类)。
--   封装了复杂的 Mineflayer 插件调用（如 `pathfinder`, `tool`, `pvp`）。
+-   通过 driver 适配层 + systems 组合实现动作（不直接访问原始 bot 实例）。
 -   **功能亮点**:
     -   **智能寻路**: 自动处理 `goto` 请求。
     -   **自动采集**: `mine` 动作包含寻路、选工具、挖掘全流程。
@@ -27,19 +32,23 @@
     -   **语义感知**: `find_location` 使用 Python 逻辑分析地形特征（如最高点、平地）。
     -   **容错机制**: 内置超时处理和重试逻辑。
 
-### 4. `lifecycle_manager.py` - 生命周期管理
+### 5. `systems/` - 子系统实现
+拆分为移动、挖掘、合成、背包、感知等子系统。
+-   移动脱困逻辑在 `movement_recovery.py`（`UnstuckPolicy`）。
+
+### 6. `lifecycle_manager.py` - 生命周期管理
 -   管理 Bot 的上下线逻辑。
 -   处理所有者（Owner）的登录/登出事件。
 -   实现超时自动下线（如主人离线 10 小时后下线）。
 
-### 5. `tag_resolver.py`
+### 7. `tag_resolver.py`
 -   辅助工具，用于解析 Minecraft 的标签（Tags）和方块 ID。
 
 ## 目录结构
 
--   `meta_actions/`: (如果有) 定义更高级的元动作。
--   `drivers/`: (如果有) 特定功能的驱动实现。
--   `systems/`: (如果有) 独立的子系统实现。
+-   `meta_actions/`: 定义更高级的元动作。
+-   `drivers/`: Driver 适配层（Mineflayer 实现）。
+-   `systems/`: 独立的子系统实现。
 
 ## 设计理念
 

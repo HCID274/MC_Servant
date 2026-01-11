@@ -19,8 +19,6 @@ logger = logging.getLogger(__name__)
 class MovementSystem:
     def __init__(self, driver: IDriverAdapter, background: BackgroundTaskManager) -> None:
         self._driver = driver
-        self._bot = driver.bot
-        self._pathfinder = driver.pathfinder
         self._Vec3 = driver.vec3
         self._background = background
 
@@ -39,7 +37,7 @@ class MovementSystem:
                 )
 
             logger.info("[DEBUG] goto: goal parsed, setting pathfinder goal")
-            self._bot.pathfinder.setGoal(goal)
+            self._driver.set_goal(goal)
 
             try:
                 await asyncio.wait_for(
@@ -47,7 +45,7 @@ class MovementSystem:
                     timeout=timeout
                 )
             except asyncio.TimeoutError:
-                self._bot.pathfinder.stop()
+                self._driver.stop_pathfinder()
                 return ActionResult(
                     success=False,
                     action="goto",
@@ -59,13 +57,13 @@ class MovementSystem:
             except RuntimeError as e:
                 logger.warning(f"[goto] Pathfinder error: {e}. Trying simple fallback move.")
                 try:
-                    self._bot.pathfinder.stop()
+                    self._driver.stop_pathfinder()
                 except Exception:
                     pass
 
                 fallback_moved = await self._simple_move_step(goal, duration=1.2)
                 if self._is_goal_reached(goal):
-                    pos = self._bot.entity.position
+                    pos = self._driver.get_position()
                     return ActionResult(
                         success=True,
                         action="goto",
@@ -78,12 +76,12 @@ class MovementSystem:
                 remaining = max(0.0, timeout - (time.time() - start_time))
                 if fallback_moved and remaining > 0.1:
                     try:
-                        self._bot.pathfinder.setGoal(goal)
+                        self._driver.set_goal(goal)
                         await asyncio.wait_for(
                             self._wait_for_goal_reached(saved_goal=goal),
                             timeout=remaining
                         )
-                        pos = self._bot.entity.position
+                        pos = self._driver.get_position()
                         return ActionResult(
                             success=True,
                             action="goto",
@@ -94,7 +92,7 @@ class MovementSystem:
                         )
                     except asyncio.TimeoutError:
                         try:
-                            self._bot.pathfinder.stop()
+                            self._driver.stop_pathfinder()
                         except Exception:
                             pass
                         return ActionResult(
@@ -116,7 +114,7 @@ class MovementSystem:
                     duration_ms=int((time.time() - start_time) * 1000)
                 )
 
-            pos = self._bot.entity.position
+            pos = self._driver.get_position()
             return ActionResult(
                 success=True,
                 action="goto",
@@ -128,7 +126,7 @@ class MovementSystem:
 
         except Exception as e:
             logger.error(f"goto failed: {e}")
-            self._bot.pathfinder.stop()
+            self._driver.stop_pathfinder()
             return ActionResult(
                 success=False,
                 action="goto",
@@ -143,11 +141,11 @@ class MovementSystem:
 
     async def _simple_move_step(self, goal=None, duration: float = 0.8) -> bool:
         try:
-            pos_before = self._bot.entity.position
-            target = self._extract_goal_coords(goal) if goal else None
+            pos_before = self._driver.get_position()
+            target = self._driver.goal_target_coords(goal) if goal else None
             if target:
                 try:
-                    self._bot.lookAt(self._Vec3(target[0] + 0.5, pos_before.y + 1.6, target[2] + 0.5))
+                    self._driver.look_at(self._Vec3(target[0] + 0.5, pos_before.y + 1.6, target[2] + 0.5))
                 except Exception:
                     pass
 
@@ -167,15 +165,15 @@ class MovementSystem:
             return False
 
     async def _nudge_move(self, direction: str, duration: float = 0.6) -> bool:
-        pos_before = self._bot.entity.position
+        pos_before = self._driver.get_position()
         try:
-            self._bot.setControlState(direction, True)
-            self._bot.setControlState("jump", True)
+            self._driver.set_control_state(direction, True)
+            self._driver.set_control_state("jump", True)
             await asyncio.sleep(max(0.2, duration))
         finally:
             try:
-                self._bot.setControlState(direction, False)
-                self._bot.setControlState("jump", False)
+                self._driver.set_control_state(direction, False)
+                self._driver.set_control_state("jump", False)
             except Exception:
                 pass
 
@@ -183,7 +181,7 @@ class MovementSystem:
 
     async def _try_clear_front_block(self, target: Optional[Tuple[int, int, int]]) -> None:
         try:
-            pos = self._bot.entity.position
+            pos = self._driver.get_position()
             bx = int(math.floor(pos.x))
             by = int(math.floor(pos.y))
             bz = int(math.floor(pos.z))
@@ -201,24 +199,14 @@ class MovementSystem:
                 step_x = 1
 
             head_pos = self._Vec3(bx + step_x, by + 1, bz + step_z)
-            head_block = self._bot.blockAt(head_pos)
+            head_block = self._driver.block_at(head_pos)
             if head_block and not self._is_air_block(head_block) and getattr(head_block, "diggable", True):
                 try:
-                    await self._bot.dig(head_block)
+                    await self._driver.dig(head_block)
                 except Exception:
                     pass
         except Exception:
             pass
-
-    def _extract_goal_coords(self, goal) -> Optional[Tuple[int, int, int]]:
-        if not goal:
-            return None
-        if hasattr(goal, "x") and hasattr(goal, "y") and hasattr(goal, "z"):
-            try:
-                return int(goal.x), int(goal.y), int(goal.z)
-            except Exception:
-                return None
-        return None
 
     def _is_air_block(self, block) -> bool:
         try:
@@ -228,7 +216,7 @@ class MovementSystem:
 
     def _has_moved(self, pos_before, threshold: float = 0.2) -> bool:
         try:
-            pos_after = self._bot.entity.position
+            pos_after = self._driver.get_position()
             dx = pos_after.x - pos_before.x
             dy = pos_after.y - pos_before.y
             dz = pos_after.z - pos_before.z
@@ -239,29 +227,27 @@ class MovementSystem:
     async def navigate_to_block(self, x: int, y: int, z: int) -> None:
         """Navigate near a block position for interaction."""
         try:
-            bot_pos = self._bot.entity.position
+            bot_pos = self._driver.get_position()
             dist = ((bot_pos.x - x) ** 2 + (bot_pos.y - y) ** 2 + (bot_pos.z - z) ** 2) ** 0.5
             if dist < 4:
                 return
 
-            goals = self._pathfinder.goals
-            goal = goals.GoalNear(int(x), int(y), int(z), 3)
-            self._bot.pathfinder.setGoal(goal)
+            goal = self._driver.create_goal_near(int(x), int(y), int(z), 3)
+            if goal is None:
+                return
+            self._driver.set_goal(goal)
 
             start_wait = time.time()
-            while not self._bot.pathfinder.isMoving() and time.time() - start_wait < 2.0:
+            while not self._driver.is_moving() and time.time() - start_wait < 2.0:
                 await asyncio.sleep(0.1)
-            if not self._bot.pathfinder.isMoving():
-                fallback_goal = None
-                if hasattr(goals, "GoalNearXZ"):
-                    fallback_goal = goals.GoalNearXZ(int(x), int(z), 3)
-                else:
-                    fallback_goal = goals.GoalNear(int(x), int(bot_pos.y), int(z), 3)
+            if not self._driver.is_moving():
+                fallback_goal = self._driver.create_goal_near_xz(int(x), int(z), 3, y_hint=int(bot_pos.y))
                 logger.debug(f"Navigation fallback to XZ-only goal for ({x},{y},{z})")
-                self._bot.pathfinder.setGoal(fallback_goal)
+                if fallback_goal is not None:
+                    self._driver.set_goal(fallback_goal)
 
             start = time.time()
-            while self._bot.pathfinder.isMoving() and time.time() - start < 10:
+            while self._driver.is_moving() and time.time() - start < 10:
                 await asyncio.sleep(0.1)
 
         except Exception as e:
@@ -274,18 +260,22 @@ class MovementSystem:
         reach: float = 1.0
     ) -> bool:
         try:
-            goals = self._pathfinder.goals
             target_x = math.floor(position["x"])
             target_y = math.floor(position["y"])
             target_z = math.floor(position["z"])
 
-            goal = None
-            if hasattr(goals, "GoalBlock"):
-                goal = goals.GoalBlock(target_x, target_y, target_z)
-            else:
-                goal = goals.GoalNear(target_x, target_y, target_z, max(1, int(math.ceil(reach))))
+            goal = self._driver.create_goal_block(target_x, target_y, target_z)
+            if goal is None:
+                goal = self._driver.create_goal_near(
+                    target_x,
+                    target_y,
+                    target_z,
+                    max(1, int(math.ceil(reach)))
+                )
+            if goal is None:
+                return False
 
-            self._bot.pathfinder.setGoal(goal)
+            self._driver.set_goal(goal)
 
             try:
                 await asyncio.wait_for(
@@ -300,11 +290,11 @@ class MovementSystem:
                 return False
             finally:
                 try:
-                    self._bot.pathfinder.stop()
+                    self._driver.stop_pathfinder()
                 except Exception:
                     pass
 
-            pos = self._bot.entity.position
+            pos = self._driver.get_position()
             dx = pos.x - position["x"]
             dy = pos.y - position["y"]
             dz = pos.z - position["z"]
@@ -333,7 +323,7 @@ class MovementSystem:
         try:
             center_y = self._get_highest_block_y_at(center_x, center_z)
             if center_y is None:
-                center_y = int(self._bot.entity.position.y)
+                center_y = int(self._driver.get_position().y)
 
             num_waypoints = max(3, duration // 10)
             waypoints = []
@@ -352,7 +342,7 @@ class MovementSystem:
             # 🔧 Fix: Fallback - 如果随机点都无效，使用机器人当前位置附近的简单偏移
             if not waypoints:
                 logger.warning("[patrol] Random waypoints failed, using fallback near bot position")
-                bot_pos = self._bot.entity.position
+                bot_pos = self._driver.get_position()
                 bot_y = int(bot_pos.y)
                 for dx, dz in [(5, 0), (-5, 0), (0, 5), (0, -5), (3, 3), (-3, -3)]:
                     fallback_x = int(bot_pos.x) + dx
@@ -372,7 +362,7 @@ class MovementSystem:
             logger.info(f"[patrol] Generated {len(waypoints)} waypoints")
 
             patrol_start = time.time()
-            last_pos = self._bot.entity.position
+            last_pos = self._driver.get_position()
 
             while time.time() - patrol_start < duration:
                 if time.time() - start_time > timeout:
@@ -387,7 +377,7 @@ class MovementSystem:
 
                 if goto_result.success:
                     waypoints_visited += 1
-                    curr_pos = self._bot.entity.position
+                    curr_pos = self._driver.get_position()
                     dist = (
                         (curr_pos.x - last_pos.x) ** 2 +
                         (curr_pos.y - last_pos.y) ** 2 +
@@ -433,43 +423,25 @@ class MovementSystem:
             )
 
     def _parse_goal(self, target: str):
-        goals = self._pathfinder.goals
-
         # Player target: @PlayerName
         if target.startswith("@"):
             player_name = target[1:]
             try:
                 # 🔧 Fix: 安全的玩家查找
-                player = None
-                
-                # 方法 1: 直接获取 (精确匹配)
-                try:
-                    player = self._bot.players[player_name]
-                except (KeyError, TypeError):
-                    pass
-                
-                # 方法 2: 使用 .get() 如果可用
-                if not player:
-                    try:
-                        if hasattr(self._bot.players, 'get'):
-                            player = self._bot.players.get(player_name)
-                    except Exception:
-                        pass
+                player = self._driver.get_player(player_name)
                 
                 # 方法 3: 大小写不敏感匹配 (安全遍历)
                 if not player or not getattr(player, 'entity', None):
                     try:
                         # 尝试获取所有玩家名的列表
-                        player_names = []
-                        if hasattr(self._bot.players, 'keys'):
-                            player_names = list(self._bot.players.keys())
-                        elif hasattr(self._bot.players, '__iter__'):
-                            player_names = list(self._bot.players)
+                        player_names = self._driver.get_player_names()
                         
                         for pname in player_names:
                             if str(pname).lower() == player_name.lower():
                                 try:
-                                    candidate = self._bot.players[pname]
+                                    candidate = self._driver.get_player(pname)
+                                    if candidate is None and pname is not None:
+                                        candidate = self._driver.get_player(str(pname))
                                     if candidate and getattr(candidate, 'entity', None):
                                         player = candidate
                                         logger.debug(f"Found player via case-insensitive match: {pname}")
@@ -481,10 +453,10 @@ class MovementSystem:
                 
                 if player and getattr(player, 'entity', None):
                     pos = player.entity.position
-                    try:
-                        return goals.GoalNear(int(pos.x), int(pos.y), int(pos.z), 2)
-                    except Exception:
-                        return goals.GoalBlock(int(pos.x), int(pos.y), int(pos.z))
+                    goal = self._driver.create_goal_near(int(pos.x), int(pos.y), int(pos.z), 2)
+                    if goal is None:
+                        goal = self._driver.create_goal_block(int(pos.x), int(pos.y), int(pos.z))
+                    return goal
                 
                 # 记录更详细的日志
                 if player and not getattr(player, 'entity', None):
@@ -500,7 +472,7 @@ class MovementSystem:
             if len(parts) == 3:
                 try:
                     x, y, z = map(int, parts)
-                    return goals.GoalBlock(x, y, z)
+                    return self._driver.create_goal_block(x, y, z)
                 except ValueError:
                     logger.warning(f"Invalid coordinates: {target}")
                     return None
@@ -510,24 +482,24 @@ class MovementSystem:
 
     async def _wait_for_goal_reached(self, saved_goal=None) -> None:
         start_wait = time.time()
-        while not self._bot.pathfinder.isMoving():
+        while not self._driver.is_moving():
             if time.time() - start_wait > 2.0:
-                if saved_goal and self._is_goal_reached(saved_goal):
+                if saved_goal and self._driver.is_goal_reached(saved_goal, self._driver.get_position()):
                     logger.info("[DEBUG] Already at goal, no movement needed")
                     return
                 logger.warning("Pathfinder did not start moving within 2s, path may be blocked")
                 raise RuntimeError("Pathfinder failed to start - path may be blocked or unreachable")
             await asyncio.sleep(0.1)
 
-        logger.info(f"[DEBUG] Pathfinder started moving: {self._bot.pathfinder.isMoving()}")
+        logger.info(f"[DEBUG] Pathfinder started moving: {self._driver.is_moving()}")
 
         iteration = 0
         while True:
-            is_moving = self._bot.pathfinder.isMoving()
-            goal = self._bot.pathfinder.goal
+            is_moving = self._driver.is_moving()
+            goal = self._driver.current_goal()
 
             if iteration % 10 == 0:
-                pos = self._bot.entity.position
+                pos = self._driver.get_position()
                 logger.info(
                     f"[DEBUG] Pathfinder status: moving={is_moving}, goal={goal is not None}, "
                     f"pos=({pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f})"
@@ -536,13 +508,13 @@ class MovementSystem:
 
             if not is_moving:
                 check_goal = goal or saved_goal
-                if check_goal and self._is_goal_reached(check_goal):
+                if check_goal and self._driver.is_goal_reached(check_goal, self._driver.get_position()):
                     logger.info("[DEBUG] Goal reached!")
                     return
                 if goal is None and saved_goal is None:
                     logger.info("[DEBUG] Goal is None, pathfinder stopped (no saved goal)")
                     return
-                pos = self._bot.entity.position
+                pos = self._driver.get_position()
                 logger.warning(
                     f"[DEBUG] Pathfinder stopped without reaching goal! "
                     f"pos=({pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f})"
@@ -551,57 +523,15 @@ class MovementSystem:
 
             await asyncio.sleep(0.1)
 
-    def _is_goal_reached(self, goal) -> bool:
-        try:
-            pos = self._bot.entity.position
-            bx = math.floor(pos.x)
-            by = math.floor(pos.y)
-            bz = math.floor(pos.z)
-
-            if hasattr(goal, "x") and hasattr(goal, "y") and hasattr(goal, "z"):
-                try:
-                    gx = int(goal.x)
-                    gy = int(goal.y)
-                    gz = int(goal.z)
-                    if bx == gx and by == gy and bz == gz:
-                        return True
-                except Exception:
-                    pass
-
-            if hasattr(goal, "range") and hasattr(goal, "x") and hasattr(goal, "y") and hasattr(goal, "z"):
-                try:
-                    dx = pos.x - float(goal.x)
-                    dy = pos.y - float(goal.y)
-                    dz = pos.z - float(goal.z)
-                    if (dx * dx + dy * dy + dz * dz) <= (float(goal.range) ** 2):
-                        return True
-                except Exception:
-                    pass
-
-            try:
-                if goal.isEnd(self._Vec3(bx, by, bz)):
-                    return True
-            except Exception:
-                pass
-            try:
-                if goal.isEnd(bx, by, bz):
-                    return True
-            except Exception:
-                pass
-
-            return False
-        except Exception:
-            return False
-
     def _get_highest_block_y_at(self, x: int, z: int) -> Optional[int]:
         try:
-            start_y = min(320, int(self._bot.entity.position.y) + 64)
+            start_y = min(320, int(self._driver.get_position().y) + 64)
 
             for y in range(start_y, -64, -1):
                 try:
-                    block = self._bot.blockAt({"x": x, "y": y, "z": z})
+                    block = self._driver.block_at({"x": x, "y": y, "z": z})
                     if block and block.name not in ("air", "void_air", "cave_air"):
-                        above = self._bot.blockAt({"x": x, "y": y + 1, "z": z})
+                        above = self._driver.block_at({"x": x, "y": y + 1, "z": z})
                         if above and above.name in ("air", "void_air", "cave_air"):
                             return y + 1
                 except Exception:

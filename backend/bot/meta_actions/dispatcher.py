@@ -50,6 +50,8 @@ class MetaActionDispatcher:
         "patrol": 90.0,
         "retreat_safe": 30.0,
         "climb_to_surface": 60.0,
+        "explore": 90.0,
+        "look_around": 10.0,
     }
     
     # 不接受 timeout 参数的动作

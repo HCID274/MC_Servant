@@ -9,6 +9,7 @@ from bot.interfaces import IBotActions, ActionResult
 from bot.drivers.mineflayer.driver import MineflayerDriver
 from bot.systems.common import BackgroundTaskManager
 from bot.systems.movement import MovementSystem
+from bot.systems.movement_recovery import UnstuckPolicy
 from bot.systems.inventory import InventorySystem
 from bot.systems.mining import MiningSystem
 from bot.systems.crafting import CraftingSystem
@@ -19,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 class MineflayerActions(IBotActions):
     def __init__(self, bot):
-        self._mf_bot = bot
         self._driver = MineflayerDriver(bot)
         self._background = BackgroundTaskManager(self._driver)
         self._movement = MovementSystem(self._driver, self._background)
@@ -27,6 +27,7 @@ class MineflayerActions(IBotActions):
         self._perception = PerceptionSystem(self._driver)
         self._mining = MiningSystem(self._driver, self._background, self._movement, self._inventory)
         self._crafting = CraftingSystem(self._driver, self._background, self._movement, self._inventory)
+        self._recovery = UnstuckPolicy(self._driver, self._background, self._movement, self._inventory)
 
         self._setup_progress_events()
 
@@ -39,7 +40,8 @@ class MineflayerActions(IBotActions):
 
     async def chat(self, message: str) -> bool:
         try:
-            return await self._mf_bot.chat(message)
+            self._driver.chat(message)
+            return True
         except Exception as e:
             logger.error(f"chat failed: {e}")
             return False
@@ -71,7 +73,7 @@ class MineflayerActions(IBotActions):
         )
 
     async def climb_to_surface(self, timeout: float = 60.0) -> ActionResult:
-        return await self._mining.climb_to_surface(timeout=timeout)
+        return await self._recovery.climb_to_surface(timeout=timeout)
 
     async def expose_underground(self, target_block: str, max_depth: int = 5, timeout: float = 60.0) -> ActionResult:
         """暴露地下方块，用于找不到目标时向下探测"""
@@ -119,15 +121,15 @@ class MineflayerActions(IBotActions):
 
     def get_state(self) -> dict:
         try:
-            pos = self._driver.bot.entity.position
+            pos = self._driver.get_position()
             return {
                 "position": {
                     "x": int(pos.x),
                     "y": int(pos.y),
                     "z": int(pos.z)
                 },
-                "health": float(self._driver.bot.health) if self._driver.bot.health else 20.0,
-                "food": int(self._driver.bot.food) if self._driver.bot.food else 20,
+                "health": self._driver.get_health(),
+                "food": self._driver.get_food(),
                 "inventory": self._inventory.get_inventory_summary(),
                 "equipped": self._inventory.get_equipped_item()
             }
@@ -144,7 +146,7 @@ class MineflayerActions(IBotActions):
 
     def get_player_position(self, player_name: str) -> Optional[dict]:
         try:
-            player = self._driver.bot.players[player_name]
+            player = self._driver.get_player(player_name)
             if player and player.entity:
                 pos = player.entity.position
                 return {

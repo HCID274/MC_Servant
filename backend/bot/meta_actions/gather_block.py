@@ -148,7 +148,7 @@ class GatherBlockAction(IMetaAction, ToolMatcherMixin):
         
         # 获取当前 Bot 状态进行工具检查
         try:
-            bot_state = await actions.get_state()
+            bot_state = actions.get_state()
             inventory = bot_state.get("inventory", {})
             
             if not self.has_required_tool(block_type, inventory):

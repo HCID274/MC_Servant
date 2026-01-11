@@ -98,6 +98,27 @@ class IBotActions(ABC):
             data: {"collected": {"oak_log": 3}, "location": [x, y, z]}
         """
         pass
+
+    @abstractmethod
+    async def mine_tree(
+        self,
+        near_position: Optional[dict] = None,
+        search_radius: int = 32,
+        timeout: float = 120.0
+    ) -> ActionResult:
+        """
+        砍树（采集原木）
+
+        Args:
+            near_position: 可选搜索中心 {x, y, z}
+            search_radius: 搜索半径（格）
+            timeout: 超时时间（秒）
+
+        Returns:
+            ActionResult
+            data: {"collected": int, "failed": int, "log_type": str}
+        """
+        pass
     
     @abstractmethod
     async def climb_to_surface(self, timeout: float = 60.0) -> ActionResult:
@@ -142,6 +163,22 @@ class IBotActions(ABC):
         Returns:
             ActionResult
             data: {"crafted": {"oak_planks": 4}}
+        """
+        pass
+
+    @abstractmethod
+    async def smelt(self, item_name: str, count: int = 1, timeout: float = 120.0) -> ActionResult:
+        """
+        冶炼物品
+
+        Args:
+            item_name: 原材料 ID (如 "raw_iron", "sand")
+            count: 数量
+            timeout: 超时时间 (秒)
+
+        Returns:
+            ActionResult
+            data: {"smelted": {"iron_ingot": 3}}
         """
         pass
     
@@ -319,6 +356,16 @@ class IBotActions(ABC):
                 "inventory": {"oak_log": 64, "cobblestone": 128},
                 "equipped": "diamond_pickaxe" | None
             }
+        """
+        pass
+
+    @abstractmethod
+    def get_player_position(self, player_name: str) -> Optional[dict]:
+        """
+        获取指定玩家位置
+
+        Returns:
+            {"x": int, "y": int, "z": int} | None
         """
         pass
 

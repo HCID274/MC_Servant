@@ -32,6 +32,7 @@ from .recovery_planner import (
     RecoveryDecisionType,
     RecoveryContext,
 )
+from .recovery_policy import RecoveryPolicy
 
 if TYPE_CHECKING:
     from ..bot.interfaces import IBotActions, ActionResult
@@ -91,6 +92,7 @@ class UniversalRunner(ITaskRunner):
         dynamic_resolver: Optional["DynamicResolver"] = None,
         prerequisite_resolver: Optional["PrerequisiteResolver"] = None,
         experience_recorder: Optional["ExperienceRecorder"] = None,
+        recovery_policy: Optional[RecoveryPolicy] = None,
     ):
         """
         初始化 UniversalRunner
@@ -108,6 +110,7 @@ class UniversalRunner(ITaskRunner):
         self._dynamic_resolver = dynamic_resolver
         self._prerequisite_resolver = prerequisite_resolver
         self._experience_recorder = experience_recorder
+        self._recovery_policy = recovery_policy or RecoveryPolicy()
         self._resolver = resolver or self._create_default_resolver()
 
     def _create_default_resolver(self) -> Any:
@@ -287,34 +290,21 @@ class UniversalRunner(ITaskRunner):
             last_pos = current_pos
 
             # 紧急触发脱困：仅依赖位移检测 (不再依赖硬编码高度)
-            is_moving_action = cached_action and cached_action.action in ["goto", "mine", "explore", "patrol"]
-            
-            if stuck_ticks >= STUCK_MAX_TICKS and is_moving_action:
+            if self._recovery_policy and self._recovery_policy.should_emergency_recover(
+                stuck_ticks, STUCK_MAX_TICKS, cached_action
+            ):
                 logger.warning(f"[StuckMonitor] Triggering emergency recovery: stuck={stuck_ticks}")
-                # 构造脱困动作并执行（走统一执行通道，便于记录）
-                climb_step = ActionStep(
-                    action="climb_to_surface",
-                    params={"timeout": 60.0},
-                    description="Emergency recovery: climb to surface"
-                )
+                climb_step = self._recovery_policy.emergency_step(timeout=60.0)
                 climb_res = await self._execute_step(actions, climb_step)
                 last_result = climb_res
                 if climb_res.success:
                     completed_steps.append(climb_res)
-                    stuck_ticks = 0  # 重置监测
-                    # 脱困成功后，重新观察状态
+                    stuck_ticks = 0  # ??????
+                    # ???????????????????
                     bot_state = self._get_bot_state(actions, context, last_scan, last_result, last_find_location)
                 else:
                     logger.error(f"[StuckMonitor] Climb to surface failed: {climb_res.message}")
-            
-            # ✅ Q2: Inventory Delta 作为辅助信息注入 (而非直接返回成功)
-            if gather_item_id and gather_target_count and gather_start_count is not None:
-                inv = bot_state.get("inventory", {})
-                current = int(inv.get(gather_item_id, 0) or 0)
-                delta = current - gather_start_count
-                goal_met = delta >= gather_target_count
-                
-                # 注入到 bot_state 供 LLM 参考
+
                 bot_state["gather_progress"] = {
                     "item": gather_item_id,
                     "collected": delta,
@@ -1134,24 +1124,20 @@ class UniversalRunner(ITaskRunner):
         # 如果寻路/移动失败，无论高度如何，优先尝试垂直脱困
         if error_code != "SUCCESS" and attempt_count >= 1:
             move_errors = ["PATH_BLOCKED", "TARGET_NOT_FOUND", "TIMEOUT", "RECOVERY_FAILED", "EXECUTION_ERROR"]
+            height_gap = self._estimate_height_gap(cached_action, bot_state or {}, context)
+            step = self._recovery_policy.move_error_step(
+                error_code=error_code,
+                height_gap=height_gap,
+                attempt_count=attempt_count,
+            ) if self._recovery_policy else None
+            if step:
+                logger.info("[Recovery] %s", step.description or "Triggering climb_to_surface")
+                return {"next_step": step}
             if error_code in move_errors:
-                height_gap = self._estimate_height_gap(cached_action, bot_state or {}, context)
-                if height_gap is not None and height_gap >= 4:
-                    logger.info(
-                        f"[Recovery] Vertical gap {height_gap} detected (error: {error_code}), "
-                        "triggering climb_to_surface"
-                    )
-                    climb_step = ActionStep(
-                        action="climb_to_surface",
-                        params={"timeout": 60.0},
-                        description=f"Vertical gap {height_gap} with move error ({error_code}), climb to surface"
-                    )
-                    return {"next_step": climb_step}
                 logger.info(
                     f"[Recovery] Move error without vertical gap (error: {error_code}, gap={height_gap}), "
                     "skipping climb_to_surface"
                 )
-
         # Local retry for transient failures (Attempt 2)
         if self._rules.is_transient_error(error_code) and attempt_count < 2:
             logger.info(f"[Recovery] Transient error, retrying same action: {error_code}")

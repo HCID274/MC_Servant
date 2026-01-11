@@ -14,6 +14,8 @@ from .scan_environment import ScanEnvironmentAction
 from .craft_item import CraftItemAction
 from .smelt_item import SmeltItemAction
 from .retreat_safe import RetreatSafeAction
+from .explore import ExploreAction
+from .look_around import LookAroundAction
 
 __all__ = [
     "IMetaAction",
@@ -26,6 +28,8 @@ __all__ = [
     "CraftItemAction",
     "SmeltItemAction",
     "RetreatSafeAction",
+    "ExploreAction",
+    "LookAroundAction",
 ]
 
 

@@ -27,8 +27,6 @@ class CraftingSystem:
         inventory: InventorySystem,
     ) -> None:
         self._driver = driver
-        self._bot = driver.bot
-        self._mcData = driver.mcdata
         self._movement = movement
         self._inventory = inventory
         self._background = background
@@ -41,8 +39,8 @@ class CraftingSystem:
         missing_materials: Dict[str, int] = {}
 
         try:
-            item_info = self._mcData.itemsByName[item_name] if hasattr(self._mcData.itemsByName, item_name) else None
-            if not item_info:
+            item_id = self._driver.get_item_id(item_name)
+            if item_id is None:
                 return ActionResult(
                     success=False,
                     action="craft",
@@ -53,10 +51,10 @@ class CraftingSystem:
 
             crafting_table_block = None
             try:
-                ct_info = self._mcData.blocksByName["crafting_table"]
-                if ct_info:
-                    crafting_table_block = self._bot.findBlock({
-                        "matching": ct_info.id,
+                ct_id = self._driver.get_block_id("crafting_table")
+                if ct_id is not None:
+                    crafting_table_block = self._driver.find_block({
+                        "matching": ct_id,
                         "maxDistance": 32
                     })
             except Exception:
@@ -64,7 +62,7 @@ class CraftingSystem:
 
             all_recipes = []
             try:
-                all_recipes_proxy = self._bot.recipesAll(item_info.id, None, crafting_table_block)
+                all_recipes_proxy = self._driver.recipes_all(item_id, crafting_table_block)
                 all_recipes = list(all_recipes_proxy) if all_recipes_proxy else []
             except Exception as e:
                 logger.debug(f"recipesAll failed: {e}")
@@ -73,12 +71,12 @@ class CraftingSystem:
                 try:
                     recipes_proxy = None
                     try:
-                        recipes_proxy = self._bot.recipesFor(item_info.id, None, int(count), None)
+                        recipes_proxy = self._driver.recipes_for(item_id, count=int(count), crafting_table=crafting_table_block)
                     except Exception:
                         try:
-                            recipes_proxy = self._bot.recipesFor(item_info.id, None, int(count))
+                            recipes_proxy = self._driver.recipes_for(item_id, count=int(count))
                         except Exception:
-                            recipes_proxy = self._bot.recipesFor(item_info.id)
+                            recipes_proxy = self._driver.recipes_for(item_id)
                     all_recipes = list(recipes_proxy) if recipes_proxy else []
                 except Exception:
                     pass
@@ -98,7 +96,7 @@ class CraftingSystem:
             if not all_recipes:
                 has_raw_recipe = False
                 try:
-                    raw_recipes = self._mcData.recipes.get(str(item_info.id))
+                    raw_recipes = self._driver.get_recipe_data(item_id)
                     if raw_recipes and len(raw_recipes) > 0:
                         has_raw_recipe = True
                 except Exception:
@@ -144,10 +142,10 @@ class CraftingSystem:
 
             crafting_table = None
             if executable_recipe.requiresTable:
-                ct_info = self._mcData.blocksByName["crafting_table"] if hasattr(self._mcData.blocksByName, "crafting_table") else None
-                if ct_info:
-                    crafting_table = self._bot.findBlock({
-                        "matching": ct_info.id,
+                ct_id = self._driver.get_block_id("crafting_table")
+                if ct_id is not None:
+                    crafting_table = self._driver.find_block({
+                        "matching": ct_id,
                         "maxDistance": 32
                     })
 
@@ -164,7 +162,7 @@ class CraftingSystem:
                 await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(
                         None,
-                        lambda: self._bot.craft(executable_recipe, count, crafting_table)
+                        lambda: self._driver.craft_recipe(executable_recipe, count, crafting_table)
                     ),
                     timeout=timeout
                 )
@@ -179,11 +177,12 @@ class CraftingSystem:
                     try:
                         use_window = None
                         if executable_recipe.requiresTable:
-                            current_window = self._bot.currentWindow
+                            current_window = self._driver.get_current_window()
+                            current_title = self._driver.get_window_title(current_window) if current_window else ""
 
-                            if not current_window or "crafting_table" not in str(current_window.title).lower():
+                            if not current_window or "crafting_table" not in str(current_title).lower():
                                 if crafting_table is None:
-                                    crafting_table = self._bot.findBlock({
+                                    crafting_table = self._driver.find_block({
                                         "matching": lambda b: b.name == "crafting_table",
                                         "maxDistance": 2
                                     })
@@ -203,13 +202,13 @@ class CraftingSystem:
                                             try:
                                                 center = crafting_table.position.offset(0.5, 0.5, 0.5)
                                                 logger.info(f"[craft] Looking at {center}...")
-                                                await self._bot.lookAt(center)
+                                                await self._driver.look_at(center)
                                             except Exception:
                                                 pass
 
                                             logger.info("[craft] Activating block...")
                                             try:
-                                                self._bot.activateBlock(crafting_table)
+                                                self._driver.activate_block(crafting_table)
                                             except Exception as act_err:
                                                 logger.error(f"[craft] activateBlock failed: {act_err}")
 
@@ -218,15 +217,11 @@ class CraftingSystem:
 
                                             for _ in range(15):
                                                 try:
-                                                    w = self._bot.currentWindow
+                                                    w = self._driver.get_current_window()
                                                     if w:
-                                                        w_title = str(w.title).lower() if w.title else "none"
-                                                        w_type = str(w.type) if hasattr(w, "type") else "none"
-
-                                                        try:
-                                                            w_len = int(w.slots.length)
-                                                        except Exception:
-                                                            w_len = 0
+                                                        w_title = self._driver.get_window_title(w).lower() if w else "none"
+                                                        w_type = self._driver.get_window_type(w) if w else "none"
+                                                        w_len = self._driver.get_window_length(w) if w else 0
 
                                                         logger.info(
                                                             f"[craft] Detected open window: title='{w_title}', "
@@ -370,11 +365,7 @@ class CraftingSystem:
                     return 0
 
         def _slots_list() -> List[Any]:
-            try:
-                slots = getattr(self._bot.inventory, "slots", None)
-                return list(slots) if slots is not None else []
-            except Exception:
-                return []
+            return self._driver.get_inventory_slots()
 
         def _find_source_slot(min_needed: int) -> int:
             slots = _slots_list()
@@ -393,17 +384,17 @@ class CraftingSystem:
             if source < 0:
                 raise RuntimeError(f"manual craft missing material: {plank_item_name} x4")
 
-            self._bot.clickWindow(source, 0, 0)
+            self._driver.click_window(source, 0, 0)
             _time.sleep(0.05)
 
             for slot in input_slots:
-                self._bot.clickWindow(slot, 1, 0)
+                self._driver.click_window(slot, 1, 0)
                 _time.sleep(0.05)
 
-            self._bot.clickWindow(source, 0, 0)
+            self._driver.click_window(source, 0, 0)
             _time.sleep(0.05)
 
-            self._bot.clickWindow(output_slot, 0, 1)
+            self._driver.click_window(output_slot, 0, 1)
             _time.sleep(0.1)
 
     def _manual_craft_generic_sync(self, recipe, count: int = 1, crafting_table_window=None) -> None:
@@ -412,7 +403,7 @@ class CraftingSystem:
 
         tag_resolver = get_tag_resolver()
 
-        window = crafting_table_window if crafting_table_window else self._bot.inventory
+        window = crafting_table_window if crafting_table_window else self._driver.get_inventory_window()
         is_3x3 = (crafting_table_window is not None)
         grid_width = 3 if is_3x3 else 2
 
@@ -423,34 +414,34 @@ class CraftingSystem:
 
         grid_slots_count = 9 if is_3x3 else 4
         for i in range(1, grid_slots_count + 1):
-            slot_item = window.slots[i]
+            slot_item = self._driver.get_window_slot(window, i)
             if slot_item:
-                self._bot.clickWindow(i, 0, 1)
+                self._driver.click_window(i, 0, 1)
                 _time.sleep(0.2)
 
         inventory_snapshot = {}
-        for item in self._bot.inventory.items():
+        for item in self._driver.get_inventory_items():
             inventory_snapshot[item.name] = inventory_snapshot.get(item.name, 0) + item.count
 
         shape = recipe.inShape
         if not shape:
             raise RuntimeError("Recipe has no inShape")
 
-        slots = getattr(window, "slots", [])
+        slots = self._driver.get_window_slots(window)
         if not slots:
             pass
 
         search_start = 10 if is_3x3 else 9
 
         def find_material_slot(target_id: int) -> int:
-            slots_len = int(window.slots.length)
+            slots_len = int(self._driver.get_window_length(window))
             logger.debug(
                 f"[find_material_slot] Searching for target_id={target_id}, "
                 f"search_start={search_start}, slots_len={slots_len}"
             )
 
             for i in range(search_start, slots_len):
-                item = window.slots[i]
+                item = self._driver.get_window_slot(window, i)
                 if item and item.type == target_id:
                     logger.debug(f"[find_material_slot] Exact match found at slot {i}: {item.name}")
                     return i
@@ -467,7 +458,7 @@ class CraftingSystem:
                 f"{equivs[:5]}{'...' if len(equivs) > 5 else ''}"
             )
             for i in range(search_start, slots_len):
-                item = window.slots[i]
+                item = self._driver.get_window_slot(window, i)
                 if item and item.name in equivs:
                     logger.debug(
                         f"[find_material_slot] Tag match found at slot {i}: "
@@ -511,12 +502,12 @@ class CraftingSystem:
                 name = self._get_item_name_by_id(item_id) or str(item_id)
                 raise RuntimeError(f"manual craft missing material: {name}")
 
-            self._bot.clickWindow(source_slot, 0, 0)
+            self._driver.click_window(source_slot, 0, 0)
             _time.sleep(0.05)
-            self._bot.clickWindow(slot_idx, 0, 0)
+            self._driver.click_window(slot_idx, 0, 0)
             _time.sleep(0.05)
 
-        self._bot.clickWindow(0, 0, 1)
+        self._driver.click_window(0, 0, 1)
         _time.sleep(0.2)
 
     def _find_executable_recipe(
@@ -588,11 +579,7 @@ class CraftingSystem:
         return materials
 
     def _get_item_name_by_id(self, item_id: int) -> Optional[str]:
-        try:
-            item = self._mcData.items[item_id]
-            return item.name if item else None
-        except Exception:
-            return None
+        return self._driver.get_item_name(item_id)
 
     # =========================================================================
     # Smelting System
@@ -759,10 +746,10 @@ class CraftingSystem:
             
             for furnace_type in furnace_types:
                 try:
-                    block_info = self._mcData.blocksByName.get(furnace_type)
-                    if block_info:
-                        furnace_block = self._bot.findBlock({
-                            "matching": block_info.id,
+                    block_id = self._driver.get_block_id(furnace_type)
+                    if block_id is not None:
+                        furnace_block = self._driver.find_block({
+                            "matching": block_id,
                             "maxDistance": 32
                         })
                         if furnace_block:
@@ -815,11 +802,11 @@ class CraftingSystem:
             
             # Open furnace using mineflayer API
             loop = asyncio.get_running_loop()
-            open_method = self._bot.openFurnace
-            if furnace_kind == "blast_furnace" and hasattr(self._bot, "openBlastFurnace"):
-                open_method = self._bot.openBlastFurnace
-            elif furnace_kind == "smoker" and hasattr(self._bot, "openSmoker"):
-                open_method = self._bot.openSmoker
+            open_method = self._driver.open_furnace
+            if furnace_kind == "blast_furnace":
+                open_method = self._driver.open_blast_furnace
+            elif furnace_kind == "smoker":
+                open_method = self._driver.open_smoker
             furnace = await asyncio.wait_for(
                 loop.run_in_executor(
                     None,
@@ -839,19 +826,19 @@ class CraftingSystem:
             
             try:
                 # Get item type IDs
-                input_item_info = self._mcData.itemsByName.get(smelt_input)
-                fuel_item_info = self._mcData.itemsByName.get(fuel_item)
-                
-                if not input_item_info:
+                input_item_id = self._driver.get_item_id(smelt_input)
+                fuel_item_id = self._driver.get_item_id(fuel_item) if fuel_item else None
+
+                if input_item_id is None:
                     raise RuntimeError(f"Unknown item: {smelt_input}")
                 
                 # Put fuel first
-                if fuel_item_info:
+                if fuel_item_id is not None:
                     logger.info(f"[smelt] Putting fuel: {fuel_item}")
                     await asyncio.wait_for(
                         loop.run_in_executor(
                             None,
-                            lambda: furnace.putFuel(fuel_item_info.id, None, fuel_count_needed)
+                            lambda: furnace.putFuel(fuel_item_id, None, fuel_count_needed)
                         ),
                         timeout=5.0
                     )
@@ -861,7 +848,7 @@ class CraftingSystem:
                 await asyncio.wait_for(
                     loop.run_in_executor(
                         None,
-                        lambda: furnace.putInput(input_item_info.id, None, count)
+                        lambda: furnace.putInput(input_item_id, None, count)
                     ),
                     timeout=5.0
                 )

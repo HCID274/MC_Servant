@@ -16,8 +16,6 @@ logger = logging.getLogger(__name__)
 class PerceptionSystem:
     def __init__(self, driver: IDriverAdapter) -> None:
         self._driver = driver
-        self._bot = driver.bot
-        self._mcData = driver.mcdata
 
     async def scan(self, target_type: str, radius: int = 32) -> ActionResult:
         start_time = time.time()
@@ -26,10 +24,11 @@ class PerceptionSystem:
             targets = []
 
             if target_type == "player":
-                for name, player in dict(self._bot.players).items():
-                    if player.entity and name != self._bot.username:
+                for name in self._driver.get_player_names():
+                    player = self._driver.get_player(name)
+                    if player and player.entity and name != self._driver.username:
                         pos = player.entity.position
-                        dist = self._bot.entity.position.distanceTo(pos)
+                        dist = self._driver.get_position().distanceTo(pos)
                         if dist <= radius:
                             targets.append({
                                 "name": name,
@@ -39,10 +38,10 @@ class PerceptionSystem:
                             })
 
             elif target_type in ("mob", "entity"):
-                for entity_id, entity in dict(self._bot.entities).items():
+                for entity_id, entity in self._driver.get_entities().items():
                     if entity.type == "mob" or entity.type == "animal":
                         pos = entity.position
-                        dist = self._bot.entity.position.distanceTo(pos)
+                        dist = self._driver.get_position().distanceTo(pos)
                         if dist <= radius:
                             targets.append({
                                 "name": entity.name or entity.type,
@@ -52,12 +51,12 @@ class PerceptionSystem:
                             })
 
             else:
-                block_info = self._mcData.blocksByName[target_type] if hasattr(self._mcData.blocksByName, target_type) else None
-                if block_info:
+                block_id = self._driver.get_block_id(target_type)
+                if block_id is not None:
                     blocks_proxy = await asyncio.get_event_loop().run_in_executor(
                         None,
-                        lambda: self._bot.findBlocks({
-                            "matching": block_info.id,
+                        lambda: self._driver.find_blocks({
+                            "matching": block_id,
                             "maxDistance": radius,
                             "count": 64
                         })
@@ -66,7 +65,7 @@ class PerceptionSystem:
                     blocks = list(blocks_proxy) if blocks_proxy else []
 
                     if blocks:
-                        bot_pos = self._bot.entity.position
+                        bot_pos = self._driver.get_position()
                         nearest = None
                         nearest_dist = float("inf")
 
@@ -116,7 +115,7 @@ class PerceptionSystem:
         feature = feature.lower().strip()
 
         try:
-            bot_pos = self._bot.entity.position
+            bot_pos = self._driver.get_position()
             candidates = []
 
             if feature == "highest":
@@ -218,16 +217,14 @@ class PerceptionSystem:
             elif feature == "water":
                 water_id = None
                 try:
-                    water_info = self._mcData.blocksByName.water
-                    if water_info:
-                        water_id = water_info.id
+                    water_id = self._driver.get_block_id("water")
                 except Exception:
                     pass
 
                 if water_id:
                     blocks = await asyncio.get_event_loop().run_in_executor(
                         None,
-                        lambda: self._bot.findBlocks({
+                        lambda: self._driver.find_blocks({
                             "matching": water_id,
                             "maxDistance": radius,
                             "count": count * 5
@@ -261,10 +258,10 @@ class PerceptionSystem:
                 all_logs = []
                 for log_name in log_types:
                     try:
-                        log_info = self._mcData.blocksByName[log_name]
-                        if log_info:
-                            blocks = self._bot.findBlocks({
-                                "matching": log_info.id,
+                        log_id = self._driver.get_block_id(log_name)
+                        if log_id is not None:
+                            blocks = self._driver.find_blocks({
+                                "matching": log_id,
                                 "maxDistance": radius,
                                 "count": 64
                             })
@@ -333,13 +330,13 @@ class PerceptionSystem:
 
     def _get_highest_block_y_at(self, x: int, z: int) -> Optional[int]:
         try:
-            start_y = min(320, int(self._bot.entity.position.y) + 64)
+            start_y = min(320, int(self._driver.get_position().y) + 64)
 
             for y in range(start_y, -64, -1):
                 try:
-                    block = self._bot.blockAt({"x": x, "y": y, "z": z})
+                    block = self._driver.block_at({"x": x, "y": y, "z": z})
                     if block and block.name not in ("air", "void_air", "cave_air"):
-                        above = self._bot.blockAt({"x": x, "y": y + 1, "z": z})
+                        above = self._driver.block_at({"x": x, "y": y + 1, "z": z})
                         if above and above.name in ("air", "void_air", "cave_air"):
                             return y + 1
                 except Exception:

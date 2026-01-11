@@ -1,13 +1,42 @@
 # WebSocket Client Test Script
 import asyncio
-import websockets
 import json
+import os
+from pathlib import Path
+
+import websockets
+
+
+def _load_ws_token() -> str:
+    token = os.getenv("MC_SERVANT_WS_ACCESS_TOKEN")
+    if token:
+        return token
+
+    env_path = Path(__file__).with_name(".env")
+    if not env_path.exists():
+        return ""
+
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.strip() == "MC_SERVANT_WS_ACCESS_TOKEN":
+                return value.strip().strip('"').strip("'")
+    except Exception:
+        return ""
+
+    return ""
 
 async def test_llm():
     uri = 'ws://localhost:8765/ws/test_client'
     print('Connecting to WebSocket...')
-    
-    async with websockets.connect(uri) as ws:
+    token = _load_ws_token()
+    if not token:
+        raise RuntimeError("Missing MC_SERVANT_WS_ACCESS_TOKEN (env or backend/.env).")
+
+    async with websockets.connect(uri, additional_headers={"x-access-token": token}) as ws:
         print('Connected!')
         
         # Test cases

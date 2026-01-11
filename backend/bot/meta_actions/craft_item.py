@@ -139,7 +139,7 @@ class CraftItemAction(IMetaAction):
         
         # 检查是否需要工作台
         try:
-            bot_state = await actions.get_state()
+            bot_state = actions.get_state()
             
             if self.needs_crafting_table(item_name):
                 if not self.has_crafting_table_access(item_name, bot_state):

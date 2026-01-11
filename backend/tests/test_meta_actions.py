@@ -63,7 +63,7 @@ def mock_actions():
     actions.mine = AsyncMock(return_value=MagicMock(success=True))
     actions.scan = AsyncMock(return_value=MagicMock(success=True))
     actions.craft = AsyncMock(return_value=MagicMock(success=True))
-    actions.get_state = AsyncMock(return_value={"inventory": {"stone_pickaxe": 1}})
+    actions.get_state = MagicMock(return_value={"inventory": {"stone_pickaxe": 1}})
     return actions
 
 
@@ -182,6 +182,8 @@ class TestMetaActionRegistry:
         assert MetaActionRegistry.get("gather_block") is not None
         assert MetaActionRegistry.get("scan_environment") is not None
         assert MetaActionRegistry.get("craft_item") is not None
+        assert MetaActionRegistry.get("explore") is not None
+        assert MetaActionRegistry.get("look_around") is not None
     
     def test_get_nonexistent_action(self):
         """测试获取不存在的动作"""
@@ -293,7 +295,7 @@ class TestGatherBlockAction:
     async def test_execute_calls_mine(self, mock_actions):
         """测试执行调用 mine"""
         action = GatherBlockAction()
-        mock_actions.get_state = AsyncMock(return_value={
+        mock_actions.get_state = MagicMock(return_value={
             "inventory": {"stone_pickaxe": 1}
         })
         
@@ -369,7 +371,7 @@ class TestCraftItemAction:
     async def test_execute_calls_craft(self, mock_actions):
         """测试执行调用 craft"""
         action = CraftItemAction()
-        mock_actions.get_state = AsyncMock(return_value={
+        mock_actions.get_state = MagicMock(return_value={
             "inventory": {"crafting_table": 1}
         })
         
@@ -500,6 +502,52 @@ class TestRetreatSafeAction:
         
         mock_actions.goto.assert_called_once()
         assert result.success is True
+
+
+# ============================================================================
+# ExploreAction Tests
+# ============================================================================
+
+class TestExploreAction:
+    """探索动作测试"""
+
+    @pytest.mark.asyncio
+    async def test_execute_calls_patrol(self, mock_actions):
+        from bot.meta_actions.explore import ExploreAction
+
+        action = ExploreAction()
+        mock_actions.get_state = MagicMock(return_value={
+            "position": {"x": 10, "y": 64, "z": -5}
+        })
+        mock_actions.patrol = AsyncMock(return_value=MagicMock(success=True))
+
+        await action.execute(mock_actions, radius=15, duration=20)
+
+        mock_actions.patrol.assert_called_once_with(
+            center_x=10,
+            center_z=-5,
+            radius=15,
+            duration=20
+        )
+
+
+# ============================================================================
+# LookAroundAction Tests
+# ============================================================================
+
+class TestLookAroundAction:
+    """观察周围动作测试"""
+
+    @pytest.mark.asyncio
+    async def test_execute_calls_scan(self, mock_actions):
+        from bot.meta_actions.look_around import LookAroundAction
+
+        action = LookAroundAction()
+        mock_actions.scan = AsyncMock(return_value=MagicMock(success=True, data={"targets": []}))
+
+        await action.execute(mock_actions, target_type="player", radius=12, count=3)
+
+        mock_actions.scan.assert_called_once_with(target_type="player", radius=12)
 
 
 # ============================================================================

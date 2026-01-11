@@ -12,6 +12,8 @@
 
 import logging
 from typing import List, Optional, Tuple
+
+from bot.drivers.interfaces import IDriverAdapter
 from dataclasses import dataclass
 
 from .interfaces import (
@@ -375,7 +377,7 @@ class EntityResolver:
 # ============================================================================
 
 def create_entity_resolver(
-    bot,
+    driver: IDriverAdapter,
     kb_path: Optional[str] = None,
     search_radii: Tuple[int, ...] = (32, 64)
 ) -> EntityResolver:
@@ -383,7 +385,7 @@ def create_entity_resolver(
     创建 EntityResolver 实例的工厂函数
     
     Args:
-        bot: MineflayerBot 实例
+        driver: IDriverAdapter 实例
         kb_path: 知识库路径 (可选)
         search_radii: 搜索半径序列
         
@@ -395,8 +397,8 @@ def create_entity_resolver(
     from .inventory import BotInventoryProvider
     
     kb = JsonKnowledgeBase(kb_path)
-    scanner = MineflayerScanner(bot)
-    inventory = BotInventoryProvider(bot)
+    scanner = MineflayerScanner(driver)
+    inventory = BotInventoryProvider(driver)
     config = SearchConfig(radii=search_radii)
     
     return EntityResolver(
