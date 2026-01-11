@@ -73,6 +73,10 @@ class MineflayerActions(IBotActions):
     async def climb_to_surface(self, timeout: float = 60.0) -> ActionResult:
         return await self._mining.climb_to_surface(timeout=timeout)
 
+    async def expose_underground(self, target_block: str, max_depth: int = 5, timeout: float = 60.0) -> ActionResult:
+        """暴露地下方块，用于找不到目标时向下探测"""
+        return await self._mining.expose_underground(target_block, max_depth=max_depth, timeout=timeout)
+
     async def place(self, block_type: str, x: int, y: int, z: int, timeout: float = 10.0) -> ActionResult:
         return await self._mining.place(block_type, x, y, z, timeout=timeout)
 

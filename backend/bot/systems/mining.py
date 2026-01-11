@@ -35,8 +35,49 @@ class MiningSystem:
         self._progress_timer: Optional[ProgressTimer] = None
         # 🔧 Fix: 持久化 cheats 状态，一旦无权限就永久禁用
         self._can_use_cheats: bool = False
+        
+        # 地下方块列表（从知识库加载 + 基础石头类）
+        # 这些方块通常在地下，找不到时应该尝试向下探测
+        self._underground_blocks: Optional[set] = None  # 延迟加载
+
+    def _get_underground_blocks(self) -> set:
+        """
+        获取地下方块列表（延迟加载）
+        
+        从知识库加载 all_ores 标签，并添加基础石头类方块
+        """
+        if self._underground_blocks is None:
+            # 基础石头类方块（总是在地下）
+            base_blocks = {
+                "cobblestone", "stone", "deepslate", "tuff", "calcite",
+                "granite", "diorite", "andesite", "ancient_debris",
+            }
+            
+            # 从知识库加载矿石
+            try:
+                import json
+                from pathlib import Path
+                
+                kb_path = Path(__file__).parent.parent.parent / "data" / "mc_knowledge_base.json"
+                if kb_path.exists():
+                    with open(kb_path, "r", encoding="utf-8") as f:
+                        kb = json.load(f)
+                    
+                    # 加载 all_ores 标签
+                    ores = set(kb.get("tags", {}).get("all_ores", []))
+                    self._underground_blocks = base_blocks | ores
+                    logger.debug(f"[Mining] Loaded {len(self._underground_blocks)} underground blocks from KB")
+                else:
+                    logger.warning("[Mining] Knowledge base not found, using base blocks only")
+                    self._underground_blocks = base_blocks
+            except Exception as e:
+                logger.warning(f"[Mining] Failed to load KB: {e}, using base blocks only")
+                self._underground_blocks = base_blocks
+        
+        return self._underground_blocks
 
     async def _get_block_harvest_info(self, block) -> dict:
+
         def _sync_get():
             try:
                 harvest_tools = getattr(block, "harvestTools", None)
@@ -1029,7 +1070,161 @@ class MiningSystem:
             await asyncio.sleep(0.2)
         return False
 
+    async def expose_underground(
+        self,
+        target_block: str,
+        max_depth: int = 5,
+        timeout: float = 60.0
+    ) -> ActionResult:
+        """
+        暴露地下方块
+        
+        安全地向前下方挖掘，直到目标方块出现在感知范围内。
+        遵循 Minecraft 生存法则：不挖脚下的方块，而是挖前方的方块。
+        
+        Args:
+            target_block: 目标方块类型（如 cobblestone, iron_ore）
+            max_depth: 最大挖掘深度
+            timeout: 超时时间
+            
+        Returns:
+            ActionResult: 成功时表示目标方块已暴露
+        """
+        start_time = time.time()
+        logger.info(f"[expose_underground] Starting to expose {target_block}, max_depth={max_depth}")
+        
+        try:
+            # 获取目标方块 ID
+            block_data = self._mcData.blocksByName.get(target_block)
+            if not block_data:
+                return ActionResult(
+                    success=False,
+                    action="expose_underground",
+                    message=f"未知方块类型: {target_block}",
+                    status=ActionStatus.FAILED,
+                    error_code="UNKNOWN_BLOCK"
+                )
+            target_block_id = block_data.id
+            
+            # 获取当前位置
+            pos = self._bot.entity.position
+            bot_x, bot_y, bot_z = int(pos.x), int(pos.y), int(pos.z)
+            
+            # 获取机器人朝向，确定"前方"位置
+            yaw = self._bot.entity.yaw
+            import math
+            # 朝向向量
+            dx = -math.sin(yaw)
+            dz = math.cos(yaw)
+            # 选择前方 1 格的位置
+            front_x = bot_x + int(round(dx))
+            front_z = bot_z + int(round(dz))
+            
+            logger.debug(f"[expose_underground] Bot at ({bot_x}, {bot_y}, {bot_z}), digging at ({front_x}, *, {front_z})")
+            
+            # 先检查目标方块是否已经可见
+            existing = self._find_nearest_block(target_block_id, pos, 32)
+            if existing:
+                logger.info(f"[expose_underground] {target_block} already visible at {existing.position}")
+                return ActionResult(
+                    success=True,
+                    action="expose_underground",
+                    message=f"目标方块 {target_block} 已经可见",
+                    status=ActionStatus.SUCCESS,
+                    data={"position": {"x": int(existing.position.x), "y": int(existing.position.y), "z": int(existing.position.z)}}
+                )
+            
+            # 开始向下挖掘（前方位置）
+            dug_count = 0
+            for depth in range(1, max_depth + 1):
+                if time.time() - start_time > timeout:
+                    break
+                
+                dig_y = bot_y - depth
+                
+                # 挖掘两格宽：前方和前方+1（形成阶梯洞口，方便观察和安全）
+                for dx_offset in [0, 1]:
+                    dig_x = front_x + dx_offset
+                    
+                    block = self._bot.blockAt(self._Vec3(dig_x, dig_y, front_z))
+                    if not block or block.name in ("air", "cave_air", "water", "lava"):
+                        continue
+                    
+                    # 危险检测：如果下方是岩浆，停止
+                    below = self._bot.blockAt(self._Vec3(dig_x, dig_y - 1, front_z))
+                    if below and below.name == "lava":
+                        logger.warning(f"[expose_underground] Lava detected at ({dig_x}, {dig_y-1}, {front_z}), stopping")
+                        return ActionResult(
+                            success=False,
+                            action="expose_underground",
+                            message="检测到岩浆，停止挖掘",
+                            status=ActionStatus.PARTIAL,
+                            error_code="DANGER_DETECTED",
+                            data={"depth": depth, "dug": dug_count}
+                        )
+                    
+                    # 选择最佳工具
+                    await self._select_best_harvest_tool(block)
+                    
+                    # 挖掘
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None, lambda b=block: self._bot.dig(b)
+                            ),
+                            timeout=5.0
+                        )
+                        dug_count += 1
+                        logger.debug(f"[expose_underground] Dug {block.name} at ({dig_x}, {dig_y}, {front_z})")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[expose_underground] Dig timeout at ({dig_x}, {dig_y}, {front_z})")
+                    except Exception as e:
+                        logger.warning(f"[expose_underground] Dig error: {e}")
+                    
+                    await asyncio.sleep(0.1)
+                
+                # 每挖一层后检查目标方块是否可见
+                await asyncio.sleep(0.2)
+                found = self._find_nearest_block(target_block_id, pos, 32)
+                if found:
+                    logger.info(f"[expose_underground] ✅ Found {target_block} at {found.position} after digging {dug_count} blocks")
+                    return ActionResult(
+                        success=True,
+                        action="expose_underground",
+                        message=f"成功暴露 {target_block}",
+                        status=ActionStatus.SUCCESS,
+                        data={
+                            "position": {"x": int(found.position.x), "y": int(found.position.y), "z": int(found.position.z)},
+                            "depth": depth,
+                            "dug": dug_count
+                        },
+                        duration_ms=int((time.time() - start_time) * 1000)
+                    )
+            
+            # 达到最大深度仍未找到
+            return ActionResult(
+                success=False,
+                action="expose_underground",
+                message=f"挖掘 {max_depth} 层后仍未找到 {target_block}",
+                status=ActionStatus.PARTIAL,
+                error_code="TARGET_NOT_FOUND",
+                data={"depth": max_depth, "dug": dug_count},
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
+            
+        except Exception as e:
+            logger.error(f"[expose_underground] Error: {e}")
+            return ActionResult(
+                success=False,
+                action="expose_underground",
+                message=str(e),
+                status=ActionStatus.FAILED,
+                error_code="EXECUTION_ERROR",
+                duration_ms=int((time.time() - start_time) * 1000)
+            )
+
     async def place(
+
         self,
         block_type: str,
         x: int,

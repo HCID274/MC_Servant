@@ -117,6 +117,10 @@ class PrerequisiteResolver(IPrerequisiteResolver):
                 status=TaskStatus.PENDING
             )
         
+        # 🆕 处理 TARGET_NOT_FOUND：地下方块需要探测
+        if error_code == "TARGET_NOT_FOUND":
+            return self._resolve_target_not_found(context, inventory)
+        
         # 其他错误码交给 LLM
         logger.debug(f"Cannot resolve error code '{error_code}' symbolically")
         return None
@@ -130,7 +134,7 @@ class PrerequisiteResolver(IPrerequisiteResolver):
         解析材料不足的前置任务
         
         优先级：
-        0. 🆕 检查背包是否有等价物品（Tag 系统）
+        0.  检查背包是否有等价物品（Tag 系统）
         1. 如果材料可以合成 → 返回合成任务
         2. 如果材料可以采集 → 返回采集任务
         3. 否则返回 None (交给 LLM)
@@ -142,7 +146,7 @@ class PrerequisiteResolver(IPrerequisiteResolver):
         # 取第一个缺失的材料
         item_name, required_count = next(iter(missing.items()))
         
-        # 🆕 Phase 1 修复：使用 TagResolver 查找背包中的等价物品
+        #  Phase 1 修复：使用 TagResolver 查找背包中的等价物品
         available_item = self._tag_resolver.find_available(item_name, inventory)
         if available_item:
             available_count = inventory.get(available_item, 0)
@@ -166,10 +170,11 @@ class PrerequisiteResolver(IPrerequisiteResolver):
         if inferred:
             return inferred
         
-        # 尝试合成
+        # 尝试合成（规则库中的 stick 等物品可以在这里被识别）
         craft_task = self._try_craft_prerequisite(item_name, required_count)
         if craft_task:
             return craft_task
+
         
         # 尝试采集
         mine_task = self._try_mine_prerequisite(item_name, required_count)
@@ -328,6 +333,26 @@ class PrerequisiteResolver(IPrerequisiteResolver):
             if any(inventory.get(src, 0) > 0 for src in source_ids):
                 return self._infer_generic_craft(item_name=item_name, need=need)
 
+            #  检查是否背包有其他类型的原木（支持任意类型的木板）
+            logs_list = self._rules.get("tag_equivalents", {}).get("logs", [])
+            for log_name in logs_list:
+                if inventory.get(log_name, 0) > 0:
+                    # 找到了原木，推导对应的木板类型
+                    if log_name.endswith("_log"):
+                        alt_planks = log_name[:-4] + "_planks"
+                    elif log_name.endswith("_stem"):
+                        alt_planks = log_name[:-5] + "_planks"
+                    else:
+                        continue
+                    logger.info(f"[InferPrereq] Found {log_name} in inventory, will craft {alt_planks}")
+                    craft_times = math.ceil(need / 4)
+                    return StackTask(
+                        name=f"合成 {alt_planks} x{craft_times * 4}",
+                        goal=f"craft {alt_planks} {craft_times}",
+                        context={"source": "prerequisite", "original_need": need, "inferred": True, "from_log": log_name},
+                        status=TaskStatus.PENDING,
+                    )
+
             # 否则直接采集对应来源：按 4/次反推需要的 log/stem 数量
             src = source_ids[0]
             mine_count = int(math.ceil(need / 4))
@@ -408,3 +433,62 @@ class PrerequisiteResolver(IPrerequisiteResolver):
     def is_mineable(self, block_name: str) -> bool:
         """检查方块是否可采集"""
         return block_name in self._rules.get("mineable_blocks", {})
+    
+    def _resolve_target_not_found(
+        self,
+        context: Dict[str, Any],
+        inventory: Dict[str, int]
+    ) -> Optional[StackTask]:
+        """
+        🆕 解析 TARGET_NOT_FOUND 错误
+        
+        当目标是地下方块（矿石、圆石等）时，返回 expose_underground 任务
+        """
+        # 从 context 中获取目标方块类型
+        # context 可能来自 mine 动作失败，包含 block_type 或 target
+        block_type = context.get("block_type") or context.get("target") or context.get("item")
+        
+        if not block_type:
+            return None
+        
+        # 获取地下方块列表
+        underground_blocks = self._get_underground_blocks()
+        
+        if block_type in underground_blocks:
+            logger.info(f"[PrerequisiteResolver] {block_type} is underground, suggesting expose_underground")
+            return StackTask(
+                name=f"探测地下的 {block_type}",
+                goal=f"expose_underground {block_type}",
+                context={"source": "prerequisite", "target_block": block_type},
+                status=TaskStatus.PENDING
+            )
+        
+        return None
+    
+    def _get_underground_blocks(self) -> set:
+        """
+        获取地下方块列表（从知识库加载）
+        """
+        # 基础石头类方块
+        base_blocks = {
+            "cobblestone", "stone", "deepslate", "tuff", "calcite",
+            "granite", "diorite", "andesite", "ancient_debris",
+        }
+        
+        # 从知识库加载矿石
+        try:
+            import json
+            from pathlib import Path
+            
+            kb_path = Path(__file__).parent.parent / "data" / "mc_knowledge_base.json"
+            if kb_path.exists():
+                with open(kb_path, "r", encoding="utf-8") as f:
+                    kb = json.load(f)
+                
+                # 加载 all_ores 标签
+                ores = set(kb.get("tags", {}).get("all_ores", []))
+                return base_blocks | ores
+        except Exception as e:
+            logger.warning(f"[PrerequisiteResolver] Failed to load KB: {e}")
+        
+        return base_blocks
