@@ -1,20 +1,29 @@
-# Scripts 目录文档
+# Scripts & Tools (工具脚本)
 
-`scripts/` 目录包含项目维护、数据生成和辅助任务的脚本。
+`scripts/` 目录包含用于辅助开发、数据处理和维护的实用脚本。
 
-## 文件列表
+## 🛠️ 脚本列表
 
-### 1. `build_knowledge_base.py`
--   **用途**: 构建 Minecraft 静态知识库 (`backend/data/mc_knowledge_base.json`)。
--   **原理**:
-    -   从 `minecraft-data` (npm 包) 提取指定版本的原始物品和方块 ID。
-    -   **Regex 分类**: 使用预定义的正则表达式规则对物品进行初步分类（覆盖 ~80%）。
-    -   **LLM 分类** (可选): 调用 LLM (如 Qwen) 对剩余未分类物品进行语义补全。
-    -   **聚合**: 生成反向索引 (ID -> Tags) 和高级聚合标签 (如 `weapons` 包含 `swords`, `bows`)。
-    -   **别名映射**: 注入中文别名，支持 "砍树", "挖矿" 等自然语言指令的解析。
--   **输出**: 生成 `mc_knowledge_base.json` (供 Bot 使用) 和 `audit_report.md` (供人工审核)。
--   **运行方式**: `python scripts/build_knowledge_base.py --use-llm`
+### `build_knowledge_base.py`
+**用途**: 构建和更新语义知识库 (`backend/data/mc_knowledge_base.json`)。
 
-## 设计理念
+**工作原理**:
+这是一个混合策略脚本，旨在将 Minecraft 的原始数据转化为 LLM 可理解的语义数据。
+1.  **数据源**: 从 `minecraft-data` 获取所有物品和方块的列表。
+2.  **Regex 匹配**: 使用正则表达式进行初步分类（如所有含 "log" 的归为 "wood"）。
+3.  **LLM 增强**: 对于无法通过正则归类的物品，调用 LLM API 生成语义标签。
+4.  **输出**: 生成 JSON 格式的知识库，供 `backend/perception/knowledge_base.py` 使用。
 
-使用脚本自动化生成知识库，保证了数据源（ID 列表）的准确性，避免了 LLM 幻觉生成不存在的物品 ID，同时利用 LLM 的语义理解能力完成繁琐的分类工作。
+**用法**:
+```bash
+python scripts/build_knowledge_base.py
+```
+
+---
+
+## 📂 00Docs/
+
+`00Docs/` 目录存放项目的详细设计文档和历史记录：
+-   `00基础架构.md`: 早期架构设计草稿。
+-   `01开发进度安排.md`: 开发里程碑记录。
+-   `02项目的掉转船头方向.md`: 关于项目从商业化转向 MVP 展示的决策记录。

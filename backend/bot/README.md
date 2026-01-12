@@ -1,55 +1,56 @@
-# Bot 模块文档
+# Bot Action System (Bot 动作系统)
 
-`backend/bot/` 目录实现了 Bot 的底层控制逻辑，充当 Python 后端与 Minecraft 游戏世界（通过 Mineflayer）之间的桥梁。
+`backend/bot/` 模块负责 Bot 的具体物理交互。它封装了 Mineflayer 的 API，向上层提供语义化的动作接口。
 
-## 核心组件
+## 🌟 核心架构
 
-### 1. `interfaces.py` - 核心接口定义
-定义了 Bot 系统的核心抽象接口，遵循依赖倒置原则：
--   `IBotController`: 基础控制接口（连接、断开、聊天、基础移动）。
--   `IBotActions`: 高级动作接口（Layer 2），定义了 `goto`, `mine`, `craft` 等语义化动作。
--   `ActionResult`: 统一的动作执行结果格式。
+### 1. Meta-Action (元动作)
+位于 `meta_actions/` 目录。
+元动作是 Bot 行为的基本单元。它们比 Mineflayer 的原子 API 更高级，但比完整的任务更低级。
 
-### 2. `mineflayer_adapter.py` - Mineflayer 适配器
-实现了 `IBotController` 和 `IBotManager`。
--   使用 `javascript` 库加载 `mineflayer` Node.js 库。
--   管理 Bot 实例的创建、生成、销毁。
--   处理 AuthMe 登录逻辑（密码自动隐藏）。
--   提供底层的事件监听（如 `chat`, `spawn`, `kicked`）。
+**特点:**
+-   **原子性**: 一个元动作完成一个具体的物理交互（如 `mine_block`, `craft_item`, `goto`）。
+-   **无状态**: 元动作不持有任务状态，只负责执行。
+-   **接口**: 必须实现 `IMetaAction` 接口。
 
-### 3. `drivers/` - Driver 适配层
-定义对底层驱动的抽象边界（`IDriverAdapter`），并由 Mineflayer 实现。
--   系统层只依赖适配器接口，不直接访问原始 bot 实例。
--   负责把 Mineflayer 能力映射成稳定的方法（寻路、方块、实体、窗口等）。
+**常用元动作:**
+-   `navigate`: 智能寻路。
+-   `mine_block`: 挖掘指定方块。
+-   `place_block`: 放置方块。
+-   `attack`: 攻击实体。
+-   `craft`: 合成物品。
+-   `hand_over`: 递送物品。
 
-### 4. `actions.py` - 动作实现 (Layer 2)
-实现了 `IBotActions` 接口 (`MineflayerActions` 类)。
--   通过 driver 适配层 + systems 组合实现动作（不直接访问原始 bot 实例）。
--   **功能亮点**:
-    -   **智能寻路**: 自动处理 `goto` 请求。
-    -   **自动采集**: `mine` 动作包含寻路、选工具、挖掘全流程。
-    -   **合成系统**: `craft` 动作自动查配方、找工作台。
-    -   **语义感知**: `find_location` 使用 Python 逻辑分析地形特征（如最高点、平地）。
-    -   **容错机制**: 内置超时处理和重试逻辑。
+### 2. MetaActionRegistry (注册表)
+负责动态管理所有的 Meta-Action。
+-   **自动发现**: 自动加载 `meta_actions/` 下的动作类。
+-   **过滤**: 支持根据当前环境或 Bot 状态过滤可用的动作。
 
-### 5. `systems/` - 子系统实现
-拆分为移动、挖掘、合成、背包、感知等子系统。
--   移动脱困逻辑在 `movement_recovery.py`（`UnstuckPolicy`）。
+### 3. MineflayerAdapter (适配器)
+位于 `mineflayer_adapter.py`。
+这是 Python 与 JavaScript (Mineflayer) 交互的底层桥梁。
+-   **封装**: 将 WebSocket 收到的指令转换为 Mineflayer 的 API 调用。
+-   **状态同步**: 定时推送 Bot 的位置、生命值、背包等信息到后端。
+-   **安全**: 处理 AuthMe 登录，自动隐藏密码日志。
 
-### 6. `lifecycle_manager.py` - 生命周期管理
--   管理 Bot 的上下线逻辑。
--   处理所有者（Owner）的登录/登出事件。
--   实现超时自动下线（如主人离线 10 小时后下线）。
+### 4. Lifecycle Manager (生命周期管理)
+位于 `lifecycle_manager.py`。
+管理 Bot 的启动、重生、重连和销毁。确保在断线时能自动恢复。
 
-### 7. `tag_resolver.py`
--   辅助工具，用于解析 Minecraft 的标签（Tags）和方块 ID。
+## 🛠️ 扩展指南
 
-## 目录结构
+**如何添加一个新的动作？**
 
--   `meta_actions/`: 定义更高级的元动作。
--   `drivers/`: Driver 适配层（Mineflayer 实现）。
--   `systems/`: 独立的子系统实现。
+1.  在 `backend/bot/meta_actions/` 下创建一个新的 Python 文件。
+2.  定义一个类，继承自 `IMetaAction`。
+3.  实现 `execute` 方法，编写具体的 Mineflayer 逻辑。
+4.  实现 `validate` 方法，定义动作执行的前置条件。
+5.  在 `MetaActionRegistry` 中注册（或利用自动发现机制）。
 
-## 设计理念
-
-该模块的核心是将 Mineflayer 的底层 API（回调、事件驱动）转换为 Python 的 `async/await` 接口，并提供高层次的语义动作，使得上层（LLM 或状态机）无需关心具体的寻路算法或数据包细节。
+示例：
+```python
+class JumpAction(IMetaAction):
+    def execute(self, bot, **kwargs):
+        bot.setControlState('jump', True)
+        # ...
+```

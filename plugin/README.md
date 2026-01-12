@@ -1,30 +1,43 @@
-# Java Plugin 目录文档
+# MC_Servant Java Plugin
 
-`plugin/` 目录包含了 MC_Servant 的 Minecraft 服务器端插件源码，使用 Java (Spigot/Paper API) 编写。
+本目录包含 MC_Servant 的 Java 插件源码，基于 Spigot/Paper API 开发。
 
-## 目录结构
+## 🎯 功能职责
 
--   `src/main/java/com/mcservant/`: Java 源代码。
--   `src/main/resources/`: 资源文件（`plugin.yml`, 默认配置）。
--   `pom.xml`: Maven 项目构建配置。
+该插件作为 "傀儡" 客户端，主要职责是：
+1.  **连接器**: 建立并维护与 Python 后端的 WebSocket 连接。
+2.  **传感器**: 监听 Minecraft 服务器内的事件（聊天、交互、实体变化）并转发给后端。
+3.  **执行器**: 接收后端的文本回复指令并显示在游戏中。
+    *注意：复杂的物理动作（移动、挖掘）由 Python 端的 Mineflayer Bot 直接处理，不通过此插件。*
+4.  **身份管理**: 管理 Bot 的身份标识（使用 `PersistentDataContainer`）。
 
-## 核心功能
+## 🔧 技术栈
 
-该插件作为连接 Minecraft 服务器与 Python 后端的桥梁（Access Layer），主要职责包括：
+-   **Java 17+**
+-   **Paper API 1.20.6**
+-   **Java-WebSocket**: WebSocket 客户端库。
+-   **CommandAPI**: 简化的命令注册库。
+-   **Maven**: 构建工具。
 
-1.  **WebSocket 客户端**: 连接到 Python 后端的 WebSocket 服务 (`ws://localhost:8765`)。
-2.  **指令转发**: 注册 `/bot` 等游戏内指令，将玩家输入转发给后端处理。
-3.  **NPC 渲染**:
-    -   使用 `Citizens` 或 `NMS` (如果有) 生成 NPC 实体。
-    -   处理全息文字 (Holograms) 显示（如 "思考中...", "正在砍树"）。
-4.  **事件监听**:
-    -   监听玩家聊天 (`AsyncPlayerChatEvent`) 并转发给 Bot。
-    -   监听玩家交互（右键 NPC）触发对话。
-5.  **环境同步**:
-    -   (可选) 向后端同步部分难以通过 Bot 客户端获取的服务器状态。
+## 🏗️ 核心类
 
-## 架构
+-   `MCServant`: 插件主类，负责生命周期管理和配置读取。
+-   `NetworkClient`: 封装 WebSocket 连接逻辑，包含断线重连机制。
+-   `EventListener`: Spigot 事件监听器。
 
-插件采用轻量级设计，复杂的逻辑（LLM、寻路决策）全部卸载到 Python 后端。插件仅负责：
--   **I/O**: 接收后端指令，发送游戏事件。
--   **View**: 在游戏内渲染 Bot 的状态和反馈。
+## ⚙️ 编译指南
+
+在 `plugin/` 目录下运行：
+```powershell
+./mvnw clean package
+```
+构建产物位于 `target/MC_Servant-1.0.0.jar`。
+
+## 📝 配置文件 `config.yml`
+
+```yaml
+backend-url: "ws://localhost:8765/ws/bot"
+auth-token: "YOUR_SECRET_TOKEN"
+bot:
+  default_name: "MCServant_Bot"
+```

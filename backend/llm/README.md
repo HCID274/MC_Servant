@@ -1,41 +1,35 @@
-# LLM 模块文档
+# LLM Infrastructure (大模型设施)
 
-`backend/llm/` 目录负责与大语言模型 (Large Language Model) 进行交互，封装了 API 调用、上下文管理、提示词构建和意图识别等功能。
+`backend/llm/` 模块负责与大语言模型 (LLM) 的交互。它是 Agent 的"大脑"核心。
 
-## 核心组件
+## 🌟 核心组件
 
-### 1. `factory.py` - 工厂模式
--   根据环境变量 (`MC_SERVANT_LLM_PROVIDER`) 创建对应的 LLM 客户端实例（如 OpenRouter, Qwen 等）。
--   统一返回符合接口规范的客户端。
+### 1. LLM Factory (工厂模式)
+位于 `factory.py`。
+根据环境变量 `MC_SERVANT_LLM_PROVIDER` 动态实例化不同的 LLM 客户端。
+支持的 Provider:
+-   `openai`: OpenAI (GPT-3.5/4)。
+-   `azure`: Azure OpenAI。
+-   `anthropic`: Claude 系列。
+-   `custom`: 兼容 OpenAI 接口的自定义模型（如 DeepSeek, Qwen）。
 
-### 2. `interfaces.py` - 接口定义
--   定义了 LLM 客户端的统一接口，确保上层业务逻辑与具体模型提供商解耦。
+### 2. Context Manager (上下文管理)
+位于 `context_manager.py`。
+为了防止 LLM 上下文溢出 (Context Window Exceeded)，该模块负责：
+-   **Token Counting**: 计算当前对话的 Token 数量。
+-   **Trimming**: 当超过 `llm_max_context_tokens` 限制时，智能修剪最旧的消息，保留 System Prompt 和最新的几轮对话。
 
-### 3. `context_manager.py` - 上下文管理器 (核心)
--   **职责**: 管理对话历史，实施 Token 限制策略。
--   **机制**:
-    -   维护对话窗口，当超出 Token 限制时，自动触发压缩逻辑。
-    -   调用 `compression.py` 将旧对话总结为摘要 (L1 记忆)。
-    -   负责构建包含 System Prompt、RAG 内容和对话历史的最终 Prompt。
+### 3. Prompt Management
+位于 `prompts/` (通常在 `backend/task/prompts/` 或 `backend/data/`)。
+管理所有的 System Prompt 和 Task Prompt。
 
-### 4. `compression.py` - 记忆压缩
--   实现了将原始对话 (Raw Buffer) 压缩为摘要 (Episodic Memory) 的逻辑。
--   实现了将摘要进一步提炼为核心记忆 (Core Memory) 的逻辑。
+## ⚙️ 配置
 
-### 5. `intent.py` - 意图识别
--   分析用户输入的文本，识别其意图（如 "闲聊", "指令", "查询"）。
--   提取指令中的关键参数（如 "帮我砍树" -> Action: Mine, Target: Log）。
+在 `.env` 中配置：
 
-### 6. `embedding.py` - 向量化
--   封装文本向量化 (Embedding) 接口，用于 RAG 系统的相似度检索。
-
-## 客户端实现
-
--   `openrouter_client.py`: 适配 OpenRouter API (支持 Claude, GPT-4 等)。
--   `qwen_client.py`: 适配通义千问 (Qwen) API。
-
-## 功能亮点
-
--   **流式输出**: 支持流式 (Streaming) 响应，提升用户体验（全息文字逐字显示）。
--   **JSON 模式**: 强制模型输出 JSON 格式，用于结构化任务规划。
--   **容错与重试**: 处理 API 超时和限流错误。
+```ini
+MC_SERVANT_LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-xxxx
+OPENAI_MODEL_NAME=gpt-4o
+LLM_MAX_CONTEXT_TOKENS=8000
+```

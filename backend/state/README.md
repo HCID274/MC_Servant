@@ -1,55 +1,45 @@
-# State 模块文档
+# State & Memory System (状态与记忆系统)
 
-`backend/state/` 目录实现了 Bot 的有限状态机 (FSM) 和状态管理系统。它决定了 Bot 在宏观层面的行为模式（如是该闲聊、该干活还是该睡觉）。
+`backend/state/` 模块实现了 Bot 的状态机和统一记忆访问接口。它是连接执行层与数据层的枢纽。
 
-## 核心组件
+## 🌟 核心组件
 
-### 1. `machine.py` - 状态机 (StateMachine)
--   **职责**: 管理 Bot 的当前状态，处理状态流转。
--   **机制**:
-    -   接收外部事件（如聊天、Tick）。
-    -   调用当前状态的 `on_event` 方法处理事件。
-    -   执行状态切换逻辑 (`transition_to`)。
-    -   驱动状态的 `tick` 循环。
+### 1. MemoryFacade (记忆门面)
+位于 `memory_facade.py`。
+这是应用层访问记忆系统的唯一入口。它隐藏了底层数据库和向量检索引擎的复杂性。
 
-### 2. `states.py` - 具体状态实现
-定义了 Bot 的各种状态类，均继承自 `State` 基类：
--   `IdleState`: 空闲状态。等待指令，或进行随机的闲逛/观察。
--   `ChatState`: 聊天状态。专注于对话，暂停任务执行。
--   `WorkingState`: 工作状态。由 `TaskExecutor` 驱动，执行具体的任务序列。
--   `SleepState`: 睡眠状态（如夜晚躺床上）。
+**主要功能:**
+-   **Conversation History**: 获取和追加聊天记录。
+-   **Context Management**: 维护当前的对话上下文（L0/L1/L2 记忆层级）。
+-   **Experience Retrieval**: 通过 RAG (检索增强生成) 获取过去类似任务的经验。
 
-### 3. `context.py` - Bot 上下文 (BotContext)
--   **职责**: 作为依赖注入容器，在状态之间共享数据和组件。
--   **内容**:
-    -   `executor`: 任务执行器实例。
-    -   `actions`: 动作层接口。
-    -   `memory`: 统一记忆系统接口 (`MemoryFacade`)。
-    -   `runtime`: 运行时上下文。
-    -   `bot`: Bot 控制器实例。
+**BackgroundTaskManager**:
+`MemoryFacade` 内置了一个后台任务管理器，用于处理异步的 "Fire-and-Forget" 记忆写入操作（如日志记录），确保不阻塞主线程，并在系统关闭时优雅完成所有挂起任务。
 
-### 4. `memory_facade.py` - 记忆门面 (MemoryFacade)
--   **职责**: 封装底层的 `ContextManager` 和 `BackgroundTaskManager`，为上层业务提供简洁的记忆操作接口。
--   **功能**:
-    -   `add_message`: 记录对话或事件。
-    -   `add_experience`: 记录任务经验。
-    -   处理异步写入，避免阻塞主线程。
+### 2. State Machine (状态机)
+位于 `machine.py` 和 `states.py`。
+管理 Bot 的宏观生命周期状态。
 
-### 5. `config.py` - 状态机配置
--   管理与状态机行为相关的配置项（如超时时间、阈值）。
+**主要状态:**
+-   `IdleState`: 空闲，等待指令。
+-   `ListeningState`: 正在处理用户输入。
+-   `ThinkingState`: 正在进行 LLM 规划。
+-   `WorkingState`: 正在执行任务（UniversalRunner 运行中）。
+    -   **On Exit**: `WorkingState` 退出时会强制清理 `TaskExecutor`，防止死锁。
 
-## 状态流转图 (示例)
+### 3. BotContext (上下文)
+位于 `context.py`。
+这是一个贯穿整个应用生命周期的上帝对象。它持有：
+-   `bot`: 当前的 Bot 实例引用。
+-   `memory`: `MemoryFacade` 实例。
+-   `state_machine`: 状态机实例。
+-   `events`: 事件总线。
 
-```mermaid
-graph TD
-    Idle --> |收到指令| Working
-    Idle --> |收到聊天| Chat
-    Working --> |任务完成/失败| Idle
-    Working --> |收到聊天| Chat
-    Chat --> |对话结束| Idle
-    Chat --> |对话结束且有挂起任务| Working
-```
+## 🧠 记忆分级设计
 
-## 设计理念
+系统实现了类似人类的记忆模型：
 
-状态机模式将 Bot 的行为解耦为独立的状态类，每个状态只关注自己的逻辑。这使得添加新行为（如 "PVP状态" 或 "交易状态"）变得简单，只需新增一个状态类并定义流转规则即可。
+-   **L0 (Working Memory)**: 当前正在进行的对话和任务上下文。保存在内存中，随会话结束丢失。
+-   **L1 (Short-term Memory)**: 最近的几轮对话历史。
+-   **L2 (Long-term Memory)**: 持久化的历史记录和总结。
+-   **Semantic Memory (RAG)**: 存储在向量数据库中的知识和经验，通过语义检索调用。
