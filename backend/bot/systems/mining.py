@@ -1951,26 +1951,74 @@ class MiningSystem:
                 timeout=3.0
             )
 
-            target_pos = self._Vec3(x, y - 1, z)
-            ref_block = self._driver.block_at(target_pos)
+            async def attempt_place(px: int, py: int, pz: int) -> bool:
+                try:
+                    target_pos = self._Vec3(px, py, pz)
+                    target_block = self._driver.block_at(target_pos)
+                    if target_block and self._is_soft_obstacle(target_block):
+                        await self._dig_block_at(px, py, pz, allow_hand_break=True)
+                        target_block = self._driver.block_at(target_pos)
+                    if target_block and not self._is_air_block(target_block):
+                        return False
 
-            await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self._driver.place_block(ref_block, self._Vec3(0, 1, 0))
-                ),
-                timeout=timeout
-            )
+                    ref_pos = self._Vec3(px, py - 1, pz)
+                    ref_block = self._driver.block_at(ref_pos)
+                    if self._is_air_block(ref_block) or self._is_hazard_block(ref_block):
+                        return await self._place_block_at(px, py, pz, item)
+
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: self._driver.place_block(ref_block, self._Vec3(0, 1, 0))
+                            ),
+                            timeout=timeout
+                        )
+                    except asyncio.TimeoutError:
+                        placed = self._driver.block_at(target_pos)
+                        return bool(placed and getattr(placed, 'name', None) == block_type)
+
+                    placed = self._driver.block_at(target_pos)
+                    return bool(placed and getattr(placed, 'name', None) == block_type)
+                except Exception:
+                    return False
+
+            if await attempt_place(x, y, z):
+                return ActionResult(
+                    success=True,
+                    action='place',
+                    message=f'Placed {block_type} at ({x},{y},{z})',
+                    status=ActionStatus.SUCCESS,
+                    data={'placed_at': [x, y, z]},
+                    duration_ms=int((time.time() - start_time) * 1000)
+                )
+
+            try:
+                dir_index = self._yaw_to_spiral_index(self._driver.get_yaw())
+                dirs = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+                dx, dz = dirs[dir_index]
+            except Exception:
+                dx, dz = 0, 0
+            back_x, back_z = x - dx, z - dz
+            if (back_x, back_z) != (x, z) and await attempt_place(back_x, y, back_z):
+                return ActionResult(
+                    success=True,
+                    action='place',
+                    message=f'Placed {block_type} at ({back_x},{y},{back_z})',
+                    status=ActionStatus.SUCCESS,
+                    data={'placed_at': [back_x, y, back_z], 'fallback': 'back_step'},
+                    duration_ms=int((time.time() - start_time) * 1000)
+                )
 
             return ActionResult(
-                success=True,
-                action="place",
-                message=f"成功放置 {block_type} 在 ({x},{y},{z})",
-                status=ActionStatus.SUCCESS,
-                data={"placed_at": [x, y, z]},
+                success=False,
+                action='place',
+                message='Placement failed after retrying target and back step',
+                status=ActionStatus.FAILED,
+                error_code='PATH_BLOCKED',
+                data={'placed_at': [x, y, z]},
                 duration_ms=int((time.time() - start_time) * 1000)
             )
-
         except asyncio.TimeoutError:
             try:
                 placed = self._driver.block_at(self._Vec3(x, y, z))

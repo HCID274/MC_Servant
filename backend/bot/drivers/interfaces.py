@@ -215,6 +215,17 @@ class IDriverAdapter(ABC):
     def get_recipe_data(self, item_id: int) -> Any:
         """Get raw recipe data for an item id."""
 
+    @abstractmethod
+    def recipe_requires_table(self, item_name: str) -> bool:
+        """
+        Check if crafting an item requires a 3x3 crafting table.
+        
+        Returns True if the item requires a crafting table,
+        False if it can be crafted in the 2x2 inventory grid.
+        
+        If uncertain (no recipe data available), returns True as a safe default.
+        """
+
     @property
     @abstractmethod
     def username(self) -> str:

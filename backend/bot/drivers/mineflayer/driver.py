@@ -391,10 +391,190 @@ class MineflayerDriver(IDriverAdapter):
             return None
 
     def get_recipe_data(self, item_id: int) -> Any:
+        """Get recipe data from mcData for a given item ID.
+        
+        mcData.recipes structure varies by version. Try multiple access methods.
+        """
         try:
-            return self._mcdata.recipes.get(str(int(item_id)))
+            recipes = self._mcdata.recipes
+            if recipes is None:
+                return None
+            
+            # 尝试多种 key 格式
+            for key in [item_id, str(item_id), int(item_id)]:
+                try:
+                    # 方式1: dict-like get
+                    if hasattr(recipes, 'get'):
+                        result = recipes.get(key)
+                        if result is not None:
+                            return result
+                    # 方式2: 直接索引
+                    result = recipes[key]
+                    if result is not None:
+                        return result
+                except (KeyError, TypeError, IndexError):
+                    continue
+            
+            # 方式3: 尝试用物品名称查找
+            try:
+                item = self._mcdata.items[item_id]
+                if item and hasattr(item, 'name'):
+                    item_name = item.name
+                    for key in [item_name, f"minecraft:{item_name}"]:
+                        try:
+                            if hasattr(recipes, 'get'):
+                                result = recipes.get(key)
+                                if result is not None:
+                                    return result
+                            result = recipes[key]
+                            if result is not None:
+                                return result
+                        except (KeyError, TypeError):
+                            continue
+            except Exception:
+                pass
+            
+            return None
         except Exception:
             return None
+
+    # 2x2 背包合成槽可合成的物品（不需要工作台）
+    # 使用反向逻辑：只有这些物品可以在背包内合成，其他物品默认需要工作台
+    _CAN_CRAFT_IN_INVENTORY_PATTERNS = (
+        "_planks",  # 原木 -> 木板
+        "_button",  # 木板/石头 -> 按钮 (1个材料)
+    )
+    
+    _CAN_CRAFT_IN_INVENTORY_ITEMS = frozenset({
+        # 基础材料
+        "stick",           # 2 木板 -> 4 木棍
+        "crafting_table",  # 4 木板 -> 1 工作台
+        
+        # 染料相关 (1-2个材料)
+        "bone_meal", "light_gray_dye", "gray_dye", "pink_dye", 
+        "lime_dye", "yellow_dye", "light_blue_dye", "magenta_dye", 
+        "orange_dye", "cyan_dye", "purple_dye",
+        
+        # 食物 (简单配方)
+        "sugar", "wheat", "pumpkin_seeds", "melon_seeds",
+        "mushroom_stew", "beetroot_soup", "rabbit_stew",
+        
+        # 其他 2x2 配方
+        "fire_charge", "firework_star",
+        "fermented_spider_eye", "glistering_melon_slice",
+        "magma_cream", "blaze_powder", "ender_eye",
+    })
+
+    def recipe_requires_table(self, item_name: str) -> bool:
+        """
+        Check if crafting an item requires a 3x3 crafting table.
+        
+        Prefer mcData recipes to detect 2x2 craftability, falling back to
+        heuristics when recipe data is unavailable.
+        """
+        if not item_name:
+            return True
+
+        item_id = self.get_item_id(item_name)
+        if item_id is None:
+            return True
+
+        def _as_list(value: Any) -> list[Any]:
+            if value is None:
+                return []
+            if isinstance(value, dict):
+                for key in ("inShape", "shape", "in_shape", "ingredients", "inIngredients", "in"):
+                    if key in value:
+                        return [value]
+                return list(value.values())
+            try:
+                return list(value)
+            except TypeError:
+                return [value]
+
+        def _get_attr(obj: Any, names: tuple[str, ...]) -> Any:
+            if isinstance(obj, dict):
+                for name in names:
+                    if name in obj:
+                        return obj.get(name)
+            for name in names:
+                if hasattr(obj, name):
+                    return getattr(obj, name)
+            return None
+
+        def _is_empty_slot(value: Any) -> bool:
+            if value is None:
+                return True
+            if isinstance(value, (int, float)):
+                return int(value) <= 0
+            if isinstance(value, str):
+                return value in ("", "air", "minecraft:air")
+            try:
+                item_id_value = getattr(value, "id", None)
+                if item_id_value is not None:
+                    return int(item_id_value) <= 0
+            except Exception:
+                pass
+            return False
+
+        def _shape_fits_inventory(shape: Any) -> bool:
+            rows = _as_list(shape)
+            min_r = max_r = min_c = max_c = None
+            for r_idx, row in enumerate(rows):
+                cols = _as_list(row)
+                for c_idx, cell in enumerate(cols):
+                    if _is_empty_slot(cell):
+                        continue
+                    if min_r is None:
+                        min_r = max_r = r_idx
+                        min_c = max_c = c_idx
+                    else:
+                        min_r = min(min_r, r_idx)
+                        max_r = max(max_r, r_idx)
+                        min_c = min(min_c, c_idx)
+                        max_c = max(max_c, c_idx)
+            if min_r is None:
+                return False
+            height = max_r - min_r + 1
+            width = max_c - min_c + 1
+            return height <= 2 and width <= 2
+
+        def _ingredients_fit_inventory(recipe: Any) -> bool:
+            ingredients = _get_attr(recipe, ("ingredients", "inIngredients", "in", "ingredient"))
+            if ingredients is None:
+                return False
+            items = _as_list(ingredients)
+            count = sum(1 for item in items if not _is_empty_slot(item))
+            return 0 < count <= 4
+
+        try:
+            raw_recipes = self.get_recipe_data(item_id)
+        except Exception:
+            raw_recipes = None
+
+        if raw_recipes:
+            recipe_entries = _as_list(raw_recipes)
+            if recipe_entries:
+                for entry in recipe_entries:
+                    if entry is None:
+                        continue
+                    shape = _get_attr(entry, ("inShape", "shape", "in_shape"))
+                    if shape is not None:
+                        if _shape_fits_inventory(shape):
+                            return False
+                        continue
+                    if _ingredients_fit_inventory(entry):
+                        return False
+                return True
+
+        for pattern in self._CAN_CRAFT_IN_INVENTORY_PATTERNS:
+            if item_name.endswith(pattern):
+                return False
+
+        if item_name in self._CAN_CRAFT_IN_INVENTORY_ITEMS:
+            return False
+
+        return True
 
     @property
     def username(self) -> str:

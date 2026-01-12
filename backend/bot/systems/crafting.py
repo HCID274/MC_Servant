@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 class CraftingSystem:
+    """Crafting system for bot item crafting."""
+
     def __init__(
         self,
         driver: IDriverAdapter,
@@ -85,7 +87,26 @@ class CraftingSystem:
                 except Exception:
                     pass
 
+            # 🔧 Fix: 在返回 "No recipe found" 之前，先检查是否需要工作台
             if not all_recipes:
+                requires_table = self._driver.recipe_requires_table(item_name)
+
+                logger.info(
+                    f"[craft] Recipe check for {item_name}: "
+                    f"requires_table={requires_table}, "
+                    f"crafting_table_nearby={crafting_table_block is not None}"
+                )
+
+                if requires_table:
+                    return ActionResult(
+                        success=False,
+                        action="craft",
+                        message=f"Crafting {item_name} requires a crafting table. Please place one nearby.",
+                        status=ActionStatus.FAILED,
+                        error_code="STATION_NOT_PLACED",
+                        data={"station": "crafting_table", "item": item_name}
+                    )
+
                 return ActionResult(
                     success=False,
                     action="craft",
@@ -94,27 +115,9 @@ class CraftingSystem:
                     error_code="TARGET_NOT_FOUND"
                 )
 
+
             inventory = self._inventory.get_inventory_summary()
             logger.info(f"[craft] Found {len(all_recipes)} recipe variants for {item_name}")
-
-            if not all_recipes:
-                has_raw_recipe = False
-                try:
-                    raw_recipes = self._driver.get_recipe_data(item_id)
-                    if raw_recipes and len(raw_recipes) > 0:
-                        has_raw_recipe = True
-                except Exception:
-                    pass
-
-                if has_raw_recipe:
-                    return ActionResult(
-                        success=False,
-                        action="craft",
-                        message=f"Crafting {item_name} requires a crafting table. Please place one.",
-                        status=ActionStatus.FAILED,
-                        error_code="STATION_NOT_PLACED",
-                        data={"station": "crafting_table", "item": item_name}
-                    )
 
             executable_recipe, missing_materials, uses_tag_substitution = self._find_executable_recipe(
                 all_recipes,
@@ -191,7 +194,9 @@ class CraftingSystem:
                         error_code="NO_TOOL"
                     )
 
-            if uses_tag_substitution:
+            # 🔧 只有在需要工作台的配方中使用 tag 替换时，才走 manual fallback
+            # 对于 2x2 配方（如 crafting_table），让 bot.craft() 直接处理
+            if uses_tag_substitution and executable_recipe.requiresTable:
                 return await self._manual_craft_fallback(
                     executable_recipe,
                     count,
