@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional, List, Dict
 
 from javascript import require
 
 from bot.drivers.interfaces import IDriverAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class MineflayerDriver(IDriverAdapter):
@@ -169,7 +172,17 @@ class MineflayerDriver(IDriverAdapter):
         return self._bot.blockAt(pos)
 
     async def dig(self, block: Any) -> None:
-        await self._bot.dig(block)
+        """Dig a block. Handles JS Promise that might return None."""
+        try:
+            result = self._bot.dig(block)
+            # JS bot.dig() returns a Promise, but JSPyBridge might return None
+            if result is not None:
+                import inspect
+                if inspect.isawaitable(result):
+                    await result
+        except Exception as e:
+            logger.warning(f"[dig] Error during dig: {e}")
+            raise
 
     def find_blocks(self, query: Any) -> Any:
         return self._bot.findBlocks(query)
@@ -191,8 +204,16 @@ class MineflayerDriver(IDriverAdapter):
 
     def get_inventory_items(self) -> List[Any]:
         try:
-            return list(self._bot.inventory.items())
-        except Exception:
+            items = list(self._bot.inventory.items())
+            # 🔧 Debug: 打印获取到的物品数量
+            if items:
+                logger.debug(f"[get_inventory_items] Got {len(items)} items from inventory")
+            else:
+                logger.debug(f"[get_inventory_items] Inventory is empty (no items)")
+            return items
+        except Exception as e:
+            # 🔧 Debug: 打印异常信息
+            logger.warning(f"[get_inventory_items] Exception accessing inventory: {e}")
             return []
 
     def get_held_item(self) -> Optional[Any]:
@@ -275,17 +296,41 @@ class MineflayerDriver(IDriverAdapter):
             return ""
 
     def get_window_slots(self, window: Any) -> List[Any]:
+        """Get window slots with timeout protection.
+        
+        Avoids JSPyBridge timeout by limiting slot count and using direct indexing.
+        """
         try:
             slots = getattr(window, "slots", None)
             if slots is None:
                 return []
-            return list(slots)
-        except Exception:
+            
+            # Get length first (faster than converting entire array)
+            length = 0
             try:
-                length = int(getattr(getattr(window, "slots", None), "length", 0))
-                return [window.slots[i] for i in range(length)]
+                length = int(getattr(slots, "length", 0))
             except Exception:
-                return []
+                try:
+                    length = len(slots)
+                except Exception:
+                    return []
+            
+            # Limit to reasonable number to avoid very long timeouts
+            # Crafting table has 46 slots, inventory has 45
+            max_slots = min(length, 100)
+            
+            result = []
+            for i in range(max_slots):
+                try:
+                    result.append(slots[i])
+                except Exception:
+                    result.append(None)
+            
+            return result
+            
+        except Exception as e:
+            logger.debug(f"[get_window_slots] Failed: {e}")
+            return []
 
     def get_window_slot(self, window: Any, index: int) -> Any:
         try:

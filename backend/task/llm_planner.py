@@ -176,17 +176,12 @@ find_location, patrol, mine_tree, mine, scan, goto, craft, equip, give, pickup
    - 即使目标很远，也直接用 mine(block_type=..., near_position=目标坐标)。
 5) **"砍树"优先 mine_tree**：任务语义是砍树/砍掉那棵树 → mine_tree
 
-### 合成类任务 (做/craft)
-6) **检查材料**：如果 inventory 有足够材料 → 直接 craft
-7) **材料不足先采集**：缺原木 → mine_tree；缺其他材料 → mine
+### 合成类任务 (做/craft) ⛔ craft 本身不需要任何位置感知！
+6) **合成是背包内操作**：craft 动作不需要 find_location/goto！
+   - "做/合成/craft + 物品名" = 检查材料，材料足够直接 craft
+   - 石镐/木板/工具等都是 craft，绝不是"建造"！
+7) **材料不足先采集**：如果材料不足 → scan/mine 采集材料，采集后再 craft
 8) **单步完成**：craft 成功后 → done: true
-
-### 资源等价物规则 ⭐⭐ 关键改进！
-背包中的等价物品可以互换使用，不要死守名字！
-- **木板等价**: oak_planks = birch_planks = spruce_planks = cherry_planks = ... (任何木板)
-- **原木等价**: oak_log = birch_log = cherry_log = ... (任何原木)
-- **规则**: 如果配方需要"木板"，背包有 cherry_planks 就直接用，**不要去采集 oak_log**！
-- 如果 bot_state.nearby_resources 有 cherry_log 而没有 oak_log，就砍 cherry_log，不要跑远路！
 
 ### 交付类任务 (给/give)
 9) **检查背包**：inventory 有目标物品 → 直接 give

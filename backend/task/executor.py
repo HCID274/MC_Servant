@@ -483,6 +483,30 @@ class TaskExecutor(ITaskExecutor):
             return True
         
         return False
+
+    def _parse_task_parts(self, task: str) -> Optional[tuple]:
+        parts = (task or "").strip().split()
+        if len(parts) < 2:
+            return None
+        return parts[0].lower(), parts[1]
+
+    def _should_skip_dynamic_task(
+        self,
+        task: str,
+        inventory: Dict[str, int],
+        error_code: Optional[str],
+    ) -> bool:
+        parsed = self._parse_task_parts(task)
+        if not parsed:
+            return False
+        action, item = parsed
+        if action != "craft":
+            return False
+        if inventory.get(item, 0) > 0:
+            return True
+        if item.endswith(("_pickaxe", "_axe", "_shovel", "_hoe", "_sword")) and error_code != "NO_TOOL":
+            return True
+        return False
     
     async def _handle_task_failure(self, result: TaskResult) -> bool:
         """
@@ -503,6 +527,15 @@ class TaskExecutor(ITaskExecutor):
         if result.dynamic_tasks:
             # 🔧 Fix: 去重检测 - 防止无限 explore 死循环
             filtered_tasks = []
+            error_code = result.failed_step.error_code if result.failed_step else None
+            inventory = {}
+            equipped = None
+            if self._actions:
+                state = self._actions.get_state()
+                inventory = dict(state.get("inventory", {}) or {})
+                equipped = state.get("equipped")
+            if equipped:
+                inventory[equipped] = max(inventory.get(equipped, 0), 1)
             for task_str in result.dynamic_tasks:
                 if self._is_duplicate_explore_task(task_str):
                     logger.warning(f"[Dedup] Blocked duplicate explore task: {task_str}")
@@ -513,10 +546,20 @@ class TaskExecutor(ITaskExecutor):
                         except Exception:
                             pass
                     continue
+                if result.failed_step and result.failed_step.action == "mine":
+                    action_word = task_str.split(" ", 1)[0].lower()
+                    if action_word in ("explore", "patrol"):
+                        logger.warning(f"[Dedup] Blocked explore task for mining failure: {task_str}")
+                        continue
+                if self._should_skip_dynamic_task(task_str, inventory, error_code):
+                    logger.info(f"[Dedup] Skipped dynamic task (already satisfied): {task_str}")
+                    continue
                 filtered_tasks.append(task_str)
             
             if not filtered_tasks:
                 logger.info("[Dedup] All dynamic_tasks blocked as duplicates, escalating to user")
+                if result.failed_step and result.failed_step.message:
+                    result.message = result.failed_step.message
                 return False  # 触发 escalate 逻辑
             
             logger.info(f"[DynamicResolver] Pushing {len(filtered_tasks)} prerequisite tasks")
@@ -549,11 +592,12 @@ class TaskExecutor(ITaskExecutor):
         # 构建上下文
         context = {
             "action": failed.action,
-            "missing": failed.data.get("missing", {}) if failed.data else {},
-            "item": failed.data.get("item") if failed.data else None,
-            "tool_type": failed.data.get("tool_type") if failed.data else None,
-            "min_tier": failed.data.get("min_tier") if failed.data else None,
-            "station": failed.data.get("station") if failed.data else None,
+            "missing": failed.data.get("missing", {}) if isinstance(failed.data, dict) else {},
+            "item": failed.data.get("item") if isinstance(failed.data, dict) else None,
+            "tool_type": failed.data.get("tool_type") if isinstance(failed.data, dict) else None,
+            "min_tier": failed.data.get("min_tier") if isinstance(failed.data, dict) else None,
+            "station": failed.data.get("station") if isinstance(failed.data, dict) else None,
+            "tag_aware": failed.data.get("tag_aware") if isinstance(failed.data, dict) else None,
         }
         
         inventory = self._actions.get_state().get("inventory", {}) if self._actions else {}

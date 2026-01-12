@@ -62,7 +62,7 @@ class MovementSystem:
                     pass
 
                 fallback_moved = await self._simple_move_step(goal, duration=1.2)
-                if self._is_goal_reached(goal):
+                if self._driver.is_goal_reached(goal, self._driver.get_position()):
                     pos = self._driver.get_position()
                     return ActionResult(
                         success=True,
@@ -511,6 +511,15 @@ class MovementSystem:
                 if check_goal and self._driver.is_goal_reached(check_goal, self._driver.get_position()):
                     logger.info("[DEBUG] Goal reached!")
                     return
+                # 容差检测：距离目标 < 1.5 格视为成功
+                if check_goal:
+                    coords = self._driver.goal_target_coords(check_goal)
+                    if coords:
+                        pos = self._driver.get_position()
+                        dist_sq = (pos.x - coords[0])**2 + (pos.y - coords[1])**2 + (pos.z - coords[2])**2
+                        if dist_sq < 2.25:  # 1.5^2 = 2.25
+                            logger.info(f"[DEBUG] Close enough to goal (dist={dist_sq**0.5:.2f}), treating as reached")
+                            return
                 if goal is None and saved_goal is None:
                     logger.info("[DEBUG] Goal is None, pathfinder stopped (no saved goal)")
                     return

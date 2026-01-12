@@ -100,6 +100,11 @@ class PrerequisiteResolver(IPrerequisiteResolver):
             StackTask: 需要先完成的前置任务
             None: 符号层无法解决
         """
+        # 🔧 防御性检查：确保 inventory 是字典，防止 'str' object has no attribute 'get' 错误
+        if not isinstance(inventory, dict):
+            logger.warning(f"[PrerequisiteResolver] inventory is not a dict: {type(inventory).__name__}, using empty dict")
+            inventory = {}
+        
         logger.debug(f"Resolving prerequisite for error: {error_code}, context: {context}")
         
         if error_code == "INSUFFICIENT_MATERIALS":
@@ -145,20 +150,27 @@ class PrerequisiteResolver(IPrerequisiteResolver):
         
         # 取第一个缺失的材料
         item_name, required_count = next(iter(missing.items()))
-        
-        #  Phase 1 修复：使用 TagResolver 查找背包中的等价物品
-        available_item = self._tag_resolver.find_available(item_name, inventory)
-        if available_item:
-            available_count = inventory.get(available_item, 0)
-            if available_count >= required_count:
-                # 背包已有足够等价物品，无需前置任务！
-                logger.info(f"✅ Tag match: {available_item} x{available_count} satisfies {item_name} x{required_count}")
-                return None  # 返回 None 表示无需前置任务
-            else:
-                # 部分满足，只需补充差额
-                logger.info(f"⚡ Partial tag match: {available_item} x{available_count}, need {required_count - available_count} more")
-                required_count -= available_count
-        
+        tag_aware = bool(context.get("tag_aware"))
+
+        # Phase 1: tag-resolver check (skip if already tag-aware)
+        if not tag_aware:
+            available_item = self._tag_resolver.find_available(item_name, inventory)
+            if available_item:
+                available_count = inventory.get(available_item, 0)
+                if available_count >= required_count:
+                    # Inventory already satisfies the requirement via tag equivalents.
+                    logger.info(
+                        f"[Tag] {available_item} x{available_count} satisfies {item_name} x{required_count}"
+                    )
+                    return None  # Return None -> no prerequisite task needed.
+                else:
+                    # Partial match: reduce the remaining required count.
+                    logger.info(
+                        f"[Tag] Partial: {available_item} x{available_count}, "
+                        f"need {required_count - available_count} more"
+                    )
+                    required_count -= available_count
+                    
         # 检查是否为 Tag (如 "planks")，尝试解析为具体物品
         concrete_item = self._resolve_tag_to_concrete(item_name, inventory)
         if concrete_item != item_name:
@@ -353,13 +365,31 @@ class PrerequisiteResolver(IPrerequisiteResolver):
                         status=TaskStatus.PENDING,
                     )
 
-            # 否则直接采集对应来源：按 4/次反推需要的 log/stem 数量
-            src = source_ids[0]
+            # 🔧 Fix: 使用 TagResolver 查找背包中任意可用原木
+            available_log = self._tag_resolver.find_available("logs", inventory)
+            if available_log:
+                # 有原木可用，直接合成对应木板
+                if available_log.endswith("_log"):
+                    alt_planks = available_log[:-4] + "_planks"
+                elif available_log.endswith("_stem"):
+                    alt_planks = available_log[:-5] + "_planks"
+                else:
+                    alt_planks = item_name  # fallback
+                craft_times = int(math.ceil(need / 4))
+                logger.info(f"[InferPrereq] Found {available_log} via Tag, will craft {alt_planks}")
+                return StackTask(
+                    name=f"合成 {alt_planks} x{craft_times * 4}",
+                    goal=f"craft {alt_planks} {craft_times}",
+                    context={"source": "prerequisite", "original_need": need, "inferred": True, "from_log": available_log},
+                    status=TaskStatus.PENDING,
+                )
+
+            # 无原木，采集任意可见原木（使用泛化目标，让 MiningSystem 处理 Tag）
             mine_count = int(math.ceil(need / 4))
             return StackTask(
-                name=f"采集 {src} x{mine_count}",
-                goal=f"mine {src} {mine_count}",
-                context={"source": "prerequisite", "target": item_name, "original_need": need, "inferred": True},
+                name=f"采集原木 x{mine_count}",
+                goal=f"mine log {mine_count}",  # 泛化目标，MiningSystem 会展开为所有可见原木
+                context={"source": "prerequisite", "target": item_name, "original_need": need, "inferred": True, "tag_target": "logs"},
                 status=TaskStatus.PENDING,
             )
 

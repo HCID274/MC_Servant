@@ -215,8 +215,13 @@ class DynamicResolver:
                 # 解析 JSON
                 parsed = self._repair_json(raw_response)
                 decision = self._parse_response(parsed)
-                
+
                 if decision:
+                    inv_snapshot = dict(inventory or {})
+                    equipped = (bot_state or {}).get("equipped")
+                    if equipped:
+                        inv_snapshot[equipped] = max(inv_snapshot.get(equipped, 0), 1)
+                    decision.tasks = self._normalize_tasks(decision.tasks, inv_snapshot, error_code, context)
                     logger.info(f"[DynamicResolver] Decision: {decision}")
                     return decision
                     
@@ -403,6 +408,64 @@ class DynamicResolver:
             reason=reason,
             raw=response,
         )
+
+    def _normalize_tasks(
+        self,
+        tasks: List[str],
+        inventory: Dict[str, int],
+        error_code: str,
+        context: Dict[str, Any],
+    ) -> List[str]:
+        if not tasks or not self._tag_resolver:
+            return tasks
+
+        normalized: List[str] = []
+        tool_signal = bool(context.get("tool_type") or context.get("required_tools") or context.get("min_tier"))
+        allow_tool_inserts = error_code == "NO_TOOL" or tool_signal
+        for task in tasks:
+            parts = task.split()
+            if len(parts) < 2:
+                normalized.append(task)
+                continue
+
+            action = parts[0].lower()
+            item = parts[1]
+            if action == "craft" and inventory.get(item, 0) > 0:
+                continue
+
+            if action == "craft" and not allow_tool_inserts:
+                if item.endswith(("_pickaxe", "_axe", "_shovel", "_hoe", "_sword")):
+                    continue
+            replacement = None
+
+            available = self._tag_resolver.find_available(item, inventory)
+            if available and available != item:
+                replacement = available
+
+            if not replacement:
+                if item.endswith("_log") or item.endswith("_stem"):
+                    available_log = self._tag_resolver.find_available("logs", inventory)
+                    if available_log and available_log != item:
+                        replacement = available_log
+                elif item.endswith("_planks"):
+                    available_planks = self._tag_resolver.find_available("planks", inventory)
+                    if available_planks and available_planks != item:
+                        replacement = available_planks
+                    else:
+                        available_log = self._tag_resolver.find_available("logs", inventory)
+                        if available_log:
+                            if available_log.endswith("_log"):
+                                replacement = available_log[:-4] + "_planks"
+                            elif available_log.endswith("_stem"):
+                                replacement = available_log[:-5] + "_planks"
+
+            if replacement:
+                parts[1] = replacement
+                normalized.append(" ".join(parts))
+            else:
+                normalized.append(task)
+
+        return normalized
 
 
 # ============================================================================

@@ -27,23 +27,14 @@ class ITagResolver(ABC):
     
     @abstractmethod
     def get_equivalents(self, item_name: str) -> List[str]:
-        """
-        获取某物品的所有等价物品 (同 Tag 组)
-        
-        Args:
-            item_name: 物品 ID (如 "oak_planks")
-            
-        Returns:
-            该物品所属 Tag 组的所有成员列表。
-            如果物品不属于任何 Tag 组，返回 [item_name] (自身)。
-            
-        Example:
-            get_equivalents("birch_planks")
-            # => ["oak_planks", "spruce_planks", "birch_planks", ...]
-        """
-        pass
-    
-    @abstractmethod
+        """????????????(? Tag ?)"""
+        norm = self._normalize_name(item_name)
+        tag_list = self._reverse_index.get(norm, [])
+        tag_name = self._choose_tag_for_item(norm, tag_list)
+        if tag_name and tag_name in self._tags:
+            return self._tags[tag_name]
+        return [norm] if norm else [item_name]  # ? Tag?????
+
     def get_tag_members(self, tag_name: str) -> List[str]:
         """
         获取某 Tag 组的所有成员
@@ -98,18 +89,22 @@ class TagResolver(ITagResolver):
     使用反向索引优化查询性能。
     """
     
-    _DEFAULT_PATH = Path(__file__).parent.parent / "data" / "tag_recipes.json"
+    _DEFAULT_KB_PATH = Path(__file__).parent.parent / "data" / "mc_knowledge_base.json"
+    _DEFAULT_TAG_PATH = Path(__file__).parent.parent / "data" / "tag_recipes.json"
     
     def __init__(self, tag_file: Optional[str] = None):
         """
-        初始化 Tag 解析器
-        
+        ??? Tag ???
+
         Args:
-            tag_file: Tag 定义文件路径，默认使用 data/tag_recipes.json
+            tag_file: Tag ????????????? data/mc_knowledge_base.json
         """
-        self._tag_file = Path(tag_file) if tag_file else self._DEFAULT_PATH
+        if tag_file:
+            self._tag_file = Path(tag_file)
+        else:
+            self._tag_file = self._DEFAULT_KB_PATH if self._DEFAULT_KB_PATH.exists() else self._DEFAULT_TAG_PATH
         self._tags: Dict[str, List[str]] = {}
-        self._reverse_index: Dict[str, str] = {}  # item -> tag_name
+        self._reverse_index: Dict[str, List[str]] = {}  # item -> [tag_name]
         self._load_tags()
 
     @staticmethod
@@ -125,6 +120,34 @@ class TagResolver(ITagResolver):
         if n.startswith("minecraft:"):
             n = n.split("minecraft:", 1)[1]
         return n
+
+    def _choose_tag_for_item(self, item_name: str, tags: List[str]) -> Optional[str]:
+        if not tags:
+            return None
+        norm_item = self._normalize_name(item_name)
+        if not norm_item:
+            return tags[0]
+
+        suffix_preferences = [
+            ("_planks", ["planks"]),
+            ("_log", ["logs", "logs_that_burn"]),
+            ("_stem", ["logs", "logs_that_burn"]),
+            ("_wood", ["wood"]),
+        ]
+        for suffix, preferred_tags in suffix_preferences:
+            if norm_item.endswith(suffix):
+                for tag in preferred_tags:
+                    if tag in tags:
+                        return tag
+
+        if norm_item in tags:
+            return norm_item
+
+        for tag in tags:
+            if tag not in {"wood_materials"}:
+                return tag
+
+        return tags[0]
     
     def _load_tags(self) -> None:
         """加载 Tag 定义并构建反向索引"""
@@ -134,8 +157,12 @@ class TagResolver(ITagResolver):
             
             # 过滤掉注释字段
             # 规范化 Tag 与物品名，避免 minecraft: 前缀/空白导致匹配失败
+            raw_tags = data.get("tags") if isinstance(data, dict) and "tags" in data else data
+            if not isinstance(raw_tags, dict):
+                raise ValueError("Tag file format invalid (expected dict or {'tags': {...}})")
+
             tags: Dict[str, List[str]] = {}
-            for raw_tag_name, raw_items in data.items():
+            for raw_tag_name, raw_items in raw_tags.items():
                 if str(raw_tag_name).startswith("_"):
                     continue
                 tag_name = self._normalize_name(raw_tag_name)
@@ -144,10 +171,15 @@ class TagResolver(ITagResolver):
                     tags[tag_name] = items
             self._tags = tags
             
-            # 构建反向索引 (item -> tag_name)
+            # 构建反向索引 (item -> [tag_name])
             for tag_name, items in self._tags.items():
                 for item in items:
-                    self._reverse_index[self._normalize_name(item)] = tag_name
+                    norm_item = self._normalize_name(item)
+                    if not norm_item:
+                        continue
+                    tags_for_item = self._reverse_index.setdefault(norm_item, [])
+                    if tag_name not in tags_for_item:
+                        tags_for_item.append(tag_name)
             
             logger.info(f"TagResolver loaded {len(self._tags)} tags, {len(self._reverse_index)} items")
             
@@ -161,19 +193,22 @@ class TagResolver(ITagResolver):
             self._reverse_index = {}
     
     def get_equivalents(self, item_name: str) -> List[str]:
-        """获取某物品的所有等价物品 (同 Tag 组)"""
+        """????????????(? Tag ?)"""
         norm = self._normalize_name(item_name)
-        tag_name = self._reverse_index.get(norm)
-        if tag_name:
+        tag_list = self._reverse_index.get(norm, [])
+        tag_name = self._choose_tag_for_item(norm, tag_list)
+        if tag_name and tag_name in self._tags:
             return self._tags[tag_name]
-        return [norm] if norm else [item_name]  # 无 Tag，返回自身
-    
+        return [norm] if norm else [item_name]  # ? Tag?????
+
     def get_tag_members(self, tag_name: str) -> List[str]:
         """获取某 Tag 组的所有成员"""
         return self._tags.get(self._normalize_name(tag_name), [])
 
     def get_tag_for_item(self, item_name: str) -> Optional[str]:
-        return self._reverse_index.get(self._normalize_name(item_name))
+        norm = self._normalize_name(item_name)
+        tags = self._reverse_index.get(norm, [])
+        return self._choose_tag_for_item(norm, tags)
     
     def find_available(self, item_name: str, inventory: Dict[str, int]) -> Optional[str]:
         """在背包中查找等价物品

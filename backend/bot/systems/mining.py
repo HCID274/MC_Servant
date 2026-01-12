@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 import time
 from typing import Optional, List, Dict, Any
 
@@ -229,19 +230,772 @@ class MiningSystem:
             return False
 
     def _dig_sync(self, block) -> None:
+        """
+        Synchronously dig a block.
+        
+        The driver's dig() is async, so we need to handle it properly.
+        We create a new event loop to run the coroutine since we're being
+        called from run_in_executor (which runs in a thread pool).
+        """
         try:
             result = self._driver.dig(block)
+            
+            # If result is a coroutine/awaitable, we need to run it
             if inspect.isawaitable(result):
+                # We're in a thread pool worker, so we can create a new event loop
+                loop = asyncio.new_event_loop()
                 try:
-                    asyncio.run(result)
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    try:
-                        loop.run_until_complete(result)
-                    finally:
-                        loop.close()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(result)
+                finally:
+                    loop.close()
+                    asyncio.set_event_loop(None)
+            # If result is None or not awaitable, dig was synchronous and completed
+            
         except Exception as e:
-            raise e
+            logger.warning(f"[_dig_sync] dig() raised: {e}")
+            raise
+
+    def _is_underground_target(self, block_type: str) -> bool:
+        try:
+            return block_type in self._get_underground_blocks()
+        except Exception:
+            return False
+
+    def _find_nearest_block(self, block_id: int, center: Any, max_distance: int = 16) -> Any:
+        """
+        Find the nearest block of the given type within max_distance.
+        
+        Args:
+            block_id: The block ID to search for
+            center: Center position (Vec3) to search from
+            max_distance: Maximum search radius
+            
+        Returns:
+            Block if found, None otherwise
+        """
+        try:
+            # Use driver's find_block method with matching query
+            result = self._driver.find_block({
+                "matching": block_id,
+                "maxDistance": max_distance,
+                "point": center
+            })
+            
+            if result:
+                logger.debug(f"[_find_nearest_block] Found block id={block_id} at ({result.position.x}, {result.position.y}, {result.position.z})")
+            
+            return result
+        except Exception as e:
+            logger.debug(f"[_find_nearest_block] Search failed: {e}")
+            return None
+
+    def _should_spiral_to_target(self, block_type: str, target_block) -> bool:
+        # For underground mining tasks, always prefer a spiral descent.
+        if not self._is_underground_target(block_type):
+            return False
+        return True
+
+    def _spiral_steps_to_target(self, target_block, max_steps: int = 16) -> int:
+        try:
+            pos = self._driver.get_position()
+            dy = int(pos.y) - int(target_block.position.y) - 1
+            if dy <= 0:
+                return max(2, min(6, max_steps))
+            return max(2, min(max_steps, dy))
+        except Exception:
+            return max_steps
+
+    def _is_air_block(self, block) -> bool:
+        try:
+            if block is None:
+                return True
+            if block.name in ("air", "cave_air", "void_air"):
+                return True
+            if block.name in ("water", "lava"):
+                return False
+            if getattr(block, "boundingBox", "") == "empty":
+                return True
+            return False
+        except Exception:
+            return True
+
+    def _is_hazard_block(self, block) -> bool:
+        try:
+            return block is not None and block.name in ("lava", "water")
+        except Exception:
+            return False
+
+    def _is_soft_obstacle(self, block) -> bool:
+        try:
+            if block is None:
+                return False
+            name = block.name
+            if name in (
+                "grass_block", "dirt", "coarse_dirt", "rooted_dirt", "podzol",
+                "mycelium", "moss_block", "mud", "clay",
+                "grass", "tall_grass", "fern", "large_fern", "dead_bush",
+                "pink_petals", "vine", "moss_carpet", "snow",
+                "azalea_leaves", "flowering_azalea_leaves",
+            ):
+                return True
+            if name.endswith(("_leaves", "_sapling", "_log", "_stem")):
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _find_scaffold_item(self):
+        candidates = [
+            "cobblestone", "dirt", "stone", "tuff", "deepslate",
+            "granite", "diorite", "andesite", "calcite",
+            "oak_planks", "spruce_planks", "birch_planks", "jungle_planks",
+            "acacia_planks", "dark_oak_planks", "mangrove_planks", "cherry_planks",
+        ]
+        for name in candidates:
+            item = self._inventory.find_inventory_item(name)
+            if item and getattr(item, "count", 0) > 0:
+                return item
+        return None
+
+    async def _place_block_at(self, x: int, y: int, z: int, item) -> bool:
+        if not item:
+            return False
+
+        try:
+            await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self._driver.equip_item(item, "hand")
+                ),
+                timeout=2.0
+            )
+        except Exception:
+            return False
+
+        target_pos = self._Vec3(x, y, z)
+        target_block = self._driver.block_at(target_pos)
+        if not self._is_air_block(target_block):
+            return True
+
+        offsets = [
+            (0, -1, 0), (0, 1, 0),
+            (1, 0, 0), (-1, 0, 0),
+            (0, 0, 1), (0, 0, -1),
+        ]
+
+        for ox, oy, oz in offsets:
+            ref_pos = self._Vec3(x + ox, y + oy, z + oz)
+            ref_block = self._driver.block_at(ref_pos)
+            if self._is_air_block(ref_block) or self._is_hazard_block(ref_block):
+                continue
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda b=ref_block, off=self._Vec3(-ox, -oy, -oz): self._driver.place_block(b, off)
+                    ),
+                    timeout=3.0
+                )
+            except Exception:
+                continue
+
+            placed = self._driver.block_at(target_pos)
+            if not self._is_air_block(placed):
+                return True
+
+        return False
+
+    async def _relocate_spiral_start(self, radius_min: int = 3, radius_max: int = 5) -> bool:
+        pos = self._driver.get_position()
+        base_x, base_y, base_z = int(pos.x), int(pos.y), int(pos.z)
+        dir_index = self._yaw_to_spiral_index(self._driver.get_yaw())
+        dirs = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+
+        async def try_step(nx: int, ny: int, nz: int) -> bool:
+            support_block = self._driver.block_at(self._Vec3(nx, ny - 1, nz))
+            if self._is_hazard_block(support_block):
+                return False
+            if self._is_air_block(support_block):
+                scaffold_item = self._find_scaffold_item()
+                if not await self._place_block_at(nx, ny - 1, nz, scaffold_item):
+                    return False
+
+            foot_block = self._driver.block_at(self._Vec3(nx, ny, nz))
+            if self._is_hazard_block(foot_block):
+                return False
+
+            if not await self._dig_block_at(nx, ny, nz, allow_hand_break=True):
+                return False
+            await self._dig_block_at(nx, ny + 1, nz, allow_hand_break=True)
+            return await self._step_to(nx, ny, nz)
+
+        for dist in range(radius_min, radius_max + 1):
+            for offset in range(4):
+                dx, dz = dirs[(dir_index + offset) % 4]
+                cur_x, cur_z = base_x, base_z
+                moved = True
+                for _ in range(dist):
+                    cur_x += dx
+                    cur_z += dz
+                    if not await try_step(cur_x, base_y, cur_z):
+                        moved = False
+                        break
+                if moved:
+                    logger.info(f"[Mining] Relocated spiral start to {cur_x},{base_y},{cur_z}")
+                    return True
+
+        return False
+
+    async def _attempt_spiral_descent(
+        self,
+        block_type: str,
+        max_steps: int,
+        scan_radius: int,
+        timeout: float,
+        relocate_attempts: int = 2,
+    ) -> ActionResult:
+        last_result: Optional[ActionResult] = None
+        for attempt in range(relocate_attempts + 1):
+            last_result = await self._dig_spiral_staircase(
+                block_type,
+                max_steps=max_steps,
+                scan_radius=scan_radius,
+                timeout=timeout,
+            )
+
+            if last_result.success:
+                return last_result
+
+            if last_result.error_code != "PATH_BLOCKED":
+                return last_result
+
+            if last_result.message != "Spiral staircase blocked, no safe step":
+                return last_result
+
+            if attempt >= relocate_attempts:
+                return last_result
+
+            if not await self._relocate_spiral_start():
+                return last_result
+
+        return last_result or ActionResult(
+            success=False,
+            action="spiral_staircase",
+            message="Spiral staircase failed",
+            status=ActionStatus.FAILED,
+            error_code="PATH_BLOCKED",
+        )
+
+    def _yaw_to_spiral_index(self, yaw: float) -> int:
+        dx = -math.sin(yaw)
+        dz = math.cos(yaw)
+        if abs(dx) > abs(dz):
+            return 1 if dx > 0 else 3
+        return 0 if dz > 0 else 2
+
+    async def _dig_block_at(
+        self,
+        x: int,
+        y: int,
+        z: int,
+        timeout: float = 6.0,
+        allow_hand_break: bool = False,
+        max_retries: int = 3,
+    ) -> bool:
+        """
+        Dig a block at the given coordinates with retry logic and view angle adjustment.
+        
+        Improvements:
+        - Moves closer to block if too far away (>4 blocks)
+        - Tries multiple view angles (center, top, bottom) on failure
+        - Adds debug logging for each failure case
+        - Increased default timeout from 4s to 6s
+        - Retry mechanism for transient failures
+        """
+        # First, check if we need to move closer to the block
+        pos = self._driver.get_position()
+        dx = pos.x - (x + 0.5)
+        dy = pos.y - (y + 0.5)
+        dz = pos.z - (z + 0.5)
+        dist_sq = dx * dx + dy * dy + dz * dz
+        
+        # Minecraft reach distance is about 4.5 blocks, but for spiral mining
+        # we need to be VERY close (almost on top) to fall into the hole
+        MAX_REACH_SQ = 1.5 * 1.5  # ~2.25 - must be very close
+        
+        if dist_sq > MAX_REACH_SQ:
+            logger.debug(f"[_dig_block_at] Too far from ({x},{y},{z}), dist={dist_sq**0.5:.2f}, moving closer")
+            # Move closer to the block
+            try:
+                # Create a goal near the block
+                goal = self._driver.create_goal_near(x, y, z, reach=2)
+                self._driver.set_goal(goal)
+                
+                # Wait for pathfinder to get us close (max 5 seconds)
+                move_start = time.time()
+                while time.time() - move_start < 5.0:
+                    await asyncio.sleep(0.3)
+                    
+                    # Check if we're close enough now
+                    new_pos = self._driver.get_position()
+                    new_dx = new_pos.x - (x + 0.5)
+                    new_dy = new_pos.y - (y + 0.5)
+                    new_dz = new_pos.z - (z + 0.5)
+                    new_dist_sq = new_dx * new_dx + new_dy * new_dy + new_dz * new_dz
+                    
+                    if new_dist_sq <= MAX_REACH_SQ:
+                        logger.debug(f"[_dig_block_at] Moved closer, now dist={new_dist_sq**0.5:.2f}")
+                        break
+                    
+                    # Check if pathfinder stopped
+                    if not self._driver.is_moving():
+                        break
+                
+                # Stop pathfinder
+                self._driver.stop_pathfinder()
+                
+            except Exception as e:
+                logger.warning(f"[_dig_block_at] Failed to move closer: {e}")
+                try:
+                    self._driver.stop_pathfinder()
+                except Exception:
+                    pass
+        
+        block = self._driver.block_at(self._Vec3(x, y, z))
+        if self._is_air_block(block):
+            return True
+        
+        block_name = getattr(block, "name", "unknown")
+        
+        if not getattr(block, "diggable", True):
+            logger.warning(f"[_dig_block_at] Block {block_name} at {x},{y},{z} is not diggable")
+            if not allow_hand_break or not self._is_soft_obstacle(block):
+                return False
+
+        tool_result = await self._select_best_harvest_tool(block)
+        if tool_result and "error" in tool_result:
+            logger.warning(f"[_dig_block_at] No suitable tool for {block_name}: {tool_result.get('required', [])}")
+            if not allow_hand_break or not self._is_soft_obstacle(block):
+                return False
+            tool_result = None
+            
+        if tool_result and "item" in tool_result:
+            try:
+                best_tool = tool_result["item"]
+                await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self._driver.equip_item(best_tool, "hand")
+                    ),
+                    timeout=2.5
+                )
+                logger.debug(f"[_dig_block_at] Equipped {best_tool.name} for {block_name}")
+            except Exception as e:
+                logger.warning(f"[_dig_block_at] Failed to equip tool: {e}")
+
+        # Calculate timeout based on block type
+        actual_timeout = timeout
+        if allow_hand_break and not tool_result:
+            actual_timeout = max(timeout, 12.0)  # Increased from 10s for hand-breaking
+        
+        # View angle offsets to try: center, top, bottom, corners
+        view_offsets = [
+            (0.5, 0.5, 0.5),   # Center
+            (0.5, 0.9, 0.5),   # Top center
+            (0.5, 0.1, 0.5),   # Bottom center
+            (0.2, 0.5, 0.2),   # Corner 1
+            (0.8, 0.5, 0.8),   # Corner 2
+        ]
+        
+        for attempt in range(max_retries):
+            # Get fresh block reference in case it changed
+            block = self._driver.block_at(self._Vec3(x, y, z))
+            if self._is_air_block(block):
+                return True
+            
+            # Select view offset based on attempt
+            offset_idx = attempt % len(view_offsets)
+            ox, oy, oz = view_offsets[offset_idx]
+            
+            try:
+                self._driver.look_at(self._Vec3(x + ox, y + oy, z + oz))
+                await asyncio.sleep(0.1)  # Small delay to let view angle settle
+            except Exception as e:
+                logger.debug(f"[_dig_block_at] look_at failed: {e}")
+            
+            try:
+                await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None, lambda b=block: self._dig_sync(b)
+                    ),
+                    timeout=actual_timeout
+                )
+                # Dig succeeded, verify block is gone
+                try:
+                    result = await self._wait_for_block_break(x, y, z, block_name, timeout=2.0)
+                    if result:
+                        return True
+                    # Block not gone, will retry
+                    logger.debug(f"[_dig_block_at] Block {block_name} still present after dig, retry {attempt+1}")
+                except Exception:
+                    return True  # Assume success if verification fails
+                    
+            except asyncio.TimeoutError:
+                logger.warning(f"[_dig_block_at] Dig timeout for {block_name} at {x},{y},{z} (attempt {attempt+1}/{max_retries}, offset={offset_idx})")
+                # Stop any stuck digging - call bot directly since driver doesn't have this method
+                try:
+                    if hasattr(self._driver, '_bot') and hasattr(self._driver._bot, 'stopDigging'):
+                        self._driver._bot.stopDigging()
+                except Exception:
+                    pass
+                await asyncio.sleep(0.2)
+                
+            except Exception as e:
+                logger.warning(f"[_dig_block_at] Dig failed for {block_name} at {x},{y},{z}: {e} (attempt {attempt+1}/{max_retries})")
+                await asyncio.sleep(0.2)
+        
+        # All retries exhausted
+        logger.error(f"[_dig_block_at] Failed to dig {block_name} at {x},{y},{z} after {max_retries} attempts")
+        return False
+
+    async def _step_to(self, x: int, y: int, z: int, duration: float = 0.6, max_retries: int = 3) -> bool:
+        """
+        Step to a nearby position with retry logic.
+        
+        Improvements:
+        - Retries up to max_retries times with increasing duration
+        - Relaxed distance tolerance (1.5 blocks instead of 0.9)
+        - Debug logging for failures
+        """
+        try:
+            self._driver.stop_pathfinder()
+        except Exception:
+            pass
+
+        for attempt in range(max_retries):
+            pos_before = self._driver.get_position()
+            
+            try:
+                self._driver.look_at(self._Vec3(x + 0.5, y + 1.2, z + 0.5))
+            except Exception:
+                pass
+
+            descending = y < (pos_before.y - 0.1)
+            jump = y > (pos_before.y + 0.2)
+            
+            # Adjust duration based on retry attempt
+            current_duration = duration * (1 + attempt * 0.3)  # Increase duration on retries
+            
+            try:
+                if not descending:
+                    self._driver.set_control_state("sneak", True)
+            except Exception:
+                pass
+                
+            try:
+                self._driver.set_control_state("forward", True)
+                if jump:
+                    self._driver.set_control_state("jump", True)
+                await asyncio.sleep(max(current_duration, 0.9 if descending else current_duration))
+            finally:
+                try:
+                    self._driver.set_control_state("forward", False)
+                    self._driver.set_control_state("jump", False)
+                    self._driver.set_control_state("sneak", False)
+                except Exception:
+                    pass
+
+            pos_after = self._driver.get_position()
+            dx = pos_after.x - x
+            dy = pos_after.y - y
+            dz = pos_after.z - z
+            dist_sq = dx * dx + dy * dy + dz * dz
+            
+            # Relaxed tolerance: 1.5 blocks (was 0.9)
+            if dist_sq <= 2.25:  # 1.5^2 = 2.25
+                return True
+            
+            # Log the failure
+            logger.debug(f"[_step_to] Attempt {attempt+1}/{max_retries}: target=({x},{y},{z}), actual=({pos_after.x:.1f},{pos_after.y:.1f},{pos_after.z:.1f}), dist={dist_sq**0.5:.2f}")
+            
+            # Small wait before retry
+            await asyncio.sleep(0.2)
+        
+        logger.warning(f"[_step_to] Failed to reach ({x},{y},{z}) after {max_retries} attempts")
+        return False
+
+    async def _wait_for_drop(self, target_y: int, timeout: float = 1.2, max_nudge_attempts: int = 5) -> bool:
+        """
+        Wait for bot to drop to target Y level, actively nudging if needed.
+        
+        Args:
+            target_y: Target Y coordinate to reach
+            timeout: Timeout for each drop check
+            max_nudge_attempts: Maximum number of forward nudge attempts
+        """
+        start = time.time()
+        
+        # First check if we're already at target
+        for _ in range(int(timeout / 0.1)):
+            pos = self._driver.get_position()
+            if pos.y <= target_y + 0.1:
+                return True
+            await asyncio.sleep(0.1)
+        
+        # If not dropped, try nudging forward multiple times
+        for nudge in range(max_nudge_attempts):
+            try:
+                # Nudge forward with increasing duration
+                nudge_duration = 0.2 + (nudge * 0.1)  # 0.2, 0.3, 0.4, 0.5, 0.6 seconds
+                
+                self._driver.set_control_state("sneak", False)  # Disable sneak to move faster
+                self._driver.set_control_state("forward", True)
+                await asyncio.sleep(nudge_duration)
+                self._driver.set_control_state("forward", False)
+                
+                # Check if we dropped
+                await asyncio.sleep(0.3)  # Wait for gravity
+                pos = self._driver.get_position()
+                if pos.y <= target_y + 0.1:
+                    logger.debug(f"[_wait_for_drop] Dropped after nudge {nudge+1}")
+                    return True
+                    
+            except Exception as e:
+                logger.debug(f"[_wait_for_drop] Nudge failed: {e}")
+            finally:
+                try:
+                    self._driver.set_control_state("forward", False)
+                except Exception:
+                    pass
+        
+        logger.warning(f"[_wait_for_drop] Failed to drop to Y={target_y} after {max_nudge_attempts} nudges")
+        return False
+
+    async def _dig_spiral_staircase(
+        self,
+        target_block: str,
+        max_steps: int = 16,
+        scan_radius: int = 16,
+        timeout: float = 60.0
+    ) -> ActionResult:
+        start_time = time.time()
+        
+        # Map dropped item to actual block in ground
+        # When looking for cobblestone as a drop, we need to find stone blocks
+        search_block = target_block
+        if target_block == "cobblestone":
+            search_block = "stone"
+        elif target_block == "charcoal":
+            search_block = "coal_ore"  # charcoal comes from smelting, but just in case
+            
+        target_id = self._driver.get_block_id(search_block)
+        logger.debug(f"[spiral] Searching for {search_block} (target={target_block}), id={target_id}")
+        
+        if target_id is None:
+            return ActionResult(
+                success=False,
+                action="spiral_staircase",
+                message=f"Unknown block type: {search_block}",
+                status=ActionStatus.FAILED,
+                error_code="UNKNOWN_BLOCK"
+            )
+
+        pos = self._driver.get_position()
+        cx, cy, cz = int(pos.x), int(pos.y), int(pos.z)
+        dir_index = self._yaw_to_spiral_index(self._driver.get_yaw())
+
+        dirs = [
+            (0, 0, 1),   # south
+            (1, 0, 0),   # east
+            (0, 0, -1),  # north
+            (-1, 0, 0),  # west
+        ]
+
+        for step in range(max_steps):
+            if time.time() - start_time > timeout:
+                break
+
+            if scan_radius and scan_radius > 0:
+                found = self._find_nearest_block(target_id, self._Vec3(cx, cy, cz), scan_radius)
+                if found:
+                    return ActionResult(
+                        success=True,
+                        action="spiral_staircase",
+                        message=f"Found {target_block} while descending",
+                        status=ActionStatus.SUCCESS,
+                        data={
+                            "found": True,
+                            "position": {
+                                "x": int(found.position.x),
+                                "y": int(found.position.y),
+                                "z": int(found.position.z)
+                            },
+                            "steps": step
+                        }
+                    )
+
+            idx = dir_index
+            dx, _, dz = dirs[idx]
+            nx, ny, nz = cx + dx, cy, cz + dz
+
+            head_block = self._driver.block_at(self._Vec3(nx, ny + 1, nz))
+            body_block = self._driver.block_at(self._Vec3(nx, ny, nz))
+            below_block = self._driver.block_at(self._Vec3(nx, ny - 1, nz))
+            support_block = self._driver.block_at(self._Vec3(nx, ny - 2, nz))
+
+            if self._is_hazard_block(head_block) or self._is_hazard_block(body_block):
+                return ActionResult(
+                    success=False,
+                    action="spiral_staircase",
+                    message="Spiral staircase blocked, hazard ahead",
+                    status=ActionStatus.FAILED,
+                    error_code="PATH_BLOCKED",
+                    data={"steps": step}
+                )
+            if self._is_hazard_block(below_block) or self._is_hazard_block(support_block):
+                return ActionResult(
+                    success=False,
+                    action="spiral_staircase",
+                    message="Spiral staircase blocked, hazard below",
+                    status=ActionStatus.FAILED,
+                    error_code="PATH_BLOCKED",
+                    data={"steps": step}
+                )
+
+            if self._is_air_block(support_block):
+                scaffold_item = self._find_scaffold_item()
+                placed = await self._place_block_at(nx, ny - 2, nz, scaffold_item)
+                if not placed:
+                    return ActionResult(
+                        success=False,
+                        action="spiral_staircase",
+                        message="Spiral staircase blocked, no support",
+                        status=ActionStatus.FAILED,
+                        error_code="PATH_BLOCKED",
+                        data={"steps": step}
+                    )
+
+            if not await self._dig_block_at(nx, ny + 1, nz, allow_hand_break=True):
+                return ActionResult(
+                    success=False,
+                    action="spiral_staircase",
+                    message="Spiral staircase blocked, cannot clear head",
+                    status=ActionStatus.FAILED,
+                    error_code="PATH_BLOCKED",
+                    data={"steps": step}
+                )
+            if not await self._dig_block_at(nx, ny, nz, allow_hand_break=True):
+                return ActionResult(
+                    success=False,
+                    action="spiral_staircase",
+                    message="Spiral staircase blocked, cannot clear body",
+                    status=ActionStatus.FAILED,
+                    error_code="PATH_BLOCKED",
+                    data={"steps": step}
+                )
+            if not await self._dig_block_at(nx, ny - 1, nz, allow_hand_break=True):
+                return ActionResult(
+                    success=False,
+                    action="spiral_staircase",
+                    message="Spiral staircase blocked, cannot clear descent",
+                    status=ActionStatus.FAILED,
+                    error_code="PATH_BLOCKED",
+                    data={"steps": step}
+                )
+
+            # After digging all 3 blocks, move bot directly into the hole using pathfinder
+            # This is more reliable than step + nudge because pathfinder navigates properly
+            logger.debug(f"[spiral] Moving into hole at ({nx},{ny-1},{nz})")
+            
+            descent_success = False
+            for descent_attempt in range(3):
+                try:
+                    # Create goal to move directly into the hole (ny-1 is the bottom of the hole)
+                    goal = self._driver.create_goal_near(nx, ny - 1, nz, reach=1)
+                    self._driver.set_goal(goal)
+                    
+                    move_start = time.time()
+                    while time.time() - move_start < 5.0:
+                        await asyncio.sleep(0.3)
+                        
+                        # Check if we've dropped into the hole
+                        pos = self._driver.get_position()
+                        if pos.y <= ny - 0.5:  # Successfully dropped
+                            descent_success = True
+                            break
+                        
+                        if not self._driver.is_moving():
+                            break
+                    
+                    self._driver.stop_pathfinder()
+                    
+                    if descent_success:
+                        break
+                        
+                    # If not in hole yet, try a forward nudge
+                    self._driver.look_at(self._Vec3(nx + 0.5, ny, nz + 0.5))
+                    self._driver.set_control_state("forward", True)
+                    await asyncio.sleep(0.5)
+                    self._driver.set_control_state("forward", False)
+                    await asyncio.sleep(0.3)
+                    
+                    pos = self._driver.get_position()
+                    if pos.y <= ny - 0.5:
+                        descent_success = True
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"[spiral] Descent attempt {descent_attempt+1} failed: {e}")
+                    try:
+                        self._driver.stop_pathfinder()
+                        self._driver.set_control_state("forward", False)
+                    except Exception:
+                        pass
+            
+            if not descent_success:
+                # Final check - maybe we're already in the hole
+                pos = self._driver.get_position()
+                if pos.y > ny - 0.5:
+                    # Instead of giving up, try a different direction
+                    logger.warning(f"[spiral] Descent failed at step {step}, trying different direction")
+                    dir_index = (idx + 1) % 4  # Switch to next direction
+                    
+                    # Track consecutive failures
+                    if not hasattr(self, '_spiral_fail_count'):
+                        self._spiral_fail_count = 0
+                    self._spiral_fail_count += 1
+                    
+                    if self._spiral_fail_count >= 4:  # Tried all 4 directions
+                        self._spiral_fail_count = 0
+                        return ActionResult(
+                            success=False,
+                            action="spiral_staircase",
+                            message="Spiral staircase blocked, drop failed after trying all directions",
+                            status=ActionStatus.FAILED,
+                            error_code="PATH_BLOCKED",
+                            data={"steps": step}
+                        )
+                    continue  # Try next iteration with new direction
+                    
+            # Success - reset fail counter
+            if hasattr(self, '_spiral_fail_count'):
+                self._spiral_fail_count = 0
+
+            pos = self._driver.get_position()
+            cx, cy, cz = int(pos.x), int(pos.y), int(pos.z)
+            dir_index = (idx + 1) % 4
+
+        return ActionResult(
+            success=False,
+            action="spiral_staircase",
+            message=f"Spiral staircase depth limit reached ({max_steps} steps)",
+            status=ActionStatus.TIMEOUT,
+            error_code="TIMEOUT",
+            data={"steps": max_steps},
+            duration_ms=int((time.time() - start_time) * 1000)
+        )
 
     async def mine(
         self,
@@ -312,6 +1066,37 @@ class MiningSystem:
                 )
 
                 if not target_block:
+                    if self._is_underground_target(block_type):
+                        inventory_before_spiral = self._inventory.get_inventory_count(block_type)
+                        spiral_steps = 16
+                        spiral_scan_radius = 0
+                        spiral_result = await self._attempt_spiral_descent(
+                            block_type,
+                            max_steps=spiral_steps,
+                            scan_radius=spiral_scan_radius,
+                            timeout=min(60.0, timeout)
+                        )
+                        inventory_after_spiral = self._inventory.get_inventory_count(block_type)
+                        spiral_delta = inventory_after_spiral - inventory_before_spiral
+                        if spiral_delta > 0:
+                            collected[block_type] = collected.get(block_type, 0) + spiral_delta
+                            remaining -= spiral_delta
+                            self._progress_timer.reset("spiral_collect")
+                            if remaining <= 0:
+                                break
+
+                        if spiral_result.success:
+                            search_center = self._driver.get_position()
+                            continue
+                        if unlimited_mode:
+                            break
+                        return ActionResult(
+                            success=False,
+                            action="mine",
+                            message=spiral_result.message,
+                            status=ActionStatus.FAILED,
+                            error_code=spiral_result.error_code or "TARGET_NOT_FOUND"
+                        )
                     if unlimited_mode:
                         break
                     if collected.get(block_type, 0) == 0:
@@ -323,6 +1108,38 @@ class MiningSystem:
                             error_code="TARGET_NOT_FOUND"
                         )
                     break
+
+                if self._should_spiral_to_target(block_type, target_block):
+                    inventory_before_spiral = self._inventory.get_inventory_count(block_type)
+                    spiral_scan_radius = 0
+                    spiral_steps = self._spiral_steps_to_target(target_block, max_steps=24)
+                    spiral_result = await self._attempt_spiral_descent(
+                        block_type,
+                        max_steps=spiral_steps,
+                        scan_radius=spiral_scan_radius,
+                        timeout=min(60.0, timeout)
+                    )
+                    inventory_after_spiral = self._inventory.get_inventory_count(block_type)
+                    spiral_delta = inventory_after_spiral - inventory_before_spiral
+                    if spiral_delta > 0:
+                        collected[block_type] = collected.get(block_type, 0) + spiral_delta
+                        remaining -= spiral_delta
+                        self._progress_timer.reset("spiral_collect")
+                        if remaining <= 0:
+                            break
+
+                    if spiral_result.success:
+                        search_center = self._driver.get_position()
+                        continue
+                    if unlimited_mode:
+                        break
+                    return ActionResult(
+                        success=False,
+                        action="mine",
+                        message=spiral_result.message,
+                        status=ActionStatus.FAILED,
+                        error_code=spiral_result.error_code or "PATH_BLOCKED"
+                    )
 
                 last_location = [
                     int(target_block.position.x),

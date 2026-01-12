@@ -407,7 +407,7 @@ class UniversalRunner(ITaskRunner):
                             # LLM 可能在下一轮给出正确的 place 步骤
                             continue
                     
-                    # 🆕 记录成功经验到 RAG 库
+                    # 记录成功经验到 RAG 库
                     success_result = TaskResult(
                         success=True,
                         task_description=task.goal,
@@ -584,7 +584,7 @@ class UniversalRunner(ITaskRunner):
                         completed_steps=completed_steps,
                         failed_step=result,
                         message=recovery_result.get("reason", "前置条件不足"),
-                        dynamic_tasks=recovery_result.get("dynamic_tasks"),  # 🆕 传递 LLM 生成的任务
+                        dynamic_tasks=recovery_result.get("dynamic_tasks"),  # 传递 LLM 生成的任务
                     )
 
                 if recovery_result.get("abort"):
@@ -1098,6 +1098,46 @@ class UniversalRunner(ITaskRunner):
             return None
         return target_y - current_y
 
+    def _extract_target_position_from_action(
+        self,
+        cached_action: Optional[ActionStep],
+        context: RunContext,
+    ) -> Optional[Dict[str, float]]:
+        """
+        从 ActionStep 中提取目标位置
+        
+        优先级:
+        1. params 中的显式坐标
+        2. @玩家 -> owner_position
+        3. 坐标字符串 (x,y,z)
+        """
+        if not cached_action:
+            return None
+        
+        params = cached_action.params if hasattr(cached_action, "params") else {}
+        
+        # 1. 显式坐标
+        for key in ("target_position", "near_position", "position"):
+            pos = params.get(key)
+            if isinstance(pos, dict) and "x" in pos and "y" in pos and "z" in pos:
+                return pos
+        
+        # 2. @玩家 -> owner_position
+        target = params.get("target", "")
+        if isinstance(target, str) and target.startswith("@"):
+            return context.owner_position
+        
+        # 3. 坐标字符串
+        if isinstance(target, str) and "," in target:
+            parts = target.replace(" ", "").split(",")
+            if len(parts) == 3:
+                try:
+                    return {"x": float(parts[0]), "y": float(parts[1]), "z": float(parts[2])}
+                except ValueError:
+                    pass
+        
+        return None
+
     async def _handle_failure(
         self,
         result: "ActionResult",
@@ -1124,6 +1164,24 @@ class UniversalRunner(ITaskRunner):
         # 如果寻路/移动失败，无论高度如何，优先尝试垂直脱困
         if error_code != "SUCCESS" and attempt_count >= 1:
             move_errors = ["PATH_BLOCKED", "TARGET_NOT_FOUND", "TIMEOUT", "RECOVERY_FAILED", "EXECUTION_ERROR"]
+            
+            # 检测是否已接近目标（距离 < 2 格）
+            if error_code == "PATH_BLOCKED" and cached_action:
+                target_pos = self._extract_target_position_from_action(cached_action, context)
+                bot_pos = (bot_state or {}).get("position", {})
+                if target_pos and bot_pos:
+                    try:
+                        dist_sq = (
+                            (bot_pos.get("x", 0) - target_pos.get("x", 0))**2 +
+                            (bot_pos.get("y", 0) - target_pos.get("y", 0))**2 +
+                            (bot_pos.get("z", 0) - target_pos.get("z", 0))**2
+                        )
+                        if dist_sq < 4.0:  # 距离 < 2 格
+                            logger.info(f"[Recovery] Already near target (dist={dist_sq**0.5:.2f}), trying jump escape")
+                            return {"next_step": ActionStep(action="unstuck_move", params={}, description="尝试跳跃脱出")}
+                    except Exception:
+                        pass
+            
             height_gap = self._estimate_height_gap(cached_action, bot_state or {}, context)
             step = self._recovery_policy.move_error_step(
                 error_code=error_code,

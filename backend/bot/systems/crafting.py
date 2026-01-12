@@ -14,6 +14,7 @@ from bot.interfaces import ActionResult, ActionStatus
 from bot.systems.common import BackgroundTaskManager, _coerce_js_int
 from bot.systems.inventory import InventorySystem
 from bot.systems.movement import MovementSystem
+from bot.crafting_mediator import ICraftingMediator, TagCraftingMediator, CraftingPlan
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +26,13 @@ class CraftingSystem:
         background: BackgroundTaskManager,
         movement: MovementSystem,
         inventory: InventorySystem,
+        crafting_mediator: Optional[ICraftingMediator] = None,
     ) -> None:
         self._driver = driver
         self._movement = movement
         self._inventory = inventory
         self._background = background
+        self._crafting_mediator = crafting_mediator or TagCraftingMediator()
 
     async def craft(self, item_name: str, count: int = 1, timeout: float = 30.0) -> ActionResult:
         start_time = time.time()
@@ -37,6 +40,7 @@ class CraftingSystem:
         executable_recipe = None
         inventory: Dict[str, int] = {}
         missing_materials: Dict[str, int] = {}
+        uses_tag_substitution = False
 
         try:
             item_id = self._driver.get_item_id(item_name)
@@ -44,7 +48,7 @@ class CraftingSystem:
                 return ActionResult(
                     success=False,
                     action="craft",
-                    message=f"未知的物品: {item_name}",
+                    message=f"Unknown item: {item_name}",
                     status=ActionStatus.FAILED,
                     error_code="TARGET_NOT_FOUND"
                 )
@@ -85,7 +89,7 @@ class CraftingSystem:
                 return ActionResult(
                     success=False,
                     action="craft",
-                    message=f"找不到 {item_name} 的配方",
+                    message=f"No recipe found for {item_name}",
                     status=ActionStatus.FAILED,
                     error_code="TARGET_NOT_FOUND"
                 )
@@ -106,19 +110,47 @@ class CraftingSystem:
                     return ActionResult(
                         success=False,
                         action="craft",
-                        message=f"合成 {item_name} 需要工作台，请确保工作台已放置",
+                        message=f"Crafting {item_name} requires a crafting table. Please place one.",
                         status=ActionStatus.FAILED,
                         error_code="STATION_NOT_PLACED",
                         data={"station": "crafting_table", "item": item_name}
                     )
 
-            executable_recipe, missing_materials = self._find_executable_recipe(all_recipes, inventory, count)
+            executable_recipe, missing_materials, uses_tag_substitution = self._find_executable_recipe(
+                all_recipes,
+                inventory,
+                count
+            )
+            resolved_plan: Optional[CraftingPlan] = None
+            if executable_recipe:
+                try:
+                    resolved_plan = self._crafting_mediator.resolve(
+                        executable_recipe,
+                        inventory,
+                        count,
+                        self._driver.get_item_name,
+                    )
+                    if resolved_plan and resolved_plan.missing:
+                        display_missing = self._format_missing_for_message(resolved_plan.missing, inventory)
+                        return ActionResult(
+                            success=False,
+                            action="craft",
+                            message=f"Insufficient materials for {item_name}: {display_missing}",
+                            status=ActionStatus.FAILED,
+                            error_code="INSUFFICIENT_MATERIALS",
+                            data={"missing": resolved_plan.missing, "item": item_name, "tag_aware": True},
+                            duration_ms=int((time.time() - start_time) * 1000),
+                        )
+                    if resolved_plan and resolved_plan.uses_tag_substitution:
+                        uses_tag_substitution = True
+                except Exception as resolve_err:
+                    logger.warning(f"[craft] Mediator resolve failed: {resolve_err}")
 
             if not executable_recipe and "__recipe_parse_failed__" in missing_materials:
                 return ActionResult(
                     success=False,
                     action="craft",
-                    message=f"合成 {item_name} 失败：配方解析失败 (delta)",
+                    message=f"Failed to craft {item_name}: recipe parse failed (delta)",
                     status=ActionStatus.FAILED,
                     error_code="RECIPE_PARSE_FAILED",
                     data={
@@ -130,13 +162,14 @@ class CraftingSystem:
                 )
 
             if not executable_recipe:
+                display_missing = self._format_missing_for_message(missing_materials, inventory)
                 return ActionResult(
                     success=False,
                     action="craft",
-                    message=f"合成 {item_name} 材料不足: {missing_materials}",
+                    message=f"Insufficient materials for {item_name}: {display_missing}",
                     status=ActionStatus.FAILED,
                     error_code="INSUFFICIENT_MATERIALS",
-                    data={"missing": missing_materials, "item": item_name},
+                    data={"missing": missing_materials, "item": item_name, "tag_aware": True},
                     duration_ms=int((time.time() - start_time) * 1000)
                 )
 
@@ -153,10 +186,22 @@ class CraftingSystem:
                     return ActionResult(
                         success=False,
                         action="craft",
-                        message=f"合成 {item_name} 需要工作台，但附近没有找到",
+                        message=f"Crafting {item_name} requires a crafting table, but none was found nearby.",
                         status=ActionStatus.FAILED,
                         error_code="NO_TOOL"
                     )
+
+            if uses_tag_substitution:
+                return await self._manual_craft_fallback(
+                    executable_recipe,
+                    count,
+                    item_name,
+                    crafting_table,
+                    timeout,
+                    start_time,
+                    reason="tag_substitution",
+                    resolved_plan=resolved_plan,
+                )
 
             try:
                 await asyncio.wait_for(
@@ -174,101 +219,20 @@ class CraftingSystem:
                         f"[craft] bot.craft() failed ({msg_lower}) for {item_name}. "
                         f"Attempting generic manual craft fallback..."
                     )
-                    try:
-                        use_window = None
-                        if executable_recipe.requiresTable:
-                            current_window = self._driver.get_current_window()
-                            current_title = self._driver.get_window_title(current_window) if current_window else ""
-
-                            if not current_window or "crafting_table" not in str(current_title).lower():
-                                if crafting_table is None:
-                                    crafting_table = self._driver.find_block({
-                                        "matching": lambda b: b.name == "crafting_table",
-                                        "maxDistance": 2
-                                    })
-
-                                if crafting_table:
-                                    logger.info(f"[craft] Manually opening crafting table at {crafting_table.position}")
-
-                                    async def open_table():
-                                        try:
-                                            try:
-                                                pos = crafting_table.position
-                                                logger.info(f"[craft] Navigating to {pos}...")
-                                                await self._movement.navigate_to_block(int(pos.x), int(pos.y), int(pos.z))
-                                            except Exception as nav_err:
-                                                logger.warning(f"[craft] Navigation to table failed: {nav_err}")
-
-                                            try:
-                                                center = crafting_table.position.offset(0.5, 0.5, 0.5)
-                                                logger.info(f"[craft] Looking at {center}...")
-                                                await self._driver.look_at(center)
-                                            except Exception:
-                                                pass
-
-                                            logger.info("[craft] Activating block...")
-                                            try:
-                                                self._driver.activate_block(crafting_table)
-                                            except Exception as act_err:
-                                                logger.error(f"[craft] activateBlock failed: {act_err}")
-
-                                            logger.info("[craft] Waiting for window to open...")
-                                            await asyncio.sleep(1.0)
-
-                                            for _ in range(15):
-                                                try:
-                                                    w = self._driver.get_current_window()
-                                                    if w:
-                                                        w_title = self._driver.get_window_title(w).lower() if w else "none"
-                                                        w_type = self._driver.get_window_type(w) if w else "none"
-                                                        w_len = self._driver.get_window_length(w) if w else 0
-
-                                                        logger.info(
-                                                            f"[craft] Detected open window: title='{w_title}', "
-                                                            f"type='{w_type}', slots={w_len}"
-                                                        )
-
-                                                        is_crafting = (
-                                                            "crafting_table" in w_title or
-                                                            "工作台" in w_title or
-                                                            "crafting" in w_type or
-                                                            w_len == 46
-                                                        )
-
-                                                        if is_crafting:
-                                                            logger.info("[craft] Verified crafting table detected!")
-                                                            return w
-                                                except Exception as e:
-                                                    logger.warning(f"[craft] Window check warning: {e}")
-                                                await asyncio.sleep(1.0)
-                                            logger.warning("[craft] Window open poll timed out.")
-                                            return None
-                                        except Exception as e:
-                                            logger.error(f"[craft] open_table logic crashed: {e}")
-                                            return None
-
-                                    use_window = await asyncio.wait_for(open_table(), timeout=40.0)
-                            else:
-                                use_window = current_window
-
-                            if not use_window:
-                                raise RuntimeError("Failed to open crafting table window for manual fallback.")
-
-                        await asyncio.wait_for(
-                            asyncio.get_event_loop().run_in_executor(
-                                None,
-                                lambda: self._manual_craft_generic_sync(executable_recipe, int(count), use_window)
-                            ),
-                            timeout=timeout * 3
+                    if not getattr(executable_recipe, "inShape", None):
+                        logger.warning(
+                            "[craft] Recipe has no inShape; skipping manual fallback to avoid unsafe crafting."
                         )
-
-                        return ActionResult(
-                            success=True,
-                            action="craft",
-                            message=f"成功合成 {count} 个 {item_name} (Manual Fallback)",
-                            status=ActionStatus.SUCCESS,
-                            data={"crafted": {item_name: count}, "mode": "manual_generic"},
-                            duration_ms=int((time.time() - start_time) * 1000)
+                        raise craft_exc
+                    try:
+                        return await self._manual_craft_fallback(
+                            executable_recipe,
+                            count,
+                            item_name,
+                            crafting_table,
+                            timeout,
+                            start_time,
+                            reason="mineflayer_failed"
                         )
                     except Exception as manual_exc:
                         logger.error(f"[craft] Manual generic fallback failed: {manual_exc}")
@@ -281,7 +245,7 @@ class CraftingSystem:
             return ActionResult(
                 success=True,
                 action="craft",
-                message=f"成功合成 {count} 个 {item_name}",
+                message=f"Successfully crafted {count}x {item_name}",
                 status=ActionStatus.SUCCESS,
                 data={"crafted": {item_name: count}},
                 duration_ms=int((time.time() - start_time) * 1000)
@@ -291,7 +255,7 @@ class CraftingSystem:
             return ActionResult(
                 success=False,
                 action="craft",
-                message=f"合成 {item_name} 超时",
+                message=f"Crafting {item_name} timed out",
                 status=ActionStatus.TIMEOUT,
                 error_code="TIMEOUT",
                 duration_ms=int((time.time() - start_time) * 1000)
@@ -305,6 +269,8 @@ class CraftingSystem:
                 error_code = "INSUFFICIENT_MATERIALS"
 
                 missing: Dict[str, int] = {}
+                from bot.tag_resolver import get_tag_resolver
+                tag_resolver = get_tag_resolver()
                 try:
                     if executable_recipe is not None:
                         required = self._extract_recipe_materials(executable_recipe)
@@ -312,7 +278,7 @@ class CraftingSystem:
                             material_name = self._get_item_name_by_id(material_id)
                             if not material_name:
                                 continue
-                            have = int(inventory.get(material_name, 0))
+                            have = tag_resolver.get_available_count(material_name, inventory)
                             need = int(required_count) * int(count)
                             if have < need:
                                 missing[material_name] = need - have
@@ -322,10 +288,12 @@ class CraftingSystem:
                 if not missing:
                     m = re.search(r"missing ingredient\s+([a-z0-9_]+)", error_msg.lower())
                     if m:
-                        missing[m.group(1)] = 1
+                        candidate = m.group(1)
+                        if tag_resolver.get_available_count(candidate, inventory) < 1:
+                            missing[candidate] = 1
 
                 if missing:
-                    data = {"missing": missing, "item": item_name}
+                    data = {"missing": missing, "item": item_name, "tag_aware": True}
             return ActionResult(
                 success=False,
                 action="craft",
@@ -335,6 +303,176 @@ class CraftingSystem:
                 data=data,
                 duration_ms=int((time.time() - start_time) * 1000)
             )
+
+    async def _manual_craft_fallback(
+        self,
+        recipe: Any,
+        count: int,
+        item_name: str,
+        crafting_table,
+        timeout: float,
+        start_time: float,
+        reason: str,
+        resolved_plan: Optional[CraftingPlan] = None,
+    ) -> ActionResult:
+        logger.warning(
+            f"[craft] Using manual craft fallback for {item_name} (reason={reason})"
+        )
+
+        use_window = None
+        if recipe.requiresTable:
+            current_window = self._driver.get_current_window()
+            current_title = self._driver.get_window_title(current_window) if current_window else ""
+
+            if not current_window or "crafting_table" not in str(current_title).lower():
+                if crafting_table is None:
+                    crafting_table = self._driver.find_block({
+                        "matching": lambda b: b.name == "crafting_table",
+                        "maxDistance": 2
+                    })
+
+                if crafting_table:
+                    logger.info(f"[craft] Manually opening crafting table at {crafting_table.position}")
+
+                    async def open_table():
+                        try:
+                            try:
+                                pos = crafting_table.position
+                                logger.info(f"[craft] Navigating to {pos}...")
+                                await self._movement.navigate_to_block(int(pos.x), int(pos.y), int(pos.z))
+                            except Exception as nav_err:
+                                logger.warning(f"[craft] Navigation to table failed: {nav_err}")
+
+                            try:
+                                center = crafting_table.position.offset(0.5, 0.5, 0.5)
+                                logger.info(f"[craft] Looking at {center}...")
+                                await self._driver.look_at(center)
+                            except Exception:
+                                pass
+
+                            logger.info("[craft] Activating block...")
+                            try:
+                                self._driver.activate_block(crafting_table)
+                            except Exception as act_err:
+                                logger.error(f"[craft] activateBlock failed: {act_err}")
+
+                            logger.info("[craft] Waiting for window to open...")
+                            await asyncio.sleep(1.0)
+
+                            for _ in range(15):
+                                try:
+                                    w = self._driver.get_current_window()
+                                    if w:
+                                        w_title = self._driver.get_window_title(w).lower() if w else "none"
+                                        w_type = self._driver.get_window_type(w) if w else "none"
+                                        w_len = self._driver.get_window_length(w) if w else 0
+
+                                        logger.info(
+                                            f"[craft] Detected open window: title='{w_title}', "
+                                            f"type='{w_type}', slots={w_len}"
+                                        )
+
+                                        is_crafting = (
+                                            "crafting_table" in w_title or
+                                            "\u5de5\u4f5c\u53f0" in w_title or
+                                            "crafting" in w_type or
+                                            w_len == 46
+                                        )
+
+                                        if is_crafting:
+                                            logger.info("[craft] Verified crafting table detected!")
+                                            return w
+                                except Exception as e:
+                                    logger.warning(f"[craft] Window check warning: {e}")
+                                await asyncio.sleep(1.0)
+                            logger.warning("[craft] Window open poll timed out.")
+                            return None
+                        except Exception as e:
+                            logger.error(f"[craft] open_table logic crashed: {e}")
+                            return None
+
+                    use_window = await asyncio.wait_for(open_table(), timeout=40.0)
+            else:
+                use_window = current_window
+
+            if not use_window:
+                raise RuntimeError("Failed to open crafting table window for manual fallback.")
+
+        before_count = self._inventory.get_inventory_count(item_name)
+        expected_per_craft = self._get_recipe_output_count(recipe)
+        expected_total = max(1, int(count) * expected_per_craft)
+
+        def _run_manual() -> None:
+            craft_times = max(int(count), 1)
+            if resolved_plan:
+                for idx in range(craft_times):
+                    if idx == 0:
+                        plan = resolved_plan
+                    else:
+                        inv = self._inventory.get_inventory_summary()
+                        plan = self._crafting_mediator.resolve(
+                            recipe,
+                            inv,
+                            1,
+                            self._driver.get_item_name,
+                        )
+                        if plan.missing:
+                            raise RuntimeError(f"manual craft missing material: {plan.missing}")
+                    self._manual_craft_plan_sync(plan, use_window)
+            else:
+                self._manual_craft_generic_sync(recipe, craft_times, use_window)
+
+        await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, _run_manual),
+            timeout=timeout * 3,
+        )
+
+        after_count = self._inventory.get_inventory_count(item_name)
+        if after_count - before_count < expected_total:
+            raise RuntimeError(
+                f"manual craft produced no output for {item_name} "
+                f"(expected >= {expected_total}, got {after_count - before_count})"
+            )
+
+        return ActionResult(
+            success=True,
+            action="craft",
+            message=f"Successfully crafted {count}x {item_name} (Manual Fallback)",
+            status=ActionStatus.SUCCESS,
+            data={"crafted": {item_name: count}, "mode": "manual_generic", "reason": reason},
+            duration_ms=int((time.time() - start_time) * 1000)
+        )
+
+    def _get_recipe_output_count(self, recipe) -> int:
+        try:
+            result = getattr(recipe, "result", None)
+            if isinstance(result, dict):
+                raw_count = result.get("count")
+            else:
+                raw_count = getattr(result, "count", None)
+            count = _coerce_js_int(raw_count)
+            return int(count) if count and int(count) > 0 else 1
+        except Exception:
+            return 1
+
+    def _format_missing_for_message(self, missing: Dict[str, int], inventory: Dict[str, int]) -> Dict[str, int]:
+        from bot.tag_resolver import get_tag_resolver
+
+        if not missing:
+            return {}
+
+        tag_resolver = get_tag_resolver()
+        display: Dict[str, int] = {}
+        for name, count in missing.items():
+            tag = None
+            if hasattr(tag_resolver, "get_tag_for_item"):
+                tag = tag_resolver.get_tag_for_item(name)
+            if tag and not tag.startswith("_"):
+                display_name = tag
+            else:
+                display_name = name
+            display[display_name] = display.get(display_name, 0) + int(count)
+        return display
 
     def _manual_craft_crafting_table_sync(self, plank_item_name: str, count: int = 1) -> None:
         import time as _time
@@ -397,6 +535,91 @@ class CraftingSystem:
             self._driver.click_window(output_slot, 0, 1)
             _time.sleep(0.1)
 
+    def _manual_craft_plan_sync(self, plan: CraftingPlan, crafting_table_window=None) -> None:
+        import time as _time
+
+        if not plan.slots:
+            raise RuntimeError("manual craft plan has no slots")
+
+        window = crafting_table_window if crafting_table_window else self._driver.get_inventory_window()
+        is_3x3 = (crafting_table_window is not None)
+        grid_width = 3 if is_3x3 else 2
+
+        def _normalize_name(name: Optional[str]) -> str:
+            if not name:
+                return ""
+            n = str(name).strip()
+            if n.startswith("minecraft:"):
+                n = n.split("minecraft:", 1)[1]
+            return n
+
+        def get_grid_slot(row, col):
+            if is_3x3:
+                return 1 + row * 3 + col
+            return 1 + row * 2 + col
+
+        grid_slots_count = 9 if is_3x3 else 4
+        for i in range(1, grid_slots_count + 1):
+            slot_item = self._driver.get_window_slot(window, i)
+            if slot_item:
+                self._driver.click_window(i, 0, 1)
+                _time.sleep(0.2)
+
+        search_start = 10 if is_3x3 else 9
+
+        def find_material_slot_by_name(target_name: str) -> int:
+            slots_len = int(self._driver.get_window_length(window))
+            norm_target = _normalize_name(target_name)
+            logger.debug(
+                f"[find_material_slot] Searching for target_name={norm_target}, "
+                f"search_start={search_start}, slots_len={slots_len}"
+            )
+            for i in range(search_start, slots_len):
+                item = self._driver.get_window_slot(window, i)
+                if item and _normalize_name(getattr(item, "name", "")) == norm_target:
+                    logger.debug(f"[find_material_slot] Exact match found at slot {i}: {item.name}")
+                    return i
+            logger.warning(f"[find_material_slot] No material found for {norm_target}")
+            return -1
+
+        plan_by_item: Dict[str, List[int]] = {}
+        for row, col, item_name in plan.slots:
+            slot_idx = get_grid_slot(int(row), int(col))
+            norm_name = _normalize_name(item_name)
+            if not norm_name:
+                continue
+            plan_by_item.setdefault(norm_name, []).append(slot_idx)
+
+        for item_name, slot_list in plan_by_item.items():
+            remaining_slots = list(slot_list)
+            while remaining_slots:
+                source_slot = find_material_slot_by_name(item_name)
+                if source_slot < 0:
+                    raise RuntimeError(f"manual craft missing material: {item_name}")
+
+                source_item = self._driver.get_window_slot(window, source_slot)
+                try:
+                    source_count = int(source_item.count) if source_item else 0
+                except Exception:
+                    source_count = 0
+                if source_count <= 0:
+                    source_count = len(remaining_slots)
+
+                self._driver.click_window(source_slot, 0, 0)
+                _time.sleep(0.08)
+
+                to_place = min(source_count, len(remaining_slots))
+                for _ in range(to_place):
+                    slot_idx = remaining_slots.pop(0)
+                    self._driver.click_window(slot_idx, 1, 0)
+                    _time.sleep(0.08)
+
+                self._driver.click_window(source_slot, 0, 0)
+                _time.sleep(0.08)
+
+        self._driver.click_window(0, 0, 1)
+        _time.sleep(0.2)
+
     def _manual_craft_generic_sync(self, recipe, count: int = 1, crafting_table_window=None) -> None:
         import time as _time
         from bot.tag_resolver import get_tag_resolver
@@ -440,12 +663,14 @@ class CraftingSystem:
                 f"search_start={search_start}, slots_len={slots_len}"
             )
 
+            # 第一轮：精确匹配
             for i in range(search_start, slots_len):
                 item = self._driver.get_window_slot(window, i)
                 if item and item.type == target_id:
                     logger.debug(f"[find_material_slot] Exact match found at slot {i}: {item.name}")
                     return i
 
+            # 第二轮：Tag 等价匹配
             target_name = self._get_item_name_by_id(target_id)
             logger.debug(f"[find_material_slot] No exact match, target_name={target_name}, trying Tag match...")
             if not target_name:
@@ -480,6 +705,27 @@ class CraftingSystem:
         max_rows = _safe_len(shape)
         max_cols = _safe_len(shape[0]) if max_rows > 0 else 0
 
+        def _extract_item_id(cell) -> Optional[int]:
+            if cell is None:
+                return None
+            try:
+                if isinstance(cell, list):
+                    for candidate in cell:
+                        cid = _extract_item_id(candidate)
+                        if cid is not None and cid > 0:
+                            return int(cid)
+                    return None
+                if isinstance(cell, dict):
+                    raw_id = cell.get("id")
+                else:
+                    raw_id = getattr(cell, "id", None)
+                cid = _coerce_js_int(raw_id)
+                if cid is None or int(cid) <= 0:
+                    return None
+                return int(cid)
+            except Exception:
+                return None
+
         plan: List[Tuple[int, int]] = []
         for r in range(max_rows):
             row = shape[r]
@@ -487,26 +733,42 @@ class CraftingSystem:
                 item = row[c]
                 if not item:
                     continue
-                try:
-                    if isinstance(item, list):
-                        target_id = item[0].id
-                    else:
-                        target_id = item.id
-                except Exception:
+                target_id = _extract_item_id(item)
+                if target_id is None:
                     continue
                 plan.append((get_grid_slot(r, c), int(target_id)))
 
+        plan_by_item: Dict[int, List[int]] = {}
         for slot_idx, item_id in plan:
-            source_slot = find_material_slot(item_id)
-            if source_slot < 0:
-                name = self._get_item_name_by_id(item_id) or str(item_id)
-                raise RuntimeError(f"manual craft missing material: {name}")
+            plan_by_item.setdefault(int(item_id), []).append(slot_idx)
 
-            self._driver.click_window(source_slot, 0, 0)
-            _time.sleep(0.05)
-            self._driver.click_window(slot_idx, 0, 0)
-            _time.sleep(0.05)
+        for item_id, slot_list in plan_by_item.items():
+            remaining_slots = list(slot_list)
+            while remaining_slots:
+                source_slot = find_material_slot(item_id)
+                if source_slot < 0:
+                    name = self._get_item_name_by_id(item_id) or str(item_id)
+                    raise RuntimeError(f"manual craft missing material: {name}")
 
+                source_item = self._driver.get_window_slot(window, source_slot)
+                try:
+                    source_count = int(source_item.count) if source_item else 0
+                except Exception:
+                    source_count = 0
+                if source_count <= 0:
+                    source_count = len(remaining_slots)
+
+                self._driver.click_window(source_slot, 0, 0)
+                _time.sleep(0.08)
+
+                to_place = min(source_count, len(remaining_slots))
+                for _ in range(to_place):
+                    slot_idx = remaining_slots.pop(0)
+                    self._driver.click_window(slot_idx, 1, 0)
+                    _time.sleep(0.08)
+
+                self._driver.click_window(source_slot, 0, 0)
+                _time.sleep(0.08)
         self._driver.click_window(0, 0, 1)
         _time.sleep(0.2)
 
@@ -515,10 +777,31 @@ class CraftingSystem:
         all_recipes,
         inventory: Dict[str, int],
         count: int
-    ) -> Tuple[Optional[Any], Dict[str, int]]:
+    ) -> Tuple[Optional[Any], Dict[str, int], bool]:
+        from bot.tag_resolver import get_tag_resolver
+        tag_resolver = get_tag_resolver()
+
+        logger.debug(f"[_find_executable_recipe] inventory contents: {inventory}")
+
+        def _normalize_name(name: Optional[str]) -> str:
+            if not name:
+                return ""
+            n = str(name).strip()
+            if n.startswith("minecraft:"):
+                n = n.split("minecraft:", 1)[1]
+            return n
+
+        inventory_norm: Dict[str, int] = {}
+        for k, v in (inventory or {}).items():
+            nk = _normalize_name(k)
+            if not nk:
+                continue
+            inventory_norm[nk] = inventory_norm.get(nk, 0) + int(v or 0)
+
         best_recipe = None
         best_missing: Dict[str, int] = {}
         best_missing_count = 99999
+        best_substitution_count = 99999
 
         for recipe in all_recipes:
             try:
@@ -528,25 +811,43 @@ class CraftingSystem:
                 continue
 
             missing: Dict[str, int] = {}
+            substitution_count = 0
             for item_id, req_count in needed.items():
                 item_name = self._get_item_name_by_id(item_id)
                 if not item_name:
                     continue
-                have = int(inventory.get(item_name, 0))
+                have = tag_resolver.get_available_count(item_name, inventory)
                 need = int(req_count) * int(count)
                 if have < need:
+                    logger.debug(
+                        f"[_find_executable_recipe] Material check: {item_name} need={need}, "
+                        f"have={have} (tag-aware)"
+                    )
                     missing[item_name] = need - have
+                else:
+                    logger.debug(f"[_find_executable_recipe] Material OK: {item_name} need={need}, have={have}")
+                    norm_name = _normalize_name(item_name)
+                    exact_have = int(inventory_norm.get(norm_name, 0))
+                    if exact_have < need:
+                        substitution_count += 1
 
             if not missing:
-                return (recipe, {})
+                if substitution_count == 0:
+                    return (recipe, {}, False)
+                if substitution_count < best_substitution_count:
+                    best_recipe = recipe
+                    best_substitution_count = substitution_count
+                continue
 
             missing_count = sum(missing.values())
             if missing_count < best_missing_count:
                 best_missing_count = missing_count
                 best_missing = missing
-                best_recipe = recipe
 
-        return (None, best_missing)
+        if best_recipe is not None:
+            return (best_recipe, {}, True)
+
+        return (None, best_missing, False)
 
     def _extract_recipe_materials(self, recipe) -> Dict[int, int]:
         materials: Dict[int, int] = {}
