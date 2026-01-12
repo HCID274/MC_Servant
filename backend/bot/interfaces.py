@@ -13,6 +13,7 @@ from enum import Enum
 class ActionStatus(Enum):
     """动作执行状态"""
     SUCCESS = "success"
+    PARTIAL = "partial"
     FAILED = "failed"
     TIMEOUT = "timeout"
     CANCELLED = "cancelled"

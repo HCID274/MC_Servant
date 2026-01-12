@@ -301,7 +301,7 @@ class MiningSystem:
             pos = self._driver.get_position()
             dy = int(pos.y) - int(target_block.position.y) - 1
             if dy <= 0:
-                return max(2, min(6, max_steps))
+                return max(2, min(8, max_steps))
             return max(2, min(max_steps, dy))
         except Exception:
             return max_steps
@@ -521,9 +521,9 @@ class MiningSystem:
         dz = pos.z - (z + 0.5)
         dist_sq = dx * dx + dy * dy + dz * dz
         
-        # Minecraft reach distance is about 4.5 blocks, but for spiral mining
-        # we need to be VERY close (almost on top) to fall into the hole
-        MAX_REACH_SQ = 1.5 * 1.5  # ~2.25 - must be very close
+        # Minecraft reach distance is about 4.5 blocks.
+        # Avoid over-tightening: excessive micro-adjustments slow spiral mining.
+        MAX_REACH_SQ = 3.0 * 3.0  # ~9.0
         
         if dist_sq > MAX_REACH_SQ:
             logger.debug(f"[_dig_block_at] Too far from ({x},{y},{z}), dist={dist_sq**0.5:.2f}, moving closer")
@@ -789,11 +789,11 @@ class MiningSystem:
             search_block = "stone"
         elif target_block == "charcoal":
             search_block = "coal_ore"  # charcoal comes from smelting, but just in case
-            
-        target_id = self._driver.get_block_id(search_block)
-        logger.debug(f"[spiral] Searching for {search_block} (target={target_block}), id={target_id}")
-        
-        if target_id is None:
+
+        target_ids = self._resolve_search_block_ids(search_block)
+        logger.debug(f"[spiral] Searching for {search_block} (target={target_block}), ids={target_ids}")
+
+        if not target_ids:
             return ActionResult(
                 success=False,
                 action="spiral_staircase",
@@ -804,6 +804,7 @@ class MiningSystem:
 
         pos = self._driver.get_position()
         cx, cy, cz = int(pos.x), int(pos.y), int(pos.z)
+        start_y = cy
         dir_index = self._yaw_to_spiral_index(self._driver.get_yaw())
 
         dirs = [
@@ -813,12 +814,23 @@ class MiningSystem:
             (-1, 0, 0),  # west
         ]
 
-        for step in range(max_steps):
+        depth_steps = 0
+        attempts = 0
+        timed_out = False
+        attempts_exhausted = False
+        max_attempts = max_steps * 4
+        while depth_steps < max_steps:
             if time.time() - start_time > timeout:
+                timed_out = True
                 break
+            attempts += 1
+            if attempts > max_attempts:
+                attempts_exhausted = True
+                break
+            step = depth_steps
 
             if scan_radius and scan_radius > 0:
-                found = self._find_nearest_block(target_id, self._Vec3(cx, cy, cz), scan_radius)
+                found = self._find_nearest_block(target_ids, self._Vec3(cx, cy, cz), scan_radius)
                 if found:
                     return ActionResult(
                         success=True,
@@ -983,17 +995,34 @@ class MiningSystem:
             if hasattr(self, '_spiral_fail_count'):
                 self._spiral_fail_count = 0
 
+            depth_steps += 1
             pos = self._driver.get_position()
             cx, cy, cz = int(pos.x), int(pos.y), int(pos.z)
             dir_index = (idx + 1) % 4
 
+        end_pos = self._driver.get_position()
+        y_delta = start_y - int(end_pos.y)
+
+        if timed_out:
+            message = f"Spiral staircase timed out ({depth_steps}/{max_steps} steps)"
+            status = ActionStatus.PARTIAL if depth_steps > 0 else ActionStatus.TIMEOUT
+            error_code = "TIMEOUT"
+        elif attempts_exhausted:
+            message = f"Spiral staircase stalled ({depth_steps}/{max_steps} steps)"
+            status = ActionStatus.PARTIAL if depth_steps > 0 else ActionStatus.TIMEOUT
+            error_code = "TIMEOUT"
+        else:
+            message = f"Spiral staircase depth limit reached ({depth_steps}/{max_steps} steps)"
+            status = ActionStatus.TIMEOUT
+            error_code = "TIMEOUT"
+
         return ActionResult(
             success=False,
             action="spiral_staircase",
-            message=f"Spiral staircase depth limit reached ({max_steps} steps)",
-            status=ActionStatus.TIMEOUT,
-            error_code="TIMEOUT",
-            data={"steps": max_steps},
+            message=message,
+            status=status,
+            error_code=error_code,
+            data={"steps": depth_steps, "attempts": attempts, "y_delta": y_delta},
             duration_ms=int((time.time() - start_time) * 1000)
         )
 
@@ -1016,8 +1045,8 @@ class MiningSystem:
             search_center = self._driver.get_position()
 
         try:
-            block_id = self._driver.get_block_id(block_type)
-            if block_id is None:
+            block_ids = self._resolve_search_block_ids(block_type)
+            if not block_ids:
                 return ActionResult(
                     success=False,
                     action="mine",
@@ -1060,7 +1089,7 @@ class MiningSystem:
                     )
 
                 target_block = self._find_nearest_block(
-                    block_id,
+                    block_ids,
                     search_center,
                     search_radius
                 )
@@ -1068,8 +1097,8 @@ class MiningSystem:
                 if not target_block:
                     if self._is_underground_target(block_type):
                         inventory_before_spiral = self._inventory.get_inventory_count(block_type)
-                        spiral_steps = 16
-                        spiral_scan_radius = 0
+                        spiral_steps = 32
+                        spiral_scan_radius = 4
                         spiral_result = await self._attempt_spiral_descent(
                             block_type,
                             max_steps=spiral_steps,
@@ -1086,6 +1115,17 @@ class MiningSystem:
                                 break
 
                         if spiral_result.success:
+                            search_center = self._driver.get_position()
+                            continue
+                        if (
+                            spiral_result.error_code == "TIMEOUT"
+                            and spiral_result.data
+                            and (
+                                spiral_result.data.get("steps", 0) > 0
+                                or spiral_result.data.get("y_delta", 0) > 0
+                            )
+                        ):
+                            self._progress_timer.reset("spiral_partial")
                             search_center = self._driver.get_position()
                             continue
                         if unlimited_mode:
@@ -1111,8 +1151,8 @@ class MiningSystem:
 
                 if self._should_spiral_to_target(block_type, target_block):
                     inventory_before_spiral = self._inventory.get_inventory_count(block_type)
-                    spiral_scan_radius = 0
-                    spiral_steps = self._spiral_steps_to_target(target_block, max_steps=24)
+                    spiral_scan_radius = 4
+                    spiral_steps = self._spiral_steps_to_target(target_block, max_steps=64)
                     spiral_result = await self._attempt_spiral_descent(
                         block_type,
                         max_steps=spiral_steps,
@@ -1129,6 +1169,17 @@ class MiningSystem:
                             break
 
                     if spiral_result.success:
+                        search_center = self._driver.get_position()
+                        continue
+                    if (
+                        spiral_result.error_code == "TIMEOUT"
+                        and spiral_result.data
+                        and (
+                            spiral_result.data.get("steps", 0) > 0
+                            or spiral_result.data.get("y_delta", 0) > 0
+                        )
+                    ):
+                        self._progress_timer.reset("spiral_partial")
                         search_center = self._driver.get_position()
                         continue
                     if unlimited_mode:
@@ -2079,33 +2130,46 @@ class MiningSystem:
                 duration_ms=int((time.time() - start_time) * 1000)
             )
 
-    def _find_nearest_block(self, block_id: int, center, radius: int):
+    def _find_nearest_block(self, block_id, center, radius: int):
         try:
-            blocks = self._driver.find_blocks({
-                "matching": block_id,
-                "maxDistance": radius,
-                "count": 256
-            })
-
-            if not blocks:
-                return None
-
+            block_ids = block_id if isinstance(block_id, (list, tuple, set)) else [block_id]
             nearest_block = None
             nearest_dist = float("inf")
 
-            for block_pos in blocks:
-                try:
-                    dist = center.distanceTo(block_pos)
-                    if dist < nearest_dist:
-                        nearest_dist = dist
-                        nearest_block = self._driver.block_at(block_pos)
-                except Exception:
-                    pass
+            for bid in block_ids:
+                if bid is None:
+                    continue
+                blocks = self._driver.find_blocks({
+                    "matching": bid,
+                    "maxDistance": radius,
+                    "count": 256
+                })
+                if not blocks:
+                    continue
+                for block_pos in blocks:
+                    try:
+                        dist = center.distanceTo(block_pos)
+                        if dist < nearest_dist:
+                            nearest_dist = dist
+                            nearest_block = self._driver.block_at(block_pos)
+                    except Exception:
+                        pass
 
             return nearest_block
         except Exception as e:
             logger.warning(f"_find_nearest_block failed: {e}")
             return None
+
+    def _resolve_search_block_ids(self, block_type: str) -> List[int]:
+        candidates = [block_type]
+        if block_type == "iron_ore":
+            candidates.append("deepslate_iron_ore")
+        ids = []
+        for name in candidates:
+            bid = self._driver.get_block_id(name)
+            if bid is not None:
+                ids.append(bid)
+        return ids
         except Exception as e:
             logger.warning(f"Axe equip failed: {e}")
             return False
