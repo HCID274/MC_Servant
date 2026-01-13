@@ -23,6 +23,38 @@
 
 ---
 
+## 📂 项目结构
+
+```
+MC_agent/
+├── MC_Server_1.20.6/         # Minecraft 服务器端
+│   ├── start.bat             # 启动 MC 服务器
+│   └── plugins/
+│       └── MC_Servant-1.0.0.jar  # 本项目编译后的 Java 插件
+│
+└── MC_Servant/               # 本项目源码根目录
+    ├── start.bat             # 启动 Python 后端
+    ├── requirements.txt      # Python 依赖
+    ├── backend/              # Python 后端核心代码
+    │   ├── main.py           # FastAPI 入口与 WebSocket Server
+    │   ├── config.py         # 配置管理 (Pydantic)
+    │   ├── bot/              # Mineflayer Bot 控制与 Meta-Actions
+    │   ├── task/             # 任务规划 (StackPlanner) 与执行 (UniversalRunner)
+    │   ├── state/            # 状态机与 MemoryFacade
+    │   ├── db/               # 数据库模型与 Repository
+    │   ├── llm/              # LLM 工厂与 Context 管理
+    │   ├── perception/       # 知识库与语义感知
+    │   └── websocket/        # 通信协议定义
+    ├── plugin/               # Java 插件源码
+    │   ├── src/              # Java 源代码
+    │   └── pom.xml           # Maven 构建配置
+    ├── scripts/              # 工具脚本
+    │   └── build_knowledge_base.py # 知识库构建工具
+    └── 00Docs/               # 详细开发文档
+```
+
+---
+
 ## 🚀 快速启动
 
 ### 1. 环境准备
@@ -57,11 +89,6 @@ cd MC_Servant
 请参考各子目录下的 `README.md` 获取详细技术实现说明：
 
 -   **[Backend 架构](./backend/README.md)**: 后端整体设计。
-    -   **[Task 系统](./backend/task/README.md)**: UniversalRunner, StackPlanner, 意图识别。
-    -   **[Bot 动作](./backend/bot/README.md)**: Meta-Action, Mineflayer 适配器。
-    -   **[State & Memory](./backend/state/README.md)**: 状态机, MemoryFacade, 上下文管理。
-    -   **[LLM 模块](./backend/llm/README.md)**: 模型工厂, Context Manager。
-    -   **[Database](./backend/db/README.md)**: 数据模型, 存储库。
 -   **[Java Plugin](./plugin/README.md)**: 插件源码与通信协议。
 -   **[Scripts](./scripts/README.md)**: 工具脚本与知识库构建。
 -   **[项目文档](./00Docs/MC_Servant/)**: 包含架构图、开发日志和未来规划。

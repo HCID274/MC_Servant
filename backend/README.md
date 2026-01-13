@@ -2,17 +2,27 @@
 
 `backend/` 是 MC_Servant 的核心大脑，承载了所有的智能逻辑。采用分层架构，确保模块的低耦合与高内聚。
 
-## 📁 目录索引
+## 📁 目录结构
 
-| 目录 | 功能描述 | 关键技术 |
-| :--- | :--- | :--- |
-| **[task/](./task/README.md)** | 任务规划与执行 | `UniversalRunner`, `StackPlanner`, `IntentAnalyzer` |
-| **[bot/](./bot/README.md)** | Bot 动作与控制 | `MetaActionRegistry`, `MineflayerAdapter` |
-| **[state/](./state/README.md)** | 状态机与记忆门面 | `MemoryFacade`, `BotContext`, `StateMachine` |
-| **[db/](./db/README.md)** | 数据库与持久化 | SQLAlchemy, Postgres, Repositories |
-| **[llm/](./llm/README.md)** | 大模型集成 | Factory Pattern, Context Window Management |
-| **[perception/](./perception/README.md)** | 环境感知 | `KnowledgeBase`, `MineflayerScanner` |
-| **[websocket/](./websocket/README.md)** | 通信服务 | FastAPI WebSocket, Protocol Buffers (JSON) |
+```
+backend/
+├── main.py               # 应用程序入口 (FastAPI + WebSocket)
+├── config.py             # 全局配置
+├── protocol.py           # 通信协议定义
+├── bot/                  # Bot 控制与动作层
+│   ├── meta_actions/     # 高级动作库 (Meta-Actions)
+│   └── mineflayer_adapter.py # Mineflayer 适配器
+├── task/                 # 任务规划与执行层
+│   ├── universal_runner.py # 通用任务运行时 (Tick Loop)
+│   └── stack_planner.py  # 栈式规划器
+├── state/                # 状态管理层
+│   ├── machine.py        # 有限状态机
+│   └── memory_facade.py  # 统一记忆接口
+├── db/                   # 数据持久层 (SQLAlchemy)
+├── llm/                  # 大模型集成层
+├── perception/           # 感知层 (KnowledgeBase)
+└── websocket/            # WebSocket 服务端实现
+```
 
 ## 🏗️ 核心设计模式
 
