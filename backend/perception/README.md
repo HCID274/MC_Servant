@@ -1,36 +1,30 @@
-# Perception 模块文档
+# Perception System (感知系统)
 
-`backend/perception/` 目录构建了 Bot 的感知系统，负责收集和处理游戏世界的环境数据。
+`backend/perception/` 模块赋予 Bot "看" 和 "理解" 环境的能力。
 
-## 核心组件
+## 🌟 核心组件
 
-### 1. `interfaces.py` - 接口定义
--   `IScanner`: 定义了扫描方块和实体的标准异步接口。
--   `ScanResult`: 定义了统一的扫描结果数据结构 (位置、距离、元数据)。
+### 1. KnowledgeBase (知识库)
+位于 `knowledge_base.py`。
+这是一个语义化的 Minecraft 数据库。它不仅包含物品 ID，还包含物品的语义标签。
+-   **数据来源**: `minecraft-data` 库 + 预处理脚本。
+-   **功能**: 支持通过自然语言标签查找物品（例如 "燃料" -> coal, log, plank）。
+-   **容错**: 加载数据时具备容错机制，文件丢失或损坏时会记录错误并返回空结构，避免崩溃。
 
-### 2. `scanner.py` - 扫描器实现
--   `MineflayerScanner`: 封装 Mineflayer API (`findBlocks`, `entities`)。
-    -   **功能**:
-        -   扫描指定类型的方块（按距离排序）。
-        -   扫描指定类型的实体（支持 `player`, `mob` 等类别）。
-        -   **LocalPerception**: 提供 `get_environment_summary` 方法，生成周围环境的自然语言摘要（Top-N 资源），用于 LLM 的 Context 构建。
--   `MockScanner`: 用于单元测试的模拟实现。
+### 2. MineflayerScanner (扫描器)
+位于 `scanner.py`。
+基于 Mineflayer 的 `findBlocks` API，但增加了语义增强。
+-   **动态标签解析**: 它不扫描硬编码的 ID，而是先查询 `KnowledgeBase` 获取标签对应的所有 Block ID，然后进行扫描。
+-   **范围控制**: 默认扫描半径，支持动态扩展。
 
-### 3. `knowledge_base.py` - 知识库访问
--   `JsonKnowledgeBase`: 封装对 `backend/data/mc_knowledge_base.json` 的读取。
-    -   提供根据 Tag（如 `logs`, `ores`）查询方块 ID 的能力。
-    -   提供获取物品属性（如工具等级）的接口。
+### 3. EntityResolver (实体解析器)
+用于查找和识别附近的实体（玩家、生物、掉落物）。
+-   **渐进式扫描**: 采用由近及远（如 32 -> 64 格）的策略，优先关注近处目标。
 
-### 4. `resolver.py` - 实体解析 (EntityResolver)
--   **职责**: 将模糊的自然语言描述（如 "nearby tree"）解析为具体的游戏内实体或坐标。
--   **策略**: 使用渐进式扫描 (Progressive Scanning)，先小范围 (32格) 扫描，若无结果再扩大范围 (64格)，平衡性能与覆盖面。
+## 🧠 语义感知流程
 
-### 5. `inventory.py` - 背包管理
--   封装 Bot 的背包操作与查询。
-
-### 6. `local_perception.py`
--   (该文件可能与 `scanner.py` 中的功能有重叠或作为更高层的封装，具体视代码内容而定，目前看来 `scanner.py` 承担了主要职责)。
-
-## 设计理念
-
-感知层旨在将底层的 Minecraft 数据（方块 ID、坐标数值）转换为对 LLM 友好的语义信息（"附近有 15 个橡木原木，距离 3 米"）。
+当用户说 "去砍点树"：
+1.  LLM 解析意图为 `Gather(target="log")`。
+2.  `KnowledgeBase` 解析 "log" -> `[oak_log, birch_log, spruce_log, ...]`.
+3.  `MineflayerScanner` 在周围寻找上述任意 ID 的方块。
+4.  返回最近的一个坐标给 Bot。

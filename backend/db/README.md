@@ -1,43 +1,48 @@
-# Database 模块文档
+# Database Layer (数据库层)
 
-`backend/db/` 目录包含了数据库交互层的所有代码，使用 SQLAlchemy (AsyncIO) 作为 ORM 框架，PostgreSQL 作为数据库。
+`backend/db/` 模块负责所有持久化数据的管理。项目使用 **SQLAlchemy (Async)** 作为 ORM，**PostgreSQL** 作为数据库。
 
-## 目录结构
+## 🗄️ 数据库 Schema
 
--   `migrations/`: Alembic 数据库迁移脚本。
--   `__init__.py`: 导出常用模块。
--   `database.py`: 数据库连接配置、Session 管理器初始化。
--   `models.py`: 定义所有数据库表结构 (ORM 模型)。
--   `*repository.py`: 数据访问对象 (DAO) 模式实现，封装具体的数据库操作。
+核心模型定义在 `models.py` 中：
 
-## 核心模型 (`models.py`)
+### 1. Players (`players` 表)
+存储玩家信息。
+-   `uuid`: Minecraft UUID。
+-   `username`: 游戏名。
+-   `trust_level`: 信任等级（用于权限控制）。
 
-### 1. 基础数据
--   `Player`: 存储玩家信息 (UUID, 名称, 在线状态)。
--   `Bot`: 存储 Bot 信息 (名称, 人格, 主人, 皮肤)。
+### 2. Bots (`bots` 表)
+存储 Bot 自身的信息。
+-   `name`: Bot 名称。
+-   `config`: 个性化配置。
 
-### 2. 记忆系统 (Memory System)
--   `ConversationContext`: 存储玩家与 Bot 的对话上下文，实现了三级记忆结构：
-    -   **L0**: 原始对话缓冲 (Raw Buffer)。
-    -   **L1**: 情景记忆 (Episodic Memory, 摘要)。
-    -   **L2**: 核心记忆 (Core Memory, 高密度信息)。
--   `CompressionLog`: 记录记忆压缩过程的日志，用于调试和追溯。
+### 3. Conversation Contexts (`conversation_contexts` 表)
+存储分级记忆。
+-   `tier`: 记忆层级 (L0/L1/L2)。
+-   `content`: 具体的对话或任务内容。
+-   `embedding`: 向量嵌入（用于语义检索）。
 
-### 3. 经验系统 (RAG)
--   `TaskExperience`: 存储 Bot 的任务执行经验，用于 RAG (检索增强生成)。
-    -   包含任务目标、向量嵌入 (Embedding)、执行步骤、结果状态和环境指纹。
+### 4. Experience Logs (`experience_logs` 表)
+存储任务执行经验，用于 RAG。
+-   `task_description`: 任务描述。
+-   `execution_plan`: 成功的执行计划。
+-   `outcome`: 执行结果。
 
-## Repository 层
+## 🏭 Repositories (仓储模式)
 
-Repository 模式用于解耦业务逻辑与数据库实现，并统一处理异常。
+为了解耦业务逻辑与数据库操作，我们使用 Repository 模式：
 
--   `bot_repository.py`: Bot 数据的增删改查。
--   `player_repository.py`: 玩家数据的管理。
--   `context_repository.py`: 对话上下文的存取与更新。
--   `experience_repository.py`: 任务经验的向量检索与存储。
+-   `BotRepository`: Bot 数据的 CRUD。
+-   `PlayerRepository`: 玩家数据的 CRUD。
+-   `ContextRepository`: 记忆上下文的 CRUD。
+-   `ExperienceRepository`: 经验日志的存取。
 
-## 设计原则
+**安全规范**:
+所有的 Repository 方法都必须包裹在 `try/except` 块中，并在发生数据库错误时记录日志并返回安全的默认值（如 `None` 或空列表），严禁让 SQL 异常导致 WebSocket 断开或服务崩溃。
 
-1.  **异步优先**: 所有数据库操作均为 `async/await`。
-2.  **容错性**: Repository 方法通常包含 `try/except` 块，确保数据库错误不会导致 WebSocket 断开或主进程崩溃。
-3.  **时区处理**: 统一使用 UTC+8 (北京时间) 进行存储和记录。
+## 📜 Migrations
+
+使用 Alembic 进行数据库迁移。
+-   `alembic revision --autogenerate -m "message"`: 生成迁移脚本。
+-   `alembic upgrade head`: 应用迁移。

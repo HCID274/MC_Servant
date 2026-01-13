@@ -1,35 +1,64 @@
-# Backend 目录说明
+# Backend 架构概览
 
-`backend/` 目录包含了 MC_Servant 项目的所有 Python 后端代码。这是一个基于 FastAPI 和 Mineflayer (通过 `javascript` 库) 构建的 Minecraft 智能 NPC 服务。
+`backend/` 是 MC_Servant 的核心大脑，承载了所有的智能逻辑。采用分层架构，确保模块的低耦合与高内聚。
 
-## 目录结构
+## 📁 目录结构
 
--   **bot/**: 机器人控制核心，包含与 Mineflayer 的交互逻辑、动作封装和生命周期管理。
--   **data/**: 静态数据文件（如配置、提示词模板等）。
--   **db/**: 数据库相关代码（SQLAlchemy 模型、仓库层）。
--   **llm/**: 大语言模型（LLM）集成层，负责与 OpenAI/Claude 等 API 交互。
--   **perception/**: 感知系统，负责理解环境、识别方块和实体。
--   **state/**: 状态机与上下文管理，控制 Bot 的宏观行为模式（如空闲、聊天、任务执行）。
--   **task/**: 任务规划与执行系统，包含 LLM 规划器、执行器和运行时。
--   **utils/**: 通用工具函数。
--   **websocket/**: WebSocket 服务器与通信协议，处理与 Java 插件的实时通讯。
--   **tests/**: 单元测试和集成测试。
+```
+backend/
+├── main.py               # 应用程序入口 (FastAPI + WebSocket)
+├── config.py             # 全局配置
+├── protocol.py           # 通信协议定义
+├── bot/                  # Bot 控制与动作层
+│   ├── meta_actions/     # 高级动作库 (Meta-Actions)
+│   └── mineflayer_adapter.py # Mineflayer 适配器
+├── task/                 # 任务规划与执行层
+│   ├── universal_runner.py # 通用任务运行时 (Tick Loop)
+│   └── stack_planner.py  # 栈式规划器
+├── state/                # 状态管理层
+│   ├── machine.py        # 有限状态机
+│   └── memory_facade.py  # 统一记忆接口
+├── db/                   # 数据持久层 (SQLAlchemy)
+├── llm/                  # 大模型集成层
+├── perception/           # 感知层 (KnowledgeBase)
+└── websocket/            # WebSocket 服务端实现
+```
 
-## 核心文件
+## 🏗️ 核心设计模式
 
--   `main.py`: 应用程序入口点。初始化 FastAPI 应用、WebSocket 服务器、数据库连接、LLM 客户端和 Bot 管理器。
--   `config.py`: 全局配置管理，使用 Pydantic 读取环境变量。
--   `protocol.py`: 定义前后端通信的数据协议（Pydantic 模型）。
--   `requirements.txt`: Python 依赖列表。
+### 1. Neuro-Symbolic (神经符号架构)
+系统不完全依赖 LLM 进行决策。
+-   **符号层 (Fast Path)**: 处理确定性逻辑（如合成配方、寻路算法、状态检查）。
+-   **神经层 (Slow Path)**: 处理模糊指令、复杂规划和自然语言理解。
+这种混合架构大幅降低了 Token 消耗，提高了系统的稳定性。
 
-## 架构概览
+### 2. Dependency Injection (依赖注入)
+各模块之间通过接口交互，而非具体实现。例如 `runner_factory.py` 负责组装 `Context`，将 `Memory`、`Actions` 等依赖注入到 Runner 中。
 
-本项目采用分层架构：
+### 3. The Tick Loop (通用运行时)
+所有的任务执行（无论是简单的聊天还是复杂的建筑）都运行在 `UniversalRunner` 的 Tick Loop 中：
+1.  **Observe**: 获取当前 Bot 状态和环境信息。
+2.  **Act**: 调用 Planner (StackPlanner) 决定下一步操作。
+3.  **Normalize**: 规范化参数，从知识库补充细节。
+4.  **Execute**: 调用 Meta-Action 执行动作。
+5.  **Reflect**: 检查执行结果，更新记忆，决定是否重试或恢复。
 
-1.  **接入层 (WebSocket/FastAPI)**: 处理外部请求和事件。
-2.  **决策层 (State Machine/LLM)**: 决定 Bot "做什么" (Intent)。
-3.  **规划层 (Task Planner)**: 将 Intent 分解为具体的任务序列。
-4.  **执行层 (Task Executor)**: 调度和执行具体任务。
-5.  **动作层 (Bot Actions)**: 封装底层的 Mineflayer API，提供语义化的动作接口 (Layer 2)。
-6.  **感知层 (Perception)**: 提供环境信息供上层决策。
-7.  **记忆层 (Memory)**: 统一管理对话历史、任务经验和长期记忆。
+## 🔧 启动与配置
+
+入口文件为 `main.py`。
+
+### 环境变量
+推荐使用 `.env` 文件配置：
+```ini
+MC_HOST=localhost
+MC_PORT=25565
+BOT_USERNAME=MCServant
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+DATABASE_URL=postgresql+asyncpg://user:pass@localhost/dbname
+```
+
+### 开发规范
+-   **代码注释**: 必须使用中文。
+-   **类型提示**: 全面使用 Python Type Hints。
+-   **异步编程**: 核心 IO 操作均使用 `asyncio`。

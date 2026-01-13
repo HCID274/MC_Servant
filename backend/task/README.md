@@ -1,63 +1,48 @@
-# Task 模块文档
+# Task System (任务系统)
 
-`backend/task/` 目录是 Bot 的任务执行中枢，实现了从"自然语言意图"到"具体动作执行"的完整流程。它采用分层架构和神经符号 (Neuro-Symbolic) 方法，结合了 LLM 的灵活性和传统算法的稳定性。
+`backend/task/` 模块实现了 MC_Servant 的核心执行引擎。所有的 Bot 行为（除了基础的条件反射）都由本模块驱动。
 
-## 目录结构
+## 🌟 核心组件
 
-### 1. 核心架构
--   `executor.py`: **执行器 (TaskExecutor)**。整个任务系统的驱动核心。
-    -   管理任务栈 (`StackPlanner`)。
-    -   协调 Runner (执行者) 和 Planner (规划者)。
-    -   处理任务失败和前置条件解析。
--   `runner_factory.py`: **Runner 工厂**。根据任务类型和 Feature Flags 创建合适的 `ITaskRunner` 实例。
--   `universal_runner.py`: **通用执行者 (UniversalRunner)**。
-    -   采用 Tick Loop (Observe-Act-Reflect) 模式。
-    -   是大多数复杂任务（如采集、建筑）的默认执行引擎。
+### 1. UniversalRunner (通用运行时)
+位于 `universal_runner.py`。
+这是任务执行的唯一入口。它摒弃了旧版针对不同任务编写不同 Runner 的模式，采用统一的 **Tick Loop** 流程处理所有任务。
 
-### 2. 规划层 (Planning Layer)
--   `llm_planner.py`: **LLM 规划器**。调用 LLM 将模糊目标分解为具体任务序列。
--   `stack_planner.py`: **栈式规划器 (StackPlanner)**。管理任务的父子依赖关系（压栈/出栈），支持中断和恢复。
--   `decomposer.py`: 负责将复杂任务（如 "盖房子"）分解为子任务。
--   `recovery_planner.py`: 故障恢复规划器。当标准流程失败时介入，生成恢复策略。
+**工作流 (The Tick Loop):**
+1.  **Observe (观察)**: 获取 Bot 的物理状态（位置、背包）和环境数据。
+2.  **Act (决策)**: 询问 `StackPlanner` 获取下一个子任务。
+3.  **Normalize (规范化)**: 使用 `KBOnlyResolver` 结合知识库补全参数（例如将 "木头" 解析为具体的 Block ID）。
+4.  **Execute (执行)**: 调度底层的 `MetaAction`。
+5.  **Reflect (反思)**: 验证执行结果，处理失败，触发 `Recovery` 机制。
 
-### 3. 解析层 (Resolver Layer)
--   `intent_analyzer.py`: **意图分析器**。识别用户输入是闲聊还是任务，提取任务目标。
--   `prerequisite_resolver.py`: **符号解析器 (Symbolic)** (Fast Path)。
-    -   基于规则解决常见问题（如 "缺木头" -> "砍树"）。
-    -   不调用 LLM，速度快且稳定。
--   `dynamic_resolver.py`: **动态解析器 (LLM)** (Slow Path)。
-    -   当符号解析失败时，调用 LLM 进行复杂问题的诊断和解决。
--   `kb_resolver.py`: 知识库解析器。查询 `mc_knowledge_base.json` 获取配方和属性。
--   `action_resolver.py`: 动作解析器。将 LLM 输出的 JSON 转换为可执行的 Python 动作对象。
+### 2. TaskIntentAnalyzer (意图分析)
+位于 `intent_analyzer.py`。
+负责分析用户的自然语言指令，将其转化为结构化的 `Task` 对象。它决定了任务的类型（是纯对话任务 `Chat` 还是复杂动作任务 `Build/Gather`）。
 
-### 4. 经验系统 (RAG)
--   `experience_recorder.py`: 记录任务执行的成败经验。
--   `experience_retriever.py`: 在规划新任务时，检索相似的历史经验注入 Prompt，避免重蹈覆辙。
+### 3. StackPlanner (栈式规划器)
+位于 `stack_planner.py`。
+实现了基于栈的任务管理。
+-   **分解**: 将高层任务（如 "做个工作台"）分解为子任务（"挖木头", "合成木板", "合成工作台"）。
+-   **入栈**: 子任务压入栈顶，优先执行。
+-   **出栈**: 完成后弹出。
+-   **动态规划**: 支持运行时根据环境变化动态调整计划。
 
-### 5. 辅助组件
--   `behavior_rules.py`: 定义 Bot 的行为规则（如优先使用已有工具）。
--   `prompts/`: 存储 LLM 的 Prompt 模板。
--   `runners/`: 具体任务的 Runner 实现（如果有特定类型的 Runner）。
+### 4. RunnerFactory (工厂)
+位于 `runner_factory.py`。
+负责实例化 `UniversalRunner` 并注入所有必要的依赖（Context, Actions, Memory 等）。
 
-## 工作流程
+### 5. LLM Recovery (故障恢复)
+位于 `llm_recovery_planner.py`。
+当任务失败时（如寻路卡死、缺少材料），该模块会介入，分析错误日志，并生成恢复策略（如 "回退一步", "重新规划", "放弃任务"）。
 
-1.  **意图识别**: 用户输入 -> `IntentAnalyzer` -> 任务目标。
-2.  **规划/分解**: 任务目标 -> `TaskPlanner` (RAG + LLM) -> 任务栈。
-3.  **执行循环**:
-    -   `TaskExecutor` 取出栈顶任务。
-    -   `RunnerFactory` 创建 `UniversalRunner`。
-    -   `UniversalRunner` 启动 Tick Loop:
-        -   **Observe**: 获取环境信息。
-        -   **Act**: `LLMTaskActor` 决定下一步动作。
-        -   **Execute**: 调用 `BotActions` (Mineflayer) 执行。
-        -   **Reflect**: 检查结果，决定继续、完成或报错。
-4.  **错误处理**:
-    -   若执行失败，`TaskExecutor` 尝试 `PrerequisiteResolver` (Symbolic)。
-    -   若无法解决，尝试 `LLMRecoveryPlanner`。
-    -   生成的新任务压入栈顶，优先执行。
+## 🗑️ 已移除组件
+以下旧版组件已被移除，不再支持：
+-   `GatherRunner`
+-   `LinearPlanRunner`
+-   `ClassicRunnerFactory`
 
-## 设计理念
-
--   **Neuro-Symbolic (神经符号)**: 结合 LLM 的推理能力（处理未见过的复杂情况）和规则引擎的确定性（处理合成、前置条件等固定逻辑）。
--   **Stack-Based (栈式管理)**: 任务支持无限层级的嵌套分解，天然支持"中断-恢复"模式。
--   **Tick Loop (OODA)**: 模仿人类的"观察-判断-决策-行动"循环，而非一次性生成所有步骤，提高对动态环境的适应性。
+## 🔄 开发指南
+新增一种任务类型时，通常不需要修改 Runner，只需：
+1.  确保 `TaskIntentAnalyzer` 能正确识别。
+2.  确保 `StackPlanner` 有相应的提示词或逻辑来分解该任务。
+3.  确保底层有支持该任务的 `MetaAction`。

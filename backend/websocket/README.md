@@ -1,35 +1,33 @@
-# WebSocket 模块文档
+# WebSocket Protocol (通信协议)
 
-`backend/websocket/` 目录负责处理 WebSocket 连接、消息路由和客户端管理。
+`backend/websocket/` 模块负责 Python 后端与 Java 插件之间的实时全双工通信。
 
-## 核心组件
+## 📡 架构设计
 
-### 1. `connection_manager.py` - 连接管理器
--   `ConnectionManager`: 维护活跃的 WebSocket 连接。
-    -   **功能**:
-        -   管理连接池 (`active_connections`).
-        -   支持单播 (`send_personal`) 和广播 (`broadcast`).
-        -   **心跳检测**: 定期清理超时的僵尸连接 (`cleanup_stale`).
-        -   **认证**: 校验 `x-access-token`。
+-   **Server**: Python (FastAPI WebSocket Endpoint)。
+-   **Client**: Java Plugin (Java-WebSocket)。
+-   **Protocol**: JSON 消息。
 
-### 2. `handlers.py` - 消息处理器
--   `MessageRouter`: 消息路由中心。
-    -   **职责**: 根据消息类型 (`type`) 将请求分发给相应的处理器。
-    -   **处理逻辑**:
-        -   `chat`: 调用状态机或 LLM 处理对话。
-        -   `command`: 解析并执行管理指令。
-        -   `event`: 处理游戏内事件（如玩家加入）。
-    -   集成 `BotManager`, `StateMachine`, `ContextManager` 等核心组件，协调业务流程。
+## 🔐 认证机制
 
-## 通信协议
+为了防止未授权的连接，连接建立时必须进行握手认证：
+1.  **Header**: 客户端在 HTTP 握手阶段必须携带 `x-access-token` 头。
+2.  **Validation**: 服务器使用 `secrets.compare_digest` 校验 Token 是否与 `settings.ws_access_token` 匹配。
 
-通信协议定义在 `backend/protocol.py` 中。WebSocket 消息通常为 JSON 格式，包含 `type` 字段用于区分消息类别。
+## 📨 消息协议
 
--   **Client -> Server**:
-    -   `player_message`: 玩家聊天。
-    -   `heartbeat`: 心跳包。
-    -   `bot_spawned`: Bot 生成事件。
--   **Server -> Client**:
-    -   `npc_response`: NPC 回复。
-    -   `hologram_update`: 更新头顶全息文字。
-    -   `action_request`: 请求执行动作（针对某些无法由服务端直接控制的动作，如有）。
+消息定义在 `backend/protocol.py` 中。
+
+### Client (Java) -> Server (Python)
+-   **ChatMessage**: 玩家聊天内容。
+-   **Event**: 游戏内事件（如方块破坏、实体死亡）。
+-   **StateUpdate**: Bot 状态同步（心跳）。
+
+### Server (Python) -> Client (Java)
+-   **Action**: 指令 Bot 执行动作。
+-   **Response**: 聊天回复。
+
+## 💓 连接保活
+`ConnectionManager` (`connection_manager.py`) 负责维护连接状态。
+-   **Last Seen**: 仅在收到客户端消息时更新 `last_seen` 时间戳。
+-   **Pruning**: 定期清理超时的僵尸连接。
