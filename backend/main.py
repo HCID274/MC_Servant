@@ -701,7 +701,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     Java 插件通过此端点连接
     """
     token = websocket.headers.get("x-access-token")
-    if token != settings.ws_access_token:
+    # Sentinel: Use constant-time comparison to prevent timing attacks
+    if not token or not secrets.compare_digest(token, settings.ws_access_token):
         logger.warning(f"Rejected WebSocket connection for {client_id}: invalid token")
         await websocket.accept()
         await websocket.close(code=1008, reason="Invalid token")
