@@ -29,9 +29,9 @@ class MessageType(str, Enum):
 class PlayerMessage(BaseModel):
     """玩家消息 (Java → Python)"""
     type: MessageType = MessageType.PLAYER_MESSAGE
-    player: Optional[str] = "Unknown"
-    npc: Optional[str] = None
-    content: Optional[str] = ""
+    player: Optional[str] = Field(default="Unknown", max_length=32)
+    npc: Optional[str] = Field(default=None, max_length=32)
+    content: Optional[str] = Field(default="", max_length=1000)
     timestamp: Optional[int] = 0
     # 玩家实时位置 (由 Java 插件提供，比 Mineflayer 更准确)
     player_x: Optional[float] = None
@@ -85,10 +85,10 @@ class ServantCommandMessage(BaseModel):
     用于 claim/release/list 等管理命令
     """
     type: MessageType = MessageType.SERVANT_COMMAND
-    player: Optional[str] = "Unknown"
-    player_uuid: Optional[str] = None
-    command: Optional[str] = "help"  # "claim" | "release" | "list"
-    target_bot: Optional[str] = None  # 目标 Bot 名称
+    player: Optional[str] = Field(default="Unknown", max_length=32)
+    player_uuid: Optional[str] = Field(default=None, max_length=36)
+    command: Optional[str] = Field(default="help", max_length=32)
+    target_bot: Optional[str] = Field(default=None, max_length=32)
     timestamp: Optional[int] = 0
 
 
@@ -98,9 +98,9 @@ class HologramUpdate(BaseModel):
     主动推送 Bot 头顶全息状态变化
     """
     type: MessageType = MessageType.HOLOGRAM_UPDATE
-    npc: str
-    hologram_text: str
-    identity_line: Optional[str] = None  # 可选更新身份行
+    npc: str = Field(max_length=32)
+    hologram_text: str = Field(max_length=255)
+    identity_line: Optional[str] = Field(default=None, max_length=100)  # 可选更新身份行
 
 
 # 消息类型到模型的映射
