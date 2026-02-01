@@ -145,6 +145,10 @@ class MineflayerBot(IBotController):
         @On(self._bot, 'message')
         def on_message(this, message, *args):
             """监听聊天消息，检测 AuthMe 登录提示"""
+            # Extract position from args (mineflayer passes: message, position, sender, verified)
+            # position: 'chat' (0), 'system' (1), 'game_info' (2)
+            position = args[0] if args else None
+
             msg = str(message)
             msg_lower = msg.lower()
 
@@ -162,27 +166,27 @@ class MineflayerBot(IBotController):
             # - Please login with "/login password"
             # - /login <password>
             if self._password and not self._authme_logged_in:
-                should_login = False
+                # Security: Only process system messages (position='system' or 1) or game info (position='game_info' or 2)
+                # Ignore chat messages (position='chat' or 0) to prevent players from spoofing login prompts
+                is_secure_source = str(position) in ('system', 'game_info', '1', '2')
 
-                # 关键词匹配 (更严格)
-                if "/login" in msg_lower or "/register" in msg_lower:
-                    # 排除玩家聊天 (简单的启发式：如果不包含冒号，或者是系统消息格式)
-                    # Mineflayer 的 message 对象通常是 ChatMessage，str(message) 得到纯文本
-                    # 这是一个简化的判断，防止玩家通过聊天诱骗 Bot 发送密码
-                    if ":" not in msg:
-                        should_login = True
-                    # 如果是常见的服务器提示格式
-                    elif "please" in msg_lower or "use" in msg_lower or "command" in msg_lower:
+                if is_secure_source:
+                    should_login = False
+
+                    # 关键词匹配 (更严格)
+                    if "/login" in msg_lower or "/register" in msg_lower:
+                        # 只要是系统消息，通常可以信任
+                        # 但为了保险起见，仍然检查关键词
                         should_login = True
 
-                if should_login:
-                    logger.info(f"AuthMe prompt detected, sending login...")
-                    try:
-                        self._bot.chat(f"/login {self._password}")
-                        self._authme_logged_in = True
-                        logger.info(f"Bot {self._username} sent AuthMe login command")
-                    except Exception as e:
-                        logger.error(f"AuthMe login failed: {e}")
+                    if should_login:
+                        logger.info(f"AuthMe prompt detected (source={position}), sending login...")
+                        try:
+                            self._bot.chat(f"/login {self._password}")
+                            self._authme_logged_in = True
+                            logger.info(f"Bot {self._username} sent AuthMe login command")
+                        except Exception as e:
+                            logger.error(f"AuthMe login failed: {e}")
         
         @On(self._bot, 'kicked')
         def on_kicked(this, reason, loggedIn):
