@@ -29,9 +29,9 @@ class MessageType(str, Enum):
 class PlayerMessage(BaseModel):
     """玩家消息 (Java → Python)"""
     type: MessageType = MessageType.PLAYER_MESSAGE
-    player: Optional[str] = "Unknown"
-    npc: Optional[str] = None
-    content: Optional[str] = ""
+    player: Optional[str] = Field("Unknown", max_length=32)
+    npc: Optional[str] = Field(None, max_length=32)
+    content: Optional[str] = Field("", max_length=1000)
     timestamp: Optional[int] = 0
     # 玩家实时位置 (由 Java 插件提供，比 Mineflayer 更准确)
     player_x: Optional[float] = None
@@ -42,27 +42,27 @@ class PlayerMessage(BaseModel):
 class NpcResponse(BaseModel):
     """NPC 回复 (Python → Java)"""
     type: MessageType = MessageType.NPC_RESPONSE
-    npc: Optional[str] = "UnknownBot"
-    target_player: Optional[str] = "Unknown"
-    content: Optional[str] = ""
+    npc: Optional[str] = Field("UnknownBot", max_length=32)
+    target_player: Optional[str] = Field("Unknown", max_length=32)
+    content: Optional[str] = Field("", max_length=1000)
     segments: Optional[list[str]] = None  # 分段显示内容
-    hologram_text: Optional[str] = None
-    action: Optional[str] = None
+    hologram_text: Optional[str] = Field(None, max_length=100)
+    action: Optional[str] = Field(None, max_length=32)
 
 
 class BotCommand(BaseModel):
     """Bot 动作指令 (Python → Java or internal)"""
     type: MessageType = MessageType.BOT_COMMAND
-    npc: Optional[str] = "UnknownBot"
-    command: Optional[str] = "idle"  # jump, chat, move_to, etc.
+    npc: Optional[str] = Field("UnknownBot", max_length=32)
+    command: Optional[str] = Field("idle", max_length=32)  # jump, chat, move_to, etc.
     args: dict = Field(default_factory=dict)
 
 
 class BotStatus(BaseModel):
     """Bot 状态 (Python → Java)"""
     type: MessageType = MessageType.BOT_STATUS
-    npc: Optional[str] = "UnknownBot"
-    status: Optional[str] = "idle"  # idle, busy, offline
+    npc: Optional[str] = Field("UnknownBot", max_length=32)
+    status: Optional[str] = Field("idle", max_length=32)  # idle, busy, offline
     position: Optional[list[float]] = None
 
 
@@ -85,10 +85,10 @@ class ServantCommandMessage(BaseModel):
     用于 claim/release/list 等管理命令
     """
     type: MessageType = MessageType.SERVANT_COMMAND
-    player: Optional[str] = "Unknown"
-    player_uuid: Optional[str] = None
-    command: Optional[str] = "help"  # "claim" | "release" | "list"
-    target_bot: Optional[str] = None  # 目标 Bot 名称
+    player: Optional[str] = Field("Unknown", max_length=32)
+    player_uuid: Optional[str] = Field(None, max_length=64)
+    command: Optional[str] = Field("help", max_length=32)  # "claim" | "release" | "list"
+    target_bot: Optional[str] = Field(None, max_length=32)  # 目标 Bot 名称
     timestamp: Optional[int] = 0
 
 
@@ -98,9 +98,9 @@ class HologramUpdate(BaseModel):
     主动推送 Bot 头顶全息状态变化
     """
     type: MessageType = MessageType.HOLOGRAM_UPDATE
-    npc: str
-    hologram_text: str
-    identity_line: Optional[str] = None  # 可选更新身份行
+    npc: str = Field(..., max_length=32)
+    hologram_text: str = Field(..., max_length=100)
+    identity_line: Optional[str] = Field(None, max_length=100)  # 可选更新身份行
 
 
 # 消息类型到模型的映射
