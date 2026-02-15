@@ -8,6 +8,7 @@
 
 import asyncio
 import logging
+import re
 from typing import Tuple, Optional, Dict
 
 # javascript 模块用于在 Python 中调用 Node.js 模块
@@ -148,31 +149,43 @@ class MineflayerBot(IBotController):
             msg = str(message)
             msg_lower = msg.lower()
 
+            # args: [position, sender, verified]
+            # position: 'chat', 'system', 'game_info'
+            # sender: UUID string (e.g. "00000000-0000-0000-0000-000000000000")
+
+            position = args[0] if len(args) > 0 else "chat"
+            sender = args[1] if len(args) > 1 else None
+
             # 安全日志：检查是否包含密码
             if self._password and self._password in msg:
                 safe_msg = msg.replace(self._password, "********")
-                logger.debug(f"Bot received message: {safe_msg}")
+                logger.debug(f"Bot received message ({position}): {safe_msg}")
             else:
-                logger.debug(f"Bot received message: {msg}")
+                logger.debug(f"Bot received message ({position}): {msg}")
             
             # 检测 AuthMe 登录/注册提示
             # 必须匹配服务器的标准提示，避免玩家聊天误触发
-            # 常见提示：
-            # - Please register with "/register password password"
-            # - Please login with "/login password"
-            # - /login <password>
             if self._password and not self._authme_logged_in:
+                # 1. 来源检查：必须是系统消息 (position='system') 或
+                #    如果是 chat 类型，发送者必须为空/全0 UUID (某些服务器插件行为)
+                is_system = (position == 'system' or position == 'game_info')
+                if not is_system and position == 'chat':
+                    # 检查 sender 是否为 None 或 空 UUID
+                    # 注意：javascript 库可能传递 None, undefined, 或 空字符串
+                    if not sender or sender == "00000000-0000-0000-0000-000000000000":
+                        is_system = True
+
+                # 如果不是系统消息，直接忽略 (防止玩家 spoofing)
+                if not is_system:
+                    return
+
                 should_login = False
 
-                # 关键词匹配 (更严格)
+                # 2. 内容匹配 (严格正则)
+                # 匹配包含 /login 或 /register 的系统提示
                 if "/login" in msg_lower or "/register" in msg_lower:
-                    # 排除玩家聊天 (简单的启发式：如果不包含冒号，或者是系统消息格式)
-                    # Mineflayer 的 message 对象通常是 ChatMessage，str(message) 得到纯文本
-                    # 这是一个简化的判断，防止玩家通过聊天诱骗 Bot 发送密码
-                    if ":" not in msg:
-                        should_login = True
-                    # 如果是常见的服务器提示格式
-                    elif "please" in msg_lower or "use" in msg_lower or "command" in msg_lower:
+                    # 使用正则确保这是一个命令提示，而不是其他文本
+                    if re.search(r"(?i)(?:please|use|command|/login|/register)", msg):
                         should_login = True
 
                 if should_login:
