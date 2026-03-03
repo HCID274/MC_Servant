@@ -1,19 +1,16 @@
 @echo off
+setlocal
 chcp 65001 >nul
+
 echo ======================================
 echo    MC_Servant Backend Launcher
 echo ======================================
 echo.
 
-REM 切换到后端目录
 cd /d "%~dp0backend"
-
-REM 激活虚拟环境
-if exist "..\venv\Scripts\activate.bat" (
-    echo [*] Activating virtual environment...
-    call "..\venv\Scripts\activate.bat"
-) else (
-    echo [!] Virtual environment not found, using system Python
+if errorlevel 1 (
+    echo [ERROR] Failed to enter backend directory.
+    exit /b 1
 )
 
 echo [*] Starting FastAPI WebSocket server...
@@ -24,5 +21,19 @@ echo Press Ctrl+C to stop the server
 echo ======================================
 echo.
 
-REM 启动后端（使用 cmd /c 避免 Ctrl+C 时的 Y/N 确认）
-cmd /c python main.py
+set "UV_EXE="
+where uv.exe >nul 2>nul
+if %errorlevel% equ 0 set "UV_EXE=uv.exe"
+if not defined UV_EXE if exist "%USERPROFILE%\.local\bin\uv.exe" set "UV_EXE=%USERPROFILE%\.local\bin\uv.exe"
+
+if defined UV_EXE (
+    echo [*] Launching with uv: %UV_EXE%
+    "%UV_EXE%" run --with-requirements requirements.txt python main.py
+) else (
+    echo [ERROR] uv not found.
+    echo Install uv or add it to PATH. Example path expected:
+    echo   %USERPROFILE%\.local\bin\uv.exe
+    exit /b 1
+)
+
+endlocal

@@ -8,6 +8,8 @@
 
 import asyncio
 import logging
+import time
+from pathlib import Path
 from typing import Tuple, Optional, Dict
 
 # javascript 模块用于在 Python 中调用 Node.js 模块
@@ -58,13 +60,25 @@ class MineflayerBot(IBotController):
             logger.error(f"Failed to connect bot: {e}")
             self._connected = False
             return False
-    
+
+    def _require_node_module(self, package_name: str):
+        """
+        Load Node package with local backend/node_modules priority.
+
+        `uv run` may execute Python from an isolated cache path where
+        default Node resolution cannot find project-local packages.
+        """
+        local_pkg = Path(__file__).resolve().parents[1] / "node_modules" / package_name
+        if local_pkg.exists():
+            return require(str(local_pkg))
+        return require(package_name)
+
     def _init_bot(self):
         """初始化 Mineflayer Bot（阻塞操作）"""
         # 加载 Node.js 模块
-        self._mineflayer = require('mineflayer')
-        self._pathfinder = require('mineflayer-pathfinder')
-        self._Vec3 = require("vec3")
+        self._mineflayer = self._require_node_module('mineflayer')
+        self._pathfinder = self._require_node_module('mineflayer-pathfinder')
+        self._Vec3 = self._require_node_module("vec3")
         
         # 创建 Bot
         self._bot = self._mineflayer.createBot({
@@ -93,14 +107,14 @@ class MineflayerBot(IBotController):
         """
         try:
             # 加载 minecraft-data (用于方块/物品查询)
-            self._mcData = require('minecraft-data')(self._bot.version)
+            self._mcData = self._require_node_module('minecraft-data')(self._bot.version)
             
             # 加载 collectblock 插件 (自动采集)
-            collectblock = require('mineflayer-collectblock')
+            collectblock = self._require_node_module('mineflayer-collectblock')
             self._bot.loadPlugin(collectblock.plugin)
             
             # 加载 tool 插件 (自动选择工具)
-            tool_plugin = require('mineflayer-tool')
+            tool_plugin = self._require_node_module('mineflayer-tool')
             self._bot.loadPlugin(tool_plugin.plugin)
             
             # 配置寻路参数
@@ -132,6 +146,8 @@ class MineflayerBot(IBotController):
     def _register_events(self):
         """注册 Bot 事件处理器"""
         self._authme_logged_in = False  # AuthMe 登录状态标记
+        self._last_authme_attempt_ts = 0.0
+        self._authme_attempt_cooldown = 2.5  # 避免重复刷屏命令
         
         @On(self._bot, 'login')
         def on_login(*args):
@@ -162,27 +178,63 @@ class MineflayerBot(IBotController):
             # - Please login with "/login password"
             # - /login <password>
             if self._password and not self._authme_logged_in:
-                should_login = False
+                # 登录/注册成功提示
+                if (
+                    "you are now logged in" in msg_lower
+                    or "successfully logged in" in msg_lower
+                    or "successful login" in msg_lower
+                    or "you have successfully registered" in msg_lower
+                    or "successfully registered" in msg_lower
+                    or "registration successful" in msg_lower
+                    or "you are now registered" in msg_lower
+                ):
+                    self._authme_logged_in = True
+                    logger.info(f"Bot {self._username} AuthMe authenticated")
+                    return
 
-                # 关键词匹配 (更严格)
-                if "/login" in msg_lower or "/register" in msg_lower:
-                    # 排除玩家聊天 (简单的启发式：如果不包含冒号，或者是系统消息格式)
-                    # Mineflayer 的 message 对象通常是 ChatMessage，str(message) 得到纯文本
-                    # 这是一个简化的判断，防止玩家通过聊天诱骗 Bot 发送密码
-                    if ":" not in msg:
-                        should_login = True
-                    # 如果是常见的服务器提示格式
-                    elif "please" in msg_lower or "use" in msg_lower or "command" in msg_lower:
-                        should_login = True
+                # 仅处理系统提示，避免玩家聊天诱导发密码
+                is_system_prompt = ":" not in msg or any(
+                    key in msg_lower for key in ("please", "use", "command", "authme")
+                )
+                if not is_system_prompt:
+                    return
 
-                if should_login:
-                    logger.info(f"AuthMe prompt detected, sending login...")
+                needs_register = "/register" in msg_lower or "/reg" in msg_lower
+                needs_login = "/login" in msg_lower or "/log" in msg_lower or "/l " in msg_lower
+
+                # 错误提示补偿：根据提示切换命令
+                if "not registered" in msg_lower:
+                    needs_register = True
+                    needs_login = False
+                if "isn't registered" in msg_lower:
+                    needs_register = True
+                    needs_login = False
+                if "already registered" in msg_lower:
+                    needs_login = True
+                if "wrong password" in msg_lower:
+                    logger.warning(f"Bot {self._username} AuthMe password rejected")
+
+                now = time.time()
+                if now - self._last_authme_attempt_ts < self._authme_attempt_cooldown:
+                    return
+
+                cmd = None
+                action = None
+                if needs_register:
+                    cmd = f"/register {self._password} {self._password}"
+                    action = "register"
+                elif needs_login:
+                    cmd = f"/login {self._password}"
+                    action = "login"
+
+                if cmd:
                     try:
-                        self._bot.chat(f"/login {self._password}")
-                        self._authme_logged_in = True
-                        logger.info(f"Bot {self._username} sent AuthMe login command")
+                        logger.info(f"AuthMe prompt detected, sending {action}...")
+                        self._bot.chat(cmd)
+                        self._last_authme_attempt_ts = now
+                        logger.info(f"Bot {self._username} sent AuthMe {action} command")
                     except Exception as e:
-                        logger.error(f"AuthMe login failed: {e}")
+                        logger.error(f"AuthMe {action} failed: {e}")
         
         @On(self._bot, 'kicked')
         def on_kicked(this, reason, loggedIn):

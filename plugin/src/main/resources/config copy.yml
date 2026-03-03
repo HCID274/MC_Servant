@@ -1,6 +1,0 @@
-websocket:
-  url: "ws://localhost:8765/ws/plugin"
-  access_token: "YOUR_SECRET_TOKEN_HERE"
-
-bot:
-  default_name: "MCServant_Bot"
