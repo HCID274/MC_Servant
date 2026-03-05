@@ -53,3 +53,5 @@ logs/
 # ===== Cache =====
 .cache/
 *.cache
+LLMRouter_MigrationBundle
+qwen35_cli_test

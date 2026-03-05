@@ -57,6 +57,19 @@ def _resolve_bot_name(message: dict) -> str:
     return settings.bot_username
 
 
+def _is_known_bot_player(player_name: Optional[str]) -> bool:
+    if not player_name:
+        return False
+
+    if settings.bot_username and player_name == settings.bot_username:
+        return True
+
+    if bot_manager and player_name in bot_manager.list_bots():
+        return True
+
+    return False
+
+
 async def _ensure_bot(name: str) -> Tuple[Optional[object], bool]:
     """Return (bot, created_now)."""
     if not bot_manager:
@@ -336,6 +349,13 @@ async def _handle_presence_message(message: dict) -> None:
 
     if msg_type in {"player_join", "player_login"} and player and player_uuid:
         online_players[player_uuid] = {"name": player, "uuid": player_uuid}
+        if _is_known_bot_player(player):
+            owner = bot_owners.get(player)
+            await _send_hologram_update(
+                player,
+                "💤 待命中",
+                identity_line=owner["name"] if owner else "",
+            )
     elif msg_type == "player_quit" and player_uuid:
         online_players.pop(player_uuid, None)
     elif msg_type in {"init_sync", "online_players_sync"}:
@@ -346,6 +366,13 @@ async def _handle_presence_message(message: dict) -> None:
             pname = item.get("name")
             if puid and pname:
                 online_players[puid] = {"name": pname, "uuid": puid}
+                if _is_known_bot_player(pname):
+                    owner = bot_owners.get(pname)
+                    await _send_hologram_update(
+                        pname,
+                        "💤 待命中",
+                        identity_line=owner["name"] if owner else "",
+                    )
 
 
 @asynccontextmanager

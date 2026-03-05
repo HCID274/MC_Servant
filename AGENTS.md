@@ -1,5 +1,10 @@
 # Repository Guidelines
 
+## User Mandatory Rule
+- 未经用户明确允许，禁止擅自新增功能、扩展实现、改动需求范围。
+- 默认只执行用户明确要求的最小改动；任何额外实现必须先提问并获得确认。
+- 若需求存在歧义，先澄清再改代码。
+
 ## Project Structure & Module Organization
 - `backend/`: Python FastAPI + WebSocket backend, task engine, state machine, LLM integration, persistence, and tests.
 - `backend/tests/`: pytest test suite for runner, planner, memory, recovery, and action integration.
