@@ -6,11 +6,16 @@ PROMPTS_DIR = Path(__file__).resolve().parents[1] / "data" / "prompts"
 INITIAL_SYSTEM_PROMPT = PROMPTS_DIR / "初始提示词.md"
 
 
-def load_prompt(_: str) -> str:
-    """
-    提示词读取入口（骨架占位）。
+def load_prompt(filename: str) -> str:
+    """按文件名读取提示词。"""
+    path = PROMPTS_DIR / filename
+    if not path.exists():
+        raise FileNotFoundError(f"Prompt file not found: {path}")
+    return path.read_text(encoding="utf-8").strip()
 
-    说明：此处只保留接口，不实现具体策略。
-    """
-    raise NotImplementedError("TODO: 在思考层接入具体提示词读取策略")
 
+def load_router_system_prompt() -> str:
+    """读取 Router 系统提示词。"""
+    if not INITIAL_SYSTEM_PROMPT.exists():
+        raise FileNotFoundError(f"Router prompt missing: {INITIAL_SYSTEM_PROMPT}")
+    return INITIAL_SYSTEM_PROMPT.read_text(encoding="utf-8").strip()
