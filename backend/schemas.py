@@ -10,7 +10,10 @@ ActionType = Literal["mine", "move_to", "pick_up", "craft", "interact", "unknown
 
 
 class RouterOutput(BaseModel):
-    """第一层（思考层）路由输出。"""
+    """
+    大脑的第一反应（意图识别结果）。
+    它决定了女仆是该陪主人聊天（chat），还是该挽起袖子去干活（task）。
+    """
 
     intent: IntentType = Field(description="意图分类结果")
     action: ActionType = Field(description="提取出的核心动作")
@@ -19,20 +22,29 @@ class RouterOutput(BaseModel):
 
 
 class TaskRouterOutput(BaseModel):
-    """离线 task-only 路由输出（兼容旧测试）。"""
+    """
+    （测试专用）简易的任务识别结果。
+    主要用于在没有完整 LLM 接入时的离线功能测试。
+    """
 
     action: Literal["mine"] = Field(description="核心动作")
     target: Literal["coal_ore"] = Field(description="动作目标")
 
 
 class PlannerOutput(BaseModel):
-    """第一层（思考层）任务规划输出。"""
+    """
+    任务拆解清单。
+    当主人下达复杂指令时，大脑会将大任务拆解成一串小任务，存放在这里。
+    """
 
     tasks: List[Dict[str, Any]] = Field(default_factory=list, description="拆解后的任务序列")
 
 
 class MaidState(TypedDict):
-    """第二层（编排层）状态定义。"""
+    """
+    女仆的“记忆与实时状态”。
+    这是整个大脑工作流的共享数据中心，记录了主人说了什么、大脑思考到了哪一步、任务队列排到了哪里，以及执行结果如何。
+    """
 
     user_input: str
     intent: Optional[IntentType]

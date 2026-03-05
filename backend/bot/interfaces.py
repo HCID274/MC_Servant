@@ -11,7 +11,10 @@ from enum import Enum
 # ============================================================================
 
 class ActionStatus(Enum):
-    """动作执行状态"""
+    """
+    动作的执行结局。
+    用来明确地告诉大脑：任务是成了、挂了、超时了，还是半路被人叫停了。
+    """
     SUCCESS = "success"
     PARTIAL = "partial"
     FAILED = "failed"
@@ -22,27 +25,9 @@ class ActionStatus(Enum):
 @dataclass
 class ActionResult:
     """
-    动作执行结果 - 统一的反馈结构
-    
-    所有动作都必须返回此结构，供 LLM 反思决策
-    
-    Attributes:
-        success: 是否成功
-        action: 执行的动作名
-        message: 人类可读的描述
-        status: 状态枚举
-        data: 返回数据 (格式由具体动作定义)
-        error_code: 错误码
-        duration_ms: 执行耗时
-        
-    Error Codes:
-        INVENTORY_FULL - 背包满了
-        TOOL_BROKEN - 工具损坏
-        TARGET_NOT_FOUND - 找不到目标
-        PATH_BLOCKED - 路径被阻挡
-        TIMEOUT - 超时
-        NO_TOOL - 没有合适工具
-        INSUFFICIENT_MATERIALS - 材料不足
+    动作的结案报告。
+    它不仅告诉大脑“做完没”，还会带回详细的反馈：花了多久、报错码是什么、捡到了多少东西。
+    大脑会根据这份报告来决定下一步是该欢呼还是该反思。
     """
     success: bool
     action: str
@@ -55,16 +40,9 @@ class ActionResult:
 
 class IBotActions(ABC):
     """
-    Bot 动作抽象接口 (Layer 2: Python Actions)
-    
-    设计原则：
-    - 简单的接口：方法参数使用语义化名称，不暴露坐标细节
-    - 深度的功能：内部封装寻路、工具选择、错误处理
-    - 依赖抽象：上层只依赖此接口，不依赖 Mineflayer 具体实现
-    
-    Target 格式约定：
-    - 坐标: "x,y,z" (如 "100,64,-200")
-    - 玩家: "@PlayerName" (如 "@HCID273")
+    机器人“高级技能”的标准规范。
+    这里定义了女仆应该会的所有复杂本领（如挖矿、合成、找坐标、砍树），但不关心具体怎么实现。
+    设计原则是“简单发令，深度执行”：大脑下一条简单的命令，具体怎么寻路、怎么选工具都由底层的实现类搞定。
     """
     
     @abstractmethod
@@ -377,12 +355,9 @@ class IBotActions(ABC):
 
 class IBotController(ABC):
     """
-    Bot 控制器抽象接口
-    
-    简单接口：jump, chat, get_position
-    深度功能：后续可扩展 move_to, attack, place_block 等
-    
-    依赖抽象：业务逻辑依赖此接口，不依赖具体实现
+    机器人的“基础遥控器”标准。
+    定义了连接游戏服务器、发消息、跳跃等最基本的操作规范。
+    它是所有机器人（不管是真的 Mineflayer 还是模拟的）都必须拥有的最底层操控力。
     """
     
     @property
@@ -452,9 +427,8 @@ class IBotController(ABC):
 
 class IBotManager(ABC):
     """
-    Bot 管理器抽象接口
-    
-    管理多个 Bot 实例
+    机器人的“宿管大妈”标准。
+    定义了如何批量管理机器人：怎么创建新的、怎么找到在线的，以及怎么把它们统一注销。
     """
     
     @abstractmethod

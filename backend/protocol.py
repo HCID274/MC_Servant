@@ -6,7 +6,10 @@ from pydantic import BaseModel, Field
 
 
 class MessageType(str, Enum):
-    """消息类型枚举"""
+    """
+    女仆与插件沟通的“暗号类型”。
+    定义了这条消息到底是主人的唠叨、女仆的回复、还是机器人的动作指令。
+    """
     
     # Java → Python
     PLAYER_MESSAGE = "player_message"   # 玩家发送的消息
@@ -27,7 +30,10 @@ class MessageType(str, Enum):
 
 
 class PlayerMessage(BaseModel):
-    """玩家消息 (Java → Python)"""
+    """
+    “主人的唠叨”消息包。
+    当玩家在游戏里说话时，插件会把话语、玩家是谁、甚至玩家在哪儿都打包发给女仆。
+    """
     type: MessageType = MessageType.PLAYER_MESSAGE
     player: Optional[str] = "Unknown"
     npc: Optional[str] = None
@@ -40,7 +46,10 @@ class PlayerMessage(BaseModel):
 
 
 class NpcResponse(BaseModel):
-    """NPC 回复 (Python → Java)"""
+    """
+    “女仆的回应”消息包。
+    女仆想好怎么回话后，会把要说的话、要显示在头顶的文字、甚至接下来想做的动作打包发回给游戏插件。
+    """
     type: MessageType = MessageType.NPC_RESPONSE
     npc: Optional[str] = "UnknownBot"
     target_player: Optional[str] = "Unknown"
@@ -51,7 +60,10 @@ class NpcResponse(BaseModel):
 
 
 class BotCommand(BaseModel):
-    """Bot 动作指令 (Python → Java or internal)"""
+    """
+    “机器人动作”指令包。
+    用来告诉游戏里的机器人该干嘛，比如跳一下、走两步。
+    """
     type: MessageType = MessageType.BOT_COMMAND
     npc: Optional[str] = "UnknownBot"
     command: Optional[str] = "idle"  # jump, chat, move_to, etc.
@@ -59,7 +71,10 @@ class BotCommand(BaseModel):
 
 
 class BotStatus(BaseModel):
-    """Bot 状态 (Python → Java)"""
+    """
+    “机器人近况”汇报包。
+    用来告诉游戏插件：机器人现在是闲着呢，还是在忙着挖矿，或者已经掉线了。
+    """
     type: MessageType = MessageType.BOT_STATUS
     npc: Optional[str] = "UnknownBot"
     status: Optional[str] = "idle"  # idle, busy, offline
@@ -67,22 +82,28 @@ class BotStatus(BaseModel):
 
 
 class Heartbeat(BaseModel):
-    """心跳消息"""
+    """
+    “我还活着”心跳包。
+    每隔一段时间发一次，证明女仆和插件之间的联系还没断。
+    """
     type: MessageType = MessageType.HEARTBEAT
     timestamp: Optional[int] = 0
 
 
 class ErrorMessage(BaseModel):
-    """错误消息"""
+    """
+    “出事了”报警包。
+    当程序运行出错时，专门用来传递错误代码和具体原因。
+    """
     type: MessageType = MessageType.ERROR
     code: str
     message: str
 
 
 class ServantCommandMessage(BaseModel):
-    """系统命令消息 (Java → Python)
-    
-    用于 claim/release/list 等管理命令
+    """
+    “管理员指令”消息包。
+    专门用来处理一些高级管理操作，比如主人想要“认领”或者“释放”某个女仆。
     """
     type: MessageType = MessageType.SERVANT_COMMAND
     player: Optional[str] = "Unknown"
@@ -93,9 +114,9 @@ class ServantCommandMessage(BaseModel):
 
 
 class HologramUpdate(BaseModel):
-    """全息更新消息 (Python → Java)
-    
-    主动推送 Bot 头顶全息状态变化
+    """
+    “头顶文字更新”包。
+    女仆想主动修改自己头顶上悬浮的文字（全息图）时，就发这个消息给插件。
     """
     type: MessageType = MessageType.HOLOGRAM_UPDATE
     npc: str
