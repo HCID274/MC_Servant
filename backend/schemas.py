@@ -9,6 +9,24 @@ IntentType = Literal["chat", "task"]
 ActionType = Literal["mine", "move_to", "pick_up", "craft", "interact", "unknown"]
 
 
+# ===== 语义目标定义 =====
+TargetVocabulary = Literal[
+    "master_front",   # 主人正前方
+    "master_side",    # 主人身旁
+    "master_eyes",    # 主人的眼睛（用于看向主人）
+    "self_feet"       # 自己的脚下
+]
+
+
+class ChatStep(BaseModel):
+    """
+    语义化的动作步骤。
+    大模型只需输出“去主人前面”，无需关心坐标。
+    """
+    action: Literal["move_to", "look_at", "animate", "speak"]
+    target: Union[TargetVocabulary, str]  # 如果是 speak，target 就是台词
+
+
 class RouterOutput(BaseModel):
     """
     大脑的第一反应（意图识别结果）。

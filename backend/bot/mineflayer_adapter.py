@@ -376,6 +376,90 @@ class MineflayerBot(IBotController):
             else:
                 logger.warning(f"Invalid target format: {target}")
     
+    async def navigate_relative(self, entity_name: str, offset_type: str, distance: float) -> bool:
+        """
+        基于实体的朝向进行“相对导航”。
+        核心逻辑：读取主人的 yaw 角度，通过三角函数实时计算目标 X, Z 坐标。
+        这样即使网络有延迟，计算出的也是那一瞬间主人前方的绝对位置。
+        """
+        if not self.is_connected:
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, lambda: self._do_navigate_relative(entity_name, offset_type, distance))
+        except Exception as e:
+            logger.error(f"Relative navigation failed: {e}")
+            return False
+
+    def _do_navigate_relative(self, entity_name: str, offset_type: str, distance: float) -> bool:
+        """执行相对位移（数学解算核心）"""
+        import math
+        
+        # 1. 查找目标实体 (目前暂定主人是 @master 或通过 username 匹配)
+        # 如果是 master，我们尝试通过 bot.players 获取
+        master_player = None
+        for name in self._bot.players:
+            if name.lower() != self._username.lower(): # 暂定非自己的就是主人
+                master_player = self._bot.players[name]
+                break
+        
+        if not master_player or not master_player.entity:
+            logger.warning("Target master entity not found for relative navigation")
+            return False
+
+        # 2. 获取主人的实时姿态 (弧度制)
+        yaw = master_player.entity.yaw
+        pos = master_player.entity.position
+
+        # 3. 核心计算：根据 yaw 和 偏移类型 确定方向
+        # MC 坐标系: yaw=0 指向 Z+ 方向
+        if offset_type == 'front':
+            # 正前方向量: dx = -sin(yaw), dz = -cos(yaw)
+            dx = -math.sin(yaw) * distance
+            dz = -math.cos(yaw) * distance
+        elif offset_type == 'side':
+            # 侧面向量 (相当于正前方转 90 度): dx = -cos(yaw), dz = sin(yaw)
+            dx = -math.cos(yaw) * distance
+            dz = math.sin(yaw) * distance
+        else:
+            return False
+
+        target_x = pos.x + dx
+        target_y = pos.y
+        target_z = pos.z + dz
+
+        logger.info(f"Calculated target: {offset_type} of master at ({target_x:.1f}, {target_z:.1f})")
+
+        # 4. 调用 Pathfinder
+        goal = self._pathfinder.goals.GoalNear(target_x, target_y, target_z, 0.5)
+        self._bot.pathfinder.setGoal(goal)
+        return True
+
+    async def look_at_eyes(self, entity_name: str, height_offset: float = 1.6) -> bool:
+        """
+        看向目标的眼睛位置。
+        """
+        if not self.is_connected:
+            return False
+        
+        try:
+            # 直接复用原有的 look_at 逻辑，但加入高度偏移
+            master_player = None
+            for name in self._bot.players:
+                if name.lower() != self._username.lower():
+                    master_player = self._bot.players[name]
+                    break
+            
+            if master_player and master_player.entity:
+                eye_pos = master_player.entity.position.offset(0, height_offset, 0)
+                self._bot.lookAt(eye_pos, True)
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Look at eyes failed: {e}")
+            return False
+
     async def get_position(self) -> Optional[Tuple[float, float, float]]:
         """获取当前位置"""
         if not self.is_connected:
