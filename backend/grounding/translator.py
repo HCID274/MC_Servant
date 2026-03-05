@@ -43,7 +43,7 @@ def translate_chat_step(step: Dict[str, Any]) -> Dict[str, Any]:
     elif action == "look_at":
         if target == "master_eyes":
             return {
-                "command": "look_at_entity",
+                "command": "look_at_eyes",
                 "entity": "master",
                 "height_offset": 1.6  # 玩家眼睛的大致高度 (Y轴偏移)
             }

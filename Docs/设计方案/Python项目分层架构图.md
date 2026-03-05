@@ -36,7 +36,34 @@ backend/
 │
 └──【测试与历史遗留区】 (游乐场/墓地)
     ├── tests/
-    │   └── test_graph_offline.py        [单元测试] 脱机验证 LangGraph 状态流转与队列逻辑
+    │   ├── test_graph_offline.py        [单元测试] 脱机验证 LangGraph 状态流转与队列逻辑
+    │   └── test_router_and_translator_regressions.py
+    │                                   [回归测试] 锁定 Router 提示词变量污染与翻译层命令映射一致性
     ├── test_ws_client.py                [联调脚本] WS 客户端模拟器 (手工发 JSON 看回包)
     ├── standalone_tag_test.py           [遗留脚本] 历史 Tag 逻辑独立测试代码 (待清理)
     └── quick_test_tag.py                [遗留脚本] 历史 Tag 逻辑集成快测代码 (待清理)
+
+
+---
+
+## 关键函数清单与层级职责（本次同步）
+
+### L1 第一层：思考层 (`backend/llm_agent/router.py`)
+- `_build_router_prompt_template()`
+  - 职责：构建 Router 的 LangChain 提示词模板。
+  - 约束：系统提示词以“纯文本消息”注入，避免 JSON 花括号被误解析为模板变量。
+- `invoke_task_router(user_input: str)`
+  - 职责：调用 LLM 执行 chat/task 意图识别，返回 `RouterOutput | TaskRouterOutput | None`。
+- `route_user_input(user_input: str)`
+  - 职责：兼容旧入口，统一返回 `RouterOutput`。
+
+### L3 第三层：翻译层 (`backend/grounding/translator.py`)
+- `translate_chat_step(step: Dict[str, Any])`
+  - 职责：将语义动作翻译为可执行命令。
+  - 当前映射：`look_at + master_eyes -> look_at_eyes`，与执行层接口保持一致。
+
+### 测试层 (`backend/tests/test_router_and_translator_regressions.py`)
+- `test_router_prompt_template_only_requires_input_variable()`
+  - 职责：防止 Router 模板出现非 `input` 的隐式变量依赖。
+- `test_translate_chat_step_maps_master_eyes_to_existing_command()`
+  - 职责：防止翻译层输出不存在的命令名，保障执行链命令一致性。

@@ -1,5 +1,6 @@
 from typing import Optional, Union
 
+from langchain_core.messages import SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
@@ -11,14 +12,24 @@ LLM_MODEL = "qwen3.5-2b"
 LLM_API_KEY = "EMPTY"
 
 
-def invoke_task_router(user_input: str) -> Optional[Union[RouterOutput, TaskRouterOutput]]:
-    """调用 LLM 执行意图路由。"""
-    prompt_template = ChatPromptTemplate.from_messages(
+def _build_router_prompt_template() -> ChatPromptTemplate:
+    """
+    构建 Router 提示词模板。
+
+    注意：系统提示词中包含 JSON 花括号，必须按“纯文本消息”注入，
+    避免被 ChatPromptTemplate 误判为模板变量。
+    """
+    return ChatPromptTemplate.from_messages(
         [
-            ("system", load_router_system_prompt()),
+            SystemMessage(content=load_router_system_prompt()),
             ("human", "{input}"),
         ]
     )
+
+
+def invoke_task_router(user_input: str) -> Optional[Union[RouterOutput, TaskRouterOutput]]:
+    """调用 LLM 执行意图路由。"""
+    prompt_template = _build_router_prompt_template()
 
     llm = ChatOpenAI(
         model=LLM_MODEL,
