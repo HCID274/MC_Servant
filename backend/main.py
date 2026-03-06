@@ -17,11 +17,11 @@ from typing import Optional
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 
-from application.bot_runtime import ensure_bot
-from application.context import AppRuntime
-from application.message_router import route_ws_message
-from application.response_sender import now_timestamp, send_error, send_init_config, send_request_sync
-from application.task_job_runner import process_task_job
+from application.core.bot_runtime import ensure_bot
+from application.core.context import AppRuntime
+from application.handlers.message_router import route_ws_message
+from application.core.response_sender import now_timestamp, send_error, send_init_config, send_request_sync
+from application.services.task_job_runner import process_task_job
 from bot.mineflayer_adapter import BotManager
 from config import settings
 from execution.task_queue import TaskQueueManager
@@ -221,3 +221,4 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
 if __name__ == "__main__":
     uvicorn.run(app, host=settings.ws_host, port=settings.ws_port)
+

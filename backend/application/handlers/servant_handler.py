@@ -1,8 +1,8 @@
 import json
 
-from application.bot_runtime import ensure_bot
-from application.context import AppRuntime
-from application.response_sender import (
+from application.core.bot_runtime import ensure_bot
+from application.core.context import AppRuntime
+from application.core.response_sender import (
     broadcast_init_config,
     send_error,
     send_hologram_update,
@@ -128,4 +128,5 @@ async def handle_servant_command(message: dict, client_id: str, runtime: AppRunt
         return
 
     await send_error(client_id, "unsupported_command", f"Unsupported command: {command}")
+
 

@@ -1,9 +1,9 @@
 import logging
 from typing import Any
 
-from application.bot_runtime import ensure_bot
-from application.context import AppRuntime
-from application.response_sender import broadcast_init_config, send_npc_response
+from application.core.bot_runtime import ensure_bot
+from application.core.context import AppRuntime
+from application.core.response_sender import broadcast_init_config, send_npc_response
 from execution.task_executor import execute_task_step
 from execution.task_queue import TaskJob
 
@@ -111,3 +111,4 @@ async def process_task_job(runtime: AppRuntime, bot_name: str, job: TaskJob) -> 
             action=response_action,
             hologram_text="✅",
         )
+

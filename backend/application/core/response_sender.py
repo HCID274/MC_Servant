@@ -5,7 +5,7 @@ from typing import Optional
 from protocol import MessageType, NpcResponse
 from websocket.connection_manager import manager
 
-from application.context import AppRuntime
+from application.core.context import AppRuntime
 
 
 def now_timestamp() -> int:
@@ -97,4 +97,5 @@ async def broadcast_init_config(runtime: AppRuntime) -> None:
 async def send_request_sync(client_id: str) -> None:
     payload = {"type": "request_sync", "timestamp": now_timestamp()}
     await manager.send_personal(json.dumps(payload, ensure_ascii=False), client_id)
+
 

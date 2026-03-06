@@ -1,7 +1,7 @@
 from typing import Optional
 
-from application.context import AppRuntime
-from application.response_sender import send_hologram_update
+from application.core.context import AppRuntime
+from application.core.response_sender import send_hologram_update
 
 
 def _is_known_bot_player(player_name: Optional[str], runtime: AppRuntime) -> bool:
@@ -53,4 +53,5 @@ async def handle_presence_message(message: dict, runtime: AppRuntime) -> None:
                     "💤 待命中",
                     identity_line=owner["name"] if owner else "",
                 )
+
 

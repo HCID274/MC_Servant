@@ -1,11 +1,11 @@
 import logging
 from typing import Any
 
-from application.bot_runtime import ensure_bot, resolve_bot_name
-from application.context import AppRuntime
-from application.graph_runner import extract_reply_text, run_graph_once
-from application.quick_command_parser import parse_quick_command
-from application.response_sender import broadcast_init_config, send_error, send_npc_response
+from application.core.bot_runtime import ensure_bot, resolve_bot_name
+from application.core.context import AppRuntime
+from application.services.graph_runner import extract_reply_text, run_graph_once
+from application.services.quick_command_parser import parse_quick_command
+from application.core.response_sender import broadcast_init_config, send_error, send_npc_response
 
 
 logger = logging.getLogger(__name__)
@@ -174,3 +174,4 @@ async def handle_player_message(message: dict, client_id: str, runtime: AppRunti
         action="ack",
         hologram_text="💤 待命中",
     )
+

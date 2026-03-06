@@ -3,11 +3,11 @@ import json
 from protocol import MessageType
 from websocket.connection_manager import manager
 
-from application.context import AppRuntime
-from application.player_handler import handle_player_message
-from application.presence_handler import handle_presence_message
-from application.response_sender import now_timestamp, send_error, send_hologram_update
-from application.servant_handler import handle_servant_command
+from application.core.context import AppRuntime
+from application.handlers.player_handler import handle_player_message
+from application.handlers.presence_handler import handle_presence_message
+from application.core.response_sender import now_timestamp, send_error, send_hologram_update
+from application.handlers.servant_handler import handle_servant_command
 from config import settings
 
 
@@ -38,4 +38,5 @@ async def route_ws_message(message: dict, client_id: str, runtime: AppRuntime) -
         return
 
     await send_error(client_id, "unsupported_message", f"Unsupported message type: {msg_type}")
+
 

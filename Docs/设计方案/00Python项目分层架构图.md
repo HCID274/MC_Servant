@@ -18,16 +18,19 @@ backend/
 │
 ├── [2] [application 层] (流程编排层)
 │   └── application/
-│       ├── message_router.py                <-- [2] 路由分发：识别消息类型 (MessageType)，分拨至对应处理器
-│       ├── player_handler.py                <-- [3] 玩家用例编排：只做消息编排与入队，不直接执行业务动作
-│       ├── quick_command_parser.py          [快捷指令解析] 将 hello/status/jump/say/look 解析为统一 steps
-│       ├── graph_runner.py                  [图执行用例] 封装 LangGraph 调用、超时与回复提取
-│       ├── task_job_runner.py               [任务消费编排] 消费队列任务并回传执行进度
-│       ├── context.py                       [上下文] AppRuntime 共享依赖容器
-│       ├── bot_runtime.py                   [Bot运行时] Bot 名称解析与按需拉起保障
-│       ├── response_sender.py               [统一回包] npc/error/hologram/init_config 响应封装
-│       ├── servant_handler.py               [管理命令] 处理 claim/release/list/status 等管理员操作
-│       └── presence_handler.py              [在线态同步] 处理 player_join/quit/login 等在线状态同步
+│       ├── handlers/
+│       │   ├── message_router.py            <-- [2] 路由分发：识别消息类型 (MessageType)，分拨至对应处理器
+│       │   ├── player_handler.py            <-- [3] 玩家用例编排：只做消息编排与入队，不直接执行业务动作
+│       │   ├── servant_handler.py           [管理命令] 处理 claim/release/list/status 等管理员操作
+│       │   └── presence_handler.py          [在线态同步] 处理 player_join/quit/login 等在线状态同步
+│       ├── services/
+│       │   ├── quick_command_parser.py      [快捷指令解析] 将 hello/status/jump/say/look 解析为统一 steps
+│       │   ├── graph_runner.py              [图执行用例] 封装 LangGraph 调用、超时与回复提取
+│       │   └── task_job_runner.py           [任务消费编排] 消费队列任务并回传执行进度
+│       └── core/
+│           ├── context.py                   [上下文] AppRuntime 共享依赖容器
+│           ├── bot_runtime.py               [Bot运行时] Bot 名称解析与按需拉起保障
+│           └── response_sender.py           [统一回包] npc/error/hologram/init_config 响应封装
 │
 ├── [3] [graph 层] (决策编排层)
 │   └── graph/
@@ -70,10 +73,10 @@ backend/
 1.  **[0] 入口层 (`main.py`)**: WebSocket 收到原始 JSON；`heartbeat` 直接快路径回包，不进入业务队列。
 2.  **[1] 会话调度 (`session_runtime.py`)**: 非心跳消息进入每个 `client_id` 的入站队列，由独立 dispatcher 异步消费。
 3.  **[2] 路由层 (`message_router.py`)**: 按消息类型分流到 player/servant/presence 处理器。
-4.  **[3] 应用编排 (`player_handler.py`)**: 快捷指令先由 `quick_command_parser.py` 转 step，复杂指令经 `graph_runner.py` 调用 LangGraph。
+4.  **[3] 应用编排 (`application/handlers/player_handler.py`)**: 快捷指令先由 `application/services/quick_command_parser.py` 转 step，复杂指令经 `application/services/graph_runner.py` 调用 LangGraph。
 5.  **[4] 决策层 (`graph/workflow.py`)**: LangGraph 运转并产出任务队列（或 chat 回复）。
 6.  **[5] 调度层 (`execution/task_queue.py`)**: 快捷动作与规划动作统一按 Bot 维度串行入队，防止同 Bot 并发冲突。
-7.  **[5] 任务消费 (`task_job_runner.py`)**: 队列消费者编排执行顺序并统一发送进度消息。
+7.  **[5] 任务消费 (`application/services/task_job_runner.py`)**: 队列消费者编排执行顺序并统一发送进度消息。
 8.  **[6] 翻译层 (`grounding/task_translator.py`)**: 执行前完成语义到参数的落地转换。
 9.  **[7] 执行层 (`bot/mineflayer_adapter.py`)**: Mineflayer 执行真实物理动作。
 
