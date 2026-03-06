@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
@@ -35,6 +36,7 @@ class MineflayerBot(IBotController):
         self._mineflayer = None
         self._pathfinder = None
         self._Vec3 = None
+        self._env_snapshot_helper = None
     
     @property
     def is_connected(self) -> bool:
@@ -75,6 +77,7 @@ class MineflayerBot(IBotController):
         self._mineflayer = self._require_node_module('mineflayer')
         self._pathfinder = self._require_node_module('mineflayer-pathfinder')
         self._Vec3 = self._require_node_module("vec3")
+        self._env_snapshot_helper = require(str(Path(__file__).resolve().with_name("env_snapshot.js")))
         
         # 创建 Bot
         self._bot = self._mineflayer.createBot({
@@ -465,6 +468,28 @@ class MineflayerBot(IBotController):
             "z": round(float(pos.z), 2),
         }
 
+    def _parse_snapshot_payload(self, payload: Any) -> dict[str, Any]:
+        """将 JS 侧返回的 JSON 文本解析为 Python 字典。"""
+        if payload is None:
+            return {}
+
+        if isinstance(payload, bytes):
+            text = payload.decode("utf-8", errors="ignore")
+        else:
+            text = str(payload)
+
+        text = text.strip()
+        if not text:
+            return {}
+
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            logger.debug("Parse environment snapshot payload failed for %s: %s", self._username, exc)
+            return {}
+
+        return parsed if isinstance(parsed, dict) else {}
+
     def _resolve_player_entity(self, player_name: Optional[str]) -> Any:
         """优先按指定玩家名查找实体，失败时回退为视野中的任意其他玩家。"""
         players = getattr(self._bot, "players", None)
@@ -585,6 +610,25 @@ class MineflayerBot(IBotController):
         """同步抓取世界状态，供异步包装方法在线程池中调用。"""
         if not self.is_connected or self._bot is None or getattr(self._bot, "entity", None) is None:
             return {}
+
+        helper = getattr(self._env_snapshot_helper, "getEnvironmentSnapshot", None)
+        if callable(helper):
+            try:
+                payload = helper(
+                    self._bot,
+                    {
+                        "playerName": player_name or "",
+                        "horizontalRadius": horizontal_radius,
+                        "verticalRadius": vertical_radius,
+                        "maxEntries": max_nearby_blocks,
+                        "findCount": max(max_nearby_blocks * 32, 256),
+                    },
+                )
+                parsed = self._parse_snapshot_payload(payload)
+                if parsed:
+                    return parsed
+            except Exception as exc:
+                logger.debug("JS environment snapshot failed for %s: %s", self._username, exc)
 
         bot_pos = self._position_to_dict(self._bot.entity.position)
         player_entity = self._resolve_player_entity(player_name)

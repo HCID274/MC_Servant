@@ -67,7 +67,7 @@ backend/
 │
 └── [8] [bot 层] (物理驱动层)
     └── bot/
-        ├── mineflayer_adapter.py            <-- [8] 物理躯干：Mineflayer 适配器，既执行 jump/chat/look 等动作，也提供环境快照只读采集能力
+        ├── mineflayer_adapter.py            <-- [8] 物理躯干：Mineflayer 适配器，既执行 jump/chat/look 等动作，也委托本地 JS 聚合环境快照
         ├── interfaces.py                    [能力契约] 定义 IBotController/Actions 等标准能力规范
         └── README.md                        [文档] 适配器使用说明
 ```
@@ -94,7 +94,7 @@ backend/
 - **[0->2] 收包/处理解耦**: `main.py` 只负责接收与心跳快回，业务处理下沉到 `session_runtime` dispatcher，降低头阻塞。
 - **[3->5] 节点可追溯**: LangGraph 原生 Checkpointer 为每次 run 保存节点状态快照，支持后续 `get_state_history()` 回放与恢复。
 - **[4->5] Prompt 可审计**: Router/Planner 不再只保留结构化结果，额外保存原始 Prompt、原始输出、解析结果和耗时。
-- **[7->8] 环境可感知**: `snapshot_builder` 不再只存空壳字段，而是通过 Mineflayer 适配器拉取背包、装备、生命饱食度和附近方块摘要，为任务规划提供真实上下文。
+- **[7->8] 环境可感知**: `snapshot_builder` 不再只存空壳字段，而是通过 Mineflayer 适配器调用本地 JS 聚合逻辑，一次性拉取背包、装备、生命饱食度和附近方块摘要，为任务规划提供真实上下文。
 - **[1] 会话背压可控**: 入站队列具备容量上限，队列满时主动降载，避免雪崩式堆积。
 - **[3->6] 高内聚编排**: `player_handler` 仅做用例路由，图调用、快捷解析、任务消费、留痕存储拆分到独立模块。
 - **[6->8] 执行隔离**: 快捷动作与任务动作统一入执行队列，同一个 Bot 严格串行，避免物理动作冲突。
