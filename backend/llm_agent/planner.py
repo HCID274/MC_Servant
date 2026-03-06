@@ -1,11 +1,15 @@
 import json
+import hashlib
+import time
 from typing import Any, Optional
 
 from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 
 from llm_agent.prompts import get_task_planner_prompt
+from llm_agent.structured_output import parse_model_output, stringify_message_content
 from schemas import TaskPlannerOutput
+from tracing.repository import TraceRepository
 
 LLM_BASE_URL = "http://127.0.0.1:8000/v1"
 LLM_MODEL = "qwen3.5-2b"
@@ -43,6 +47,41 @@ def _render_task_planner_prompt(
     return prompt
 
 
+def _record_planner_call(
+    *,
+    trace_repo: Optional[TraceRepository],
+    trace_ctx: Optional[dict[str, str]],
+    rendered_prompt: str,
+    raw_response_text: Optional[str],
+    parsed_output: Optional[dict[str, Any]],
+    parse_error: Optional[str],
+    latency_ms: int,
+    usage: Optional[dict[str, Any]] = None,
+) -> None:
+    if trace_repo is None or not trace_ctx:
+        return
+
+    request_messages = [{"type": "system", "content": rendered_prompt}]
+    trace_repo.record_llm_call(
+        run_id=trace_ctx.get("run_id", ""),
+        thread_id=trace_ctx.get("thread_id", ""),
+        node_name="task_planner",
+        call_seq=1,
+        prompt_name="node_task_planner.md",
+        model_name=LLM_MODEL,
+        base_url=LLM_BASE_URL,
+        request_messages=request_messages,
+        rendered_prompt_text=rendered_prompt,
+        prompt_sha256=hashlib.sha256(rendered_prompt.encode("utf-8")).hexdigest(),
+        raw_response_text=raw_response_text,
+        parsed_output=parsed_output,
+        parse_ok=parse_error is None and parsed_output is not None,
+        parse_error=parse_error,
+        usage=usage,
+        latency_ms=latency_ms,
+    )
+
+
 def invoke_task_planner(
     *,
     context: str,
@@ -53,6 +92,8 @@ def invoke_task_planner(
     player_pos: Any = None,
     bot_name: str = "Maid",
     master_name: str = "Master",
+    trace_repo: Optional[TraceRepository] = None,
+    trace_ctx: Optional[dict[str, str]] = None,
 ) -> Optional[TaskPlannerOutput]:
     """任务规划：将复杂指令拆解为一系列可在游戏中执行的原子动作。"""
     rendered_prompt = _render_task_planner_prompt(
@@ -74,9 +115,39 @@ def invoke_task_planner(
         max_retries=1,
     )
 
-    structured_llm = llm.with_structured_output(TaskPlannerOutput)
+    request_messages = [SystemMessage(content=rendered_prompt)]
+    started_at = time.perf_counter()
+    raw_response_text: Optional[str] = None
     try:
-        return structured_llm.invoke([SystemMessage(content=rendered_prompt)])
+        response = llm.invoke(request_messages)
+        raw_response_text = stringify_message_content(getattr(response, "content", ""))
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            usage = getattr(response, "response_metadata", {}).get("token_usage")
+        parsed_model, parsed_payload, _ = parse_model_output(TaskPlannerOutput, raw_response_text)
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        _record_planner_call(
+            trace_repo=trace_repo,
+            trace_ctx=trace_ctx,
+            rendered_prompt=rendered_prompt,
+            raw_response_text=raw_response_text,
+            parsed_output=parsed_payload,
+            parse_error=None,
+            latency_ms=latency_ms,
+            usage=usage,
+        )
+        return parsed_model
     except Exception as exc:
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        _record_planner_call(
+            trace_repo=trace_repo,
+            trace_ctx=trace_ctx,
+            rendered_prompt=rendered_prompt,
+            raw_response_text=raw_response_text,
+            parsed_output=None,
+            parse_error=str(exc),
+            latency_ms=latency_ms,
+            usage=None,
+        )
         print(f"[-] Task Planner 解析失败: {exc}")
         return None

@@ -24,6 +24,11 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"
+    trace_enabled: bool = True
+    trace_db_path: str = "runtime/agent_trace.sqlite"
+    checkpoint_db_path: str = "runtime/langgraph_checkpoints.sqlite"
+    workflow_version: str = "main_workflow_v1"
+    trace_interrupt_after: str = ""
 
     model_config = SettingsConfigDict(
         env_prefix="MC_SERVANT_",

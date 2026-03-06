@@ -12,10 +12,12 @@ import json
 import logging
 import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from application.core.bot_runtime import ensure_bot
 from application.core.context import AppRuntime
@@ -27,6 +29,7 @@ from config import settings
 from execution.task_queue import TaskQueueManager
 from graph.workflow import build_workflow
 from protocol import MessageType
+from tracing.repository import TraceRepository
 from websocket.connection_manager import manager
 from websocket.session_runtime import SessionRuntime
 
@@ -41,6 +44,17 @@ logger = logging.getLogger(__name__)
 runtime = AppRuntime(bot_username=settings.bot_username)
 ws_cleanup_task: Optional[asyncio.Task] = None
 session_runtime = SessionRuntime(inbound_queue_maxsize=settings.ws_inbound_queue_maxsize)
+
+
+def _resolve_runtime_path(raw_path: str) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return (Path(__file__).resolve().parent / path).resolve()
+
+
+def _parse_interrupt_nodes(raw_value: str) -> list[str]:
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
 
 
 @asynccontextmanager
@@ -70,6 +84,12 @@ async def lifespan(app: FastAPI):
         process_job=lambda bot_name, job: process_task_job(runtime, bot_name, job),
     )
 
+    if settings.trace_enabled:
+        trace_db_path = _resolve_runtime_path(settings.trace_db_path)
+        runtime.trace_repo = TraceRepository(str(trace_db_path))
+        runtime.trace_repo.open()
+        logger.info("Trace repository ready: %s", trace_db_path)
+
     # 预加载默认 Bot：尝试在启动时激活主女仆。
     spawned, _ = await ensure_bot(runtime.bot_manager, settings.bot_username)
     if spawned:
@@ -79,10 +99,25 @@ async def lifespan(app: FastAPI):
 
     # 装载大脑工作流：编译 LangGraph 状态机。
     try:
-        runtime.workflow_app = build_workflow()
+        interrupt_after = _parse_interrupt_nodes(settings.trace_interrupt_after)
+        if settings.trace_enabled:
+            checkpoint_db_path = _resolve_runtime_path(settings.checkpoint_db_path)
+            runtime.checkpointer_cm = AsyncSqliteSaver.from_conn_string(str(checkpoint_db_path))
+            runtime.checkpointer = await runtime.checkpointer_cm.__aenter__()
+            logger.info("LangGraph checkpointer ready: %s", checkpoint_db_path)
+
+        runtime.workflow_app = build_workflow(
+            checkpointer=runtime.checkpointer,
+            trace_repo=runtime.trace_repo,
+            interrupt_after=interrupt_after or None,
+        )
         logger.info("LangGraph workflow ready")
     except Exception as exc:
         # 容错处理：若 LLM 模块异常，则降级为纯指令模式。
+        if runtime.checkpointer_cm is not None:
+            await runtime.checkpointer_cm.__aexit__(None, None, None)
+            runtime.checkpointer_cm = None
+            runtime.checkpointer = None
         runtime.workflow_app = None
         logger.warning("LangGraph init failed, fallback to minimal mode: %s", exc)
 
@@ -118,9 +153,16 @@ async def lifespan(app: FastAPI):
         runtime.task_queue_manager = None
 
     runtime.workflow_app = None
+    if runtime.checkpointer_cm is not None:
+        await runtime.checkpointer_cm.__aexit__(None, None, None)
+        runtime.checkpointer_cm = None
+        runtime.checkpointer = None
     if runtime.bot_manager:
         await runtime.bot_manager.shutdown()
         runtime.bot_manager = None
+    if runtime.trace_repo:
+        runtime.trace_repo.close()
+        runtime.trace_repo = None
 
     runtime.bot_owners.clear()
     runtime.online_players.clear()

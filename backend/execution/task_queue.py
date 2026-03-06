@@ -8,6 +8,8 @@ from execution.task_worker import run_task_worker
 class TaskJob(TypedDict, total=False):
     client_id: str
     player: str
+    run_id: str
+    thread_id: str
     source: str
     response_action: str
     hologram_text: str

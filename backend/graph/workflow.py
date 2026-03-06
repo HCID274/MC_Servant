@@ -1,5 +1,6 @@
 import json
 import sys
+from typing import Any, Optional
 
 from langgraph.graph import END, START, StateGraph
 
@@ -8,6 +9,7 @@ from graph.knowledge_loader import load_knowledge_node
 from llm_agent.planner import invoke_task_planner
 from llm_agent.router import invoke_task_router
 from schemas import MaidState, TaskPlannerOutput, TaskRouterOutput
+from tracing.repository import TraceRepository
 
 
 def _invoke_task_router(user_input: str):
@@ -20,9 +22,14 @@ def _load_knowledge_node(state: MaidState):
     return load_knowledge_node(state)
 
 
-def _invoke_task_planner(state: MaidState):
+def _invoke_task_planner(
+    state: MaidState,
+    *,
+    trace_repo: Optional[TraceRepository] = None,
+):
     """便于测试 monkeypatch 的任务规划入口。"""
     env_snapshot = state.get("env_snapshot") or {}
+    trace_ctx = state.get("trace_ctx") or {}
     return invoke_task_planner(
         context=state.get("user_input", ""),
         active_knowledge=state.get("active_knowledge", "") or "",
@@ -32,15 +39,21 @@ def _invoke_task_planner(state: MaidState):
         player_pos=env_snapshot.get("player_pos", {}),
         bot_name=env_snapshot.get("bot_name", "Maid"),
         master_name=env_snapshot.get("master_name", "Master"),
+        trace_repo=trace_repo,
+        trace_ctx=trace_ctx,
     )
 
 
-def router_node(state: MaidState):
+def router_node(state: MaidState, *, trace_repo: Optional[TraceRepository] = None):
     """思考分流：分析用户意图，决定进入闲聊模式还是任务规划模式。"""
     user_input = state.get("user_input", "")
     print(f"[*] 正在分析主人指令: {user_input}")
 
-    routed = _invoke_task_router(user_input)
+    trace_ctx = state.get("trace_ctx") or {}
+    if trace_repo is None and not trace_ctx:
+        routed = _invoke_task_router(user_input)
+    else:
+        routed = invoke_task_router(user_input, trace_repo=trace_repo, trace_ctx=trace_ctx)
     if routed is None:
         return {"intent": "chat", "error_msg": "LLM_PARSE_ERROR"}
 
@@ -61,13 +74,13 @@ def knowledge_loader_node(state: MaidState):
     return loaded
 
 
-def task_planner_node(state: MaidState):
+def task_planner_node(state: MaidState, *, trace_repo: Optional[TraceRepository] = None):
     """任务拆解：结合环境快照与知识库，将宏观目标细化为具体的执行步骤。"""
     route = state.get("route")
     if route is None:
         return {}
 
-    planned = _invoke_task_planner(state)
+    planned = _invoke_task_planner(state, trace_repo=trace_repo)
     if isinstance(planned, TaskPlannerOutput) and planned.plan:
         tasks = [step.model_dump() for step in planned.plan]
         print(f"[*] Task Planner 产出 {len(tasks)} 个子任务")
@@ -93,19 +106,29 @@ def enqueue_task_node(state: MaidState):
     return {}
 
 
-def build_workflow():
+def build_workflow(
+    *,
+    checkpointer: Any = None,
+    trace_repo: Optional[TraceRepository] = None,
+    interrupt_before: Optional[list[str]] = None,
+    interrupt_after: Optional[list[str]] = None,
+):
     """架构定义：构建并编译女仆的大脑决策状态机（LangGraph）。"""
     graph = StateGraph(MaidState)
-    graph.add_node("router", router_node)
+    graph.add_node("router", lambda state: router_node(state, trace_repo=trace_repo))
     graph.add_node("knowledge_loader", knowledge_loader_node)
-    graph.add_node("task_planner", task_planner_node)
+    graph.add_node("task_planner", lambda state: task_planner_node(state, trace_repo=trace_repo))
     graph.add_node("enqueue_task", enqueue_task_node)
     graph.add_edge(START, "router")
     graph.add_conditional_edges("router", router_branch, {"knowledge_loader": "knowledge_loader", END: END})
     graph.add_edge("knowledge_loader", "task_planner")
     graph.add_edge("task_planner", "enqueue_task")
     graph.add_edge("enqueue_task", END)
-    return graph.compile()
+    return graph.compile(
+        checkpointer=checkpointer,
+        interrupt_before=interrupt_before,
+        interrupt_after=interrupt_after,
+    )
 
 
 def build_graph():

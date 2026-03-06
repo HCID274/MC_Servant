@@ -44,6 +44,7 @@ Desktop.ini
 # ===== Logs =====
 *.log
 logs/
+backend/runtime/
 
 # ===== Environment =====
 .env

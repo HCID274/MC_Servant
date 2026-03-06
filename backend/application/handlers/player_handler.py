@@ -63,15 +63,20 @@ async def _try_handle_with_graph(
 ) -> bool:
     result = await run_graph_once(
         message=message,
+        client_id=client_id,
         bot=bot,
         bot_name=bot_name,
         player=player,
         content=content,
         workflow_app=runtime.workflow_app,
+        trace_repo=runtime.trace_repo,
     )
     if result is None:
         return False
 
+    trace_ctx = result.get("trace_ctx") or {}
+    run_id = str(trace_ctx.get("run_id") or "")
+    thread_id = str(trace_ctx.get("thread_id") or "")
     intent = result.get("intent")
     if intent == "chat":
         reply_text = extract_reply_text(result.get("route")) or "我在呢主人喵~"
@@ -83,6 +88,14 @@ async def _try_handle_with_graph(
             action="chat",
             hologram_text="💬",
         )
+        if runtime.trace_repo and run_id:
+            runtime.trace_repo.record_event(
+                run_id=run_id,
+                thread_id=thread_id,
+                stage="output",
+                event_name="npc_response_sent",
+                payload={"action": "chat", "content": reply_text},
+            )
         return True
 
     if intent == "task":
@@ -96,10 +109,26 @@ async def _try_handle_with_graph(
                 action="task_plan",
                 hologram_text="🤔",
             )
+            if runtime.trace_repo and run_id:
+                runtime.trace_repo.record_event(
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    stage="output",
+                    event_name="npc_response_sent",
+                    payload={"action": "task_plan", "content": "任务我听懂了，但暂时还没规划出步骤喵。"},
+                )
             return True
 
         if runtime.task_queue_manager is None:
             await send_error(client_id, "queue_unavailable", "task queue is unavailable")
+            if runtime.trace_repo and run_id:
+                runtime.trace_repo.record_event(
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    stage="error",
+                    event_name="queue_unavailable",
+                    payload={"message": "task queue is unavailable"},
+                )
             return True
 
         first_action, first_target = _first_step_info(task_queue)
@@ -112,10 +141,20 @@ async def _try_handle_with_graph(
                 "response_action": "task_exec",
                 "hologram_text": "⚙️",
                 "steps": task_queue,
+                "run_id": run_id,
+                "thread_id": thread_id,
             },
         )
 
         logger.info("Planned task_queue for %s: %s", bot_name, task_queue)
+        if runtime.trace_repo and run_id:
+            runtime.trace_repo.record_event(
+                run_id=run_id,
+                thread_id=thread_id,
+                stage="task_queue",
+                event_name="task_enqueued",
+                payload={"queue_pos": queue_pos, "steps": task_queue},
+            )
         await send_npc_response(
             client_id,
             bot_name,
@@ -124,6 +163,17 @@ async def _try_handle_with_graph(
             action="task_plan",
             hologram_text="📥",
         )
+        if runtime.trace_repo and run_id:
+            runtime.trace_repo.record_event(
+                run_id=run_id,
+                thread_id=thread_id,
+                stage="output",
+                event_name="npc_response_sent",
+                payload={
+                    "action": "task_plan",
+                    "content": f"任务已接收，共规划 {len(task_queue)} 步，首步 {first_action}->{first_target}，已入队 #{queue_pos} 喵。",
+                },
+            )
         return True
 
     logger.warning("Graph returned unknown intent: %s", intent)

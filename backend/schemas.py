@@ -117,6 +117,7 @@ class MaidState(TypedDict):
     active_knowledge: Optional[str]
     current_task: Optional[Dict[str, Any]]
     env_snapshot: Optional[Dict[str, Any]]
+    trace_ctx: Optional[Dict[str, str]]
     execution_result: Optional[Dict[str, Any]]
     fail_count: int
     error_msg: Optional[str]

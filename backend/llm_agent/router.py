@@ -1,11 +1,14 @@
+import hashlib
+import time
 from typing import Optional, Union
 
-from langchain_core.messages import SystemMessage
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from llm_agent.prompts import get_knowledge_index_prompt, load_router_system_prompt
+from llm_agent.structured_output import parse_model_output, stringify_message_content
 from schemas import RouterOutput, TaskRouterOutput
+from tracing.repository import TraceRepository
 
 LLM_BASE_URL = "http://127.0.0.1:8000/v1"
 LLM_MODEL = "qwen3.5-2b"
@@ -21,24 +24,60 @@ def _build_router_system_prompt() -> str:
     return f"{base_prompt}\n\n# 可用知识库索引\n{index_text}"
 
 
-def _build_router_prompt_template() -> ChatPromptTemplate:
-    """
-    构建 Router 提示词模板。
+def _build_router_messages(user_input: str) -> tuple[str, list[SystemMessage | HumanMessage]]:
+    system_prompt = _build_router_system_prompt()
+    return system_prompt, [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_input),
+    ]
 
-    注意：系统提示词中包含 JSON 花括号，必须按“纯文本消息”注入，
-    避免被 ChatPromptTemplate 误判为模板变量。
-    """
-    return ChatPromptTemplate.from_messages(
-        [
-            SystemMessage(content=_build_router_system_prompt()),
-            ("human", "{input}"),
-        ]
+
+def _record_router_call(
+    *,
+    trace_repo: Optional[TraceRepository],
+    trace_ctx: Optional[dict[str, str]],
+    request_messages: list[SystemMessage | HumanMessage],
+    rendered_prompt_text: str,
+    raw_response_text: Optional[str],
+    parsed_output: Optional[dict],
+    parse_error: Optional[str],
+    latency_ms: int,
+    usage: Optional[dict] = None,
+) -> None:
+    if trace_repo is None or not trace_ctx:
+        return
+
+    trace_repo.record_llm_call(
+        run_id=trace_ctx.get("run_id", ""),
+        thread_id=trace_ctx.get("thread_id", ""),
+        node_name="router",
+        call_seq=1,
+        prompt_name="intent_router.md",
+        model_name=LLM_MODEL,
+        base_url=LLM_BASE_URL,
+        request_messages=[
+            {"type": message.type, "content": stringify_message_content(message.content)}
+            for message in request_messages
+        ],
+        rendered_prompt_text=rendered_prompt_text,
+        prompt_sha256=hashlib.sha256(rendered_prompt_text.encode("utf-8")).hexdigest(),
+        raw_response_text=raw_response_text,
+        parsed_output=parsed_output,
+        parse_ok=parse_error is None and parsed_output is not None,
+        parse_error=parse_error,
+        usage=usage,
+        latency_ms=latency_ms,
     )
 
 
-def invoke_task_router(user_input: str) -> Optional[Union[RouterOutput, TaskRouterOutput]]:
+def invoke_task_router(
+    user_input: str,
+    *,
+    trace_repo: Optional[TraceRepository] = None,
+    trace_ctx: Optional[dict[str, str]] = None,
+) -> Optional[Union[RouterOutput, TaskRouterOutput]]:
     """意图决策：调用 LLM 识别主人的核心意图是闲聊还是任务。"""
-    prompt_template = _build_router_prompt_template()
+    rendered_prompt_text, request_messages = _build_router_messages(user_input)
 
     llm = ChatOpenAI(
         model=LLM_MODEL,
@@ -48,12 +87,41 @@ def invoke_task_router(user_input: str) -> Optional[Union[RouterOutput, TaskRout
         max_retries=1,
     )
 
-    structured_llm = llm.with_structured_output(RouterOutput)
-    chain = prompt_template | structured_llm
-
+    started_at = time.perf_counter()
+    raw_response_text: Optional[str] = None
     try:
-        return chain.invoke({"input": user_input})
+        response = llm.invoke(request_messages)
+        raw_response_text = stringify_message_content(getattr(response, "content", ""))
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            usage = getattr(response, "response_metadata", {}).get("token_usage")
+        parsed_model, parsed_payload, _ = parse_model_output(RouterOutput, raw_response_text)
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        _record_router_call(
+            trace_repo=trace_repo,
+            trace_ctx=trace_ctx,
+            request_messages=request_messages,
+            rendered_prompt_text=rendered_prompt_text,
+            raw_response_text=raw_response_text,
+            parsed_output=parsed_payload,
+            parse_error=None,
+            latency_ms=latency_ms,
+            usage=usage,
+        )
+        return parsed_model
     except Exception as e:
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        _record_router_call(
+            trace_repo=trace_repo,
+            trace_ctx=trace_ctx,
+            request_messages=request_messages,
+            rendered_prompt_text=rendered_prompt_text,
+            raw_response_text=raw_response_text,
+            parsed_output=None,
+            parse_error=str(e),
+            latency_ms=latency_ms,
+            usage=None,
+        )
         print(f"[-] LLM 解析失败: {e}")
         return None
 
