@@ -4,12 +4,21 @@ from langchain_core.messages import SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
-from llm_agent.prompts import load_router_system_prompt
+from llm_agent.prompts import get_knowledge_index_prompt, load_router_system_prompt
 from schemas import RouterOutput, TaskRouterOutput
 
 LLM_BASE_URL = "http://127.0.0.1:8000/v1"
 LLM_MODEL = "qwen3.5-2b"
 LLM_API_KEY = "EMPTY"
+KNOWLEDGE_INDEX_PLACEHOLDER = "__KNOWLEDGE_INDEX__"
+
+
+def _build_router_system_prompt() -> str:
+    base_prompt = load_router_system_prompt()
+    index_text = get_knowledge_index_prompt()
+    if KNOWLEDGE_INDEX_PLACEHOLDER in base_prompt:
+        return base_prompt.replace(KNOWLEDGE_INDEX_PLACEHOLDER, index_text)
+    return f"{base_prompt}\n\n# 可用知识库索引\n{index_text}"
 
 
 def _build_router_prompt_template() -> ChatPromptTemplate:
@@ -21,7 +30,7 @@ def _build_router_prompt_template() -> ChatPromptTemplate:
     """
     return ChatPromptTemplate.from_messages(
         [
-            SystemMessage(content=load_router_system_prompt()),
+            SystemMessage(content=_build_router_system_prompt()),
             ("human", "{input}"),
         ]
     )
@@ -55,5 +64,11 @@ def route_user_input(user_input: str) -> RouterOutput:
     if result is None:
         raise RuntimeError("Router invoke failed")
     if isinstance(result, TaskRouterOutput):
-        return RouterOutput(intent="task", action=result.action, target=result.target, reply_text=None)
+        return RouterOutput(
+            intent="task",
+            action=result.action,
+            target=result.target,
+            required_knowledge=result.required_knowledge,
+            reply_text=None,
+        )
     return result

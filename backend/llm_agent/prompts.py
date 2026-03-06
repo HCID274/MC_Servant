@@ -2,7 +2,8 @@ from pathlib import Path
 
 
 # 提示词目录约定：统一放在 backend/llm_agent/prompts 下
-PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+PROMPTS_DIR = (Path(__file__).resolve().parent / "prompts").resolve()
+KNOWLEDGE_DIR = (PROMPTS_DIR / "knowledge").resolve()
 
 
 def _load_prompt(filename: str) -> str:
@@ -10,6 +11,15 @@ def _load_prompt(filename: str) -> str:
     path = PROMPTS_DIR / filename
     if not path.exists():
         raise FileNotFoundError(f"Prompt file missing: {path}")
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _load_knowledge_file(filename: str) -> str:
+    path = (KNOWLEDGE_DIR / filename).resolve()
+    if KNOWLEDGE_DIR not in path.parents:
+        raise ValueError(f"Invalid knowledge path: {filename}")
+    if not path.exists():
+        raise FileNotFoundError(f"Knowledge file missing: {path}")
     return path.read_text(encoding="utf-8").strip()
 
 
@@ -26,6 +36,11 @@ def get_chat_planner_prompt() -> str:
 def get_task_planner_prompt() -> str:
     """第二层：任务规划 (Node Task Planner)"""
     return _load_prompt("node_task_planner.md")
+
+
+def get_knowledge_index_prompt() -> str:
+    """知识库索引（供 Intent Router 决定 required_knowledge）"""
+    return _load_knowledge_file("index.json")
 
 
 # 兼容旧代码调用
