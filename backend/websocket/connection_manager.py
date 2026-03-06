@@ -1,5 +1,6 @@
 # WebSocket Connection Manager
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Dict, Set
 import time
@@ -79,13 +80,21 @@ class ConnectionManager(IConnectionManager):
     
     async def broadcast(self, message: str) -> None:
         """广播消息到所有客户端"""
-        for client_id, websocket in list(self._connections.items()):
-            try:
-                await websocket.send_text(message)
-                # Note: Do NOT update _last_seen here.
-            except Exception as e:
-                logger.error(f"Failed to send to {client_id}: {e}")
-                await self._close_connection(client_id, code=1011, reason="Broadcast send failed")
+        pairs = list(self._connections.items())
+        if not pairs:
+            return
+        await asyncio.gather(
+            *(self._broadcast_one(client_id, websocket, message) for client_id, websocket in pairs),
+            return_exceptions=True,
+        )
+
+    async def _broadcast_one(self, client_id: str, websocket: WebSocket, message: str) -> None:
+        try:
+            await websocket.send_text(message)
+            # Note: Do NOT update _last_seen here.
+        except Exception as e:
+            logger.error(f"Failed to send to {client_id}: {e}")
+            await self._close_connection(client_id, code=1011, reason="Broadcast send failed")
 
     def touch(self, client_id: str) -> None:
         """更新客户端最后活动时间"""

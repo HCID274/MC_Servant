@@ -5,7 +5,7 @@
 - 默认只执行用户明确要求的最小改动；任何额外实现必须先提问并获得确认。
 - 若需求存在歧义，先澄清再改代码。
 - 未经用户明确要求，禁止新增测试文件；默认仅保留/提供测试命令，由用户自行执行调试。
-- 每次新增或修改 `backend` 下的 Python 代码文件后，必须同步更新 `Docs/设计方案/Python项目分层架构图.md`（目录树、函数清单、层级归属与职责说明）。
+- 每次新增或修改 `backend` 下的 Python 代码文件后，必须同步更新 `Docs/设计方案/00Python项目分层架构图.md`（目录树、函数清单、层级归属与职责说明）。
 
 ## Project Structure & Module Organization
 - `backend/`: Python FastAPI + WebSocket backend, task engine, state machine, LLM integration, persistence, and tests.

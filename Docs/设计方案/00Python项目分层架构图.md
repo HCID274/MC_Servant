@@ -14,6 +14,7 @@ backend/
 ├── [1] [websocket 层] (通信基础设施)
 │   └── websocket/
 │       └── connection_manager.py            <-- [1] 通信中转：维护长连接，处理原始数据的收发与超时清理
+│       └── session_runtime.py               [会话调度] 解耦“收包循环”和“业务处理循环”，为每个 client 建立入站队列
 │
 ├── [2] [application 层] (流程编排层)
 │   └── application/
@@ -63,19 +64,20 @@ backend/
 
 ## 指令执行生命周期 (Execution Lifecycle)
 
-1.  **[0] 入口层 (`main.py`)**: 系统接通 WebSocket 信号，原始 JSON 数据流入。
-2.  **[1] 通信层 (`connection_manager.py`)**: 管理器 `touch` 活跃连接，确保链路可用，并将数据传给路由。
-3.  **[2] 路由层 (`message_router.py`)**: 判定这是否为一条玩家对话 (`PLAYER_MESSAGE`)，并丢给处理器。
-4.  **[3] 逻辑层 (`player_handler.py`)**: 启动 `_try_handle_with_graph`，准备向大模型寻求决策建议。
-5.  **[4] 决策层 (`graph/workflow.py`)**: LangGraph 引擎运转，驱动 **[认知层]** 思考出任务清单。
-6.  **[5] 调度层 (`execution/task_queue.py`)**: 规划好的任务序列被存入对应 Bot 的专属队列，等待 Worker 轮询。
-7.  **[6] 翻译层 (`grounding/task_translator.py`)**: 执行前，将清单中的语义（如 `master_front`）即时计算为物理动作包。
-8.  **[7] 执行层 (`bot/mineflayer_adapter.py`)**: 驱动 Mineflayer 躯干在 Minecraft 服务器中完成跳跃、移动或挖掘。
+1.  **[0] 入口层 (`main.py`)**: WebSocket 收到原始 JSON；`heartbeat` 直接快路径回包，不进入业务队列。
+2.  **[1] 会话调度 (`session_runtime.py`)**: 非心跳消息进入每个 `client_id` 的入站队列，由独立 dispatcher 异步消费。
+3.  **[2] 路由层 (`message_router.py`)**: 按消息类型分流到 player/servant/presence 处理器。
+4.  **[3] 逻辑层 (`player_handler.py`)**: 处理快捷指令或调用 `_try_handle_with_graph`。
+5.  **[4] 决策层 (`graph/workflow.py`)**: LangGraph 运转并产出任务队列（或 chat 回复）。
+6.  **[5] 调度层 (`execution/task_queue.py`)**: 任务序列按 Bot 维度串行入队，防止同 Bot 并发冲突。
+7.  **[6] 翻译层 (`grounding/task_translator.py`)**: 执行前完成语义到参数的落地转换。
+8.  **[7] 执行层 (`bot/mineflayer_adapter.py`)**: Mineflayer 执行真实物理动作。
 
 ---
 
 ## 重构后的核心价值
 
-- **[0->2] 通信解耦**: 保证了无论底层 WS 怎么变，业务逻辑层 (`application`) 永远接收的是结构化后的消息。
+- **[0->2] 收包/处理解耦**: `main.py` 只负责接收与心跳快回，业务处理下沉到 `session_runtime` dispatcher，降低头阻塞。
 - **[3->4] 思考异步**: 决策过程在独立线程运行，不阻塞 WebSocket 的高并发心跳处理。
-- **[5->7] 执行隔离**: 同一个 Bot 的多个动作被压入队列串行执行，彻底解决了“一边走一边挖”导致的物理引擎冲突问题。
+- **[1] 会话背压可控**: 入站队列具备容量上限，队列满时主动降载，避免雪崩式堆积。
+- **[5->7] 执行隔离**: 同一个 Bot 的多个动作被压入队列串行执行，避免物理动作冲突。

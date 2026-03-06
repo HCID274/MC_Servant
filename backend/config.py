@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     ws_port: int = 8765
     ws_access_token: str = ""
     ws_heartbeat_timeout_seconds: int = 60
+    ws_inbound_queue_maxsize: int = 128
 
     # Minecraft server
     mc_host: str = "127.0.0.1"

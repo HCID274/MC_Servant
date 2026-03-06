@@ -21,12 +21,14 @@ from application.bot_runtime import ensure_bot
 from application.context import AppRuntime
 from application.message_router import route_ws_message
 from application.player_handler import process_task_job
-from application.response_sender import send_error, send_init_config, send_request_sync
+from application.response_sender import now_timestamp, send_error, send_init_config, send_request_sync
 from bot.mineflayer_adapter import BotManager
 from config import settings
 from execution.task_queue import TaskQueueManager
 from graph.workflow import build_workflow
+from protocol import MessageType
 from websocket.connection_manager import manager
+from websocket.session_runtime import SessionRuntime
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -38,6 +40,7 @@ logger = logging.getLogger(__name__)
 # 系统全局上下文：管理 Bot 运行实例、任务队列及决策流状态。
 runtime = AppRuntime(bot_username=settings.bot_username)
 ws_cleanup_task: Optional[asyncio.Task] = None
+session_runtime = SessionRuntime(inbound_queue_maxsize=settings.ws_inbound_queue_maxsize)
 
 
 @asynccontextmanager
@@ -108,6 +111,8 @@ async def lifespan(app: FastAPI):
             pass
         ws_cleanup_task = None
 
+    await session_runtime.shutdown()
+
     if runtime.task_queue_manager:
         await runtime.task_queue_manager.shutdown()
         runtime.task_queue_manager = None
@@ -177,6 +182,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     await send_init_config(client_id, runtime)
     await send_request_sync(client_id)
     manager.touch(client_id)
+    await session_runtime.start_client(
+        client_id,
+        handler=lambda message: route_ws_message(message, client_id, runtime),
+    )
 
     try:
         while True:
@@ -189,15 +198,26 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 await send_error(client_id, "invalid_json", "Invalid JSON payload")
                 continue
 
-            await route_ws_message(message, client_id, runtime)
+            if message.get("type") == MessageType.HEARTBEAT.value:
+                heartbeat = {"type": MessageType.HEARTBEAT.value, "timestamp": now_timestamp()}
+                await manager.send_personal(json.dumps(heartbeat), client_id)
+                continue
+
+            queued = await session_runtime.submit_message(client_id, message)
+            if not queued:
+                await send_error(
+                    client_id,
+                    "queue_overflow",
+                    "Server is busy, message dropped. Please retry shortly.",
+                )
     except WebSocketDisconnect:
         logger.info("Client disconnected: %s", client_id)
     except Exception as exc:
         logger.error("WebSocket error for %s: %s", client_id, exc)
     finally:
+        await session_runtime.stop_client(client_id)
         await manager.disconnect(client_id)
 
 
 if __name__ == "__main__":
     uvicorn.run(app, host=settings.ws_host, port=settings.ws_port)
-
