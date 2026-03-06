@@ -20,8 +20,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocke
 from application.bot_runtime import ensure_bot
 from application.context import AppRuntime
 from application.message_router import route_ws_message
-from application.player_handler import process_task_job
 from application.response_sender import now_timestamp, send_error, send_init_config, send_request_sync
+from application.task_job_runner import process_task_job
 from bot.mineflayer_adapter import BotManager
 from config import settings
 from execution.task_queue import TaskQueueManager

@@ -5,9 +5,13 @@ from typing import Any, Awaitable, Callable, Dict, TypedDict
 from execution.task_worker import run_task_worker
 
 
-class TaskJob(TypedDict):
+class TaskJob(TypedDict, total=False):
     client_id: str
     player: str
+    source: str
+    response_action: str
+    hologram_text: str
+    steps: list[dict[str, Any]]
     tasks: list[dict[str, Any]]
 
 
@@ -57,4 +61,3 @@ class TaskQueueManager:
             await asyncio.gather(*self._workers.values(), return_exceptions=True)
         self._workers.clear()
         self._queues.clear()
-
