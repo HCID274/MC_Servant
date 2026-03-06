@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 bot_manager: Optional[BotManager] = None
 ws_cleanup_task: Optional[asyncio.Task] = None
 workflow_app: Optional[Any] = None
+bot_task_queues: Dict[str, asyncio.Queue[dict]] = {}
+bot_task_workers: Dict[str, asyncio.Task] = {}
 
 # 内存状态机：记录 Bot 的归属权与玩家在线情况。
 bot_owners: Dict[str, Dict[str, str]] = {}
@@ -219,6 +221,149 @@ async def _invoke_workflow_with_timeout(
         logger.warning("LangGraph invoke failed: %s", exc)
         return None
 
+def _get_or_create_task_queue(bot_name: str) -> asyncio.Queue[dict]:
+    queue = bot_task_queues.get(bot_name)
+    if queue is None:
+        queue = asyncio.Queue()
+        bot_task_queues[bot_name] = queue
+    return queue
+
+def _ensure_task_worker(bot_name: str) -> None:
+    worker = bot_task_workers.get(bot_name)
+    if worker is not None and not worker.done():
+        return
+
+    queue = _get_or_create_task_queue(bot_name)
+    bot_task_workers[bot_name] = asyncio.create_task(
+        _task_worker_loop(bot_name, queue),
+        name=f"task-worker-{bot_name}",
+    )
+
+async def _enqueue_task_job(
+      *,
+      bot_name: str,
+      client_id: str,
+      player: str,
+      tasks: list[dict],
+  ) -> int:
+      queue = _get_or_create_task_queue(bot_name)
+      pending_before = queue.qsize()
+      await queue.put(
+          {
+              "client_id": client_id,
+              "player": player,
+              "tasks": tasks,
+          }
+      )
+      return pending_before + 1
+
+
+async def _execute_task_step(bot: object, action: str, target: str) -> Tuple[bool, str]:
+    action = (action or "").strip().lower()
+    target = (target or "").strip()
+
+    if action == "speak":
+        if not target:
+            return False, "speak 缺少台词"
+        ok = await bot.chat(target)
+        return (True, f"speak: {target}") if ok else (False, "speak 发送失败")
+
+    if action == "move_to":
+        if target == "master_front":
+            ok = await bot.navigate_relative("master", "front", 2.0)
+            return (True, "已移动到主人前方") if ok else (False, "移动到主人前方失败")
+        if target == "master_side":
+            ok = await bot.navigate_relative("master", "side", 1.5)
+            return (True, "已移动到主人身旁") if ok else (False, "移动到主人身旁失败")
+        return False, f"move_to 目标暂不支持: {target}"
+
+    # 第二阶段先把“显式任务队列”跑通，动作能力后续再逐个接入
+    if action in {"mine", "pick_up", "craft", "place"}:
+        return False, f"动作 {action} 暂未接入执行层（target={target}）"
+
+    return False, f"未知动作: {action}"
+
+
+async def _task_worker_loop(bot_name: str, queue: asyncio.Queue[dict]) -> None:
+    while True:
+        try:
+            job = await queue.get()
+        except asyncio.CancelledError:
+            return
+
+        try:
+            client_id = str(job.get("client_id") or "")
+            player = str(job.get("player") or "Unknown")
+            tasks = job.get("tasks") or []
+
+            bot, _ = await _ensure_bot(bot_name)
+            if not bot:
+                if client_id:
+                    await _send_npc_response(
+                        client_id,
+                        bot_name,
+                        player,
+                        "Bot 不可用，任务终止喵。",
+                        action="task_exec",
+                        hologram_text="❌",
+                    )
+                continue
+
+            total = len(tasks)
+            for idx, step in enumerate(tasks, start=1):
+                action = str((step or {}).get("action") or "").strip()
+                target = str((step or {}).get("target") or "").strip()
+
+                if not action:
+                    if client_id:
+                        await _send_npc_response(
+                            client_id,
+                            bot_name,
+                            player,
+                            f"[{idx}/{total}] 任务步骤缺少 action，已中断喵。",
+                            action="task_exec",
+                            hologram_text="⚠️",
+                        )
+                    break
+
+                ok, msg = await _execute_task_step(bot, action, target)
+                if not ok:
+                    if client_id:
+                        await _send_npc_response(
+                            client_id,
+                            bot_name,
+                            player,
+                            f"[{idx}/{total}] {msg}",
+                            action="task_exec",
+                            hologram_text="⚠️",
+                        )
+                    break
+
+                if client_id:
+                    await _send_npc_response(
+                        client_id,
+                        bot_name,
+                        player,
+                        f"[{idx}/{total}] {msg}",
+                        action="task_exec",
+                        hologram_text="⚙️",
+                    )
+            else:
+                if client_id:
+                    await _send_npc_response(
+                        client_id,
+                        bot_name,
+                        player,
+                        "任务执行完成喵。",
+                        action="task_exec",
+                        hologram_text="✅",
+                    )
+
+        except Exception as exc:
+            logger.exception("Task worker error (%s): %s", bot_name, exc)
+        finally:
+            queue.task_done()
+
 async def _try_handle_with_graph(
     message: dict,
     client_id: str,
@@ -242,7 +387,12 @@ async def _try_handle_with_graph(
     intent = result.get("intent")
     if intent == "chat":
         route = result.get("route")
-        reply_text = getattr(route, "reply_text", None) or "我在呢主人喵~"
+        if isinstance(route, dict):
+            reply_text = route.get("reply_text")
+        else:
+            reply_text = getattr(route, "reply_text", None)
+        reply_text = reply_text or "我在呢主人喵~"
+
         await _send_npc_response(
             client_id,
             bot_name,
@@ -269,22 +419,29 @@ async def _try_handle_with_graph(
         first = task_queue[0] if isinstance(task_queue[0], dict) else {}
         first_action = first.get("action", "unknown")
         first_target = first.get("target", "none")
-        text = f"任务已接收，共规划 {len(task_queue)} 步，先执行 {first_action} -> {first_target} 喵。"
+
+        _ensure_task_worker(bot_name)
+        queue_pos = await _enqueue_task_job(
+            bot_name=bot_name,
+            client_id=client_id,
+            player=player,
+            tasks=task_queue,
+        )
 
         logger.info("Planned task_queue for %s: %s", bot_name, task_queue)
         await _send_npc_response(
             client_id,
             bot_name,
             player,
-            text,
+            f"任务已接收，共规划 {len(task_queue)} 步，首步
+{first_action}->{first_target}，已入队 #{queue_pos} 喵。",
             action="task_plan",
-            hologram_text="📋",
+            hologram_text="📥",
         )
         return True
 
     logger.warning("Graph returned unknown intent: %s", intent)
     return False
-
 
 async def _handle_player_message(message: dict, client_id: str) -> None:
     player = message.get("player") or "Unknown"
@@ -562,6 +719,12 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         ws_cleanup_task = None
+        for worker in bot_task_workers.values():
+            worker.cancel()
+        if bot_task_workers:
+            await asyncio.gather(*bot_task_workers.values(), return_exceptions=True)
+        bot_task_workers.clear()
+        bot_task_queues.clear()
 
     workflow_app = None
     if bot_manager:
