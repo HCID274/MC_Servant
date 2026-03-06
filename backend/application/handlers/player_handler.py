@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def _first_step_info(steps: list[dict[str, Any]]) -> tuple[str, str]:
+    """信息提取器：从任务序列中获取第一步的动作与目标，用于向玩家展示进度。"""
     if not steps:
         return "unknown", "none"
     first = steps[0] if isinstance(steps[0], dict) else {}
@@ -25,6 +26,7 @@ async def _enqueue_quick_job(
     player: str,
     quick_job: dict,
 ) -> bool:
+    """快捷任务入队：将预定义的简单指令（如跳跃、说话）直接压入异步执行队列。"""
     if runtime.task_queue_manager is None:
         await send_error(client_id, "queue_unavailable", "task queue is unavailable")
         return True
@@ -40,6 +42,7 @@ async def _enqueue_quick_job(
             "steps": quick_job.get("steps", []),
         },
     )
+    # 反馈机制：若前面有任务在排队，告知玩家。
     if queue_pos > 1:
         await send_npc_response(
             client_id,
@@ -61,6 +64,7 @@ async def _try_handle_with_graph(
     content: str,
     runtime: AppRuntime,
 ) -> bool:
+    """大脑决策入口：调用 LangGraph Runner 开启深度思考逻辑。"""
     result = await run_graph_once(
         message=message,
         client_id=client_id,

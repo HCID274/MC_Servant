@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def _pick_steps(job: TaskJob) -> list[dict[str, Any]]:
+    """步骤提取器：从 Job 负载中智能识别并解压任务步骤序列。"""
     steps = job.get("steps")
     if isinstance(steps, list):
         return steps

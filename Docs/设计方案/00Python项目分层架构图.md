@@ -60,14 +60,14 @@ backend/
 ├── [7] [grounding 层] (语义对齐层)
 │   └── grounding/
 │       ├── task_translator.py               <-- [7] 语义映射：将 LLM 的“模糊目标”转换为执行层的“精确参数”
-│       ├── snapshot_builder.py              [环境快照] 为决策层构建实时的 3D 坐标与背包环境数据，并作为 run 输入快照持久化
+│       ├── snapshot_builder.py              [环境快照] 聚合 Mineflayer 的 bot/玩家坐标、背包、装备、生命饱食度与附近方块摘要，并作为 run 输入快照持久化
 │       ├── cluster_selector.py              [定位算法] 处理 mine 等动作所需的 BFS 聚类与最近目标选择
 │       ├── translator.py                    [兼容模块] 既有聊天动作的语义映射实现
 │       └── env_client.py                    [环境接口] 预留用于查询游戏世界方块数据的客户端接口
 │
 └── [8] [bot 层] (物理驱动层)
     └── bot/
-        ├── mineflayer_adapter.py            <-- [8] 物理躯干：Mineflayer 适配器，真正执行 jump/chat/look 等动作
+        ├── mineflayer_adapter.py            <-- [8] 物理躯干：Mineflayer 适配器，既执行 jump/chat/look 等动作，也提供环境快照只读采集能力
         ├── interfaces.py                    [能力契约] 定义 IBotController/Actions 等标准能力规范
         └── README.md                        [文档] 适配器使用说明
 ```
@@ -85,7 +85,7 @@ backend/
 7.  **[6] 调度层 (`execution/task_queue.py`)**: 快捷动作与规划动作统一按 Bot 维度串行入队，防止同 Bot 并发冲突。
 8.  **[6] 任务消费 (`application/services/task_job_runner.py`)**: 队列消费者编排执行顺序并统一发送进度消息，同时记录 task_step 级执行事件。
 9.  **[7] 翻译层 (`grounding/task_translator.py`)**: 执行前完成语义到参数的落地转换。
-10. **[8] 执行层 (`bot/mineflayer_adapter.py`)**: Mineflayer 执行真实物理动作。
+10. **[8] 执行层 (`bot/mineflayer_adapter.py`)**: Mineflayer 执行真实物理动作，并从游戏世界抓取规划所需的环境状态。
 
 ---
 
@@ -94,6 +94,7 @@ backend/
 - **[0->2] 收包/处理解耦**: `main.py` 只负责接收与心跳快回，业务处理下沉到 `session_runtime` dispatcher，降低头阻塞。
 - **[3->5] 节点可追溯**: LangGraph 原生 Checkpointer 为每次 run 保存节点状态快照，支持后续 `get_state_history()` 回放与恢复。
 - **[4->5] Prompt 可审计**: Router/Planner 不再只保留结构化结果，额外保存原始 Prompt、原始输出、解析结果和耗时。
+- **[7->8] 环境可感知**: `snapshot_builder` 不再只存空壳字段，而是通过 Mineflayer 适配器拉取背包、装备、生命饱食度和附近方块摘要，为任务规划提供真实上下文。
 - **[1] 会话背压可控**: 入站队列具备容量上限，队列满时主动降载，避免雪崩式堆积。
 - **[3->6] 高内聚编排**: `player_handler` 仅做用例路由，图调用、快捷解析、任务消费、留痕存储拆分到独立模块。
 - **[6->8] 执行隔离**: 快捷动作与任务动作统一入执行队列，同一个 Bot 严格串行，避免物理动作冲突。

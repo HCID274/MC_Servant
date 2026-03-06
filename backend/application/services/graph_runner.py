@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def _build_trace_ctx(client_id: str, bot_name: str, player: str) -> dict[str, str]:
+    """追踪上下文构建：为单次请求生成唯一的运行标识符。"""
     run_id = uuid.uuid4().hex
     return {
         "run_id": run_id,
@@ -24,6 +25,7 @@ def _build_trace_ctx(client_id: str, bot_name: str, player: str) -> dict[str, st
 
 
 def _build_graph_config(trace_ctx: dict[str, str]) -> dict[str, dict[str, str]]:
+    """图配置生成：构造 LangGraph 需要的持久化线程与命名空间参数。"""
     return {
         "configurable": {
             "thread_id": trace_ctx["thread_id"],
@@ -38,19 +40,16 @@ async def _invoke_workflow_with_timeout(
     config: dict[str, Any],
     timeout_seconds: float = 20.0,
 ) -> tuple[Optional[dict], Optional[str]]:
-    """异步执行保障：优先走 ainvoke，以兼容 AsyncSqliteSaver。"""
+    """异步执行引擎：优先调用 ainvoke 接口，确保与异步持久化层的兼容性。"""
     if workflow_app is None:
         return None, "workflow_unavailable"
 
     try:
-        ainvoke = getattr(workflow_app, "ainvoke", None)
-        if callable(ainvoke):
-            result = await asyncio.wait_for(ainvoke(state, config=config), timeout=timeout_seconds)
-        else:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(workflow_app.invoke, state, config),
-                timeout=timeout_seconds,
-            )
+        # 直接调用原生异步执行！优雅，高效！
+        result = await asyncio.wait_for(
+            workflow_app.ainvoke(state, config=config), 
+            timeout=timeout_seconds
+        )
         return result, None
     except asyncio.TimeoutError:
         logger.warning("LangGraph invoke timeout after %.1fs", timeout_seconds)
@@ -66,6 +65,7 @@ async def _call_state_api(
     sync_name: str,
     config: dict[str, Any],
 ) -> Any:
+    """动态 API 调用器：封装对 LangGraph 状态查询接口的同步/异步适配逻辑。"""
     async_method = getattr(workflow_app, async_name, None)
     if callable(async_method):
         result = async_method(config)
@@ -80,11 +80,13 @@ async def _call_state_api(
 
 
 async def _count_state_history(workflow_app: Any, config: dict[str, Any]) -> int:
+    """历史版本计数：统计当前对话线程产生的检查点总数。"""
     history = await _call_state_api(workflow_app, "aget_state_history", "get_state_history", config)
     if history is None:
         return 0
 
     count = 0
+    # 异步迭代兼容：处理流式或集合式的历史数据。
     if hasattr(history, "__aiter__"):
         async for _ in history:
             count += 1
@@ -96,6 +98,7 @@ async def _count_state_history(workflow_app: Any, config: dict[str, Any]) -> int
 
 
 def _extract_checkpoint_id(snapshot: Any) -> Optional[str]:
+    """标识符提取：从状态快照中挖掘持久化记录的唯一 ID。"""
     if snapshot is None:
         return None
 
@@ -109,6 +112,7 @@ def _extract_checkpoint_id(snapshot: Any) -> Optional[str]:
         configurable = container.get("configurable", container)
         if not isinstance(configurable, dict):
             continue
+        # 字段嗅探：尝试获取不同版本 LangGraph 使用的 ID 字段。
         for key in ("checkpoint_id", "thread_ts"):
             value = configurable.get(key)
             if value:
@@ -124,6 +128,7 @@ def _record_event(
     event_name: str,
     payload: Optional[dict[str, Any]] = None,
 ) -> None:
+    """追踪打点：记录一次决策流程中的细粒度逻辑事件。"""
     if trace_repo is None:
         return
     trace_repo.record_event(
@@ -136,7 +141,7 @@ def _record_event(
 
 
 def extract_reply_text(route: Any) -> Optional[str]:
-    """属性提取器：适配不同模型输出格式，提取可读回复文本。"""
+    """台词提取器：适配不同模型输出结构，剥离用于语音播报的纯文本。"""
     if route is None:
         return None
     if isinstance(route, dict):
@@ -154,11 +159,13 @@ async def run_graph_once(
     workflow_app: Any,
     trace_repo: Optional[TraceRepository] = None,
 ) -> Optional[dict]:
-    """图执行用例：构建环境快照、登记 run，并执行一次 Router->Planner 链路。"""
+    """单次图执行用例：串联感知、思考、追踪，完成一次全链路决策请求。"""
+    # 感知层：获取当前物理坐标。
     env_snapshot = await build_env_snapshot(message, bot_name, player, bot)
     trace_ctx = _build_trace_ctx(client_id, bot_name, player)
     config = _build_graph_config(trace_ctx)
 
+    # 链路追踪初始化：登记一次新的 Run。
     if trace_repo is not None:
         trace_repo.record_run_started(
             run_id=trace_ctx["run_id"],
@@ -181,6 +188,7 @@ async def run_graph_once(
             payload={"content": content},
         )
 
+    # 驱动决策流。
     state = {
         "user_input": content,
         "task_queue": [],
@@ -191,6 +199,7 @@ async def run_graph_once(
 
     result, error = await _invoke_workflow_with_timeout(workflow_app, state, config)
     if result is None:
+        # 异常链路记录：登记失败原因。
         status = "timed_out" if error == "timeout" else "failed"
         error_code = "graph_timeout" if error == "timeout" else "graph_failed"
         _record_event(
@@ -209,12 +218,14 @@ async def run_graph_once(
             )
         return None
 
+    # 后置审计：提取生成的快照与检查点计数。
     snapshot = await _call_state_api(workflow_app, "aget_state", "get_state", config)
     latest_checkpoint_id = _extract_checkpoint_id(snapshot)
     checkpoint_count = await _count_state_history(workflow_app, config)
     status = "interrupted" if "__interrupt__" in result else "completed"
     reply_text = extract_reply_text(result.get("route")) if result.get("intent") == "chat" else None
 
+    # 完成打点：记录生成的任务量与状态。
     _record_event(
         trace_repo,
         trace_ctx,

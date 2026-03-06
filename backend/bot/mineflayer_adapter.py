@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import Tuple, Optional, Dict
+from typing import Any, Optional, Dict, Tuple
 
 # javascript 模块用于在 Python 中调用 Node.js 模块
 from javascript import require, On
@@ -456,6 +456,192 @@ class MineflayerBot(IBotController):
         except Exception as e:
             logger.error(f"Look at eyes failed: {e}")
             return False
+
+    def _position_to_dict(self, pos: Any) -> dict[str, float]:
+        """将 Mineflayer 的 Vec3 坐标转换为普通字典，便于序列化与日志落盘。"""
+        return {
+            "x": round(float(pos.x), 2),
+            "y": round(float(pos.y), 2),
+            "z": round(float(pos.z), 2),
+        }
+
+    def _resolve_player_entity(self, player_name: Optional[str]) -> Any:
+        """优先按指定玩家名查找实体，失败时回退为视野中的任意其他玩家。"""
+        players = getattr(self._bot, "players", None)
+        if not players:
+            return None
+
+        candidate_names: list[str] = []
+        if player_name:
+            candidate_names.append(str(player_name))
+        for name in players:
+            if str(name).lower() == self._username.lower():
+                continue
+            if str(name) not in candidate_names:
+                candidate_names.append(str(name))
+
+        for name in candidate_names:
+            player = players.get(name)
+            entity = getattr(player, "entity", None) if player else None
+            if entity is not None:
+                return entity
+        return None
+
+    def _extract_inventory_counts(self) -> dict[str, int]:
+        """汇总背包中每种物品的数量，供规划层判断材料是否已具备。"""
+        inventory = getattr(self._bot, "inventory", None)
+        if inventory is None or not hasattr(inventory, "items"):
+            return {}
+
+        counts: dict[str, int] = {}
+        try:
+            for item in inventory.items():
+                name = str(getattr(item, "name", "") or "").strip()
+                if not name:
+                    continue
+                count = int(getattr(item, "count", 0) or 0)
+                counts[name] = counts.get(name, 0) + count
+        except Exception as exc:
+            logger.debug("Inventory snapshot failed for %s: %s", self._username, exc)
+            return {}
+        return dict(sorted(counts.items()))
+
+    def _extract_held_item(self) -> Optional[str]:
+        """读取主手当前装备，方便判断 bot 是否已拿起工具。"""
+        held_item = getattr(self._bot, "heldItem", None)
+        if held_item is None:
+            return None
+        name = str(getattr(held_item, "name", "") or "").strip()
+        return name or None
+
+    def _scan_nearby_blocks(
+        self,
+        *,
+        center_pos: Any,
+        horizontal_radius: int,
+        vertical_radius: int,
+        max_entries: int,
+    ) -> list[dict[str, Any]]:
+        """扫描 bot 周围方块并按方块名聚合，避免把整片区块原样塞进 Prompt。"""
+        center = self._position_to_dict(center_pos)
+        base_x = int(round(center_pos.x))
+        base_y = int(round(center_pos.y))
+        base_z = int(round(center_pos.z))
+
+        summary: dict[str, dict[str, Any]] = {}
+        air_names = {"air", "cave_air", "void_air"}
+
+        for x in range(base_x - horizontal_radius, base_x + horizontal_radius + 1):
+            for y in range(base_y - vertical_radius, base_y + vertical_radius + 1):
+                for z in range(base_z - horizontal_radius, base_z + horizontal_radius + 1):
+                    try:
+                        block = self._bot.blockAt(self._Vec3(x, y, z))
+                    except Exception:
+                        continue
+                    if block is None:
+                        continue
+
+                    name = str(getattr(block, "name", "") or "").strip()
+                    if not name or name in air_names:
+                        continue
+
+                    block_pos = getattr(block, "position", None)
+                    if block_pos is None:
+                        continue
+
+                    dx = float(block_pos.x) - center["x"]
+                    dy = float(block_pos.y) - center["y"]
+                    dz = float(block_pos.z) - center["z"]
+                    distance = round((dx * dx + dy * dy + dz * dz) ** 0.5, 2)
+
+                    item = summary.get(name)
+                    if item is None:
+                        summary[name] = {
+                            "name": name,
+                            "count": 1,
+                            "nearest": self._position_to_dict(block_pos),
+                            "distance": distance,
+                        }
+                        continue
+
+                    item["count"] += 1
+                    if distance < item["distance"]:
+                        item["distance"] = distance
+                        item["nearest"] = self._position_to_dict(block_pos)
+
+        ranked = sorted(
+            summary.values(),
+            key=lambda item: (float(item.get("distance", 9999.0)), -int(item.get("count", 0)), str(item.get("name", ""))),
+        )
+        return ranked[:max_entries]
+
+    def _collect_environment_snapshot(
+        self,
+        player_name: Optional[str],
+        horizontal_radius: int,
+        vertical_radius: int,
+        max_nearby_blocks: int,
+    ) -> dict[str, Any]:
+        """同步抓取世界状态，供异步包装方法在线程池中调用。"""
+        if not self.is_connected or self._bot is None or getattr(self._bot, "entity", None) is None:
+            return {}
+
+        bot_pos = self._position_to_dict(self._bot.entity.position)
+        player_entity = self._resolve_player_entity(player_name)
+        player_pos = self._position_to_dict(player_entity.position) if player_entity is not None else {}
+
+        health = getattr(self._bot, "health", None)
+        food = getattr(self._bot, "food", None)
+
+        return {
+            "bot_pos": bot_pos,
+            "player_pos": player_pos,
+            "inventory": self._extract_inventory_counts(),
+            "nearby_blocks": self._scan_nearby_blocks(
+                center_pos=self._bot.entity.position,
+                horizontal_radius=horizontal_radius,
+                vertical_radius=vertical_radius,
+                max_entries=max_nearby_blocks,
+            ),
+            "equipped": self._extract_held_item(),
+            "health": round(float(health), 2) if health is not None else None,
+            "food": int(food) if food is not None else None,
+        }
+
+    async def get_environment_snapshot(
+        self,
+        player_name: Optional[str] = None,
+        horizontal_radius: int = 6,
+        vertical_radius: int = 2,
+        max_nearby_blocks: int = 20,
+    ) -> dict[str, Any]:
+        """
+        获取用于规划与留痕的最小环境快照。
+
+        包含：
+        - bot / 玩家坐标
+        - 背包汇总
+        - 主手装备
+        - 生命 / 饱食度
+        - 周边方块聚合摘要
+        """
+        if not self.is_connected:
+            return {}
+
+        loop = asyncio.get_event_loop()
+        try:
+            return await loop.run_in_executor(
+                None,
+                lambda: self._collect_environment_snapshot(
+                    player_name,
+                    horizontal_radius,
+                    vertical_radius,
+                    max_nearby_blocks,
+                ),
+            )
+        except Exception as exc:
+            logger.debug("Get environment snapshot failed for %s: %s", self._username, exc)
+            return {}
 
     async def get_position(self) -> Optional[Tuple[float, float, float]]:
         """获取当前位置"""

@@ -5,6 +5,7 @@ from application.core.response_sender import send_hologram_update
 
 
 def _is_known_bot_player(player_name: Optional[str], runtime: AppRuntime) -> bool:
+    """身份辨识器：判断某个玩家名是否属于系统当前正在运行的 Bot 实例。"""
     if not player_name:
         return False
 
@@ -18,6 +19,7 @@ def _is_known_bot_player(player_name: Optional[str], runtime: AppRuntime) -> boo
 
 
 async def handle_presence_message(message: dict, runtime: AppRuntime) -> None:
+    """状态同步处理器：处理玩家/Bot 的进入、退出及全量列表同步请求。"""
     msg_type = message.get("type")
     player = message.get("player")
     player_uuid = message.get("player_uuid")

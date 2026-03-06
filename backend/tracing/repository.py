@@ -7,24 +7,27 @@ from typing import Any, Optional
 
 
 def _now_ms() -> int:
+    """时间戳工具：获取当前毫秒级时间戳，用于精确计算延迟。"""
     return int(time.time() * 1000)
 
 
 def _json_text(value: Any) -> Optional[str]:
+    """序列化工具：将字典对象安全地转换为 JSON 字符串，并处理 None 值。"""
     if value is None:
         return None
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 class TraceRepository:
-    """运行留痕仓储：将 run/llm/event 审计信息写入本地 SQLite。"""
+    """运行留痕仓储：将 run/llm/event 审计信息写入本地 SQLite，实现全链路可追溯。"""
 
     def __init__(self, db_path: str):
         self._db_path = Path(db_path)
         self._conn: Optional[sqlite3.Connection] = None
-        self._lock = threading.RLock()
+        self._lock = threading.RLock() # 数据库写操作排他锁
 
     def open(self) -> None:
+        """数据库开启：初始化 SQLite 连接并配置 WAL 模式以提升并发性能。"""
         if self._conn is not None:
             return
 
@@ -37,6 +40,7 @@ class TraceRepository:
         self._initialize_schema()
 
     def close(self) -> None:
+        """资源回收：安全关闭数据库连接。"""
         with self._lock:
             if self._conn is None:
                 return
@@ -44,10 +48,12 @@ class TraceRepository:
             self._conn = None
 
     def _initialize_schema(self) -> None:
+        """表结构定义：创建 agent_run (请求主表)、llm_call (模型日志) 及 run_event (逻辑打点) 表。"""
         conn = self._require_conn()
         with self._lock:
             conn.executescript(
                 """
+                -- 记录一次完整的指令请求
                 CREATE TABLE IF NOT EXISTS agent_run (
                     run_id TEXT PRIMARY KEY,
                     thread_id TEXT NOT NULL UNIQUE,
@@ -76,6 +82,7 @@ class TraceRepository:
                 CREATE INDEX IF NOT EXISTS idx_agent_run_status_started
                 ON agent_run(status, started_at DESC);
 
+                -- 记录大模型调用明细
                 CREATE TABLE IF NOT EXISTS llm_call (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id TEXT NOT NULL,
@@ -102,6 +109,7 @@ class TraceRepository:
                 CREATE INDEX IF NOT EXISTS idx_llm_call_run_seq
                 ON llm_call(run_id, call_seq);
 
+                -- 记录细粒度的逻辑执行点
                 CREATE TABLE IF NOT EXISTS run_event (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id TEXT NOT NULL,
@@ -122,6 +130,7 @@ class TraceRepository:
             conn.commit()
 
     def _require_conn(self) -> sqlite3.Connection:
+        """连接完整性检查：确保在执行 SQL 前数据库已开启。"""
         if self._conn is None:
             raise RuntimeError("TraceRepository is not opened")
         return self._conn
@@ -141,6 +150,7 @@ class TraceRepository:
         env_snapshot: Optional[dict[str, Any]],
         workflow_version: Optional[str],
     ) -> None:
+        """请求登记：在指令进入大脑前，初始化一条运行记录。"""
         conn = self._require_conn()
         started_at = _now_ms()
         with self._lock:
@@ -200,6 +210,7 @@ class TraceRepository:
         usage: Optional[dict[str, Any]],
         latency_ms: Optional[int],
     ) -> None:
+        """模型日志：持久化一次具体的 LLM 调用及其解析结果。"""
         conn = self._require_conn()
         with self._lock:
             conn.execute(
@@ -257,6 +268,7 @@ class TraceRepository:
         node_name: Optional[str] = None,
         step_index: Optional[int] = None,
     ) -> None:
+        """逻辑打点：记录执行过程中的里程碑事件（如：任务入队、任务完成）。"""
         conn = self._require_conn()
         with self._lock:
             conn.execute(
@@ -297,6 +309,7 @@ class TraceRepository:
         latest_checkpoint_id: Optional[str] = None,
         checkpoint_count: Optional[int] = None,
     ) -> None:
+        """运行更新：在流程结束或异常时，更新状态、耗时及产生的输出。"""
         conn = self._require_conn()
         finished_at = _now_ms()
 

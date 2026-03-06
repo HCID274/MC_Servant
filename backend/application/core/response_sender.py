@@ -9,10 +9,12 @@ from application.core.context import AppRuntime
 
 
 def now_timestamp() -> int:
+    """时间戳工具：获取当前 UNIX 时间，用于消息同步。"""
     return int(time.time())
 
 
 def split_segments(text: str, max_len: int = 18) -> list[str]:
+    """文本分段器：将长句拆分为符合游戏全息图宽度的短段。"""
     text = (text or "").strip()
     if not text:
         return []
@@ -20,6 +22,7 @@ def split_segments(text: str, max_len: int = 18) -> list[str]:
 
 
 async def send_error(client_id: str, code: str, message: str) -> None:
+    """错误反馈：向指定客户端发送标准错误响应包。"""
     payload = {"type": MessageType.ERROR.value, "code": code, "message": message}
     await manager.send_personal(json.dumps(payload, ensure_ascii=False), client_id)
 
@@ -32,6 +35,7 @@ async def send_npc_response(
     action: str = "chat",
     hologram_text: Optional[str] = None,
 ) -> None:
+    """全息响应发送：封装女仆台词并推送至游戏插件显示。"""
     response = NpcResponse(
         npc=npc,
         target_player=target_player,
@@ -49,6 +53,7 @@ async def send_hologram_update(
     identity_line: Optional[str] = None,
     client_id: Optional[str] = None,
 ) -> None:
+    """全息图更新：主动修改女仆头顶悬浮的文字内容。"""
     payload = {
         "type": MessageType.HOLOGRAM_UPDATE.value,
         "npc": npc,
@@ -63,6 +68,7 @@ async def send_hologram_update(
 
 
 def build_init_config_payload(runtime: AppRuntime) -> dict:
+    """配置生成器：构造系统初始化的同步数据包，包含 Bot 列表与所有权。"""
     bot_names = runtime.bot_manager.list_bots() if runtime.bot_manager else []
     if runtime.bot_username and runtime.bot_username not in bot_names:
         bot_names.append(runtime.bot_username)
@@ -85,16 +91,19 @@ def build_init_config_payload(runtime: AppRuntime) -> dict:
 
 
 async def send_init_config(client_id: str, runtime: AppRuntime) -> None:
+    """初始化同步：向新连接的客户端推送全量系统配置。"""
     payload = build_init_config_payload(runtime)
     await manager.send_personal(json.dumps(payload, ensure_ascii=False), client_id)
 
 
 async def broadcast_init_config(runtime: AppRuntime) -> None:
+    """全局广播配置：当系统状态（如 Bot 增减）变更时通知所有客户端。"""
     payload = build_init_config_payload(runtime)
     await manager.broadcast(json.dumps(payload, ensure_ascii=False))
 
 
 async def send_request_sync(client_id: str) -> None:
+    """数据同步请求：主动要求插件同步当前的在线玩家与状态。"""
     payload = {"type": "request_sync", "timestamp": now_timestamp()}
     await manager.send_personal(json.dumps(payload, ensure_ascii=False), client_id)
 
