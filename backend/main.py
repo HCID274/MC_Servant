@@ -5,7 +5,6 @@ Minimal backend baseline:
 - WebSocket auth and routing
 - Java plugin protocol compatibility
 - Basic Mineflayer bot actions
-- No database / no LLM / no state machine
 """
 
 import asyncio
@@ -14,8 +13,8 @@ import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
-from typing import Dict, Optional, Tuple
-
+from typing import Any, Dict, Optional, Tuple
+from graph.workflow import build_workflow
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 
@@ -31,19 +30,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 全局管理器：持有 Bot 实例、WS 连接以及决策流引擎。
 bot_manager: Optional[BotManager] = None
 ws_cleanup_task: Optional[asyncio.Task] = None
+workflow_app: Optional[Any] = None
 
-# In-memory ownership and presence state (reset on restart by design)
+# 内存状态机：记录 Bot 的归属权与玩家在线情况。
 bot_owners: Dict[str, Dict[str, str]] = {}
 online_players: Dict[str, Dict[str, str]] = {}
 
 
 def _now() -> int:
+    """获取当前 UNIX 时间戳。"""
     return int(time.time())
 
 
 def _split_segments(text: str, max_len: int = 18) -> list[str]:
+    """文本分段器：将长句拆分为符合游戏全息图宽度的短段。"""
     text = (text or "").strip()
     if not text:
         return []
@@ -51,6 +54,7 @@ def _split_segments(text: str, max_len: int = 18) -> list[str]:
 
 
 def _resolve_bot_name(message: dict) -> str:
+    """解析目标 Bot：识别指令指向的是哪个女仆。"""
     npc = (message.get("npc") or "").strip()
     if npc:
         return npc.lstrip("@")
@@ -58,6 +62,7 @@ def _resolve_bot_name(message: dict) -> str:
 
 
 def _is_known_bot_player(player_name: Optional[str]) -> bool:
+    """身份过滤器：判断某个玩家名是否属于受控的 Bot。"""
     if not player_name:
         return False
 
@@ -71,7 +76,7 @@ def _is_known_bot_player(player_name: Optional[str]) -> bool:
 
 
 async def _ensure_bot(name: str) -> Tuple[Optional[object], bool]:
-    """Return (bot, created_now)."""
+    """Bot 持久化保障：确保指定的 Bot 实例已就绪，必要时自动唤醒。"""
     if not bot_manager:
         return None, False
 
@@ -101,6 +106,7 @@ async def _send_npc_response(
     action: str = "chat",
     hologram_text: Optional[str] = None,
 ) -> None:
+    """响应封装：构造并向游戏插件发送女仆的回应数据包。"""
     response = NpcResponse(
         npc=npc,
         target_player=target_player,
@@ -167,6 +173,118 @@ async def _send_request_sync(client_id: str) -> None:
     payload = {"type": "request_sync", "timestamp": _now()}
     await manager.send_personal(json.dumps(payload, ensure_ascii=False), client_id)
 
+async def _build_env_snapshot(
+    message: dict, bot_name: str, player: str, bot: object
+) -> dict:
+    """构造给 LangGraph 的最小环境快照。"""
+    bot_pos: dict = {}
+    try:
+        pos = await bot.get_position()
+        if pos:
+            bot_pos = {"x": pos[0], "y": pos[1], "z": pos[2]}
+    except Exception as exc:
+        logger.debug("Get bot position failed: %s", exc)
+
+    player_pos: dict = {}
+    px = message.get("player_x")
+    py = message.get("player_y")
+    pz = message.get("player_z")
+    if px is not None and py is not None and pz is not None:
+        player_pos = {"x": px, "y": py, "z": pz}
+
+    return {
+        "bot_name": bot_name,
+        "master_name": player,
+        "bot_pos": bot_pos,
+        "player_pos": player_pos,
+        "inventory": {},      # MVP：先用空背包，后续接真实采集
+        "nearby_blocks": [],  # MVP：先用空列表，后续接真实扫描
+    }
+    
+async def _invoke_workflow_with_timeout(
+    state: dict, timeout_seconds: float = 20.0
+) -> Optional[dict]:
+    """异步线程化调用 LangGraph，避免阻塞 WS 事件循环。"""
+    if workflow_app is None:
+        return None
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(workflow_app.invoke, state),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("LangGraph invoke timeout after %.1fs", timeout_seconds)
+        return None
+    except Exception as exc:
+        logger.warning("LangGraph invoke failed: %s", exc)
+        return None
+
+async def _try_handle_with_graph(
+    message: dict,
+    client_id: str,
+    bot: object,
+    bot_name: str,
+    player: str,
+    content: str,
+) -> bool:
+    """决策流入口：将用户输入喂给 LangGraph，尝试生成智能决策。"""
+    env_snapshot = await _build_env_snapshot(message, bot_name, player, bot)
+    state = {
+        "user_input": content,
+        "task_queue": [],
+        "env_snapshot": env_snapshot,
+    }
+
+    result = await _invoke_workflow_with_timeout(state)
+    if result is None:
+        return False
+
+    intent = result.get("intent")
+    if intent == "chat":
+        route = result.get("route")
+        reply_text = getattr(route, "reply_text", None) or "我在呢主人喵~"
+        await _send_npc_response(
+            client_id,
+            bot_name,
+            player,
+            reply_text,
+            action="chat",
+            hologram_text="💬",
+        )
+        return True
+
+    if intent == "task":
+        task_queue = result.get("task_queue") or []
+        if not task_queue:
+            await _send_npc_response(
+                client_id,
+                bot_name,
+                player,
+                "任务我听懂了，但暂时还没规划出步骤喵。",
+                action="task_plan",
+                hologram_text="🤔",
+            )
+            return True
+
+        first = task_queue[0] if isinstance(task_queue[0], dict) else {}
+        first_action = first.get("action", "unknown")
+        first_target = first.get("target", "none")
+        text = f"任务已接收，共规划 {len(task_queue)} 步，先执行 {first_action} -> {first_target} 喵。"
+
+        logger.info("Planned task_queue for %s: %s", bot_name, task_queue)
+        await _send_npc_response(
+            client_id,
+            bot_name,
+            player,
+            text,
+            action="task_plan",
+            hologram_text="📋",
+        )
+        return True
+
+    logger.warning("Graph returned unknown intent: %s", intent)
+    return False
+
 
 async def _handle_player_message(message: dict, client_id: str) -> None:
     player = message.get("player") or "Unknown"
@@ -219,12 +337,24 @@ async def _handle_player_message(message: dict, client_id: str) -> None:
         await _send_npc_response(client_id, bot_name, player, text, action="look_at", hologram_text="👀")
         return
 
-    # Default: keep baseline deterministic, no LLM
+    # 默认分支：先尝试走 LLM + LangGraph 主链路
+    handled = await _try_handle_with_graph(
+        message=message,
+        client_id=client_id,
+        bot=bot,
+        bot_name=bot_name,
+        player=player,
+        content=content,
+    )
+    if handled:
+        return
+
+    # 降级回极简模式，保证服务可用
     await _send_npc_response(
         client_id,
         bot_name,
         player,
-        f"已收到指令：{content}。当前为极简模式，复杂任务暂未启用。",
+        f"已收到指令：{content}。当前为极简降级模式，复杂任务暂未启用。",
         action="ack",
         hologram_text="💤 待命中",
     )
@@ -377,7 +507,7 @@ async def _handle_presence_message(message: dict) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global bot_manager, ws_cleanup_task
+    global bot_manager, ws_cleanup_task, workflow_app
 
     logger.info("Initializing MC_Servant minimal backend...")
 
@@ -400,6 +530,13 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Default bot not ready at startup; it can be spawned lazily")
 
+    # 启动时编译 LangGraph（失败则自动降级）
+    try:
+        workflow_app = build_workflow()
+        logger.info("LangGraph workflow ready")
+    except Exception as exc:
+        workflow_app = None
+        logger.warning("LangGraph init failed, fallback to minimal mode: %s", exc)
     async def ws_cleanup_worker() -> None:
         interval = max(5, settings.ws_heartbeat_timeout_seconds // 3)
         while True:
@@ -426,6 +563,7 @@ async def lifespan(app: FastAPI):
             pass
         ws_cleanup_task = None
 
+    workflow_app = None
     if bot_manager:
         await bot_manager.shutdown()
 

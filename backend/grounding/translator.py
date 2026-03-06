@@ -2,11 +2,7 @@ from typing import Any, Dict
 
 
 class EnvClient:
-    """
-    机器人的“眼睛”。
-    它负责去游戏里看一圈，把周围有什么方块、有什么生物的信息抓取回来。
-    大脑（LLM）需要通过它来了解外面的世界，才能做出“去挖那一块煤矿”这样的决定。
-    """
+    """感知组件：负责从游戏环境中抓取方块与实体快照，为 LLM 提供决策依据。"""
 
     def get_snapshot(self, _: str) -> Dict[str, Any]:
         """
@@ -16,11 +12,7 @@ class EnvClient:
 
 
 def translate_chat_step(step: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    语义翻译官。
-    将大模型给出的“模糊目标”（如：主人前面），翻译成执行端能理解的“精确指令”。
-    这样设计是为了应对网络延迟，让执行端在最后一刻才计算具体的物理位置。
-    """
+    """语义对齐：将 LLM 的相对语义目标（如：主人前方）映射为执行端的物理动作。"""
     action = step.get("action")
     target = step.get("target")
 

@@ -21,10 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class MineflayerBot(IBotController):
-    """
-    机器人的“真实化身”。
-    它是基于 Mineflayer 库实现的具体机器人。它真的会去连接游戏服务器，并通过底层的 javascript 翻译官来操控机器人的每一个动作（比如跳跃、说话、旋转）。
-    """
+    """物理化身：基于 Mineflayer 实现的真实机器人，负责与游戏服务器进行字节级交互。"""
     
     def __init__(self, host: str, port: int, username: str, password: Optional[str] = None):
         self._host = host
@@ -473,10 +470,7 @@ class MineflayerBot(IBotController):
 
 
 class BotManager(IBotManager):
-    """
-    实实在在的“机器人管家”。
-    负责在程序运行时，真正地把一个个 Mineflayer 机器人变出来，并给它们分配好服务器地址和密码，确保它们能乖乖听话。
-    """
+    """机器人管家：负责 Bot 实例的生命周期管理，包括按需生成、状态监控与统一销毁。"""
     
     def __init__(self, mc_host: str, mc_port: int, default_password: Optional[str] = None):
         self._mc_host = mc_host

@@ -54,7 +54,7 @@ def invoke_task_planner(
     bot_name: str = "Maid",
     master_name: str = "Master",
 ) -> Optional[TaskPlannerOutput]:
-    """调用 LLM 执行任务拆解。"""
+    """任务规划：将复杂指令拆解为一系列可在游戏中执行的原子动作。"""
     rendered_prompt = _render_task_planner_prompt(
         context=context,
         active_knowledge=active_knowledge,

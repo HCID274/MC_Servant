@@ -37,7 +37,7 @@ def _build_router_prompt_template() -> ChatPromptTemplate:
 
 
 def invoke_task_router(user_input: str) -> Optional[Union[RouterOutput, TaskRouterOutput]]:
-    """调用 LLM 执行意图路由。"""
+    """意图决策：调用 LLM 识别主人的核心意图是闲聊还是任务。"""
     prompt_template = _build_router_prompt_template()
 
     llm = ChatOpenAI(

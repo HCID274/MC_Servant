@@ -1,7 +1,7 @@
 backend/
 │
 ├──【全局核心】 
-│   ├── main.py                          [接入总控] FastAPI/WS 总入口：路由分发与生命周期管理
+│   ├── main.py                          [接入总控] FastAPI/WS 总入口：路由分发、LangGraph调用入口与降级策略
 │   └── schemas.py                       [全局状态] LangGraph 共享大字典 (MaidState) 与结构化输出模型
 │
 ├──【L1 第一层：思考层】 (大模型/LangChain) 
@@ -67,3 +67,21 @@ backend/
   - 职责：防止 Router 模板出现非 `input` 的隐式变量依赖。
 - `test_translate_chat_step_maps_master_eyes_to_existing_command()`
   - 职责：防止翻译层输出不存在的命令名，保障执行链命令一致性。
+
+## 主入口接入补充（LLM + LangGraph）
+
+### 全局核心 (`backend/main.py`)
+- `_build_env_snapshot(message, bot_name, player, bot)`
+  - 职责：为图执行构造最小 `env_snapshot`（bot/player 位置 + inventory/nearby_blocks 占
+位）。
+- `_invoke_workflow_with_timeout(state, timeout_seconds=20.0)`
+  - 职责：通过 `asyncio.to_thread` 调用 `workflow.invoke`，避免阻塞 WebSocket 主循环，并提
+供超时降级。
+- `_try_handle_with_graph(...)`
+  - 职责：承接 `player_message` 默认分支，执行 Router -> Knowledge Loader -> Planner ->
+Enqueue，按 `intent` 回包。
+- `lifespan(...)` 中 `workflow_app = build_workflow()`
+  - 职责：启动时编译图；失败则自动降级到 minimal fallback，保证服务稳定性。
+
+### 本次同步备注
+- 已修复 `backend/main.py` 中主入口接入函数的语法断行问题（函数签名换行与 f-string 断行），不涉及架构职责变更。

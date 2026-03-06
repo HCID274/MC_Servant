@@ -28,6 +28,7 @@ TaskActionType = Literal[
 ]   
 
 class TaskStep(BaseModel):
+    """任务原子步：定义一个具体的物理动作及其目标参数。"""
     action: TaskActionType = Field(
         description="执行的动作类型，必须是预设的合法动作之一"
     )

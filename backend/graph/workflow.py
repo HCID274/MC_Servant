@@ -36,7 +36,7 @@ def _invoke_task_planner(state: MaidState):
 
 
 def router_node(state: MaidState):
-    """节点1：思考层路由。"""
+    """思考分流：分析用户意图，决定进入闲聊模式还是任务规划模式。"""
     user_input = state.get("user_input", "")
     print(f"[*] 正在分析主人指令: {user_input}")
 
@@ -53,7 +53,7 @@ def router_node(state: MaidState):
 
 
 def knowledge_loader_node(state: MaidState):
-    """节点2：按 Router 的 required_knowledge 注入知识卡带。"""
+    """知识注入：根据任务需求动态加载对应的知识卡带，增强模型背景信息。"""
     loaded = _load_knowledge_node(state)
     active_knowledge = loaded.get("active_knowledge", "")
     if active_knowledge:
@@ -62,7 +62,7 @@ def knowledge_loader_node(state: MaidState):
 
 
 def task_planner_node(state: MaidState):
-    """节点3：基于 active_knowledge 进行任务拆解。"""
+    """任务拆解：结合环境快照与知识库，将宏观目标细化为具体的执行步骤。"""
     route = state.get("route")
     if route is None:
         return {}
@@ -94,7 +94,7 @@ def enqueue_task_node(state: MaidState):
 
 
 def build_workflow():
-    """构建并编译 LangGraph 工作流。"""
+    """架构定义：构建并编译女仆的大脑决策状态机（LangGraph）。"""
     graph = StateGraph(MaidState)
     graph.add_node("router", router_node)
     graph.add_node("knowledge_loader", knowledge_loader_node)

@@ -11,10 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class IConnectionManager(ABC):
-    """
-    网络连接的“管家规范”。
-    它定义了如何跟外界（比如 Java 插件）打交道的标准流程：怎么接电话、怎么挂电话、怎么广播消息。
-    """
+    """通信契约：定义 WebSocket 连接的维护、消息分发与广播的标准接口。"""
     
     @abstractmethod
     async def connect(self, websocket: WebSocket, client_id: str) -> None:
@@ -38,11 +35,7 @@ class IConnectionManager(ABC):
 
 
 class ConnectionManager(IConnectionManager):
-    """
-    实实在在的“网络连接管家”。
-    它负责在后台默默地接待来自游戏插件的 WebSocket 连接。
-    它不仅要确保消息能准确地发给对应的女仆机器人，还要眼疾手快地清理掉那些已经挂断（断开）的连接。
-    """
+    """物理连接管家：负责维护与 Java 插件的实时长连接，处理消息中转与超时清理。"""
     
     def __init__(self):
         # client_id -> WebSocket

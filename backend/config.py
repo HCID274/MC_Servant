@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """全局配置中心：定义从环境变量或 .env 加载的系统运行参数。"""
     # WebSocket server
     ws_host: str = "0.0.0.0"
     ws_port: int = 8765

@@ -11,10 +11,7 @@ from enum import Enum
 # ============================================================================
 
 class ActionStatus(Enum):
-    """
-    动作的执行结局。
-    用来明确地告诉大脑：任务是成了、挂了、超时了，还是半路被人叫停了。
-    """
+    """执行状态：明确标识动作的终态（成功、失败、超时或取消）。"""
     SUCCESS = "success"
     PARTIAL = "partial"
     FAILED = "failed"
@@ -24,11 +21,7 @@ class ActionStatus(Enum):
 
 @dataclass
 class ActionResult:
-    """
-    动作的结案报告。
-    它不仅告诉大脑“做完没”，还会带回详细的反馈：花了多久、报错码是什么、捡到了多少东西。
-    大脑会根据这份报告来决定下一步是该欢呼还是该反思。
-    """
+    """结算报告：封装动作执行后的详细反馈，供决策层评估下一步行动。"""
     success: bool
     action: str
     message: str
@@ -39,11 +32,7 @@ class ActionResult:
 
 
 class IBotActions(ABC):
-    """
-    机器人“高级技能”的标准规范。
-    这里定义了女仆应该会的所有复杂本领（如挖矿、合成、找坐标、砍树），但不关心具体怎么实现。
-    设计原则是“简单发令，深度执行”：大脑下一条简单的命令，具体怎么寻路、怎么选工具都由底层的实现类搞定。
-    """
+    """高级动作标准：定义挖矿、合成等复杂技能的契约，解耦大脑决策与底层执行。"""
     
     @abstractmethod
     async def goto(self, target: str, timeout: float = 60.0) -> ActionResult:
@@ -354,11 +343,7 @@ class IBotActions(ABC):
 # ============================================================================
 
 class IBotController(ABC):
-    """
-    机器人的“基础遥控器”标准。
-    定义了连接游戏服务器、发消息、跳跃等最基本的操作规范。
-    它是所有机器人（不管是真的 Mineflayer 还是模拟的）都必须拥有的最底层操控力。
-    """
+    """基础操控标准：定义跳跃、旋转、说话等最底层的原子操作规范。"""
     
     @property
     @abstractmethod
@@ -426,10 +411,7 @@ class IBotController(ABC):
 
 
 class IBotManager(ABC):
-    """
-    机器人的“宿管大妈”标准。
-    定义了如何批量管理机器人：怎么创建新的、怎么找到在线的，以及怎么把它们统一注销。
-    """
+    """管理契约：定义如何批量维护、查找以及注销多个 Bot 实例。"""
     
     @abstractmethod
     def get_bot(self, name: str) -> Optional[IBotController]:
