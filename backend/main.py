@@ -29,6 +29,7 @@ from config import settings
 from execution.task_queue import TaskQueueManager
 from graph.workflow import build_workflow
 from protocol import MessageType
+from schemas import RouterOutput, TaskPlannerOutput, TaskStep
 from tracing.repository import TraceRepository
 from websocket.connection_manager import manager
 from websocket.session_runtime import SessionRuntime
@@ -55,6 +56,25 @@ def _resolve_runtime_path(raw_path: str) -> Path:
 
 def _parse_interrupt_nodes(raw_value: str) -> list[str]:
     return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
+def _extend_checkpointer_allowlist(checkpointer: object) -> None:
+    """检查点反序列化白名单：注册项目内会写入状态快照的 Pydantic 类型，消除无意义告警。"""
+    serializer = getattr(checkpointer, "serde", None)
+    if serializer is not None and hasattr(serializer, "with_msgpack_allowlist"):
+        setattr(
+            checkpointer,
+            "serde",
+            serializer.with_msgpack_allowlist([RouterOutput, TaskPlannerOutput, TaskStep]),
+        )
+
+    jsonplus_serde = getattr(checkpointer, "jsonplus_serde", None)
+    if jsonplus_serde is not None and hasattr(jsonplus_serde, "with_msgpack_allowlist"):
+        setattr(
+            checkpointer,
+            "jsonplus_serde",
+            jsonplus_serde.with_msgpack_allowlist([RouterOutput, TaskPlannerOutput, TaskStep]),
+        )
 
 
 @asynccontextmanager
@@ -104,6 +124,7 @@ async def lifespan(app: FastAPI):
             checkpoint_db_path = _resolve_runtime_path(settings.checkpoint_db_path)
             runtime.checkpointer_cm = AsyncSqliteSaver.from_conn_string(str(checkpoint_db_path))
             runtime.checkpointer = await runtime.checkpointer_cm.__aenter__()
+            _extend_checkpointer_allowlist(runtime.checkpointer)
             logger.info("LangGraph checkpointer ready: %s", checkpoint_db_path)
 
         runtime.workflow_app = build_workflow(

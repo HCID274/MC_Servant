@@ -6,7 +6,7 @@
 backend/
 │
 ├── [0] [入口层] (main.py)
-│   ├── main.py                              <-- [0] 系统启动点：FastAPI 创建、WS 绑定、原始字节流入口
+│   ├── main.py                              <-- [0] 系统启动点：FastAPI 创建、WS 绑定、原始字节流入口，并初始化 Checkpointer 反序列化白名单
 │   ├── config.py                            [配置] 环境变量读取、Trace DB / Checkpoint DB 路径配置
 │   ├── protocol.py                          [协议] WebSocket 消息模型定义
 │   └── schemas.py                           [状态] LLM/Graph 结构化数据模型定义（含 trace_ctx / opening_reply_text / failure_reason）
@@ -91,7 +91,7 @@ backend/
 ## 重构后的核心价值
 
 - **[0->2] 收包/处理解耦**: `main.py` 只负责接收与心跳快回，业务处理下沉到 `session_runtime` dispatcher，降低头阻塞。
-- **[3->5] 节点可追溯**: LangGraph 原生 Checkpointer 为每次 run 保存节点状态快照，支持后续 `get_state_history()` 回放与恢复。
+- **[3->5] 节点可追溯**: LangGraph 原生 Checkpointer 为每次 run 保存节点状态快照，支持后续 `get_state_history()` 回放与恢复；启动时会注册项目内状态模型的 msgpack allowlist，避免无意义的反序列化告警。
 - **[4->5] Prompt 可审计**: Router/Planner 不再只保留结构化结果，额外保存原始 Prompt、原始输出、解析结果和耗时。
 - **[7->8] 环境可感知**: `snapshot_builder` 不再只存空壳字段，而是通过 Mineflayer 适配器调用本地 JS 聚合逻辑，一次性拉取背包、装备、生命饱食度和附近方块摘要，为任务规划提供真实上下文。
 - **[1] 会话背压可控**: 入站队列具备容量上限，队列满时主动降载，避免雪崩式堆积。
