@@ -37,7 +37,12 @@ class TaskStep(BaseModel):
     )
 
 class TaskPlannerOutput(BaseModel):
+    opening_reply_text: Optional[str] = Field(
+        default=None,
+        description="任务规划完成后立刻对玩家播报的开场白，用于掩盖首次计算延迟"
+    )
     plan: List[TaskStep] = Field(
+        default_factory=list,
         description="经过逻辑拆解后的原子任务序列"
     )
 
@@ -94,15 +99,6 @@ class TaskRouterOutput(BaseModel):
     required_knowledge: List[str] = Field(default_factory=list, description="兼容字段")
 
 
-class PlannerOutput(BaseModel):
-    """
-    任务拆解清单。
-    当主人下达复杂指令时，大脑会将大任务拆解成一串小任务，存放在这里。
-    """
-
-    tasks: List[Dict[str, Any]] = Field(default_factory=list, description="拆解后的任务序列")
-
-
 class MaidState(TypedDict):
     """
     女仆的“记忆与实时状态”。
@@ -112,13 +108,15 @@ class MaidState(TypedDict):
     user_input: str
     intent: Optional[IntentType]
     route: Optional[Union[RouterOutput, TaskRouterOutput]]
-    plan: Optional[PlannerOutput]
+    plan: Optional[TaskPlannerOutput]
+    opening_reply_text: Optional[str]
     planned_tasks: Optional[List[Dict[str, Any]]]
     active_knowledge: Optional[str]
     current_task: Optional[Dict[str, Any]]
     env_snapshot: Optional[Dict[str, Any]]
     trace_ctx: Optional[Dict[str, str]]
     execution_result: Optional[Dict[str, Any]]
+    failure_reason: Optional[str]
     fail_count: int
     error_msg: Optional[str]
 

@@ -9,7 +9,7 @@ backend/
 │   ├── main.py                              <-- [0] 系统启动点：FastAPI 创建、WS 绑定、原始字节流入口
 │   ├── config.py                            [配置] 环境变量读取、Trace DB / Checkpoint DB 路径配置
 │   ├── protocol.py                          [协议] WebSocket 消息模型定义
-│   └── schemas.py                           [状态] LLM/Graph 结构化数据模型定义（含 trace_ctx）
+│   └── schemas.py                           [状态] LLM/Graph 结构化数据模型定义（含 trace_ctx / opening_reply_text / failure_reason）
 │
 ├── [1] [websocket 层] (通信基础设施)
 │   └── websocket/
@@ -46,7 +46,7 @@ backend/
 ├── [5] [llm_agent 层] (认知层)
 │   └── llm_agent/
 │       ├── router.py                        [意图识别] 调用 LLM 识别核心意图，并记录原始 Prompt / Output
-│       ├── planner.py                       [任务拆解] 调用 LLM 将宏观目标细化为原子步骤，并记录原始 Prompt / Output
+│       ├── planner.py                       [任务拆解] 调用 LLM 将宏观目标细化为原子步骤，并输出计划开场白 opening_reply_text
 │       ├── structured_output.py             [结构化解析] 从 LLM 原始文本中提取 JSON 并做 Pydantic 校验
 │       ├── prompts.py                       [提示词装载] 管理并动态填充提示词模板资源
 │       └── prompts/...                      [提示词资源] .md 格式的各种 Planner 核心提示词
