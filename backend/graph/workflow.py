@@ -8,7 +8,7 @@ from graph.conditions import router_branch
 from graph.knowledge_loader import load_knowledge_node
 from llm_agent.planner import invoke_task_planner
 from llm_agent.router import invoke_task_router
-from schemas import MaidState, TaskPlannerOutput, TaskRouterOutput
+from schemas import MaidState, TaskPlannerOutput
 from tracing.repository import TraceRepository
 
 
@@ -56,9 +56,6 @@ def router_node(state: MaidState, *, trace_repo: Optional[TraceRepository] = Non
         routed = invoke_task_router(user_input, trace_repo=trace_repo, trace_ctx=trace_ctx)
     if routed is None:
         return {"intent": "chat", "error_msg": "LLM_PARSE_ERROR"}
-
-    if isinstance(routed, TaskRouterOutput):
-        return {"intent": "task", "route": routed, "error_msg": None}
 
     if routed.reply_text:
         print(f"\n女仆: {routed.reply_text}\n")

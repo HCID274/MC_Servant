@@ -20,12 +20,11 @@ backend/
 │   └── application/
 │       ├── handlers/
 │       │   ├── message_router.py            <-- [2] 路由分发：识别消息类型 (MessageType)，分拨至对应处理器
-│       │   ├── player_handler.py            <-- [3] 玩家用例编排：调用 Graph、优先回传 Planner 开场白，并将 run_id/thread_id 与任务上下文带入任务队列
+│       │   ├── player_handler.py            <-- [3] 玩家用例编排：统一经 Graph 决策，优先回传 Planner 开场白，并将 run_id/thread_id 与任务上下文带入任务队列
 │       │   ├── servant_handler.py           [管理命令] 处理 claim/release/list/status 等管理员操作
 │       │   └── presence_handler.py          [在线态同步] 处理 player_join/quit/login 等在线状态同步
 │       ├── services/
-│       │   ├── quick_command_parser.py      [快捷指令解析] 将 hello/status/jump/say/look 解析为统一 steps
-│       │   ├── graph_runner.py              [图执行用例] 生成 run_id/thread_id、执行 LangGraph、提取 checkpoint 摘要
+│       │   ├── graph_runner.py              [图执行用例] 生成 run_id/thread_id、执行 LangGraph、提取根图 checkpoint 摘要
 │       │   └── task_job_runner.py           [任务消费编排] 消费队列任务并回传执行进度，同时写入执行事件留痕
 │       └── core/
 │           ├── context.py                   [上下文] AppRuntime 共享依赖容器（含 checkpointer / trace_repo）
@@ -79,7 +78,7 @@ backend/
 1.  **[0] 入口层 (`main.py`)**: WebSocket 收到原始 JSON；`heartbeat` 直接快路径回包，不进入业务队列。
 2.  **[1] 会话调度 (`session_runtime.py`)**: 非心跳消息进入每个 `client_id` 的入站队列，由独立 dispatcher 异步消费。
 3.  **[2] 路由层 (`message_router.py`)**: 按消息类型分流到 player/servant/presence 处理器。
-4.  **[3] 应用编排 (`application/handlers/player_handler.py`)**: 快捷指令先由 `application/services/quick_command_parser.py` 转 step，复杂指令经 `application/services/graph_runner.py` 调用 LangGraph，并优先向玩家发送 Planner 返回的 `opening_reply_text`。
+4.  **[3] 应用编排 (`application/handlers/player_handler.py`)**: 所有玩家自然语言输入统一经 `application/services/graph_runner.py` 调用 LangGraph，并优先向玩家发送 Planner 返回的 `opening_reply_text`。
 5.  **[4] 运行留痕 (`tracing/repository.py`)**: `agent_run / llm_call / run_event` 审计表保存请求、Prompt/Output 与执行事件；LangGraph Checkpointer 负责节点级 State 存档。
 6.  **[5] 决策层 (`graph/workflow.py`)**: LangGraph 运转并产出任务队列（或 chat 回复），同时把 `plan / opening_reply_text` 写回共享状态；每个节点结束后由 Checkpointer 自动落本地检查点。
 7.  **[6] 调度层 (`execution/task_queue.py`)**: 快捷动作与规划动作统一按 Bot 维度串行入队，防止同 Bot 并发冲突。
@@ -96,5 +95,5 @@ backend/
 - **[4->5] Prompt 可审计**: Router/Planner 不再只保留结构化结果，额外保存原始 Prompt、原始输出、解析结果和耗时。
 - **[7->8] 环境可感知**: `snapshot_builder` 不再只存空壳字段，而是通过 Mineflayer 适配器调用本地 JS 聚合逻辑，一次性拉取背包、装备、生命饱食度和附近方块摘要，为任务规划提供真实上下文。
 - **[1] 会话背压可控**: 入站队列具备容量上限，队列满时主动降载，避免雪崩式堆积。
-- **[3->6] 高内聚编排**: `player_handler` 仅做用例路由，图调用、快捷解析、任务消费、留痕存储拆分到独立模块；任务 Job 会携带原始输入、初始快照与开场白上下文，供后续 Bark 预取与失败重规使用。
+- **[3->6] 高内聚编排**: `player_handler` 仅做用例路由，图调用、任务消费、留痕存储拆分到独立模块；所有自然语言输入统一走 Graph，避免关键字硬编码分流，任务 Job 会携带原始输入、初始快照与开场白上下文，供后续 Bark 预取与失败重规使用。
 - **[6->8] 执行隔离**: 快捷动作与任务动作统一入执行队列，同一个 Bot 严格串行，避免物理动作冲突。

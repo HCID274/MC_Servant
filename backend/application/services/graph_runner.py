@@ -25,11 +25,10 @@ def _build_trace_ctx(client_id: str, bot_name: str, player: str) -> dict[str, st
 
 
 def _build_graph_config(trace_ctx: dict[str, str]) -> dict[str, dict[str, str]]:
-    """图配置生成：构造 LangGraph 需要的持久化线程与命名空间参数。"""
+    """图配置生成：构造 LangGraph 根图持久化所需的线程参数。"""
     return {
         "configurable": {
             "thread_id": trace_ctx["thread_id"],
-            "checkpoint_ns": "mc_servant.main_workflow",
         }
     }
 

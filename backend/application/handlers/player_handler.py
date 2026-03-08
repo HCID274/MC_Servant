@@ -4,7 +4,6 @@ from typing import Any
 from application.core.bot_runtime import ensure_bot, resolve_bot_name
 from application.core.context import AppRuntime
 from application.services.graph_runner import extract_reply_text, run_graph_once
-from application.services.quick_command_parser import parse_quick_command
 from application.core.response_sender import broadcast_init_config, send_error, send_npc_response
 
 
@@ -17,42 +16,6 @@ def _first_step_info(steps: list[dict[str, Any]]) -> tuple[str, str]:
         return "unknown", "none"
     first = steps[0] if isinstance(steps[0], dict) else {}
     return str(first.get("action", "unknown")), str(first.get("target", "none"))
-
-
-async def _enqueue_quick_job(
-    runtime: AppRuntime,
-    bot_name: str,
-    client_id: str,
-    player: str,
-    quick_job: dict,
-) -> bool:
-    """快捷任务入队：将预定义的简单指令（如跳跃、说话）直接压入异步执行队列。"""
-    if runtime.task_queue_manager is None:
-        await send_error(client_id, "queue_unavailable", "task queue is unavailable")
-        return True
-
-    queue_pos = await runtime.task_queue_manager.enqueue(
-        bot_name,
-        {
-            "client_id": client_id,
-            "player": player,
-            "source": "quick",
-            "response_action": quick_job.get("response_action", "quick_exec"),
-            "hologram_text": quick_job.get("hologram_text", "✨"),
-            "steps": quick_job.get("steps", []),
-        },
-    )
-    # 反馈机制：若前面有任务在排队，告知玩家。
-    if queue_pos > 1:
-        await send_npc_response(
-            client_id,
-            bot_name,
-            player,
-            f"指令已入队 #{queue_pos}，前方还有 {queue_pos - 1} 条待执行喵。",
-            action="quick_queue",
-            hologram_text="📥",
-        )
-    return True
 
 
 async def _try_handle_with_graph(
@@ -204,12 +167,6 @@ async def handle_player_message(message: dict, client_id: str, runtime: AppRunti
     if not content:
         await send_error(client_id, "invalid_message", "content is empty")
         return
-
-    quick_job = parse_quick_command(content)
-    if quick_job:
-        handled = await _enqueue_quick_job(runtime, bot_name, client_id, player, quick_job)
-        if handled:
-            return
 
     bot, created = await ensure_bot(runtime.bot_manager, bot_name)
     if created:

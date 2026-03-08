@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 
 from llm_agent.prompts import get_knowledge_index_prompt, load_router_system_prompt
 from llm_agent.structured_output import parse_model_output, stringify_message_content
-from schemas import RouterOutput, TaskRouterOutput
+from schemas import RouterOutput
 from tracing.repository import TraceRepository
 
 LLM_BASE_URL = "http://127.0.0.1:8000/v1"
@@ -75,7 +75,7 @@ def invoke_task_router(
     *,
     trace_repo: Optional[TraceRepository] = None,
     trace_ctx: Optional[dict[str, str]] = None,
-) -> Optional[Union[RouterOutput, TaskRouterOutput]]:
+) -> Optional[RouterOutput]:
     """意图决策：调用 LLM 识别主人的核心意图是闲聊还是任务。"""
     rendered_prompt_text, request_messages = _build_router_messages(user_input)
 
@@ -131,12 +131,4 @@ def route_user_input(user_input: str) -> RouterOutput:
     result = invoke_task_router(user_input)
     if result is None:
         raise RuntimeError("Router invoke failed")
-    if isinstance(result, TaskRouterOutput):
-        return RouterOutput(
-            intent="task",
-            action=result.action,
-            target=result.target,
-            required_knowledge=result.required_knowledge,
-            reply_text=None,
-        )
     return result

@@ -89,17 +89,6 @@ class RouterOutput(BaseModel):
         return self
 
 
-class TaskRouterOutput(BaseModel):
-    """
-    （测试专用）简易的任务识别结果。
-    主要用于在没有完整 LLM 接入时的离线功能测试。
-    """
-
-    action: Literal["mine"] = Field(description="核心动作")
-    target: Literal["coal_ore"] = Field(description="动作目标")
-    required_knowledge: List[str] = Field(default_factory=list, description="兼容字段")
-
-
 class MaidState(TypedDict):
     """
     女仆的“记忆与实时状态”。
@@ -108,7 +97,7 @@ class MaidState(TypedDict):
 
     user_input: str
     intent: Optional[IntentType]
-    route: Optional[Union[RouterOutput, TaskRouterOutput]]
+    route: Optional[RouterOutput]
     plan: Optional[TaskPlannerOutput]
     opening_reply_text: Optional[str]
     planned_tasks: Optional[List[Dict[str, Any]]]
