@@ -85,10 +85,12 @@ async def process_task_job(runtime: AppRuntime, bot_name: str, job: TaskJob) -> 
     total = len(steps)
     record_event("task_queue", "task_job_started", payload={"total_steps": total})
 
+    # 任务序列迭代：按序翻译并执行 LLM 规划的每一个步骤。
     for idx, step in enumerate(steps, start=1):
         action = str((step or {}).get("action") or "").strip()
         target = str((step or {}).get("target") or "").strip()
 
+        # 参数校验：防止执行缺失关键指令的无效步骤。
         if not action:
             if client_id:
                 await send_npc_response(
@@ -107,6 +109,7 @@ async def process_task_job(runtime: AppRuntime, bot_name: str, job: TaskJob) -> 
             )
             return
 
+        # 执行前打点：在数据库中标记该原子步骤开始执行。
         record_event(
             "task_step",
             "task_step_started",
@@ -115,6 +118,7 @@ async def process_task_job(runtime: AppRuntime, bot_name: str, job: TaskJob) -> 
         )
         ok, message = await execute_task_step(bot, action, target)
         if not ok:
+            # 异常链路：记录失败原因并及时中断后续步骤。
             if client_id:
                 text = message if is_quick else f"[{idx}/{total}] {message}"
                 await send_npc_response(
@@ -133,6 +137,7 @@ async def process_task_job(runtime: AppRuntime, bot_name: str, job: TaskJob) -> 
             )
             return
 
+        # 进度同步：执行完每一步都向玩家及追踪系统汇报最新进度。
         if client_id:
             text = message if is_quick else f"[{idx}/{total}] {message}"
             await send_npc_response(

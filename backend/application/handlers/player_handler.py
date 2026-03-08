@@ -102,8 +102,11 @@ async def _try_handle_with_graph(
             )
         return True
 
+    # 路径 B - 任务模式：将规划好的步骤序列压入后台异步队列。
     if intent == "task":
         task_queue = result.get("task_queue") or []
+        opening_reply_text = str(result.get("opening_reply_text") or "").strip()
+        # 异常防护：防止模型只认领了任务却没给出具体步骤。
         if not task_queue:
             await send_npc_response(
                 client_id,
@@ -135,6 +138,7 @@ async def _try_handle_with_graph(
                 )
             return True
 
+        # 异步投递：构造完整的任务 Job 并推入 Bot 专属队列，实现执行层隔离。
         first_action, first_target = _first_step_info(task_queue)
         queue_pos = await runtime.task_queue_manager.enqueue(
             bot_name,
@@ -144,6 +148,9 @@ async def _try_handle_with_graph(
                 "source": "task",
                 "response_action": "task_exec",
                 "hologram_text": "⚙️",
+                "original_user_input": content,
+                "opening_reply_text": opening_reply_text,
+                "initial_env_snapshot": result.get("env_snapshot") or {},
                 "steps": task_queue,
                 "run_id": run_id,
                 "thread_id": thread_id,
@@ -159,11 +166,15 @@ async def _try_handle_with_graph(
                 event_name="task_enqueued",
                 payload={"queue_pos": queue_pos, "steps": task_queue},
             )
+        opening_text = opening_reply_text or (
+            f"【BUG_FALLBACK_OPENING_REPLY_MISSING】任务已接收，共规划 {len(task_queue)} 步，"
+            f"首步 {first_action}->{first_target}，已入队 #{queue_pos} 喵。"
+        )
         await send_npc_response(
             client_id,
             bot_name,
             player,
-            f"任务已接收，共规划 {len(task_queue)} 步，首步 {first_action}->{first_target}，已入队 #{queue_pos} 喵。",
+            opening_text,
             action="task_plan",
             hologram_text="📥",
         )
@@ -175,7 +186,7 @@ async def _try_handle_with_graph(
                 event_name="npc_response_sent",
                 payload={
                     "action": "task_plan",
-                    "content": f"任务已接收，共规划 {len(task_queue)} 步，首步 {first_action}->{first_target}，已入队 #{queue_pos} 喵。",
+                    "content": opening_text,
                 },
             )
         return True

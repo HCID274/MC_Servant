@@ -37,6 +37,7 @@ class TaskStep(BaseModel):
     )
 
 class TaskPlannerOutput(BaseModel):
+    """任务规划结果：承载了经过大脑拆解后的步骤序列，以及人性化的执行开场白。"""
     opening_reply_text: Optional[str] = Field(
         default=None,
         description="任务规划完成后立刻对玩家播报的开场白，用于掩盖首次计算延迟"

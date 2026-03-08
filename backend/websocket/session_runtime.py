@@ -26,7 +26,7 @@ class SessionRuntime:
         self._sessions: Dict[str, ClientSession] = {}
 
     async def start_client(self, client_id: str, handler: MessageHandler) -> None:
-        """启动客户端分发协程；若已存在旧会话则先替换。"""
+        """会话激活：为新接入的客户端开启独立的后台消息分发协程。"""
         await self.stop_client(client_id)
 
         inbound_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=self._inbound_queue_maxsize)
@@ -56,7 +56,7 @@ class SessionRuntime:
             await self.stop_client(client_id)
 
     async def submit_message(self, client_id: str, message: dict) -> bool:
-        """提交消息到客户端入站队列；队列满时返回 False。"""
+        """消息投递：将 WebSocket 原始包压入对应的会话队列，实现收发解耦。"""
         session = self._sessions.get(client_id)
         if session is None:
             return False
@@ -72,6 +72,7 @@ class SessionRuntime:
         inbound_queue: asyncio.Queue[dict],
         handler: MessageHandler,
     ) -> None:
+        """分发循环：后台轮询入站队列，确保业务处理的耗时不影响 WebSocket 的收包效率。"""
         while True:
             try:
                 message = await inbound_queue.get()

@@ -27,7 +27,7 @@ def _invoke_task_planner(
     *,
     trace_repo: Optional[TraceRepository] = None,
 ):
-    """便于测试 monkeypatch 的任务规划入口。"""
+    """思考适配器：封装对任务规划器的调用，并注入链路追踪上下文。"""
     env_snapshot = state.get("env_snapshot") or {}
     trace_ctx = state.get("trace_ctx") or {}
     return invoke_task_planner(
@@ -84,11 +84,20 @@ def task_planner_node(state: MaidState, *, trace_repo: Optional[TraceRepository]
     if isinstance(planned, TaskPlannerOutput) and planned.plan:
         tasks = [step.model_dump() for step in planned.plan]
         print(f"[*] Task Planner 产出 {len(tasks)} 个子任务")
-        return {"planned_tasks": tasks}
+        return {
+            "plan": planned,
+            "opening_reply_text": planned.opening_reply_text,
+            "planned_tasks": tasks,
+        }
 
     fallback_task = {"action": route.action, "target": route.target}
     print(f"[*] Task Planner 无结果，回退为 Router 单任务: {fallback_task}")
-    return {"planned_tasks": [fallback_task]}
+    fallback_plan = TaskPlannerOutput(plan=[fallback_task])
+    return {
+        "plan": fallback_plan,
+        "opening_reply_text": None,
+        "planned_tasks": [fallback_task],
+    }
 
 
 def enqueue_task_node(state: MaidState):

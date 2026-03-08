@@ -6,6 +6,7 @@ from execution.task_worker import run_task_worker
 
 
 class TaskJob(TypedDict, total=False):
+    """任务负载：定义了进入异步执行队列的完整指令数据结构，包含追踪 ID 与环境快照。"""
     client_id: str
     player: str
     run_id: str
@@ -13,6 +14,9 @@ class TaskJob(TypedDict, total=False):
     source: str
     response_action: str
     hologram_text: str
+    original_user_input: str
+    opening_reply_text: str
+    initial_env_snapshot: dict[str, Any]
     steps: list[dict[str, Any]]
     tasks: list[dict[str, Any]]
 
