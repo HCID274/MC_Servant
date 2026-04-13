@@ -3,14 +3,17 @@ import type { ModuleBoundary } from "../domain/contracts.js";
 /** diagnostics 模块边界声明。 */
 export const diagnosticsModuleBoundary = {
   moduleName: "diagnostics",
-  responsibilities: ["保留诊断信息的采集与输出入口", "等待后续接入运行时事件与调试快照"],
-  placeholderExports: ["diagnosticsModuleBoundary", "createDiagnosticsPlaceholder"],
+  responsibilities: [
+    "定义 tasks、sandbox、llm 三类 JSONL 日志行契约",
+    "统一诊断通道目录、保留期与 log_ref/code_ref 校验规则",
+  ],
+  placeholderExports: [
+    "diagnosticsModuleBoundary",
+    "createDiagnosticsCatalog",
+    "createTaskLogLine",
+    "createSandboxLogLine",
+  ],
 } satisfies ModuleBoundary;
 
-/** 创建 diagnostics 模块占位对象。 */
-export function createDiagnosticsPlaceholder() {
-  return {
-    channels: [] as const,
-    status: "placeholder" as const,
-  };
-}
+export * from "./contracts.js";
+export * from "./logs.js";

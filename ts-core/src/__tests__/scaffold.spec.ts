@@ -8,9 +8,11 @@ import {
   MessageSource,
   RUNTIME_EVENT_TYPES,
   coreModuleBoundaries,
+  createDiagnosticsCatalog,
   createEnvironmentSnapshot,
   createHealthResponse,
   createRuntimeScaffold,
+  createSandboxFacadeContract,
   createSessionRecord,
   createStatusResponse,
   createWorldModelQueryBoundary,
@@ -18,7 +20,7 @@ import {
 } from "../index.js";
 
 describe("TS Core 工程骨架", () => {
-  it("应导出八个模块边界并与模块名清单一致", () => {
+  it("应导出全部模块边界并与模块名清单一致", () => {
     const moduleNames = coreModuleBoundaries.map((boundary) => boundary.moduleName);
 
     expect(moduleNames).toEqual([...CORE_MODULE_NAMES]);
@@ -107,5 +109,18 @@ describe("TS Core 工程骨架", () => {
     expect(session.bot_id).toBe("bot-root");
     expect(health.status).toBe("ok");
     expect(status.bot.status).toBe(BotStatus.IDLE);
+  });
+
+  it("应从根入口导出 sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
+    const facadeContract = createSandboxFacadeContract();
+    const diagnosticsCatalog = createDiagnosticsCatalog();
+
+    expect(facadeContract.bot.goTo.aligned_skill).toBe("goTo");
+    expect(facadeContract.chat.say.emits_step).toBe(true);
+    expect(diagnosticsCatalog.channels.map((channel) => channel.channel)).toEqual([
+      "tasks",
+      "sandbox",
+      "llm",
+    ]);
   });
 });

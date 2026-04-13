@@ -112,3 +112,24 @@
   - `Socket.io`（实时推送） 与 replay（补拉） 事件统一复用 `runtime/events.ts`（运行时事件） 命名；`createReplayResponse()`（创建补拉响应） 已改为逐条克隆实时事件对象，避免调用方引用旁路污染接口层返回值。
   - `createWebMessageEnvelope()`（创建网页消息包） 已收紧为会话绑定语义：当消息请求 `bot_id`（机器人标识） 与已鉴权 `session.bot_id`（会话目标机器人） 不一致时直接拒绝构造，不再允许跨 Bot（机器人） 混合包进入后续链路。
   - 测试已覆盖根导出、会话登录 / 鉴权、消息提交、状态查询、健康检查、replay（补拉） 边界，以及“会话与请求 Bot 不一致拒绝构造”“原始事件对象改写不会污染 replay 响应”的回归场景；当前仍无真实服务器启动、无网络 I/O（输入输出）、无数据库查询实现。
+
+## T-007
+
+- **审查结论**: 通过
+- **核心文件**:
+  - `ts-core/src/diagnostics/index.ts`
+  - `ts-core/src/diagnostics/contracts.ts`
+  - `ts-core/src/diagnostics/logs.ts`
+  - `ts-core/src/sandbox/index.ts`
+  - `ts-core/src/sandbox/contracts.ts`
+  - `ts-core/src/sandbox/facade.ts`
+  - `ts-core/src/sandbox/execution.ts`
+  - `ts-core/src/index.ts`
+  - `ts-core/src/domain/contracts.ts`
+  - `ts-core/src/__tests__/scaffold.spec.ts`
+  - `ts-core/src/__tests__/sandbox-diagnostics-model.spec.ts`
+- **变更快照**:
+  - 建立 `sandbox`（沙箱） 模块的最小强类型契约层，补齐 `Facade API`（门面接口） 顶层分区、Phase 1（第一阶段） 技能对齐绑定、执行请求 / 结果 / 资源限制 / 错误分类，并接入根导出。
+  - 建立 `diagnostics`（诊断） 模块的 JSONL（结构化日志） 契约与引用工具，集中收口 `tasks` / `sandbox` / `llm` 三类通道的目录、保留期、`log_ref` / `code_ref`（日志 / 代码引用） 规则，以及只读日志行构造函数。
+  - 打回项已修正：`AbortError`（中断错误） 已收紧为不可恢复语义，`SandboxExecutionRequest.type`（沙箱执行请求判别字段） 已锁定为 `sandbox_code`（沙箱代码），`sandbox` 日志行公开契约也已对齐 `05_DATA_SPEC.md`（数据规范） 的短字段落盘格式。
+  - 测试已覆盖根导出、Phase 1（第一阶段） 技能对齐、日志引用、JSONL（结构化日志） 字段模型、错误分类、只读冻结与负向类型约束；当前仍未接入真实 `isolated-vm`（隔离虚拟机）、`esbuild`（转译器）、文件写入或网络 I/O（输入输出）。
