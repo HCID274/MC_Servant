@@ -1,4 +1,10 @@
 import { ConversationPriority, ExecutionTaskKind } from "../domain/contracts.js";
+import {
+  type SkillCall,
+  type SkillCallInput,
+  type SkillName,
+  createSkillCall,
+} from "../skills/index.js";
 import type { InterruptSource } from "./contracts.js";
 
 /** 执行队列可接受的优先级枚举。 */
@@ -33,14 +39,31 @@ export interface ExecJobBase {
 }
 
 /** skill_call 执行任务结构。 */
-export interface SkillCallJob extends ExecJobBase {
+export interface SkillCallJobFor<TName extends SkillName> extends ExecJobBase {
   /** 固定为 skill_call。 */
   type: ExecutionTaskKind.SkillCall;
+  /** 与技能目录对齐的 skill_call 结构。 */
+  readonly skillCall: SkillCall<TName>;
   /** 技能名。 */
-  skill: string;
+  readonly skill: TName;
   /** 技能参数。 */
-  params: Readonly<Record<string, unknown>>;
+  readonly params: SkillCall<TName>["params"];
 }
+
+/** BotActor 可消费的 `skill_call`（技能调用） 执行任务联合。 */
+export type SkillCallJob = {
+  [TName in SkillName]: SkillCallJobFor<TName>;
+}[SkillName];
+
+/** 创建 `skill_call`（技能调用） 执行任务时允许的输入联合。 */
+export type SkillCallJobInput = {
+  [TName in SkillName]: {
+    message_id: string;
+    intent_epoch: number;
+    snapshot_ts: number;
+    priority: ExecPriority;
+  } & SkillCall<TName>;
+}[SkillName];
 
 /** sandbox_code 执行任务结构。 */
 export interface SandboxCodeJob extends ExecJobBase {
@@ -78,23 +101,24 @@ export function toExecPriority(priority: ConversationPriority): ExecPriority | n
 }
 
 /** 创建 skill_call 执行任务。 */
-export function createSkillCallJob(input: {
-  message_id: string;
-  intent_epoch: number;
-  snapshot_ts: number;
-  priority: ExecPriority;
-  skill: string;
-  params: Readonly<Record<string, unknown>>;
-}): SkillCallJob {
+export function createSkillCallJob<TInput extends SkillCallJobInput>(
+  input: TInput,
+): Extract<SkillCallJob, { skill: TInput["skill"] }> {
+  const skillCall = createSkillCall({
+    skill: input.skill,
+    params: input.params,
+  } as Extract<SkillCallInput, { skill: TInput["skill"] }>);
+
   return {
     type: ExecutionTaskKind.SkillCall,
     message_id: input.message_id,
     intent_epoch: input.intent_epoch,
     snapshot_ts: input.snapshot_ts,
     priority: input.priority,
-    skill: input.skill,
-    params: input.params,
-  };
+    skillCall,
+    skill: skillCall.skill,
+    params: skillCall.params,
+  } as unknown as Extract<SkillCallJob, { skill: TInput["skill"] }>;
 }
 
 /** 创建 sandbox_code 执行任务。 */

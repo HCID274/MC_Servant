@@ -79,3 +79,18 @@
   - `EnvironmentSnapshot`（环境快照） 与 `ObservationReadBoundary`（观测只读边界） 已收口为深拷贝 + 冻结语义，`getSnapshot()` 返回副本不再泄露内部引用；`owner` / `world` 读取边界也已改成面向实时缓存源的形状。
   - `ThreatAssessment`（威胁评估） 删除弱类型兼容口，直接与 `runtime`（运行时） 的 reflex（反射）中断来源复用；不再允许 `"high"` 这类平行 threat（威胁） 字符串或最小载荷进入。
   - `world-model`（世界模型） 已补齐资源画像、资源簇、候选块、最优簇查询和 query / refresh（查询 / 刷新） 分离契约；查询返回值及关键嵌套对象已冻结，测试覆盖快照不可变、owner 实时读取、强类型 threat 与 world-model 只读回归。`runtime-model.spec.ts` 的改动仅限用户授权下的最小必要强类型修复。
+
+## T-005
+
+- **审查结论**: 通过
+- **核心文件**:
+  - `ts-core/src/skills/contracts.ts`
+  - `ts-core/src/skills/registry.ts`
+  - `ts-core/src/skills/index.ts`
+  - `ts-core/src/runtime/tasking.ts`
+  - `ts-core/src/__tests__/skills-model.spec.ts`
+- **变更快照**:
+  - 建立 `skills`（技能） 模块的 Phase 1（第一阶段） 技能目录与参数契约，补齐 `goTo`、`mine`、`cutTree`、`collect`、`equip` 五个技能的强类型参数模型、校验器与只读 `skill_call`（技能调用） 结构。
+  - 新增 `SkillRegistry`（技能注册表） 纯函数边界，覆盖创建、注册、按名读取、顺序列举与 Phase 1 默认注册表构造；当前仍保持纯契约层，没有接入真实 Mineflayer（Minecraft 协议客户端） 执行或 `BotActor`（机器人执行代理） 调度。
+  - `runtime/tasking.ts` 中的 `createSkillCallJob`（创建技能调用任务） 已与 `skills`（技能） 契约收口，`skill_call`（技能调用） 不再依赖自由字符串 + 自由参数对象的平行集合。
+  - 测试已覆盖技能目录、负向类型约束、注册表边界与 `skill_call`（技能调用） 对齐路径；当前根入口无需新增临时兼容层。

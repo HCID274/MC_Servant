@@ -4,16 +4,16 @@ import type { ModuleBoundary } from "../domain/contracts.js";
 export const skillsModuleBoundary = {
   moduleName: "skills",
   responsibilities: [
-    "保留技能注册与技能目录的模块入口",
-    "等待后续 skill_call 输出接入具体技能实现",
+    "维护技能目录、参数契约与注册表的纯类型边界",
+    "为 runtime 与后续 sandbox 共享同一套 skill_call 契约",
   ],
-  placeholderExports: ["skillsModuleBoundary", "createSkillsModulePlaceholder"],
+  placeholderExports: [
+    "SKILL_DIRECTORY",
+    "PHASE1_SKILL_NAMES",
+    "createSkillCall",
+    "createPhase1SkillRegistry",
+  ],
 } satisfies ModuleBoundary;
 
-/** 创建技能模块占位对象。 */
-export function createSkillsModulePlaceholder() {
-  return {
-    registeredSkills: [] as const,
-    status: "placeholder" as const,
-  };
-}
+export * from "./contracts.js";
+export * from "./registry.js";
