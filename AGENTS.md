@@ -1,8 +1,26 @@
 # Repository Guidelines
 
+## 0. Agent 入口与协作工作流
+
+本仓库采用三角色 Agent 协作开发机制（Manager / Coder / Consultant）。
+
+**所有 AI Agent 进入仓库后，必须先读 `ts-core/agent.md`（索引入口），再按角色执行对应工作流。**
+
+| 文件 | 用途 |
+|---|---|
+| `ts-core/agent.md` | Agent 协作索引入口（三角色共同起点） |
+| `ts-core/Docs/09_AGENT_WORKFLOW.md` | 工作流完整规范：角色定义、职责边界、状态流转、Prompt 模板 |
+| `ts-core/Docs/WF_当前任务握手.md` | 当前活跃任务（Manager 写 / Coder 读+填反馈） |
+| `ts-core/Docs/WF_开发进度记录.md` | 已完成任务追加记录（仅 Manager 写入） |
+| `ts-core/Docs/WF_需求变更索引.md` | 需求变更摘要（Consultant 追加 / Manager 读取） |
+
+如果你不是以特定角色启动的（即没有收到 Manager/Coder/Consultant 的 Prompt），仍然必须遵守本文件中的所有约束。
+
+---
+
 ## 1. 当前路线
 
-- 当前路线为“路线 A：旧项目保留为参考库，同级目录新开 `ts-core/` 做 TS 单核心重构”。
+- 当前路线为"路线 A：旧项目保留为参考库，同级目录新开 `ts-core/` 做 TS 单核心重构"。
 - 未经用户明确要求，不在本仓旧系统上继续推进新架构，不把旧 `backend/` 当成未来主线实现。
 - 新实现默认落在 `ts-core/`；旧 `backend/`、`plugin/` 仅作为参考库、维护对象或兼容对象，不作为默认开发落点。
 - 旧设计文档已归档到 `backend/Docs/`，作为历史资料，与后续新设计文档区分。
@@ -24,7 +42,7 @@
 - 禁止在代码或 prompt 中写死 Minecraft 领域事实数据，如配方、掉落、工具等级、方块组、运行时规则。
 - Minecraft 任务事实真源优先使用 `mineflayer`、`minecraft-data` 与实时环境快照。
 - 未经用户明确允许，禁止回退到自维护知识库 JSON 作为主规划依据。
-- 中文用户输入到标准英文目标 id 的词汇映射可以维护在数据文件中，但只负责“中文 -> 标准 id”翻译，不能承载配方、掉落、工具等级等事实规则。
+- 中文用户输入到标准英文目标 id 的词汇映射可以维护在数据文件中，但只负责"中文 -> 标准 id"翻译，不能承载配方、掉落、工具等级等事实规则。
 
 ## 4. Legacy 索引工作流
 
@@ -73,15 +91,30 @@
 ## 7. 仓库结构认知
 
 - `ts-core/`：新 TypeScript 单核心工程；当前主线开发默认落点。
+  - `ts-core/agent.md`：Agent 协作索引入口。
+  - `ts-core/Docs/`：设计文档（01-09）+ 工作流动态文件（WF_*）。
+  - `ts-core/scripts/`：工具脚本（pre_review.sh 等）。
+  - `ts-core/src/`：源代码（Coder 工作区）。
 - `backend/`：旧 Python FastAPI + Mineflayer 适配层；当前定位为参考库与维护对象，不是未来主线架构。
 - `plugin/`：Java Paper/Spigot 插件。
 - `scripts/`：工具脚本。
-- `Docs/`、`docs/`：架构文档与迁移索引；迁移相关文档优先看 `docs/legacy-*.md`。
+- `docs/`：迁移索引（`legacy-*.md`）。
 - 根入口：`README.md`、历史启动脚本与项目说明文件。
 
 ## 8. 常用命令
 
-### 旧 backend
+### ts-core（主线）
+- 安装依赖：`cd ts-core && pnpm install`
+- 类型检查：`cd ts-core && pnpm typecheck`
+- 测试：`cd ts-core && pnpm test`
+- 测试监听：`cd ts-core && pnpm test:watch`
+- lint：`cd ts-core && pnpm lint`
+- format：`cd ts-core && pnpm format`
+- 开发：`cd ts-core && pnpm dev`
+- 构建：`cd ts-core && pnpm build`
+- 预检（Coder 自检）：`bash ts-core/scripts/pre_review.sh`
+
+### 旧 backend（仅维护）
 - 安装依赖：
   - `cd backend && pip install -r requirements.txt`
   - `cd backend && npm install`
@@ -91,20 +124,18 @@
 - 测试：
   - `cd backend && pytest -q`
 
-### ts-core
-- 安装依赖：`cd ts-core && pnpm install`
-- 类型检查：`cd ts-core && pnpm typecheck`
-- 测试：`cd ts-core && pnpm test`
-- 测试监听：`cd ts-core && pnpm test:watch`
-- lint：`cd ts-core && pnpm lint`
-- format：`cd ts-core && pnpm format`
-- 开发：`cd ts-core && pnpm dev`
-- 构建：`cd ts-core && pnpm build`
-
 ### plugin
 - 构建：`cd plugin && .\mvnw.cmd clean package -DskipTests`
 
 ## 9. 编码规范
+
+### 编辑 ts-core 时（主线）
+- 使用 TypeScript，不写新的纯 JavaScript 业务模块，除非第三方工具脚本确有必要。
+- 优先使用 `type` / `interface` 明确边界，避免滥用 `any`。
+- 类型、类使用 `PascalCase`，变量、函数使用 `camelCase`。
+- 模块职责单一，禁止新增 god file。
+- 能做纯函数的模块优先纯函数化，尤其是 `world-model`、`summary-input`、`domain`。
+- `ts-core` 代码默认要求中文文档注释：每个导出的类、函数、接口、类型都应有中文注释；关键状态流转、协议转换、并发门控和异常分支应有中文块注释解释原因与边界。
 
 ### 编辑旧 Python 代码时
 - 保持现有 type-hinted 风格。
@@ -116,14 +147,6 @@
 - 保持标准 4 空格缩进。
 - 命名遵循 `camelCase` / `PascalCase`。
 
-### 编辑 ts-core 时
-- 使用 TypeScript，不写新的纯 JavaScript 业务模块，除非第三方工具脚本确有必要。
-- 优先使用 `type` / `interface` 明确边界，避免滥用 `any`。
-- 类型、类使用 `PascalCase`，变量、函数使用 `camelCase`。
-- 模块职责单一，禁止新增 god file。
-- 能做纯函数的模块优先纯函数化，尤其是 `world-model`、`summary-input`、`domain`。
-- `ts-core` 代码默认要求中文文档注释：每个导出的类、函数、接口、类型都应有中文注释；关键状态流转、协议转换、并发门控和异常分支应有中文块注释解释原因与边界。
-
 ## 10. TypeScript 配置规则
 
 - `ts-core` 默认启用严格模式 `strict`。
@@ -132,14 +155,13 @@
 
 ## 11. 文档规则
 
-- 迁移索引和 TS Core 重构相关信息，统一维护在 `docs/legacy-*.md`。
-- `AGENTS.md` 只保留约束、工作流、范围线、禁止事项与文档索引；不要继续堆积阶段性实现细节。
-- 具体架构设计统一落在 `docs/architecture-*.md`，由 `AGENTS.md` 提供索引，不把大段实现细节直接堆回 `AGENTS.md`。
-- 当前已确认的架构文档入口：
-  - `docs/architecture-observation.md`：`observation` 的事实增量模型与未决设计点。
-  - `docs/architecture-llm-execution.md`：`LLM` 执行接口采用受限 `DSL`，不走自由脚本主路径。
-  - `docs/architecture-runtime-control.md`：运行时控制模型、打断策略、应急行为与 `Plan-Execute-Review` 主流程。
+- **设计文档**统一维护在 `ts-core/Docs/`（01-09 系列），由 `ts-core/Docs/00_目录.md` 提供总索引。
+- **迁移索引**统一维护在 `docs/legacy-*.md`。
+- **工作流动态文件**统一维护在 `ts-core/Docs/WF_*.md`。
+- `AGENTS.md` 只保留约束、工作流路由、范围线、禁止事项与文档索引；不要继续堆积阶段性实现细节。
+- 不把具体架构设计细节直接堆进 `AGENTS.md`；架构设计落在 `ts-core/Docs/01-08` 系列中。
 - 旧 `backend/Docs/` 保留为历史资料，不再作为 TS Core 的主实现导航入口。
+- 旧 `docs/architecture-*.md` 已被 `ts-core/Docs/01-08` 系列取代，仅保留为历史参考。
 - `ts-core` 自身的运行说明、脚本说明、模块说明，优先放在 `ts-core/README.md` 或其局部文档中，不反向堆回 `AGENTS.md`。
 
 ## 12. 安全与配置
@@ -151,4 +173,4 @@
 ## 13. 额外约束
 
 - 不要把阶段性实现细节重新堆进 `AGENTS.md` 或旧 `backend/Docs/`。
-- 不要把项目总纲与仓库执行规范混写；项目架构和目标看项目总纲，仓库操作规则看 `AGENTS.md`。
+- 不要把项目总纲与仓库执行规范混写；项目架构和目标看 `ts-core/Docs/` 设计文档，仓库操作规则看 `AGENTS.md`。
