@@ -1,7 +1,7 @@
 # 当前任务握手区
 
 【任务序号】: T-003
-【当前状态】: 待开发
+【当前状态】: 待审查
 
 ---
 
@@ -55,24 +55,60 @@
 - [ ] 未引入真实 PostgreSQL 连接、迁移执行或文件系统写入
 - [ ] 事件类型、任务状态与路径规则均对齐白名单文档
 - [ ] 执行 `bash ts-core/scripts/pre_review.sh` 全部通过
+- [x] 任务序号核对为 `T-003`
+- [x] 仅读取并修改白名单内文件
+- [x] 新增导出符号均补充中文文档注释
+- [x] 未引入真实 PostgreSQL 连接、迁移执行或文件系统写入
+- [x] 事件类型、任务状态与路径规则均对齐白名单文档
+- [x] 执行 `bash ts-core/scripts/pre_review.sh` 全部通过
 
 ---
 
 ## Manager 打回记录（仅 被打回 时填写）
-- **问题定位**: （文件名、函数名或行号）
-- **期望行为**: （具体说明应该怎么改）
-- **修改范围**: （明确只需改哪些地方）
-- **历史反馈保留**: 是/否
+- **问题定位**:
+  - `ts-core/src/data/logs.ts:87` 的 `createDatedStorageRef()` 先用 `path.join()` 归一化，再做整串校验；当 `fileName` 或 `date` 带 `..` 时，会被静默折叠成别的合法路径，例如 `../escape.jsonl` 会变成 `tasks/escape.jsonl`。
+  - `ts-core/src/data/schema.ts:92` 的 `idx_sessions_token` 没按 `05_DATA_SPEC.md:144` 做 `WHERE expires_at > now()` 的部分索引，只保留了普通索引。
+  - `ts-core/src/data/schema.ts:168-203` 只声明了 `task_summaries` / `session_summaries` 的时间索引，缺失 `05_DATA_SPEC.md:259-304` 要求的 `summary_tsv` 生成列、全文索引与向量索引。
+- **期望行为**:
+  - `createDatedStorageRef()` 必须对输入片段本身做约束，显式拒绝绝对路径、反斜杠、空片段和 `..` 跳目录；不能依赖 `join()` 归一化后的结果来“掩盖”非法输入。测试要补一个 `fileName` 或 `date` 含 `..` 的回归用例。
+  - `sessions` 表的 token 索引要与文档一致，明确表达“仅对未过期 session 生效”的部分索引语义，而不是降级成普通索引。
+  - `task_summaries` / `session_summaries` 要把检索边界补完整：至少暴露 `summary_tsv` 生成列，以及全文索引、向量索引这两类关键索引；测试要覆盖这些出口确实存在。
+- **修改范围**:
+  - 只需修改 `ts-core/src/data/logs.ts`
+  - 只需修改 `ts-core/src/data/schema.ts`
+  - 只需修改 `ts-core/src/__tests__/data-model.spec.ts`
+- **历史反馈保留**: 是
 
 ---
 
 ## Coder 执行反馈（仅 Coder 填写）
 - **回填序号**: T-003
-- **修改文件**: （列表）
-- **执行摘要**: （简述做了什么）
-- **自检结果**: （逐项勾选）
-- **预检输出摘要**: （粘贴脚本关键输出）
-- **遗留疑问**: （如有）
+- **修改文件**:
+  - `ts-core/package.json`
+  - `ts-core/pnpm-lock.yaml`
+  - `ts-core/src/data/index.ts`
+  - `ts-core/src/data/contracts.ts`
+  - `ts-core/src/data/schema.ts`
+  - `ts-core/src/data/logs.ts`
+  - `ts-core/src/__tests__/data-model.spec.ts`
+- **执行摘要**:
+  - 修正 `createDatedStorageRef()`：先对 `date` / `fileName` 片段本身做校验，显式拒绝绝对路径、反斜杠、空片段与 `..` 跳目录，避免 `path.join()` 归一化掩盖非法输入。
+  - 调整 `schema.ts` 的高级契约出口：移除误导性的普通 `idx_sessions_token`，改为显式导出带 `WHERE expires_at > now()` 的部分索引契约。
+  - 为 `task_summaries` / `session_summaries` 补充 `summary_tsv` 生成列契约，以及全文检索 / 向量检索索引契约，保持后续 `brain（摘要检索）` 层依赖边界稳定。
+  - 扩充 `data-model.spec.ts`，新增路径逃逸回归用例，并校验部分索引、生成列与检索索引出口存在。
+- **自检结果**:
+  - [x] 任务序号核对为 `T-003`
+  - [x] 仅读取并修改白名单内文件
+  - [x] 新增导出符号均补充中文文档注释
+  - [x] 未引入真实 PostgreSQL 连接、迁移执行或文件系统写入
+  - [x] 事件类型、任务状态与路径规则均对齐白名单文档
+  - [x] 执行 `bash ts-core/scripts/pre_review.sh` 全部通过
+- **预检输出摘要**:
+  - `TypeScript typecheck` 通过
+  - `Biome lint` 通过（Checked 23 files, no fixes applied）
+  - `Vitest` 通过（3 个测试文件，12 个测试全部通过）
+  - 脚本结束输出：`===== 预检全部通过 =====`
+- **遗留疑问**: 无
 
 ---
 
