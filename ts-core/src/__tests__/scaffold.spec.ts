@@ -8,11 +8,14 @@ import {
   MessageSource,
   RUNTIME_EVENT_TYPES,
   coreModuleBoundaries,
+  createDataConfig,
   createDiagnosticsCatalog,
+  createDrizzleMigrationMetadata,
   createEnvironmentSnapshot,
   createHealthResponse,
   createMessageQueueName,
   createMessageTriage,
+  createRedisKeyCatalog,
   createRuntimeScaffold,
   createSandboxFacadeContract,
   createSessionRecord,
@@ -139,5 +142,22 @@ describe("TS Core 工程骨架", () => {
     expect(queueCatalog.conversation.queue).toBe(createMessageQueueName("bot-root"));
     expect(queueCatalog.bot.queue).toBe("bot:bot-root:exec");
     expect(queueCatalog.brain.queue).toBe("brain");
+  });
+
+  it("应从根入口导出 db（数据库） 与 data（数据） 的基础设施契约", () => {
+    const config = createDataConfig({
+      env: {
+        LOGS_BASE_DIR: "./root-logs",
+        EMBEDDING_DIMENSIONS: "1536",
+      },
+    });
+    const redisKeys = createRedisKeyCatalog("bot-root");
+    const migrations = createDrizzleMigrationMetadata();
+
+    expect(config.logs.baseDir).toBe("./root-logs");
+    expect(config.embedding.dimensions).toBe(1536);
+    expect(redisKeys.intentEpoch).toBe("bot:bot-root:intent_epoch");
+    expect(redisKeys.queues.exec).toBe("bull:bot:bot-root:exec:*");
+    expect(migrations.migrationsDirectory).toBe("src/db/migrations");
   });
 });

@@ -10,6 +10,7 @@ export const CORE_MODULE_NAMES = [
   "sandbox",
   "diagnostics",
   "domain",
+  "db",
   "data",
 ] as const;
 

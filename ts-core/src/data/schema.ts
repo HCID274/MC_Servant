@@ -17,7 +17,9 @@ import type { MessageTriage } from "../domain/contracts.js";
 import type { TaskStatusEventPayload } from "../runtime/events.js";
 import type { SkillCallJob } from "../runtime/tasking.js";
 import {
+  type BotConfigOverlay,
   CHAT_MESSAGE_ROLES,
+  DEFAULT_EMBEDDING_DIMENSIONS,
   MC_SERVANT_SCHEMA_NAME,
   PERSISTED_MESSAGE_SOURCES,
   type PersistedEventPayload,
@@ -29,7 +31,7 @@ import {
 } from "./contracts.js";
 
 /** 向量列的维度常量。 */
-export const EMBEDDING_DIMENSIONS = 1024 as const;
+export const EMBEDDING_DIMENSIONS = DEFAULT_EMBEDDING_DIMENSIONS;
 
 /** mc_servant schema 命名空间。 */
 export const mcServantSchema = pgSchema(MC_SERVANT_SCHEMA_NAME);
@@ -151,7 +153,7 @@ export const botsTable = mcServantSchema.table("bots", {
   botName: text("bot_name").notNull().unique(),
   persona: text("persona").notNull().default("catmaid"),
   mcServer: text("mc_server").notNull(),
-  config: jsonb("config").$type<Readonly<Record<string, unknown>>>().notNull().default({}),
+  config: jsonb("config").$type<BotConfigOverlay>().notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

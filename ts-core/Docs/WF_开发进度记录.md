@@ -155,3 +155,25 @@
   - 建立 `workers`（工作线程） 模块的三队列命名、三类 Worker（工作线程） 输入任务与输出动作契约，并把 `cancel` / `modify`（取消 / 修改） 到 `InterruptSignal`（中断信号） 的桥接语义固定为纯函数边界。
   - 打回项已修正：`workers`（工作线程） 不再直接依赖 `conversation`（对话） 的实现函数，只接收已构造好的 `ConversationReply`（对话回复） / `ExecJob`（执行任务）；`cancel`（取消） 路径已锁死为 `template`（模板） 回复；`ConversationWorkerTask`（对话工作线程任务） 也已拒绝 `bot_id`（机器人标识） 与消息载荷不一致的输入。
   - 测试已覆盖根导出、三队列命名、分诊回退、双路径规划、cancel / modify（取消 / 修改） 分流、优先级到队列行为映射，以及本轮两条负向回归；当前仍未接入真实 `BullMQ`（队列）、`Redis`（缓存）、`LLM`（大语言模型） SDK、数据库或网络 I/O（输入输出）。
+
+## T-009
+
+- **审查结论**: 通过
+- **核心文件**:
+  - `ts-core/src/index.ts`
+  - `ts-core/src/domain/contracts.ts`
+  - `ts-core/src/data/index.ts`
+  - `ts-core/src/data/contracts.ts`
+  - `ts-core/src/data/schema.ts`
+  - `ts-core/src/db/index.ts`
+  - `ts-core/src/db/contracts.ts`
+  - `ts-core/src/db/keys.ts`
+  - `ts-core/src/db/connection.ts`
+  - `ts-core/src/db/migrations.ts`
+  - `ts-core/src/__tests__/scaffold.spec.ts`
+  - `ts-core/src/__tests__/db-config-model.spec.ts`
+- **变更快照**:
+  - 建立 `db`（数据库） 模块的最小强类型契约，补齐 PostgreSQL（关系型数据库） schema（模式） / extension（扩展） 元信息、连接描述符、Redis（缓存） 键目录、Bot 状态缓存结构与 Drizzle（类型安全 ORM） migration（迁移） 元信息，并接入根导出与模块清单。
+  - `data`（数据） 模块已集中收口基础设施配置默认值、环境变量主名 / 历史别名、日志根目录 / 保留期与 `bots.config`（机器人配置） overlay（覆盖合并） 纯函数；运行时消费侧不再直接依赖自由 `Record<string, unknown>`（任意键值对象）。
+  - Redis（缓存） / BullMQ（队列） 键命名已通过 `workers/queues.ts`（工作线程队列命名） 复用收口，`bot:{botId}:intent_epoch`、`bot:{botId}:state`、`bot:{botId}:snapshot` 与 `bull:msg:{botId}:*` / `bull:bot:{botId}:exec:*` / `bull:brain:*` 的关系可由纯函数目录直接读出，不再散落平行字符串集合。
+  - 测试已覆盖根导出、环境变量归一化、Bot 级配置覆盖、Redis（缓存） 键目录、状态缓存、PostgreSQL（关系型数据库） / migration（迁移） 元信息与负向校验；当前仍未接入真实 `pg`（驱动）、`Redis`（缓存） 客户端、迁移执行器、文件系统写入或网络 I/O（输入输出）。

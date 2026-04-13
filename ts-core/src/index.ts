@@ -1,5 +1,6 @@
 import { conversationModuleBoundary } from "./conversation/index.js";
 import { dataModuleBoundary } from "./data/index.js";
+import { dbModuleBoundary } from "./db/index.js";
 import { diagnosticsModuleBoundary } from "./diagnostics/index.js";
 import { domainModuleBoundary } from "./domain/index.js";
 import { interfacesModuleBoundary } from "./interfaces/index.js";
@@ -22,6 +23,7 @@ export const coreModuleBoundaries = [
   sandboxModuleBoundary,
   diagnosticsModuleBoundary,
   domainModuleBoundary,
+  dbModuleBoundary,
   dataModuleBoundary,
 ] as const;
 
@@ -35,4 +37,5 @@ export * from "./workers/index.js";
 export * from "./sandbox/index.js";
 export * from "./diagnostics/index.js";
 export * from "./domain/index.js";
+export * from "./db/index.js";
 export * from "./data/index.js";
