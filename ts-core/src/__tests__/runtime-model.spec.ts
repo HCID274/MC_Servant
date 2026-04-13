@@ -7,6 +7,8 @@ import {
   ExecutionTaskKind,
   RUNTIME_EVENT_TYPES,
   TaskHistoryStatus,
+  ThreatLevel,
+  ThreatRuleId,
   canTransition,
   createSandboxCodeJob,
   createSkillCallJob,
@@ -17,6 +19,21 @@ import {
 } from "../index.js";
 
 describe("runtime 执行态模型", () => {
+  const reflexThreat = {
+    rule_id: ThreatRuleId.HostileCloseArmed,
+    level: ThreatLevel.Fight,
+    reason: "hostile_close_armed",
+    interrupt_required: true,
+    detected_at: 1_712_000_000,
+    hostile_entities: [],
+    bot_state: {
+      health: 20,
+      is_on_fire: false,
+      y_velocity: 0,
+      has_weapon_equipped: true,
+    },
+  } as const;
+
   it("应能创建与文档一致的执行任务联合", () => {
     const skillCallJob = createSkillCallJob({
       message_id: "msg-1",
@@ -63,7 +80,7 @@ describe("runtime 执行态模型", () => {
     const reflexDecision = resolveInterruptDecision(BotStatus.EXECUTING, {
       source: {
         type: "reflex",
-        threat: { level: "high" },
+        threat: reflexThreat,
       },
       reason: "threat_detected",
     });
@@ -79,7 +96,7 @@ describe("runtime 执行态模型", () => {
       signal: {
         source: {
           type: "reflex",
-          threat: { level: "high" },
+          threat: reflexThreat,
         },
         reason: "threat_detected",
       },

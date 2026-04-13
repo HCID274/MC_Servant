@@ -1,4 +1,5 @@
 import { type EventLogEntry, EventLogLevel, type MessageSource } from "../domain/contracts.js";
+import type { ThreatLevel, ThreatRuleId } from "../observation/contracts.js";
 import type { BotStatus, InterruptSource } from "./contracts.js";
 import type { TaskHistoryStatus } from "./tasking.js";
 
@@ -52,6 +53,16 @@ export interface TaskStatusEventPayload {
   job_id: string;
   /** 当前状态。 */
   status: TaskHistoryStatus;
+}
+
+/** 反射触发事件载荷。 */
+export interface ReflexTriggeredEventPayload {
+  /** 规则标识。 */
+  rule_id: ThreatRuleId;
+  /** 威胁等级。 */
+  threat_level: ThreatLevel;
+  /** 参与评估的实体标识。 */
+  entities: readonly string[];
 }
 
 /** 判断给定字符串是否为合法运行时事件类型。 */

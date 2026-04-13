@@ -43,3 +43,39 @@
   - 补齐 `ExecJob`、执行优先级、`task_history` 状态枚举与 `event_log` 事件常量，命名对齐 `05_DATA_SPEC.md` 与 `02_RUNTIME_SPEC.md`。
   - 建立纯函数状态机模型，覆盖合法/非法迁移、中断分流、`state.transition` 审计事件与“未接受迁移不产生日志事件”的约束。
   - 测试已覆盖执行任务构造、事件名清单、合法迁移、非法迁移和中断接受语义，`T-001` 留下的 `domain/index.ts` 占位导出残留已一并收口。
+
+## T-003
+
+- **审查结论**: 通过
+- **核心文件**:
+  - `ts-core/package.json`
+  - `ts-core/pnpm-lock.yaml`
+  - `ts-core/src/data/index.ts`
+  - `ts-core/src/data/contracts.ts`
+  - `ts-core/src/data/schema.ts`
+  - `ts-core/src/data/logs.ts`
+  - `ts-core/src/__tests__/data-model.spec.ts`
+- **变更快照**:
+  - 建立 `data` 模块的持久化契约层，补齐 `mc_servant` 核心表 schema 出口、`event_log` / `task_history` 复用现有运行时枚举，以及冷热日志常量。
+  - `log_ref` / `code_ref` 的相对路径规则已集中收口，`createDatedStorageRef()` 会在拼接前拒绝 `..`、绝对路径与反斜杠输入，避免路径归一化掩盖非法片段。
+  - `sessions` 的未过期 token 部分索引语义、`task_summaries` / `session_summaries` 的 `summary_tsv` 生成列与全文 / 向量检索索引，已明确为独立契约出口。
+  - 测试已覆盖核心表结构、事件 / 状态复用、路径逃逸回归，以及部分索引和摘要检索契约存在性；当前没有引入真实 PostgreSQL 连接、迁移执行或文件写入逻辑。
+
+## T-004
+
+- **审查结论**: 通过
+- **核心文件**:
+  - `ts-core/src/observation/index.ts`
+  - `ts-core/src/observation/contracts.ts`
+  - `ts-core/src/observation/snapshot.ts`
+  - `ts-core/src/world-model/index.ts`
+  - `ts-core/src/world-model/contracts.ts`
+  - `ts-core/src/world-model/query.ts`
+  - `ts-core/src/runtime/contracts.ts`
+  - `ts-core/src/__tests__/observation-world-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-model.spec.ts`
+- **变更快照**:
+  - 建立 `observation` 模块的双数据源只读契约层，统一 Mineflayer（Minecraft 协议客户端）与 JAR Bridge（服务端桥接）的原始输入、归一化环境快照、威胁检测输入输出，以及读取时取当前值的只读边界。
+  - `EnvironmentSnapshot`（环境快照） 与 `ObservationReadBoundary`（观测只读边界） 已收口为深拷贝 + 冻结语义，`getSnapshot()` 返回副本不再泄露内部引用；`owner` / `world` 读取边界也已改成面向实时缓存源的形状。
+  - `ThreatAssessment`（威胁评估） 删除弱类型兼容口，直接与 `runtime`（运行时） 的 reflex（反射）中断来源复用；不再允许 `"high"` 这类平行 threat（威胁） 字符串或最小载荷进入。
+  - `world-model`（世界模型） 已补齐资源画像、资源簇、候选块、最优簇查询和 query / refresh（查询 / 刷新） 分离契约；查询返回值及关键嵌套对象已冻结，测试覆盖快照不可变、owner 实时读取、强类型 threat 与 world-model 只读回归。`runtime-model.spec.ts` 的改动仅限用户授权下的最小必要强类型修复。

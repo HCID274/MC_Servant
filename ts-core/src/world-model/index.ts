@@ -3,14 +3,17 @@ import type { ModuleBoundary } from "../domain/contracts.js";
 /** world-model 模块边界声明。 */
 export const worldModelModuleBoundary = {
   moduleName: "world-model",
-  responsibilities: ["保留世界模型的只读推导入口", "等待后续接入观测快照与威胁评估边界"],
-  placeholderExports: ["worldModelModuleBoundary", "createWorldModelPlaceholder"],
+  responsibilities: [
+    "提供资源画像、资源簇与候选块的只读查询契约",
+    "显式拆分 query 与 refresh 边界",
+  ],
+  placeholderExports: [
+    "worldModelModuleBoundary",
+    "createWorldModelQueryBoundary",
+    "createWorldModelRefreshBoundary",
+    "queryBestResourceCluster",
+  ],
 } satisfies ModuleBoundary;
 
-/** 创建 world-model 模块占位对象。 */
-export function createWorldModelPlaceholder() {
-  return {
-    derivedViews: [] as const,
-    status: "placeholder" as const,
-  };
-}
+export * from "./contracts.js";
+export * from "./query.js";

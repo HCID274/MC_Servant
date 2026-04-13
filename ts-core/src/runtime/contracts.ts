@@ -1,4 +1,7 @@
 import { type ExecutionTaskEnvelope, ExecutionTaskKind } from "../domain/contracts.js";
+import type { ReflexInterruptSource, ThreatAssessment } from "../observation/contracts.js";
+
+export type { ThreatAssessment } from "../observation/contracts.js";
 
 /** Bot 状态枚举，用于描述 BotActor 在运行时内的最小状态集合。 */
 export enum BotStatus {
@@ -10,9 +13,6 @@ export enum BotStatus {
   SHUTDOWN = "shutdown",
 }
 
-/** 威胁评估占位结构，用于为 reflex 中断保留文档要求的 threat 概念。 */
-export type ThreatAssessment = Readonly<Record<string, unknown>>;
-
 /** 中断来源判别联合，用于区分 control、reflex、triage 与 system 四类来源。 */
 export type InterruptSource =
   | {
@@ -21,12 +21,7 @@ export type InterruptSource =
       /** 控制命令。 */
       command: "interrupt" | "cancel";
     }
-  | {
-      /** 反射类中断。 */
-      type: "reflex";
-      /** 威胁评估结果。 */
-      threat: ThreatAssessment;
-    }
+  | ReflexInterruptSource
   | {
       /** 分诊类中断。 */
       type: "triage";
