@@ -9,13 +9,16 @@ import {
   RUNTIME_EVENT_TYPES,
   coreModuleBoundaries,
   createEnvironmentSnapshot,
+  createHealthResponse,
   createRuntimeScaffold,
+  createSessionRecord,
+  createStatusResponse,
   createWorldModelQueryBoundary,
   toExecPriority,
 } from "../index.js";
 
 describe("TS Core 工程骨架", () => {
-  it("应导出七个模块边界并与模块名清单一致", () => {
+  it("应导出八个模块边界并与模块名清单一致", () => {
     const moduleNames = coreModuleBoundaries.map((boundary) => boundary.moduleName);
 
     expect(moduleNames).toEqual([...CORE_MODULE_NAMES]);
@@ -79,5 +82,30 @@ describe("TS Core 工程骨架", () => {
 
     expect(snapshot.snapshot_version).toBe("root-export");
     expect(worldModel.queryClusters("oak_log")).toEqual([]);
+  });
+
+  it("应从根入口导出 interfaces（接口层） 的最小纯契约", () => {
+    const session = createSessionRecord({
+      id: "session-root",
+      owner_id: "owner-root",
+      bot_id: "bot-root",
+      token: "token-root",
+      expires_at: "2026-04-20T00:00:00.000Z",
+      created_at: "2026-04-13T00:00:00.000Z",
+    });
+    const health = createHealthResponse("2026-04-13T00:00:00.000Z");
+    const status = createStatusResponse({
+      bot: {
+        bot_id: session.bot_id,
+        status: BotStatus.IDLE,
+        intent_epoch: 3,
+        last_event_seq: 9,
+        updated_at: "2026-04-13T00:00:00.000Z",
+      },
+    });
+
+    expect(session.bot_id).toBe("bot-root");
+    expect(health.status).toBe("ok");
+    expect(status.bot.status).toBe(BotStatus.IDLE);
   });
 });

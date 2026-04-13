@@ -4,6 +4,7 @@ export const CORE_MODULE_NAMES = [
   "skills",
   "observation",
   "world-model",
+  "interfaces",
   "diagnostics",
   "domain",
   "data",

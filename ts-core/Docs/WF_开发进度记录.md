@@ -94,3 +94,21 @@
   - 新增 `SkillRegistry`（技能注册表） 纯函数边界，覆盖创建、注册、按名读取、顺序列举与 Phase 1 默认注册表构造；当前仍保持纯契约层，没有接入真实 Mineflayer（Minecraft 协议客户端） 执行或 `BotActor`（机器人执行代理） 调度。
   - `runtime/tasking.ts` 中的 `createSkillCallJob`（创建技能调用任务） 已与 `skills`（技能） 契约收口，`skill_call`（技能调用） 不再依赖自由字符串 + 自由参数对象的平行集合。
   - 测试已覆盖技能目录、负向类型约束、注册表边界与 `skill_call`（技能调用） 对齐路径；当前根入口无需新增临时兼容层。
+
+## T-006
+
+- **审查结论**: 通过
+- **核心文件**:
+  - `ts-core/src/interfaces/contracts.ts`
+  - `ts-core/src/interfaces/api.ts`
+  - `ts-core/src/interfaces/realtime.ts`
+  - `ts-core/src/interfaces/index.ts`
+  - `ts-core/src/index.ts`
+  - `ts-core/src/domain/contracts.ts`
+  - `ts-core/src/__tests__/interfaces-model.spec.ts`
+  - `ts-core/src/__tests__/scaffold.spec.ts`
+- **变更快照**:
+  - 建立 `interfaces`（接口层） 模块的最小纯契约，补齐会话 / token（令牌） 鉴权、`POST /api/message`、`GET /api/status`、`GET /api/health`、`GET /api/replay` 的强类型输入输出边界，并接入根导出与模块清单。
+  - `Socket.io`（实时推送） 与 replay（补拉） 事件统一复用 `runtime/events.ts`（运行时事件） 命名；`createReplayResponse()`（创建补拉响应） 已改为逐条克隆实时事件对象，避免调用方引用旁路污染接口层返回值。
+  - `createWebMessageEnvelope()`（创建网页消息包） 已收紧为会话绑定语义：当消息请求 `bot_id`（机器人标识） 与已鉴权 `session.bot_id`（会话目标机器人） 不一致时直接拒绝构造，不再允许跨 Bot（机器人） 混合包进入后续链路。
+  - 测试已覆盖根导出、会话登录 / 鉴权、消息提交、状态查询、健康检查、replay（补拉） 边界，以及“会话与请求 Bot 不一致拒绝构造”“原始事件对象改写不会污染 replay 响应”的回归场景；当前仍无真实服务器启动、无网络 I/O（输入输出）、无数据库查询实现。
