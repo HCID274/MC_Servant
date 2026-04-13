@@ -1,0 +1,20 @@
+[project]
+name = "windows-smoke-local"
+version = "0.1.0"
+description = "Windows 本地被测端最小服务工具"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "websockets>=15.0.1,<16",
+]
+
+[project.scripts]
+windows-smoke = "windows_smoke_local.cli:main"
+windows-ws-echo = "windows_smoke_local.cli:main_ws_echo"
+windows-tcp-accept = "windows_smoke_local.cli:main_tcp_accept"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"

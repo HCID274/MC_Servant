@@ -1,0 +1,21 @@
+[project]
+name = "aliyun-smoke-client"
+version = "0.1.0"
+description = "阿里云测量客户端最小工具"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "websockets>=15.0.1,<16",
+]
+
+[project.scripts]
+aliyun-smoke = "aliyun_smoke_client.cli:main"
+aliyun-smoke-ping = "aliyun_smoke_client.cli:main_smoke_ping"
+aliyun-smoke-ws = "aliyun_smoke_client.cli:main_smoke_ws"
+aliyun-smoke-iperf = "aliyun_smoke_client.cli:main_smoke_iperf"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"

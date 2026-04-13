@@ -1,0 +1,294 @@
+# MC_Servant Backend - Layered Entry
+
+"""
+Backend entrypoint responsibilities:
+- FastAPI app creation
+- Lifecycle wiring
+- WebSocket binding and message dispatch
+"""
+
+import asyncio
+import json
+import logging
+import secrets
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Optional
+
+import uvicorn
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from langgraph.checkpoint.serde.base import maybe_add_typed_methods
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+from application.core.bot_runtime import ensure_bot
+from application.core.context import AppRuntime
+from application.handlers.message_router import route_ws_message
+from application.core.response_sender import now_timestamp, send_error, send_init_config, send_request_sync
+from application.services.task_job.runner import process_task_job
+from bot.manager import BotManager
+from config import settings
+from execution.task_queue import TaskQueueManager
+from graph.workflow import build_workflow
+from protocol import MessageType
+from schemas import (
+    RouterOutput,
+    StepSummaryAgentOutput,
+    TaskPlannerOutput,
+    TaskStep,
+)
+from tracing.store import TraceStore
+from websocket.connection_manager import manager
+from websocket.session_runtime import SessionRuntime
+
+logging.basicConfig(
+    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    format="[%(asctime)s] %(levelname).1s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+# 系统全局上下文：管理 Bot 运行实例、任务队列及决策流状态。
+runtime = AppRuntime(bot_username=settings.bot_username)
+ws_cleanup_task: Optional[asyncio.Task] = None
+session_runtime = SessionRuntime(inbound_queue_maxsize=settings.ws_inbound_queue_maxsize)
+
+
+def _resolve_runtime_path(raw_path: str) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return (Path(__file__).resolve().parent / path).resolve()
+
+
+def _parse_interrupt_nodes(raw_value: str) -> list[str]:
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
+def _extend_checkpointer_allowlist(checkpointer: object) -> None:
+    """检查点反序列化白名单：显式替换默认 serializer，避免 True 模式持续打印未注册类型告警。"""
+    allowlist = [
+        RouterOutput,
+        TaskPlannerOutput,
+        TaskStep,
+        StepSummaryAgentOutput,
+    ]
+    serializer = JsonPlusSerializer(allowed_msgpack_modules=allowlist)
+    setattr(checkpointer, "serde", maybe_add_typed_methods(serializer))
+    setattr(checkpointer, "jsonplus_serde", serializer)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """生命周期管理器：负责系统启动时的依赖注入与关闭时的资源回收。"""
+    global ws_cleanup_task
+
+    logger.info("Initializing MC_Servant layered backend...")
+
+    # 环境校验：确保通信令牌存在，防止未授权访问。
+    if not settings.ws_access_token.strip():
+        raise RuntimeError("MC_SERVANT_WS_ACCESS_TOKEN is required")
+
+    # 安全预警：提醒开发者配置密码以兼容 AuthMe 插件。
+    if not settings.bot_password:
+        logger.warning("MC_SERVANT_BOT_PASSWORD is empty; AuthMe servers may reject bot login")
+
+    # 注入物理管家：初始化底层的 Mineflayer 控制中枢。
+    runtime.bot_manager = BotManager(
+        mc_host=settings.mc_host,
+        mc_port=settings.mc_port,
+        default_password=settings.bot_password,
+        mc_version=settings.mc_version,
+    )
+
+    # 注入调度中枢：配置任务异步执行队列。
+    runtime.task_queue_manager = TaskQueueManager(
+        process_job=lambda bot_name, job: process_task_job(runtime, bot_name, job),
+    )
+
+    if settings.trace_enabled:
+        trace_db_path = _resolve_runtime_path(settings.trace_db_path)
+        llm_text_log_path = None
+        if settings.trace_llm_text_log_enabled:
+            llm_text_log_path = str(_resolve_runtime_path(settings.trace_llm_text_log_path))
+        runtime.trace_repo = TraceStore(str(trace_db_path), llm_text_log_path=llm_text_log_path)
+        runtime.trace_repo.open()
+        logger.info("Trace repository ready: %s", trace_db_path)
+        if llm_text_log_path:
+            logger.info("LLM text transcript ready: %s", llm_text_log_path)
+
+    # 预加载默认 Bot：尝试在启动时激活主女仆。
+    spawned, _ = await ensure_bot(runtime.bot_manager, settings.bot_username)
+    if spawned:
+        logger.info("Default bot ready: %s", settings.bot_username)
+    else:
+        logger.warning("Default bot not ready at startup; it can be spawned lazily")
+
+    # 装载大脑工作流：编译 LangGraph 状态机。
+    try:
+        interrupt_after = _parse_interrupt_nodes(settings.trace_interrupt_after)
+        if settings.trace_enabled:
+            checkpoint_db_path = _resolve_runtime_path(settings.checkpoint_db_path)
+            runtime.checkpointer_cm = AsyncSqliteSaver.from_conn_string(str(checkpoint_db_path))
+            runtime.checkpointer = await runtime.checkpointer_cm.__aenter__()
+            _extend_checkpointer_allowlist(runtime.checkpointer)
+            logger.info("LangGraph checkpointer ready: %s", checkpoint_db_path)
+
+        runtime.workflow_app = build_workflow(
+            checkpointer=runtime.checkpointer,
+            trace_repo=runtime.trace_repo,
+            interrupt_after=interrupt_after or None,
+        )
+        logger.info("LangGraph workflow ready")
+    except Exception as exc:
+        # 容错处理：若 LLM 模块异常，则降级为纯指令模式。
+        if runtime.checkpointer_cm is not None:
+            await runtime.checkpointer_cm.__aexit__(None, None, None)
+            runtime.checkpointer_cm = None
+            runtime.checkpointer = None
+        runtime.workflow_app = None
+        logger.warning("LangGraph init failed, fallback to minimal mode: %s", exc)
+
+    async def ws_cleanup_worker() -> None:
+        interval = max(5, settings.ws_heartbeat_timeout_seconds // 3)
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await manager.cleanup_stale(settings.ws_heartbeat_timeout_seconds)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning("WS cleanup worker error: %s", exc)
+
+    ws_cleanup_task = asyncio.create_task(ws_cleanup_worker())
+    logger.info("WebSocket server ready on ws://%s:%s", settings.ws_host, settings.ws_port)
+    yield
+
+    logger.info("Shutting down MC_Servant layered backend...")
+
+    if ws_cleanup_task:
+        ws_cleanup_task.cancel()
+        try:
+            await ws_cleanup_task
+        except asyncio.CancelledError:
+            pass
+        ws_cleanup_task = None
+
+    await session_runtime.shutdown()
+
+    if runtime.task_queue_manager:
+        await runtime.task_queue_manager.shutdown()
+        runtime.task_queue_manager = None
+
+    runtime.workflow_app = None
+    if runtime.checkpointer_cm is not None:
+        await runtime.checkpointer_cm.__aexit__(None, None, None)
+        runtime.checkpointer_cm = None
+        runtime.checkpointer = None
+    if runtime.bot_manager:
+        await runtime.bot_manager.shutdown()
+        runtime.bot_manager = None
+    if runtime.trace_repo:
+        runtime.trace_repo.close()
+        runtime.trace_repo = None
+
+    runtime.bot_owners.clear()
+    runtime.online_players.clear()
+
+
+app = FastAPI(
+    title="MC_Servant Backend (Layered)",
+    description="Layered backend for MC_Servant",
+    version="2.1.0-layered",
+    lifespan=lifespan,
+)
+
+
+async def verify_token(x_access_token: str = Header(default=None)):
+    """安全鉴权：验证请求头中的令牌，保护核心 API 免受非法访问。"""
+    if not x_access_token or not secrets.compare_digest(x_access_token, settings.ws_access_token):
+        raise HTTPException(status_code=401, detail="Invalid or missing token")
+
+
+@app.get("/")
+async def root():
+    """根路径：提供系统元数据，用于简单的状态连通性测试。"""
+    return {
+        "status": "running",
+        "mode": "layered",
+        "service": "MC_Servant Backend",
+        "websocket": f"ws://{settings.ws_host}:{settings.ws_port}/ws",
+    }
+
+
+@app.get("/bots", dependencies=[Depends(verify_token)])
+async def list_bots():
+    """清单查询：透传底层控制器的实例列表，展示当前在线的 Bot。"""
+    return {"bots": runtime.bot_manager.list_bots() if runtime.bot_manager else []}
+
+
+@app.get("/state", dependencies=[Depends(verify_token)])
+async def get_state():
+    """实时快照：聚合内存中的所有玩家归属与在线状态，提供全量视图。"""
+    return {
+        "mode": "layered",
+        "bot_count": len(runtime.bot_manager.list_bots()) if runtime.bot_manager else 0,
+        "owners": runtime.bot_owners,
+        "online_players": list(runtime.online_players.values()),
+    }
+
+
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    """网关入口：处理插件长连接，并作为原始数据流入系统的第一站。"""
+    token = websocket.headers.get("x-access-token")
+    if not token or not secrets.compare_digest(token, settings.ws_access_token):
+        logger.warning("Rejected WebSocket connection for %s: invalid token", client_id)
+        await websocket.accept()
+        await websocket.close(code=1008, reason="Invalid token")
+        return
+
+    await manager.connect(websocket, client_id)
+    await send_init_config(client_id, runtime)
+    await send_request_sync(client_id)
+    manager.touch(client_id)
+    await session_runtime.start_client(
+        client_id,
+        handler=lambda message: route_ws_message(message, client_id, runtime),
+    )
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            manager.touch(client_id)
+
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                await send_error(client_id, "invalid_json", "Invalid JSON payload")
+                continue
+
+            if message.get("type") == MessageType.HEARTBEAT.value:
+                heartbeat = {"type": MessageType.HEARTBEAT.value, "timestamp": now_timestamp()}
+                await manager.send_personal(json.dumps(heartbeat), client_id)
+                continue
+
+            queued = await session_runtime.submit_message(client_id, message)
+            if not queued:
+                await send_error(
+                    client_id,
+                    "queue_overflow",
+                    "Server is busy, message dropped. Please retry shortly.",
+                )
+    except WebSocketDisconnect:
+        logger.info("Client disconnected: %s", client_id)
+    except Exception as exc:
+        logger.error("WebSocket error for %s: %s", client_id, exc)
+    finally:
+        await session_runtime.stop_client(client_id)
+        await manager.disconnect(client_id)
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host=settings.ws_host, port=settings.ws_port)
+

@@ -1,0 +1,18 @@
+name: MC_Servant
+version: ${project.version}
+main: com.mcservant.MCServant
+api-version: 1.19
+author: LHQ
+description: Minecraft 智能 NPC 助手插件 - 自然语言交互
+
+# 硬依赖 - 必须安装
+depend:
+  - CommandAPI
+
+# 软依赖 - 可选功能
+softdepend:
+  - DecentHolograms
+  - FastAsyncWorldEdit
+  - Vault
+
+# 命令由 CommandAPI 动态注册，无需在此声明

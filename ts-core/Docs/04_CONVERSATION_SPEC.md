@@ -1,0 +1,919 @@
+# CONVERSATION_SPEC.md — 对话与意图处理规格
+
+> v0.1 | 2026.04 | 依赖 ARCHITECTURE.md v0.2, RUNTIME_SPEC.md v0.1, SANDBOX_SPEC.md v0.1
+
+---
+
+## 0. 本文档的职责边界
+
+本文档定义 ConversationWorker 的完整行为规格：两阶段 LLM 调用模型、意图分类与优先级判定、上下文组装策略、代码/skill 产出格式、回复生成、Token 预算管理、记忆检索集成。
+
+**本文档不涉及**：BotActor 状态机（见 RUNTIME_SPEC.md）、沙箱执行细节（见 SANDBOX_SPEC.md）、BrainWorker 摘要压缩算法（见 DATA_SPEC.md）、具体 skill 实现（见 SKILL_CATALOG.md）。
+
+---
+
+## 1. ConversationWorker 核心定位
+
+ConversationWorker 是 Bot 的「理解与决策中枢」。它不碰 Bot，不碰 Mineflayer，不碰沙箱。它只做三件事：
+
+1. **理解**：用户说了什么，什么意图，什么紧迫度
+2. **决策**：闲聊直接回、任务生成执行计划、中断直接转发
+3. **产出**：聊天回复文本 / ExecJob（skill_call 或 sandbox_code）
+
+ConversationWorker 消费 `msg:{botId}` 队列，产出物推入 `bot:{botId}:exec` 队列或直接通过 Socket.io 广播回复。
+
+---
+
+## 2. 两阶段 LLM 调用模型
+
+### 2.1 为什么分两阶段
+
+单次调用要求 LLM 同时完成意图分类 + 回复/代码生成。问题：
+
+- 闲聊占比约 60-70%，不需要生成代码，单次调用浪费深度推理的 token
+- 意图判错时，整个深度输出全部作废
+- 无法在分类后做差异化的上下文注入（闲聊不需要 Facade API 类型定义）
+
+两阶段模型：先用轻量 prompt 做分类，再根据分类结果决定是否需要第二次深度调用。
+
+### 2.2 调用流程
+
+```
+用户消息到达 ConversationWorker
+    │
+    ▼
+╔════════════════════════════════════════╗
+║  Stage 1: Triage（分诊）               ║
+║                                        ║
+║  输入：消息 + 最近 3 轮原始对话          ║
+║        + Bot 状态一行摘要               ║
+║  输出：MessageTriage JSON              ║
+║  Token 预算：输入 ~400, 输出 ~80       ║
+║  延迟预期：300-800ms                    ║
+╚═══════════════════╤════════════════════╝
+                    │
+          ┌─────────┼────────────┐
+          ▼         ▼            ▼
+        chat    task/modify     cancel
+          │         │            │
+          ▼         │            ▼
+╔═══════════════╗   │    直接调 botActor.interrupt()
+║ Stage 2-Chat  ║   │    + 生成确认回复
+║               ║   │    （不需要第二次 LLM，
+║ 输入：消息     ║   │     模板回复即可）
+║ + 3 轮对话    ║   │
+║ + 人设 prompt ║   │
+║ + 记忆摘要    ║   │
+║               ║   │
+║ 输出：回复文本 ║   │
+║ Token: ~600   ║   │
+║ 延迟: 0.5-2s  ║   │
+╚═══════════════╝   │
+                    ▼
+          ╔═══════════════════════╗
+          ║ Stage 2-Plan          ║
+          ║                       ║
+          ║ 输入：消息 + 快照      ║
+          ║ + Facade API 签名     ║
+          ║ + 记忆/RAG 检索结果   ║
+          ║ + 任务历史索引        ║
+          ║                       ║
+          ║ 输出：ExecJob JSON    ║
+          ║ Token: ~2000-3000     ║
+          ║ 延迟: 2-8s            ║
+          ╚═══════════════════════╝
+```
+
+### 2.3 cancel 的特殊处理
+
+Stage 1 判定 `intent: cancel` 时，不需要第二次 LLM 调用。ConversationWorker 直接：
+
+1. 调 `botActor.interrupt({ source: { type: 'triage', intent_epoch }, reason })`
+2. 广播模板回复：`"好的，已经停下来了喵~"` 或从 3-5 个预设模板中随机选一个
+
+这比走 LLM 生成回复快一个数量级。
+
+---
+
+## 3. Stage 1: Triage Prompt 设计
+
+### 3.1 System Prompt
+
+```
+你是一个消息分类器。根据用户消息和上下文，判断用户的意图类别和紧迫度。
+只输出 JSON，不要输出其他内容。
+
+意图分类规则：
+- chat：闲聊、问候、问问题、情感表达、与 Minecraft 游戏操作无关的对话
+- task：要求 Bot 执行游戏内动作（采集、移动、制造、跟随等）
+- modify：要求修改当前正在执行的任务（改目标、改数量、加条件）
+- cancel：要求停止当前任务（但不是一般性的"不要"——只有明确指向当前动作的停止指令）
+
+紧迫度规则：
+- interrupt：必须立刻中止当前动作（"快跑"、"停下"、"别打了"）
+- urgent：尽快执行，插队（"赶紧来"、"快点挖"）
+- normal：正常排队
+- background：低优先级（"有空的话"、"之后帮我"）
+
+输出格式：
+{"intent":"chat|task|modify|cancel","priority":"interrupt|urgent|normal|background","reason":"一句话说明判断依据"}
+```
+
+### 3.2 User Prompt 模板
+
+```
+Bot 状态：{idle|正在执行:{当前任务简述}}
+---
+{最近3轮对话，格式: [主人] xxx / [Bot] xxx}
+---
+[主人] {当前消息}
+```
+
+### 3.3 Triage 输出类型
+
+```typescript
+interface MessageTriage {
+  intent: 'chat' | 'task' | 'modify' | 'cancel'
+  priority: 'interrupt' | 'urgent' | 'normal' | 'background'
+  reason: string
+}
+```
+
+### 3.4 Triage 容错
+
+LLM 输出解析失败时的兜底策略：
+
+| 情况 | 处置 |
+|------|------|
+| JSON 解析失败 | 回退为 `{ intent: 'chat', priority: 'normal' }` |
+| intent 值非法 | 回退为 `'chat'` |
+| priority 值非法 | 回退为 `'normal'` |
+
+回退永远偏向安全侧——宁可把任务当闲聊（最多延迟执行），不能把闲聊当中断（打断正在执行的任务）。
+
+---
+
+## 4. Stage 2-Chat: 闲聊回复
+
+### 4.1 System Prompt
+
+```
+你是 {bot_name}，一个在 Minecraft 中的贴心猫娘女仆。你的主人是 {master_name}。
+
+性格：
+- 温柔、活泼、偶尔卖萌
+- 忠诚但有自己的小脾气
+- 对 Minecraft 世界充满好奇
+
+绝对规则：
+- 每句回复结尾必须加"喵"或"喵~"
+- 回复简短自然，不超过 3 句话
+- 不要输出 JSON，不要输出动作计划，只说话
+```
+
+### 4.2 User Prompt 组装
+
+```
+{记忆检索结果（如有相关，≤200字）}
+---
+{最近3轮对话}
+---
+[主人] {当前消息}
+```
+
+### 4.3 回复输出处理
+
+LLM 的文本输出直接作为 Bot 回复，通过 Socket.io 广播到双端。
+
+后处理检查：如果回复末尾没有"喵"，自动追加"喵~"。这是兜底，不依赖 LLM 100% 遵守。
+
+---
+
+## 5. Stage 2-Plan: 任务规划
+
+### 5.1 输出格式选择：skill_call 优先
+
+ConversationWorker 的规划输出有两种路径。**默认走 skill_call**，只有当意图复杂到无法映射为单个 skill 时才走 sandbox_code。
+
+判定逻辑：
+
+```
+用户意图能否映射为单个 Facade API 调用？
+    │
+    ├─ 是："帮我砍 5 棵树" → skill_call { skill: 'cutTree', params: { count: 5 } }
+    │      "过来" → skill_call { skill: 'goToOwner', params: {} }
+    │      "跟着我" → skill_call { skill: 'follow', params: {} }
+    │
+    └─ 否："去矿洞挖 10 个钻石，挖完回来给我" → sandbox_code
+           "先做一把石镐再去挖铁" → sandbox_code
+           任何需要条件判断、多步编排、错误处理的意图 → sandbox_code
+```
+
+### 5.2 Plan System Prompt（sandbox_code 路径）
+
+```
+你是 {bot_name} 的任务规划引擎。根据主人的指令、当前环境快照和可用 API，生成可执行的 TypeScript 代码。
+
+# 可用 API
+{Facade API 类型定义（精简版，见 5.4 节）}
+
+# 代码约束
+- 代码是一段顶层 async 函数体，不需要 import/export/class
+- 全局可用对象：api, console, sleep(ms), Math, JSON, Date
+- 用 try/catch 处理预期内的失败，提供替代方案
+- 每完成一个里程碑阶段，用 api.chat.say() 向主人汇报
+- 所有汇报和对话必须以"喵"或"喵~"结尾
+- 代码不超过 150 行
+
+# 输出格式
+只输出 JSON：
+{
+  "reply": "给主人的开场回复（带喵）",
+  "code": "TypeScript 代码字符串"
+}
+不要输出任何解释文本。
+```
+
+### 5.3 Plan User Prompt 组装
+
+```
+# 环境快照
+{压缩后的 EnvironmentSnapshot，见第 7 节}
+
+# 任务历史
+{压缩索引，≤300字}
+
+# 记忆检索
+{RAG 结果，≤200字}
+
+# 主人的指令
+{当前消息}
+```
+
+### 5.4 Facade API 精简版类型定义
+
+完整的 Facade API 定义在 SANDBOX_SPEC.md 第 4 节。注入 LLM prompt 时使用精简版，省去注释和次要字段，压缩 token 用量：
+
+```typescript
+interface api {
+  bot: {
+    goTo(x: number, y: number, z: number): Promise<Position>
+    goToOwner(distance?: number): Promise<Position>
+    follow(distance?: number): Promise<void>
+    mine(blockName: string, count: number): Promise<{collected: number}>
+    collect(itemName: string, radius?: number): Promise<{collected: number}>
+    equip(itemName: string, destination?: string): Promise<void>
+    cutTree(count: number): Promise<{collected: number}>
+    attack(entityName: string): Promise<{killed: boolean}>
+    getStatus(): Promise<BotStatus>
+    getInventory(): Promise<InventoryItem[]>
+  }
+  world: {
+    nearestBlocks(blockName: string, radius?: number, maxCount?: number): Promise<BlockInfo[]>
+    nearestEntities(filter?: {type?: string, name?: string}, radius?: number): Promise<EntityInfo[]>
+    blockAt(x: number, y: number, z: number): Promise<BlockInfo | null>
+    getTime(): Promise<{timeOfDay: number, isDay: boolean}>
+  }
+  knowledge: {
+    getRecipe(itemName: string): Promise<Recipe[]>
+    getBlockInfo(blockName: string): Promise<BlockData | null>
+    getItemInfo(itemName: string): Promise<ItemData | null>
+  }
+  memory: {
+    search(query: string, limit?: number): Promise<MemoryEntry[]>
+    recentTasks(limit?: number): Promise<TaskSummary[]>
+  }
+  chat: {
+    say(message: string): Promise<void>
+    report(message: string): Promise<void>
+  }
+  owner: {
+    readonly position: Position
+    readonly name: string
+    readonly online: boolean
+  }
+  task: {
+    readonly id: string
+    readonly userMessage: string
+  }
+}
+```
+
+约 800 token。这是 sandbox_code 路径 prompt 的固定开销，闲聊路径完全不需要。
+
+### 5.5 Plan 输出解析
+
+```typescript
+interface PlanOutput {
+  reply: string        // 开场回复，直接广播
+  code: string         // TS 代码，包装为 sandbox_code ExecJob
+}
+```
+
+解析失败时（JSON 格式错误、缺少字段）：
+
+1. 尝试从 LLM 输出中提取 code 块（```` ```typescript ... ``` ````回退匹配）
+2. 如果仍然失败，emit `task.failed`，向用户广播"没听懂你的意思喵……再说一遍？喵~"
+
+### 5.6 skill_call 路径的 Prompt
+
+skill_call 路径不需要 LLM 生成代码。Stage 2-Plan 的 prompt 简化为：
+
+```
+根据主人的指令和当前状态，选择最合适的动作。
+
+可用动作：
+- goTo(x, y, z)：移动到坐标
+- goToOwner()：移动到主人身边
+- follow()：跟随主人
+- mine(blockName, count)：挖掘方块
+- collect(itemName)：捡拾掉落物
+- equip(itemName)：装备物品
+- cutTree(count)：砍树
+- attack(entityName)：攻击
+
+输出 JSON：
+{"reply":"开场回复（带喵）","skill":"动作名","params":{参数对象}}
+```
+
+Token 预算：输入 ~500，输出 ~100。比 sandbox_code 路径省 5-10 倍。
+
+### 5.7 skill_call 输出解析
+
+```typescript
+interface SkillCallOutput {
+  reply: string
+  skill: string
+  params: Record<string, unknown>
+}
+```
+
+ConversationWorker 将其包装为 ExecJob：
+
+```typescript
+const execJob: ExecJob = {
+  type: 'skill_call',
+  skill: output.skill,
+  params: output.params,
+  intent_epoch: currentEpoch,
+  snapshot_ts: snapshot.timestamp,
+  message_id: msg.message_id,
+}
+```
+
+---
+
+## 6. 上下文预算管理
+
+### 6.1 Token 预算总表
+
+ConversationWorker 的每一次 LLM 调用都有严格的 token 预算。预算不是建议——是硬上限。超出预算的内容必须被裁剪。
+
+| 调用类型 | 总输入预算 | 总输出预算 |
+|---------|-----------|-----------|
+| Stage 1 Triage | 500 | 100 |
+| Stage 2-Chat | 800 | 200 |
+| Stage 2-Plan (skill_call) | 800 | 150 |
+| Stage 2-Plan (sandbox_code) | 3000 | 1500 |
+
+### 6.2 输入 Token 分配（sandbox_code 路径，最重的场景）
+
+```
+┌───────────────────────────────────────────┐
+│  总预算 3000 tokens                        │
+├───────────────────────────────────────────┤
+│  System Prompt（含 Facade API 签名）  ~1000 │  ← 固定开销
+│  环境快照（压缩版）                  ~400  │  ← 动态
+│  最近 3 轮原始对话                   ~300  │  ← 动态
+│  任务历史索引                       ~300  │  ← 动态
+│  记忆检索结果                       ~200  │  ← 动态
+│  当前消息                           ~100  │  ← 固定
+│  格式标记与分隔符                    ~100  │  ← 固定
+│  余量                               ~300  │  ← 安全缓冲
+└───────────────────────────────────────────┘
+```
+
+### 6.3 各槽位的裁剪策略
+
+每个动态槽位有独立的裁剪规则，当内容超出分配预算时执行：
+
+| 槽位 | 预算 | 裁剪策略 |
+|------|------|---------|
+| 环境快照 | 400 tok | 先砍 `nearby_blocks`（只保留 Top-5），再砍 `nearby_entities`（只保留敌对），最后砍 `server_extended` |
+| 最近 3 轮对话 | 300 tok | 从最旧一轮开始砍，保证最新一轮完整。每轮超过 100 字时截断到 100 字 + "…" |
+| 任务历史索引 | 300 tok | 保留最近 3 条摘要。如果仍超，将每条摘要压缩到一句话 |
+| 记忆检索结果 | 200 tok | 只保留 Top-2 结果。每条超过 100 字时截断 |
+
+裁剪在 ConversationWorker 内部同步完成（字符串操作），不是额外的 LLM 调用。
+
+---
+
+## 7. 环境快照压缩格式
+
+observation 模块产出的 EnvironmentSnapshot 原始结构约 2000-5000 字符。注入 LLM prompt 前压缩为紧凑文本格式：
+
+### 7.1 压缩模板
+
+```
+[Bot] 位置:({x},{y},{z}) 生命:{hp}/20 饥饿:{food}/20 着火:{是|否}
+[装备] 头:{head} 身:{torso} 腿:{legs} 脚:{feet} 主手:{hand} 副手:{off_hand}
+[背包] {item1}x{count}, {item2}x{count}, ...（空槽不列）
+[附近方块] {block1}x{count}(最近{dist}格), ...（Top-5，按距离排序）
+[附近生物] {entity1}({type},{dist}格), ...（敌对优先，Top-5）
+[时间] {白天|夜晚}({timeOfDay})
+```
+
+### 7.2 压缩示例
+
+```
+[Bot] 位置:(120,64,200) 生命:18/20 饥饿:16/20 着火:否
+[装备] 主手:stone_pickaxe
+[背包] oak_log x12, cobblestone x34, stick x8, crafting_table x1
+[附近方块] oak_log x6(最近3格), stone x20(最近1格), coal_ore x3(最近8格), iron_ore x2(最近12格), dirt x15(最近1格)
+[附近生物] zombie(敌对,22格), cow(被动,8格), sheep(被动,15格)
+[时间] 白天(6000)
+```
+
+约 300 字符 / ~150 token。远低于 400 token 预算。
+
+---
+
+## 8. 任务历史索引系统
+
+### 8.1 设计目标
+
+任务执行的 JSONL 日志动辄几百行。LLM 不需要看全部细节——它需要的是：**发生了什么、结果如何、有什么值得记住的**。
+
+BrainWorker 的摘要压缩产出的就是这种索引。ConversationWorker 在组装 prompt 时，从 PG 拉取最近任务的摘要索引。
+
+### 8.2 索引层级：三级压缩
+
+```
+Level 0: 原始 JSONL 日志
+         每步一行，完整记录动作、目标、结果、耗时
+         存储：本地文件系统
+         用途：Debug、回溯
+
+Level 1: 任务摘要（BrainWorker 产出）
+         一段 50-150 字的自然语言摘要
+         存储：PG task_summaries 表
+         用途：ConversationWorker prompt 注入、RAG 检索
+
+Level 2: 会话索引（BrainWorker 定期聚合）
+         多个任务摘要进一步压缩为一段 ≤100 字的会话概要
+         存储：PG session_summaries 表
+         用途：长时间跨度的上下文恢复
+```
+
+### 8.3 ConversationWorker 的索引拉取策略
+
+```typescript
+async function buildTaskHistoryContext(botId: string, budget: number): Promise<string> {
+  // 1. 拉最近 5 条 Level 1 摘要
+  const summaries = await db.query(`
+    SELECT task_id, intent, status, summary, created_at
+    FROM task_summaries
+    WHERE bot_id = $1
+    ORDER BY created_at DESC
+    LIMIT 5
+  `, [botId])
+
+  // 2. 拼接，逐条检查预算
+  let result = ''
+  let tokenCount = 0
+
+  for (const s of summaries) {
+    const line = `[${s.status}] ${s.intent}: ${s.summary}`
+    const lineTokens = estimateTokens(line)
+
+    if (tokenCount + lineTokens > budget) {
+      // 超预算：截断当前条目为一句话
+      const truncated = `[${s.status}] ${s.intent}: ${s.summary.slice(0, 30)}…`
+      result += truncated + '\n'
+      break
+    }
+
+    result += line + '\n'
+    tokenCount += lineTokens
+  }
+
+  return result
+}
+```
+
+### 8.4 Level 2 会话索引的触发条件
+
+BrainWorker 在以下条件满足时触发 Level 1 → Level 2 聚合：
+
+- 同一 session 内 Level 1 摘要累计超过 10 条
+- 或者 Level 1 摘要总字符数超过 1500 字
+
+聚合产出一条 ≤100 字的 Level 2 概要，保留指向原始 Level 1 摘要的 `task_id` 列表。LLM 如果需要细节，可以通过 `api.memory.recallTaskDetails()` 回溯到 Level 1 甚至 Level 0。
+
+---
+
+## 9. 记忆检索集成
+
+### 9.1 混合检索架构
+
+```
+用户消息到达 ConversationWorker
+    │
+    ├─ 提取检索查询（直接用用户消息原文，不做额外转写）
+    │
+    ├─ 并发发起两路检索：
+    │
+    │   ┌──────────────────┐    ┌──────────────────┐
+    │   │  全文检索 (FTS)   │    │  向量检索          │
+    │   │                  │    │                    │
+    │   │  PG tsvector     │    │  Embedding API     │
+    │   │  关键词精确命中   │    │  → pgvector 余弦   │
+    │   │  Top-5           │    │  Top-5             │
+    │   └────────┬─────────┘    └────────┬───────────┘
+    │            │                       │
+    │            └───────────┬───────────┘
+    │                        │
+    │                        ▼
+    │               ┌────────────────┐
+    │               │  合并去重排序   │
+    │               │                │
+    │               │  1. 两路结果合并 │
+    │               │  2. 按 task_id  │
+    │               │     去重       │
+    │               │  3. 混合评分    │
+    │               │  4. 取 Top-3   │
+    │               └────────┬───────┘
+    │                        │
+    │                        ▼
+    │               注入 LLM prompt 的记忆槽位
+    │               （≤200 token）
+```
+
+### 9.2 混合评分公式
+
+```typescript
+function hybridScore(ftsRank: number | null, vectorDistance: number | null): number {
+  const ftsScore = ftsRank != null ? ftsRank : 0
+  const vecScore = vectorDistance != null ? (1 - vectorDistance) : 0  // 余弦距离转相似度
+
+  // FTS 命中权重更高：关键词精确匹配比语义模糊匹配更可信
+  return ftsScore * 0.6 + vecScore * 0.4
+}
+```
+
+FTS 权重高于向量检索。理由：MC 场景中，"钻石矿"、"苦力怕"、"下矿"这些关键词的精确命中比语义相似度更可靠。向量检索是补充——处理"上次那个很危险的洞穴"这类没有明确关键词的模糊回忆。
+
+### 9.3 检索时机
+
+不是每次 LLM 调用都做检索。只有以下场景触发：
+
+| 场景 | 是否检索 | 理由 |
+|------|---------|------|
+| Stage 1 Triage | **不检索** | 分诊不需要历史记忆 |
+| Stage 2-Chat | **条件检索** | 仅当消息包含回忆性语义时（"上次"、"之前"、"还记得"） |
+| Stage 2-Plan | **总是检索** | 任务规划需要历史上下文 |
+
+条件检索的触发词表（Phase 1 硬编码，后续可扩展）：
+
+```typescript
+const RECALL_TRIGGERS = ['上次', '之前', '还记得', '那个', '以前', '昨天', '刚才']
+
+function shouldSearchMemory(message: string, intent: string): boolean {
+  if (intent === 'task' || intent === 'modify') return true
+  return RECALL_TRIGGERS.some(t => message.includes(t))
+}
+```
+
+### 9.4 Embedding 调用优化
+
+Embedding API 调用是记忆检索的瓶颈（每次 50-200ms）。优化措施：
+
+- FTS 和 Embedding API 并发调用（`Promise.all`），总延迟取决于较慢的那个
+- 如果 FTS 已经返回 ≥3 条高置信度结果（ftsRank > 0.3），可以跳过向量检索（短路优化，阈值与 DATA_SPEC.md 3.2 节一致）
+- Embedding 结果不缓存（用户每次提问不同，缓存命中率极低）
+
+---
+
+## 10. 对话历史管理
+
+### 10.1 原始对话窗口
+
+ConversationWorker 维护每个 bot session 最近 N 轮原始对话，存储在 PG 中。
+
+> **表结构完整定义见 DATA_SPEC.md 2.3 节 `chat_messages` 表。** 注意 `session_id` 可空（游戏端 `/svs` 消息无 web session）。
+
+### 10.2 滑动窗口策略
+
+每次 LLM 调用只带最近 3 轮（6 条消息：3 user + 3 bot）。理由：
+
+- MiniMax 模型对上下文窗口的利用效率在 3-5 轮后快速衰减
+- 超过 3 轮的历史通过任务索引和 RAG 检索覆盖
+- 3 轮 × 平均每轮 100 字 = ~300 字 ≈ ~150 token，在预算内
+
+### 10.3 对话窗口拉取
+
+```typescript
+async function getRecentMessages(botId: string, sessionId: string, limit: number = 6): Promise<ChatMessage[]> {
+  return await db.query(`
+    SELECT role, content, created_at
+    FROM chat_messages
+    WHERE bot_id = $1 AND session_id = $2
+    ORDER BY created_at DESC
+    LIMIT $3
+  `, [botId, sessionId, limit])
+    .then(rows => rows.reverse())  // 按时间正序排列
+}
+```
+
+### 10.4 对话格式化
+
+注入 prompt 时的格式：
+
+```
+[主人] 帮我去砍 10 棵树
+[小花] 好的主人，我这就去砍喵~
+[主人] 等一下，先做一把斧头
+[小花] 了解，我先做把斧头再去砍喵~
+[主人] 对了，砍完之后把木头给我
+```
+
+不使用 JSON 或 XML 标签包裹对话——纯文本格式对 LLM 更自然，且省 token。
+
+---
+
+## 11. 回复广播与事件发射
+
+### 11.1 闲聊回复
+
+```typescript
+async function broadcastChatReply(botId: string, reply: string, messageId: string): Promise<void> {
+  // 1. 写入 chat_messages 表
+  await db.insert('chat_messages', {
+    bot_id: botId,
+    role: 'bot',
+    content: reply,
+    source: 'system',
+    message_id: `reply-${messageId}`,
+  })
+
+  // 2. Socket.io 广播
+  io.to(`bot:${botId}`).emit('chat.reply', {
+    content: reply,
+    message_id: `reply-${messageId}`,
+    timestamp: Date.now(),
+  })
+
+  // 3. 游戏内聊天（通过 Mineflayer 或 JAR Bridge）
+  gameChat.send(botId, reply)
+
+  // 4. event_log
+  emitEvent({
+    type: 'chat.reply',
+    bot_id: botId,
+    content: reply,
+    in_response_to: messageId,
+  })
+}
+```
+
+### 11.2 任务规划回复
+
+任务规划产出后，先广播开场回复（`PlanOutput.reply`），再推入 exec 队列：
+
+```typescript
+async function handlePlanOutput(output: PlanOutput | SkillCallOutput, msg: IncomingMessage): Promise<void> {
+  // 1. 广播开场回复
+  if (output.reply) {
+    await broadcastChatReply(msg.botId, output.reply, msg.message_id)
+  }
+
+  // 2. 构造 ExecJob
+  let execJob: ExecJob
+
+  if ('code' in output) {
+    execJob = {
+      type: 'sandbox_code',
+      code: output.code,
+      intent_epoch: msg.epoch,
+      snapshot_ts: msg.snapshot_ts,
+      message_id: msg.message_id,
+    }
+  } else {
+    execJob = {
+      type: 'skill_call',
+      skill: output.skill,
+      params: output.params,
+      intent_epoch: msg.epoch,
+      snapshot_ts: msg.snapshot_ts,
+      message_id: msg.message_id,
+    }
+  }
+
+  // 3. 推入 exec 队列
+  await execQueue.add('exec', execJob, {
+    priority: priorityToNumber(msg.priority),
+    jobId: msg.message_id,  // 去重
+  })
+}
+
+function priorityToNumber(priority: string): number {
+  switch (priority) {
+    case 'interrupt': return 1  // interrupt 类在 Triage 阶段已处理，此处作为安全兜底
+    case 'urgent': return 1
+    case 'normal': return 5
+    case 'background': return 10
+    default: return 5
+  }
+}
+```
+
+---
+
+## 12. ConversationWorker 完整处理流程
+
+将前面所有环节串联：
+
+```
+msg:{botId} 队列取出 job（用户消息）
+    │
+    ▼
+1. 拉取最近 3 轮对话
+    │
+2. 获取 Bot 当前状态一行摘要
+    │
+3. ══ Stage 1: Triage LLM 调用 ══
+    │  输入：状态摘要 + 3 轮对话 + 当前消息
+    │  输出：MessageTriage { intent, priority, reason }
+    │
+4. 分支路由：
+    │
+    ├─ intent === 'cancel'
+    │   → botActor.interrupt(...)
+    │   → 广播模板回复
+    │   → done
+    │
+    ├─ intent === 'chat'
+    │   → 条件记忆检索（有回忆语义时）
+    │   → ══ Stage 2-Chat LLM 调用 ══
+    │   → 广播回复
+    │   → done
+    │
+    ├─ intent === 'task'
+    │   → 并发：记忆检索 + 拉取任务历史索引 + 获取环境快照
+    │   → 判断：单 skill 可映射？
+    │       ├─ 是 → ══ Stage 2-Plan (skill_call) LLM 调用 ══
+    │       └─ 否 → ══ Stage 2-Plan (sandbox_code) LLM 调用 ══
+    │   → 解析输出
+    │   → 广播开场回复
+    │   → 推入 exec 队列
+    │   → done
+    │
+    └─ intent === 'modify'
+        → botActor.interrupt(...)  // 先停当前任务
+        → 并发：记忆检索 + 拉取任务历史索引 + 获取环境快照
+        → ══ Stage 2-Plan LLM 调用 ══ （prompt 额外注入被中断任务的信息）
+        → 广播回复
+        → 推入 exec 队列
+        → done
+```
+
+---
+
+## 13. modify 意图的特殊处理
+
+modify 的本质是 cancel + new。与 ARCHITECTURE.md 第 11.4 节一致：不做旧计划与新计划的 diff。
+
+处理流程：
+
+1. 调 `botActor.interrupt({ source: { type: 'triage', intent_epoch }, reason: 'modify' })`
+2. 获取被中断任务的信息（从 event_log 拉取最近的 `task.started` 事件）
+3. 将被中断任务信息注入 Stage 2-Plan 的 prompt：
+
+```
+# 被中断的任务
+之前在执行：{被中断任务的 intent 描述}
+执行到：{最后一步的 step.progress}
+现在主人要求修改为：{当前消息}
+
+请基于当前环境快照重新规划，不要延续旧计划。
+```
+
+4. LLM 基于当前状态生成全新计划
+
+---
+
+## 14. 人设一致性保障
+
+### 14.1 人设注入点
+
+| 调用类型 | 人设注入方式 |
+|---------|------------|
+| Triage | 不注入人设（纯分类器，不需要角色扮演） |
+| Chat | 完整人设 system prompt |
+| Plan (skill_call) | 只注入"回复带喵"约束 |
+| Plan (sandbox_code) | 只注入"api.chat.say 内容带喵"约束 |
+
+Triage 阶段刻意不注入人设。分类器越干净越好，角色扮演会污染分类判断。
+
+### 14.2 "喵"尾缀兜底
+
+所有 Bot 发出的文本（聊天回复、api.chat.say/report 调用）在最终广播前，经过一次后处理：
+
+```typescript
+function ensureMeow(text: string): string {
+  const trimmed = text.trimEnd()
+  if (trimmed.endsWith('喵') || trimmed.endsWith('喵~') || trimmed.endsWith('喵！')) {
+    return trimmed
+  }
+  return trimmed + '喵~'
+}
+```
+
+这是兜底机制。LLM 大概率会遵守 prompt 中的规则，但不能 100% 保证。
+
+---
+
+## 15. 错误处理与降级
+
+### 15.1 LLM 调用失败
+
+| 失败类型 | 处置 |
+|---------|------|
+| 网络超时（>10s） | 重试 1 次。仍失败则广播"主人，我脑子有点卡喵……稍等一下喵~"，job 标记 failed |
+| API 返回错误（5xx） | 同上 |
+| API 返回错误（4xx） | 不重试，记录错误，广播"出了点问题喵……"，job 标记 failed |
+| 响应解析失败 | 走兜底策略（见 3.4 节和 5.5 节） |
+
+### 15.2 重试策略
+
+最多重试 1 次，间隔 1 秒。不做指数退避——用户在等，延迟敏感。Phase 1 简单粗暴：成功就走，失败就报错。
+
+### 15.3 ConversationWorker 自身崩溃
+
+ConversationWorker 是 BullMQ Worker，崩溃后 BullMQ 自动将 job 标记为 failed。Docker 重启容器后，Worker 重新开始消费队列。未处理的消息留在队列里，不会丢失。
+
+---
+
+## 16. LLM 客户端抽象
+
+### 16.1 接口定义
+
+```typescript
+interface LLMClient {
+  chat(params: {
+    system: string
+    messages: { role: 'user' | 'assistant'; content: string }[]
+    temperature?: number
+    max_tokens?: number
+    response_format?: 'text' | 'json'
+  }): Promise<string>
+}
+```
+
+ConversationWorker 只依赖此接口，不依赖具体 SDK。Phase 1 实现 MiniMax 适配器，未来切换模型只需新增适配器。
+
+### 16.2 温度参数
+
+| 调用类型 | temperature | 理由 |
+|---------|-------------|------|
+| Triage | 0.1 | 分类要稳定，不需要创意 |
+| Chat | 0.7 | 闲聊要自然，需要变化 |
+| Plan (skill_call) | 0.2 | 结构化输出要稳定 |
+| Plan (sandbox_code) | 0.3 | 代码要正确，但允许一定灵活性 |
+
+---
+
+## 17. 配置参数速查
+
+| 参数 | 默认值 | 环境变量 | 说明 |
+|------|--------|---------|------|
+| `TRIAGE_TIMEOUT_MS` | 5000 | `TRIAGE_TIMEOUT` | Stage 1 LLM 超时 |
+| `CHAT_TIMEOUT_MS` | 8000 | `CHAT_TIMEOUT` | Stage 2-Chat LLM 超时 |
+| `PLAN_TIMEOUT_MS` | 15000 | `PLAN_TIMEOUT` | Stage 2-Plan LLM 超时 |
+| `LLM_RETRY_COUNT` | 1 | `LLM_RETRY` | LLM 调用最大重试次数 |
+| `LLM_RETRY_DELAY_MS` | 1000 | `LLM_RETRY_DELAY` | 重试间隔 |
+| `RECENT_MESSAGES_COUNT` | 6 | `RECENT_MSG_COUNT` | 对话窗口大小（条数，3 轮 = 6 条） |
+| `TASK_HISTORY_COUNT` | 5 | `TASK_HIST_COUNT` | 拉取的 Level 1 摘要条数 |
+| `MEMORY_SEARCH_TOP_N` | 3 | `MEM_TOP_N` | 记忆检索返回条数 |
+| `FTS_WEIGHT` | 0.6 | `FTS_WEIGHT` | 全文检索权重 |
+| `VECTOR_WEIGHT` | 0.4 | `VEC_WEIGHT` | 向量检索权重 |
+
+---
+
+## 18. 后续文档依赖
+
+本文档定义了 ConversationWorker 的完整行为。以下文档依赖本文档：
+
+- **DATA_SPEC.md**：依赖第 8 节任务索引层级定义、第 10 节 chat_messages 表结构
+- **SKILL_CATALOG.md**：依赖第 5.6 节 skill_call 路径的映射关系
+
+本文档依赖的上游文档：
+
+- **SANDBOX_SPEC.md 第 4 节**：Facade API 完整类型定义（精简版基于此裁剪）
+- **SANDBOX_SPEC.md 第 8 节**：LLM 代码生成约束
+- **RUNTIME_SPEC.md 第 5.3 节**：ExecJob 类型定义
+- **RUNTIME_SPEC.md 第 7 节**：intent_epoch 行为
+
+---
+
+v0.1 完毕。你审一遍，没问题就继续下一个文档。

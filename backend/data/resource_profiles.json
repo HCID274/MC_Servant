@@ -1,0 +1,117 @@
+{
+  "profiles": {
+    "tree": {
+      "connectivity_rule": "face_or_diagonal",
+      "search_anchor": "shared",
+      "radius": 32,
+      "max_find_count": 5000,
+      "finish_cluster_if_overage_leq": 10,
+      "intra_cluster_order_strategy": "nearest"
+    },
+    "ore_vein": {
+      "connectivity_rule": "face",
+      "search_anchor": "bot",
+      "radius": 32,
+      "max_find_count": 5000,
+      "finish_cluster_if_overage_leq": 10,
+      "intra_cluster_order_strategy": "nearest"
+    },
+    "rock_cluster": {
+      "connectivity_rule": "face",
+      "search_anchor": "bot",
+      "radius": 32,
+      "max_find_count": 5000,
+      "finish_cluster_if_overage_leq": 10,
+      "intra_cluster_order_strategy": "nearest"
+    }
+  },
+  "resource_keys": {
+    "any_log": {
+      "profile": "tree",
+      "candidate_block_source": {
+        "type": "minecraft_dynamic",
+        "key": "all_logs"
+      }
+    },
+    "iron_ore": {
+      "profile": "ore_vein",
+      "success_targets": ["raw_iron"],
+      "candidate_block_source": {
+        "type": "literal",
+        "block_names": ["iron_ore", "deepslate_iron_ore"]
+      }
+    },
+    "coal_ore": {
+      "profile": "ore_vein",
+      "success_targets": ["coal"],
+      "candidate_block_source": {
+        "type": "literal",
+        "block_names": ["coal_ore", "deepslate_coal_ore"]
+      }
+    },
+    "copper_ore": {
+      "profile": "ore_vein",
+      "success_targets": ["raw_copper"],
+      "candidate_block_source": {
+        "type": "literal",
+        "block_names": ["copper_ore", "deepslate_copper_ore"]
+      }
+    },
+    "gold_ore": {
+      "profile": "ore_vein",
+      "success_targets": ["raw_gold"],
+      "candidate_block_source": {
+        "type": "literal",
+        "block_names": ["gold_ore", "deepslate_gold_ore"]
+      }
+    },
+    "redstone_ore": {
+      "profile": "ore_vein",
+      "success_targets": ["redstone"],
+      "candidate_block_source": {
+        "type": "literal",
+        "block_names": ["redstone_ore", "deepslate_redstone_ore"]
+      }
+    },
+    "lapis_ore": {
+      "profile": "ore_vein",
+      "success_targets": ["lapis_lazuli"],
+      "candidate_block_source": {
+        "type": "literal",
+        "block_names": ["lapis_ore", "deepslate_lapis_ore"]
+      }
+    },
+    "diamond_ore": {
+      "profile": "ore_vein",
+      "success_targets": ["diamond"],
+      "candidate_block_source": {
+        "type": "literal",
+        "block_names": ["diamond_ore", "deepslate_diamond_ore"]
+      }
+    },
+    "emerald_ore": {
+      "profile": "ore_vein",
+      "success_targets": ["emerald"],
+      "candidate_block_source": {
+        "type": "literal",
+        "block_names": ["emerald_ore", "deepslate_emerald_ore"]
+      }
+    },
+    "stone": {
+      "profile": "rock_cluster",
+      "success_targets": ["cobblestone"],
+      "candidate_block_source": {
+        "type": "literal",
+        "block_names": ["stone"]
+      }
+    },
+    "sand": {
+      "profile": "rock_cluster",
+      "success_targets": ["sand", "red_sand"],
+      "candidate_block_source": {
+        "type": "literal",
+        "block_names": ["sand", "red_sand"]
+      }
+    }
+  }
+}

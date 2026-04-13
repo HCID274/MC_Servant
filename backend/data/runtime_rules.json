@@ -1,0 +1,15 @@
+{
+  "air_block_names": [
+    "air",
+    "cave_air",
+    "void_air"
+  ],
+  "scaffold_block_names": [
+    "dirt",
+    "cobblestone",
+    "stone",
+    "oak_planks",
+    "spruce_planks",
+    "birch_planks"
+  ]
+}

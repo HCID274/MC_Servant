@@ -1,0 +1,13 @@
+# MC_Servant Backend Dependencies (Minimal Core)
+
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+websockets>=12.0
+javascript>=1.1.0
+langchain-core>=0.3.0
+langchain-openai>=0.3.0
+google-genai>=1.66.0
+langgraph>=0.2.0
+langgraph-checkpoint-sqlite>=2.0.11
