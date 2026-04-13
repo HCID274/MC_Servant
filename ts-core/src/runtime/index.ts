@@ -11,9 +11,15 @@ export const runtimeModuleBoundary = {
     "BotStatus",
     "InterruptSource",
     "InterruptSignal",
+    "ExecJob",
+    "RUNTIME_EVENT_TYPES",
+    "resolveTransition",
     "RuntimeTaskEnvelope",
     "createRuntimeScaffold",
   ],
 } satisfies ModuleBoundary;
 
 export * from "./contracts.js";
+export * from "./tasking.js";
+export * from "./events.js";
+export * from "./state-machine.js";

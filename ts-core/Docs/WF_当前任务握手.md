@@ -1,58 +1,59 @@
 # 当前任务握手区
 
-【任务序号】: T-002
+【任务序号】: T-003
 【当前状态】: 待开发
 
 ---
 
 ## Manager 任务指令
 
-**任务目标**: 建立 `runtime` 与 `domain` 的执行态模型，补齐 BotActor 状态流转、执行任务载荷、事件类型映射与最小纯函数化校验边界，为后续数据层与 observation（观测）接入提供稳定契约。
+**任务目标**: 建立 `data` 模块的持久化契约层，沉淀 PostgreSQL（关系型数据库）核心表结构、`event_log`/`task_history` 对齐映射、`log_ref`/`code_ref` 相对路径规则与 JSONL（逐行 JSON 日志）目录抽象，为后续接入真实连接与迁移脚本提供稳定边界。
 
 **上下文说明**:
-1. `T-001` 已完成工程骨架与基础契约落地，当前需要把执行层模型从“枚举占位”推进到“可约束状态流转与事件映射”的纯类型阶段。
-2. 本任务仍然不写 Mineflayer、BullMQ、Fastify、数据库或 Socket.io 实现，只允许写纯类型、纯函数、常量表与测试。
-3. `T-001` 留下的一个非阻塞注意项是 `domain/index.ts` 的占位导出字符串未同步新命名；本任务允许顺手收口。
+1. `T-002` 已完成 `runtime`/`domain` 的执行态模型，本任务要把这些运行时契约落到持久化表达层，但仍然不接入真实 PostgreSQL、文件系统写入或 migration（迁移）执行。
+2. 设计文档要求 PostgreSQL 是唯一业务真理源，`event_log` 是 append-only（只追加）事件流，JSONL 是冷日志，二者通过 `log_ref` 等相对路径指针衔接。
+3. 当前工程还没有 `Drizzle ORM（轻量 SQL 生成器）` 依赖与数据模块细分文件；本任务允许在最小范围内补齐依赖与纯 schema（模式）定义出口。
 
 **输入文件白名单（Coder 仅限读取以下文件）**:
-1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏的约束》、第 3.1 节《队列划分》、第 3.2 节《全链路数据流》、第 3.3 节《消息入口 Control 快路径规则》
-2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 1 节《BotActor 核心定位》、第 2 节《状态机完整定义》、第 3 节《中断协议详细规格》
-3. `ts-core/Docs/04_CONVERSATION_SPEC.md` — 第 1 节《ConversationWorker 核心定位》、第 2.2 节《调用流程》、第 2.3 节《cancel 的特殊处理》、第 5.1 节《输出格式选择：skill_call 优先》
-4. `ts-core/Docs/05_DATA_SPEC.md` — 第 1 节《持久化分层总览》、第 2.3 节《event_log》、第 2.3 节《task_history》
-5. `ts-core/scripts/pre_review.sh` — 全文件
-6. `ts-core/src/index.ts` — 全文件
-7. `ts-core/src/domain/index.ts` — 全文件
+1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏的约束》、第 8.2 节《append-only Event Log》、第 13 节《日志存储与冷热分离》、第 14 节《数据与持久化边界》
+2. `ts-core/Docs/05_DATA_SPEC.md` — 第 1 节《持久化分层总览》、第 2 节《PostgreSQL Schema 设计》、第 4.1 节《目录结构》、第 4.5 节《日志写入实现》、第 5 节《冷热分离策略》、第 6 节《event_log 查询模式》、第 9 节《数据一致性约定》、第 10.1 节《Drizzle Migration》、第 12 节《配置参数速查》
+3. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》
+4. `ts-core/scripts/pre_review.sh` — 全文件
+5. `ts-core/package.json` — 全文件
+6. `ts-core/pnpm-lock.yaml` — 全文件（允许新建）
+7. `ts-core/src/index.ts` — 全文件
 8. `ts-core/src/domain/contracts.ts` — 全文件
-9. `ts-core/src/runtime/index.ts` — 全文件
-10. `ts-core/src/runtime/contracts.ts` — 全文件
-11. `ts-core/src/runtime/state-machine.ts` — 全文件（允许新建）
-12. `ts-core/src/runtime/events.ts` — 全文件（允许新建）
-13. `ts-core/src/runtime/tasking.ts` — 全文件（允许新建）
-14. `ts-core/src/__tests__/scaffold.spec.ts` — 全文件
-15. `ts-core/src/__tests__/runtime-model.spec.ts` — 全文件（允许新建）
+9. `ts-core/src/runtime/events.ts` — 全文件
+10. `ts-core/src/runtime/tasking.ts` — 全文件
+11. `ts-core/src/data/index.ts` — 全文件
+12. `ts-core/src/data/contracts.ts` — 全文件（允许新建）
+13. `ts-core/src/data/schema.ts` — 全文件（允许新建）
+14. `ts-core/src/data/logs.ts` — 全文件（允许新建）
+15. `ts-core/src/__tests__/scaffold.spec.ts` — 全文件
+16. `ts-core/src/__tests__/data-model.spec.ts` — 全文件（允许新建）
 
 **核心逻辑要求**:
-1. 在 `domain` 与 `runtime` 中拆清三类概念：对话入口任务、执行任务、运行时状态流转。命名必须直接对应白名单文档，不得重新发明同义概念。
-2. 抽出执行层任务契约，至少覆盖 `skill_call`、`sandbox_code`、`intent_epoch`、快照时间戳、优先级或中断相关最小字段，并保持为纯类型或纯构造辅助函数，不接队列实现。
-3. 建立 `runtime` 的纯函数状态流转模型：至少能表达合法状态集合、触发事件或原因、合法转换校验，以及中断进入 `IDLE` 或 `REFLEXING` 的基础判断；不要写真实 Actor（执行代理）类。
-4. 建立事件类型常量或类型映射，至少覆盖 `05_DATA_SPEC.md` 中列出的 `event_log` 核心事件名，并让运行时侧能以类型安全方式引用，而不是散落字符串。
-5. 同步更新测试，验证状态流转规则、执行任务类型边界与事件类型清单；测试应优先覆盖纯函数与常量映射，不要写“只检查对象存在”的空心断言。
+1. 在 `data` 模块中拆清三类概念：表结构契约、日志引用/目录规则、模块边界导出；不要把真实连接池、查询函数或文件写入逻辑混进来。
+2. 用 `Drizzle ORM（轻量 SQL 生成器）` 或等价的类型安全 schema 表达方式，明确表示 `mc_servant` 下的核心表与关键字段，至少覆盖 `bots`、`owner_bots`、`sessions`、`chat_messages`、`event_log`、`task_history`、`task_summaries`、`session_summaries`。
+3. `event_log` 与 `task_history` 的类型边界必须对齐现有 `runtime`/`domain` 契约：事件类型复用运行时事件常量，任务状态与任务类型复用现有枚举，不得再发明平行字符串集。
+4. 抽出 `log_ref`、`code_ref`、JSONL 目录分类与保留期常量；规则必须体现“只保存相对路径、不允许绝对路径或向上跳目录”的约束，但保持为纯函数/纯常量。
+5. 测试优先覆盖 schema 关键字段、事件/状态对齐、相对路径校验与冷热分层常量；不要写依赖真实 PostgreSQL 或文件系统的测试。
 
 **验收标准**:
-1. `runtime` 目录内新增的执行态模型均为纯类型、纯函数或常量映射，没有 Mineflayer、网络、数据库、队列实例化代码。
-2. `BotActor` 状态集合、关键中断来源与基础状态流转规则能在代码中被直接表达，并且测试覆盖至少一个合法转换和一个非法转换或拒绝场景。
-3. 执行任务契约已与对话入口任务明确区分，且不再把 ConversationWorker（对话工作线程）输入混入 BotActor（机器人执行代理）执行边界。
-4. `event_log` 核心事件名已集中收敛到类型安全出口，命名与 `05_DATA_SPEC.md` 一致。
-5. `domain/index.ts` 的占位导出说明已与当前契约命名同步，不再保留 `TaskKind` 旧名残留。
+1. `data` 模块新增内容均为纯类型、纯函数、schema 定义或常量映射；没有真实 PostgreSQL 连接、查询执行、迁移执行或文件写入代码。
+2. `mc_servant` 核心表与关键索引/约束在代码中有可读出口，且 `event_log`、`task_history` 的事件类型/状态类型直接复用现有契约。
+3. `log_ref`/`code_ref` 规则被集中表达，并且测试覆盖至少一个合法相对路径和两个非法路径（绝对路径、`..` 跳目录）场景。
+4. `data/index.ts` 的占位导出说明已升级为真实持久化契约出口，不再停留在 `createDataPlaceholder` 骨架。
+5. 执行 `bash ts-core/scripts/pre_review.sh` 后仍能通过，且测试文件中包含针对 `data` 模块的新断言。
 
 ---
 
 ## Coder 自检清单
-- [ ] 任务序号核对为 `T-002`
+- [ ] 任务序号核对为 `T-003`
 - [ ] 仅读取并修改白名单内文件
 - [ ] 新增导出符号均补充中文文档注释
-- [ ] 未引入 Mineflayer、数据库、队列或网络实现
-- [ ] 状态流转与事件命名均对齐白名单文档
+- [ ] 未引入真实 PostgreSQL 连接、迁移执行或文件系统写入
+- [ ] 事件类型、任务状态与路径规则均对齐白名单文档
 - [ ] 执行 `bash ts-core/scripts/pre_review.sh` 全部通过
 
 ---
@@ -66,7 +67,7 @@
 ---
 
 ## Coder 执行反馈（仅 Coder 填写）
-- **回填序号**: T-002
+- **回填序号**: T-003
 - **修改文件**: （列表）
 - **执行摘要**: （简述做了什么）
 - **自检结果**: （逐项勾选）
@@ -76,6 +77,6 @@
 ---
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
-- T-003: 建立 `data` 模块的 PostgreSQL（关系型数据库）/日志边界，沉淀 schema（模式）、表结构与日志引用抽象。
 - T-004: 建立 `observation` 与 `world-model` 的只读快照模型，补齐双数据源融合、威胁评估输入输出与快照边界。
 - T-005: 建立 `skills` 模块的 Phase 1 技能目录与 `skill_call` 参数契约，连接执行任务模型与后续沙箱/技能分派边界。
+- T-006: 建立 `interfaces`/会话边界的最小契约，补齐 `sessions`、鉴权入口与 `event_log` 断线补拉所需类型出口。

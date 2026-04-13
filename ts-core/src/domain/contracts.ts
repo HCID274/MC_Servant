@@ -17,6 +17,14 @@ export enum ConversationTaskKind {
   Message = "conversation",
 }
 
+/** 对话优先级枚举，用于描述 ConversationWorker 的分诊结果。 */
+export enum ConversationPriority {
+  Interrupt = "interrupt",
+  Urgent = "urgent",
+  Normal = "normal",
+  Background = "background",
+}
+
 /** 执行任务类型枚举，用于描述 BotActor 可消费的 ExecJob 类型。 */
 export enum ExecutionTaskKind {
   SkillCall = "skill_call",
@@ -39,11 +47,11 @@ export enum EventLogLevel {
 }
 
 /** 事件日志基础结构。 */
-export interface EventLogEntry {
+export interface EventLogEntry<TEventType extends string = string> {
   /** 事件唯一标识。 */
   eventId: string;
   /** 事件类型标识。 */
-  eventType: string;
+  type: TEventType;
   /** 事件日志级别。 */
   level: EventLogLevel;
   /** 事件来源通道。 */
@@ -77,6 +85,16 @@ export type ConversationTaskEnvelope = TaskEnvelope<ConversationTaskKind>;
 
 /** 执行任务包结构，用于承载 BotActor 的输入边界。 */
 export type ExecutionTaskEnvelope = TaskEnvelope<ExecutionTaskKind>;
+
+/** 对话分诊结果结构，用于描述意图与紧迫度判断。 */
+export interface MessageTriage {
+  /** 意图分类。 */
+  intent: "chat" | "task" | "modify" | "cancel";
+  /** 紧迫度分类。 */
+  priority: ConversationPriority;
+  /** 判断依据。 */
+  reason: string;
+}
 
 /** 模块边界描述结构，用于工程骨架阶段声明职责范围。 */
 export interface ModuleBoundary {

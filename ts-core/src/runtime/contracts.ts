@@ -1,4 +1,4 @@
-import { ExecutionTaskKind, type TaskEnvelope } from "../domain/contracts.js";
+import { type ExecutionTaskEnvelope, ExecutionTaskKind } from "../domain/contracts.js";
 
 /** Bot 状态枚举，用于描述 BotActor 在运行时内的最小状态集合。 */
 export enum BotStatus {
@@ -51,7 +51,7 @@ export interface InterruptSignal {
 }
 
 /** 运行时任务包结构，用于在 BotActor 边界内补齐执行态字段。 */
-export interface RuntimeTaskEnvelope extends TaskEnvelope<ExecutionTaskKind> {
+export interface RuntimeTaskEnvelope extends ExecutionTaskEnvelope {
   /** 任务进入运行时前看到的 Bot 状态。 */
   status: BotStatus;
   /** 任务是否允许被中断。 */
@@ -62,8 +62,8 @@ export interface RuntimeTaskEnvelope extends TaskEnvelope<ExecutionTaskKind> {
 export interface RuntimeScaffold {
   /** 默认启动状态。 */
   defaultStatus: BotStatus;
-  /** 当前阶段声明支持的任务类型。 */
-  supportedTaskKinds: readonly ExecutionTaskKind[];
+  /** 当前阶段声明支持的执行任务类型。 */
+  supportedTaskKinds: readonly string[];
   /** 当前阶段提供的中断信号模板。 */
   interruptTemplate: InterruptSignal;
 }

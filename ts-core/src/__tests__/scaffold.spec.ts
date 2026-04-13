@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   BotStatus,
   CORE_MODULE_NAMES,
+  ConversationPriority,
   ExecutionTaskKind,
   MessageSource,
+  RUNTIME_EVENT_TYPES,
   coreModuleBoundaries,
   createRuntimeScaffold,
+  toExecPriority,
 } from "../index.js";
 
 describe("TS Core 工程骨架", () => {
@@ -20,6 +23,7 @@ describe("TS Core 工程骨架", () => {
     expect(BotStatus.IDLE).toBe("idle");
     expect(ExecutionTaskKind.SkillCall).toBe("skill_call");
     expect(MessageSource.Web).toBe("web");
+    expect(toExecPriority(ConversationPriority.Interrupt)).toBeNull();
   });
 
   it("应能创建最小运行时骨架对象", () => {
@@ -29,5 +33,6 @@ describe("TS Core 工程骨架", () => {
     expect(runtimeScaffold.supportedTaskKinds).toContain(ExecutionTaskKind.SkillCall);
     expect(runtimeScaffold.supportedTaskKinds).not.toContain("conversation");
     expect(runtimeScaffold.interruptTemplate.source.type).toBe("system");
+    expect(RUNTIME_EVENT_TYPES).toContain("task.started");
   });
 });
