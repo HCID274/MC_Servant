@@ -5,6 +5,8 @@ export const CORE_MODULE_NAMES = [
   "observation",
   "world-model",
   "interfaces",
+  "conversation",
+  "workers",
   "sandbox",
   "diagnostics",
   "domain",

@@ -133,3 +133,25 @@
   - 建立 `diagnostics`（诊断） 模块的 JSONL（结构化日志） 契约与引用工具，集中收口 `tasks` / `sandbox` / `llm` 三类通道的目录、保留期、`log_ref` / `code_ref`（日志 / 代码引用） 规则，以及只读日志行构造函数。
   - 打回项已修正：`AbortError`（中断错误） 已收紧为不可恢复语义，`SandboxExecutionRequest.type`（沙箱执行请求判别字段） 已锁定为 `sandbox_code`（沙箱代码），`sandbox` 日志行公开契约也已对齐 `05_DATA_SPEC.md`（数据规范） 的短字段落盘格式。
   - 测试已覆盖根导出、Phase 1（第一阶段） 技能对齐、日志引用、JSONL（结构化日志） 字段模型、错误分类、只读冻结与负向类型约束；当前仍未接入真实 `isolated-vm`（隔离虚拟机）、`esbuild`（转译器）、文件写入或网络 I/O（输入输出）。
+
+## T-008
+
+- **审查结论**: 通过
+- **核心文件**:
+  - `ts-core/src/conversation/index.ts`
+  - `ts-core/src/conversation/contracts.ts`
+  - `ts-core/src/conversation/triage.ts`
+  - `ts-core/src/conversation/chat.ts`
+  - `ts-core/src/conversation/planning.ts`
+  - `ts-core/src/workers/index.ts`
+  - `ts-core/src/workers/contracts.ts`
+  - `ts-core/src/workers/queues.ts`
+  - `ts-core/src/domain/contracts.ts`
+  - `ts-core/src/index.ts`
+  - `ts-core/src/__tests__/scaffold.spec.ts`
+  - `ts-core/src/__tests__/conversation-workers-model.spec.ts`
+- **变更快照**:
+  - 建立 `conversation`（对话） 模块的最小强类型边界，收口 Stage 1 `MessageTriage`（消息分诊） 安全回退、`chat`（闲聊） 回复、`plan`（规划） 上下文，以及 `skill_call`（技能调用） / `sandbox_code`（沙箱代码） 双路径规划产物。
+  - 建立 `workers`（工作线程） 模块的三队列命名、三类 Worker（工作线程） 输入任务与输出动作契约，并把 `cancel` / `modify`（取消 / 修改） 到 `InterruptSignal`（中断信号） 的桥接语义固定为纯函数边界。
+  - 打回项已修正：`workers`（工作线程） 不再直接依赖 `conversation`（对话） 的实现函数，只接收已构造好的 `ConversationReply`（对话回复） / `ExecJob`（执行任务）；`cancel`（取消） 路径已锁死为 `template`（模板） 回复；`ConversationWorkerTask`（对话工作线程任务） 也已拒绝 `bot_id`（机器人标识） 与消息载荷不一致的输入。
+  - 测试已覆盖根导出、三队列命名、分诊回退、双路径规划、cancel / modify（取消 / 修改） 分流、优先级到队列行为映射，以及本轮两条负向回归；当前仍未接入真实 `BullMQ`（队列）、`Redis`（缓存）、`LLM`（大语言模型） SDK、数据库或网络 I/O（输入输出）。

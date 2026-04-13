@@ -1,3 +1,4 @@
+import { conversationModuleBoundary } from "./conversation/index.js";
 import { dataModuleBoundary } from "./data/index.js";
 import { diagnosticsModuleBoundary } from "./diagnostics/index.js";
 import { domainModuleBoundary } from "./domain/index.js";
@@ -6,6 +7,7 @@ import { observationModuleBoundary } from "./observation/index.js";
 import { runtimeModuleBoundary } from "./runtime/index.js";
 import { sandboxModuleBoundary } from "./sandbox/index.js";
 import { skillsModuleBoundary } from "./skills/index.js";
+import { workersModuleBoundary } from "./workers/index.js";
 import { worldModelModuleBoundary } from "./world-model/index.js";
 
 /** TS Core 的模块边界清单。 */
@@ -15,6 +17,8 @@ export const coreModuleBoundaries = [
   observationModuleBoundary,
   worldModelModuleBoundary,
   interfacesModuleBoundary,
+  conversationModuleBoundary,
+  workersModuleBoundary,
   sandboxModuleBoundary,
   diagnosticsModuleBoundary,
   domainModuleBoundary,
@@ -26,6 +30,8 @@ export * from "./skills/index.js";
 export * from "./observation/index.js";
 export * from "./world-model/index.js";
 export * from "./interfaces/index.js";
+export * from "./conversation/index.js";
+export * from "./workers/index.js";
 export * from "./sandbox/index.js";
 export * from "./diagnostics/index.js";
 export * from "./domain/index.js";

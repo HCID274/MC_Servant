@@ -11,10 +11,13 @@ import {
   createDiagnosticsCatalog,
   createEnvironmentSnapshot,
   createHealthResponse,
+  createMessageQueueName,
+  createMessageTriage,
   createRuntimeScaffold,
   createSandboxFacadeContract,
   createSessionRecord,
   createStatusResponse,
+  createWorkerQueueCatalog,
   createWorldModelQueryBoundary,
   toExecPriority,
 } from "../index.js";
@@ -122,5 +125,19 @@ describe("TS Core 工程骨架", () => {
       "sandbox",
       "llm",
     ]);
+  });
+
+  it("应从根入口导出 conversation（对话） 与 workers（工作线程） 契约", () => {
+    const triage = createMessageTriage({
+      intent: "task",
+      priority: "urgent",
+      reason: "root_export",
+    });
+    const queueCatalog = createWorkerQueueCatalog("bot-root");
+
+    expect(triage.intent).toBe("task");
+    expect(queueCatalog.conversation.queue).toBe(createMessageQueueName("bot-root"));
+    expect(queueCatalog.bot.queue).toBe("bot:bot-root:exec");
+    expect(queueCatalog.brain.queue).toBe("brain");
   });
 });
