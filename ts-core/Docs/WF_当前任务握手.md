@@ -1,67 +1,75 @@
 # 当前任务握手区
 
-【任务序号】: T-013
+【任务序号】: T-014
 【当前状态】: 待开发
 
 ---
 
 ## Manager 任务指令
 
-**任务目标**: 建立外部认证源适配的最小运行时契约，把“是否需要认证、认证进行中、已认证、认证失败”与“明文登录密钥只允许通过部署注入”收口为同一套纯类型 / 纯函数边界，并移除现有代码里把外部认证误建模为 PostgreSQL（关系型数据库） `authme schema`（认证模式） 的过时耦合；本任务不读取 EasyAuth（离线服认证模组） SQLite（嵌入式数据库）、不接入真实 Mineflayer（Minecraft 协议客户端） 登录、不发送真实聊天登录命令。
+**任务目标**: 在 `app`（应用装配） / 项目打包入口这一组模块内，补齐 TS Core（TypeScript 单核心） 的最小本地启动与容器化骨架：建立专用可执行入口、把当前纯装配结果转成可读的启动摘要、补上 `Dockerfile`（容器镜像构建文件） / `.dockerignore`（容器忽略文件） / `package.json`（项目清单） 脚本与最小运行说明；本任务不接入真实 Redis（缓存） / PostgreSQL（关系型数据库） / Fastify（接口网关） / Socket.io（实时推送） / Mineflayer（Minecraft 协议客户端） 连接，只做单进程、可测试、可容器启动的骨架。
 
 **上下文说明**:
-1. `T-012` 已完成 `runtime`（运行时） / `workers`（工作线程） / `diagnostics`（诊断） 的任务生命周期闭环，当前主线缺口转为“BotActor（机器人执行代理） 在 `INITIALIZING`（初始化） 阶段如何表达外部认证流程边界”。
-2. `02_RUNTIME_SPEC.md`（运行时规格） 已明确 `INITIALIZING`（初始化） 包含“Mineflayer 连接中、外部认证流程处理中”，且只有“连接成功 + 外部认证完成”才能进入 `IDLE`（空闲）；因此外部认证不能继续只是注释语义，必须在运行时契约层有可测试表达。
-3. `05_DATA_SPEC.md`（数据规格） 与需求变更索引已确认：MC（Minecraft） 登录认证当前真实部署为 EasyAuth（离线服认证模组） + SQLite（嵌入式数据库），它是**外部认证源**，不是 TS Core（TypeScript 单核心） PostgreSQL（关系型数据库） 主业务库的一部分；TS Core 不接管、不迁移、不双写它的数据，机器人登录明文密码只能由部署注入。
-4. 仓内当前仍有旧假设残留：`ts-core/src/db/contracts.ts` 还把只读依赖 schema（模式） 写成 `authme`，这会把后续实现继续拖回“外部认证在 PG（关系型数据库） 内”的错误路径；本任务要把该耦合清掉，并建立可扩展但不写死 EasyAuth（离线服认证模组） 表结构的最小契约。
-5. 本任务仍然是模块级契约收口：允许在 `runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 内补齐边界与导出，但不得接入真实数据库查询、真实聊天命令发送、真实 JAR Bridge（服务端桥接） 登录流程或 Docker（容器） 启动脚本。
+1. `T-013` 已完成 `runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 的外部认证纯契约与启动语义对齐，当前已经有稳定的 `createAppBootstrapContract()`（创建应用装配结果） 可作为本地启动骨架的纯输入。
+2. `01_ARCHITECTURE.md`（系统架构） 第 3.4 节已明确：Phase 1（第一阶段） 是**单进程、单容器**模型，三种 Worker（工作线程） 跑在同一个 Node.js（运行时） 进程里，并由 Docker（容器） `restart policy`（重启策略） 守护；因此现在可以先把“如何启动这个单进程”固定下来。
+3. `02_RUNTIME_SPEC.md`（运行时规格） 第 6.1 节已定义启动序列：加载配置 → 准备依赖 → 创建 BotActor（机器人执行代理） 进入 `INITIALIZING`（初始化） → 启动 Worker（工作线程） / 实时推送 / HTTP（接口） → 系统就绪。当前任务不实现真实依赖连接，但需要把这个顺序体现在可执行入口与启动摘要中。
+4. `AGENTS.md`（仓库协作约束） 已确认当前默认部署拓扑是：本地 Windows / WSL 侧运行 `Paper + plugin + ts-core`（服务端核心 + 插件 + TS Core），云上只承载入口层、隧道服务端与 PostgreSQL（关系型数据库）；因此本任务的容器骨架应只覆盖 `ts-core`（TypeScript 单核心） 自身，不要把 MC（Minecraft） 服务端或外部认证源打进同一个镜像。
+5. 用户已明确问过“什么时候上 `Dockerfile`（容器镜像构建文件）”，因此本任务需要把容器化骨架真正落地，而不是继续只留在设计文档里；但仍要维持最小闭环，不额外引入 `docker-compose.yml`（容器编排文件） 、真实隧道脚本或云部署脚本。
+6. 本任务仍然坚持模块级集中交付：允许在 `app`（应用装配） / 可执行入口 / 项目根配置 / 运行说明内成组修改；不得顺手接入真实网络监听、真实数据库迁移执行、真实 BullMQ（队列） Worker 启动或 EasyAuth（离线服认证模组） 认证动作。
 
 **输入文件白名单（Coder 仅限读取以下文件）**:
-1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 2 节《系统总体结构》中的双视角输入段落、第 3.1 节《队列划分》
-2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 2.1 节《状态枚举》、第 2.2 节《状态转换图》、第 2.3 节《转换规则详表》、第 6.1 节《启动序列》
-3. `ts-core/Docs/05_DATA_SPEC.md` — 第 1 节《总览》中的外部认证源段落、第 2.1 节《Schema 隔离》
-4. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》
-5. `ts-core/Docs/WF_需求变更索引.md` — 2026-04-14《MC 认证真理源确认（EasyAuth + SQLite）》条目
-6. `ts-core/scripts/pre_review.sh` — 全文件
-7. `ts-core/src/index.ts` — 全文件
-8. `ts-core/src/runtime/contracts.ts` — 全文件
-9. `ts-core/src/runtime/state-machine.ts` — 全文件
-10. `ts-core/src/runtime/index.ts` — 全文件
-11. `ts-core/src/data/contracts.ts` — 全文件
-12. `ts-core/src/data/index.ts` — 全文件
-13. `ts-core/src/db/contracts.ts` — 全文件
-14. `ts-core/src/db/index.ts` — 全文件
-15. `ts-core/src/app/contracts.ts` — 全文件
-16. `ts-core/src/app/bootstrap.ts` — 全文件
-17. `ts-core/src/app/index.ts` — 全文件
-18. `ts-core/src/__tests__/runtime-model.spec.ts` — 全文件
-19. `ts-core/src/__tests__/db-config-model.spec.ts` — 全文件
-20. `ts-core/src/__tests__/app-smoke-model.spec.ts` — 全文件
+1. `AGENTS.md` — 第 2 节《用户强约束》中的部署拓扑条目、第 5 节《ts-core 工具链与工程基线》、第 8 节《常用命令》、第 12 节《安全与配置》
+2. `ts-core/Docs/01_ARCHITECTURE.md` — 第 3.4 节《Phase 1 部署模型》
+3. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 6.1 节《启动序列》、第 6.2 节《关闭序列》
+4. `ts-core/Docs/05_DATA_SPEC.md` — 第 12 节《配置参数速查》
+5. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》
+6. `ts-core/Docs/WF_需求变更索引.md` — 2026-04-14《MC 认证真理源确认（EasyAuth + SQLite）》条目
+7. `ts-core/scripts/pre_review.sh` — 全文件
+8. `ts-core/package.json` — 全文件
+9. `ts-core/tsconfig.json` — 全文件
+10. `ts-core/biome.json` — 全文件
+11. `ts-core/README.md` — 全文件
+12. `ts-core/src/index.ts` — 全文件
+13. `ts-core/src/main.ts` — 全文件（可新建）
+14. `ts-core/src/app/index.ts` — 全文件
+15. `ts-core/src/app/bootstrap.ts` — 全文件
+16. `ts-core/src/app/contracts.ts` — 全文件
+17. `ts-core/src/app/smoke.ts` — 全文件
+18. `ts-core/src/app/entrypoint.ts` — 全文件（可新建）
+19. `ts-core/src/__tests__/app-smoke-model.spec.ts` — 全文件
+20. `ts-core/src/__tests__/scaffold.spec.ts` — 全文件
+21. `ts-core/src/__tests__/app-entrypoint-model.spec.ts` — 全文件（可新建）
+22. `ts-core/Dockerfile` — 全文件（可新建）
+23. `ts-core/.dockerignore` — 全文件（可新建）
+24. `ts-core/.env.example` — 全文件（可新建）
 
 **核心逻辑要求**:
-1. 必须在 `runtime`（运行时） 内建立统一的外部认证状态 / 配置契约，至少能无歧义表达：`not_required`（无需认证） / `pending`（认证进行中） / `authenticated`（已认证） / `failed`（认证失败）；不得再把外部认证停留在注释层或散落成多套布尔字段。
-2. 必须显式表达“明文登录密钥由部署注入”的边界：允许通过 `env`（环境变量） / `botConfig`（机器人配置） 等纯配置输入声明登录密钥来源，但不得把外部认证密码哈希、SQLite（嵌入式数据库） 路径、EasyAuth（离线服认证模组） 表结构或查询逻辑写进运行时契约。
-3. `db`（数据库元信息） / `data`（数据配置） / `app`（应用装配） 侧必须清除把外部认证误建模为 PostgreSQL（关系型数据库） `authme schema`（认证模式） 的过时耦合；TS Core（TypeScript 单核心） 的 PostgreSQL（关系型数据库） 仍只描述业务真理源，不承担外部认证源只读 schema（模式） 假设。
-4. `app/bootstrap`（应用装配） 必须能纯函数暴露当前 Bot（机器人） 的外部认证装配结果，使后续启动流程可以在不接真实 IO（输入输出） 的前提下判断“是否需要认证、认证应使用哪类受控入口、密钥是否已注入”；但本任务不得真正执行登录命令。
-5. 不得引入真实 EasyAuth（离线服认证模组） 读取、不得新增 PostgreSQL（关系型数据库） 同步表、不得把外部认证状态写入 `event_log`（事件日志） / `task_history`（任务历史） 持久化层、不得接入 Dockerfile（容器镜像构建文件） 或部署脚本。
+1. 必须保持 `ts-core/src/index.ts`（根导出入口） 继续承担库导出职责，不得把可执行副作用直接塞回根导出入口；可执行启动逻辑必须放到专用入口（如 `src/main.ts`、`src/app/entrypoint.ts`） 中。
+2. 可执行入口必须只消费纯装配结果，生成可读的启动摘要 / 启动计划，并明确表达当前阶段“已完成配置装配、尚未接真实 IO（输入输出） 连接”的边界；不得偷偷连接 Redis（缓存） / PostgreSQL（关系型数据库） / Fastify（接口网关） / Socket.io（实时推送） / Mineflayer（Minecraft 协议客户端）。
+3. `package.json`（项目清单） 脚本必须与新入口对齐，至少保证开发态、构建产物运行态与预检流程之间不再互相矛盾；若引入新入口文件，`Dockerfile`（容器镜像构建文件） 的最终启动命令必须与之保持一致。
+4. `Dockerfile`（容器镜像构建文件） / `.dockerignore`（容器忽略文件） 必须体现单进程、单容器的最小 TS Core（TypeScript 单核心） 镜像边界：镜像内只包含构建 TS Core 所需内容，不打包真实数据库、Redis（缓存）、MC（Minecraft） 服务端或外部认证库文件，不把任何真实密钥写入镜像层。
+5. `README.md`（运行说明） 与 `.env.example`（环境变量样例） 必须记录最小本地启动方式，以及当前 `T-013` 已引入的外部认证相关环境变量入口；但只能写样例键名与说明，不能写真实密码、真实地址或用户本机私有路径。
+6. 若为测试性可执行入口新增纯函数摘要构造器或启动计划构造器，必须把可测试逻辑与真正的 `console`（控制台） / `process`（进程） 副作用分离，确保 Vitest（测试） 可直接覆盖核心逻辑而不依赖真实进程启动。
 
 **验收标准**:
-1. `runtime`（运行时） 已存在统一的外部认证状态与配置契约，且与 `INITIALIZING`（初始化） → `IDLE`（空闲） 的状态机语义一致。
-2. `data`（数据配置） / `app`（应用装配） 已能纯函数表达“认证是否启用、入口方式、密钥注入来源 / 缺失”的最小装配结果。
-3. `db/contracts.ts`（数据库契约） 中不再把外部认证错误表述为 PostgreSQL（关系型数据库） `authme schema`（认证模式） 或其他写死的 PG（关系型数据库） 只读 schema（模式）。
-4. 新增或更新测试已覆盖：无需认证路径、需要认证但缺少注入密钥的失败路径、装配层可见性，以及清除旧 `authme`（旧认证模式） 假设后的导出一致性。
-5. 执行 `bash ts-core/scripts/pre_review.sh` 后仍能通过。
+1. `ts-core`（TypeScript 单核心） 已存在独立的可执行启动入口，且 `src/index.ts`（根导出入口） 仍保持纯导出角色，没有混入启动副作用。
+2. `package.json`（项目清单） 的 `dev`（开发） / 运行脚本 与 `Dockerfile`（容器镜像构建文件） 的启动命令已对齐到同一个入口，能够表达单进程 TS Core（TypeScript 单核心） 的最小启动骨架。
+3. 可执行入口或其依赖的纯函数已能输出可测试的启动摘要，至少覆盖：初始状态为 `INITIALIZING`（初始化）、外部认证装配结果、计划中的启动阶段顺序，以及当前阶段未接真实依赖的说明。
+4. `README.md`（运行说明） / `.env.example`（环境变量样例） / `Dockerfile`（容器镜像构建文件） / `.dockerignore`（容器忽略文件） 已形成一致的最小本地运行说明，且未把真实密钥、真实私有路径或外部认证库文件写死进去。
+5. 新增或更新测试已覆盖：启动摘要构造、根导出入口无副作用假设、脚本 / 入口对齐的关键断言，以及 `T-013` 外部认证装配结果在启动入口中的可见性。
+6. 执行 `bash ts-core/scripts/pre_review.sh` 后仍能通过。
 
 ---
 
 ## Coder 自检清单
-- [ ] 任务序号核对为 `T-013`
+- [ ] 任务序号核对为 `T-014`
 - [ ] 仅读取并修改白名单内文件
 - [ ] 新增导出符号均补充中文文档注释
-- [ ] 外部认证仅建模为运行时 / 装配层纯契约，未接入 EasyAuth（离线服认证模组） SQLite（嵌入式数据库） 读取、真实聊天命令或真实服务端桥接登录逻辑
-- [ ] PostgreSQL（关系型数据库） 契约中已移除 `authme`（旧认证模式） 只读 schema（模式） 假设
-- [ ] 明文登录密钥边界仅来自部署注入，未把哈希反推、库表路径或查询逻辑混入配置 / 运行时模型
-- [ ] 新增或更新测试覆盖“无需认证 / 需要认证 / 缺少密钥失败”与应用装配可见性
+- [ ] `src/index.ts`（根导出入口） 仍为纯导出入口，未混入进程启动副作用
+- [ ] 可执行入口仅消费纯装配结果，未接入真实 Redis（缓存） / PostgreSQL（关系型数据库） / Fastify（接口网关） / Socket.io（实时推送） / Mineflayer（Minecraft 协议客户端） 连接
+- [ ] `Dockerfile`（容器镜像构建文件） / `.dockerignore`（容器忽略文件） 未包含真实密钥、真实私有路径、外部认证库文件或额外服务
+- [ ] `README.md`（运行说明） 与 `.env.example`（环境变量样例） 已同步更新，且只包含样例键名与说明
+- [ ] 新增或更新测试覆盖启动摘要 / 入口对齐 / 外部认证装配可见性
 - [ ] 执行 bash ts-core/scripts/pre_review.sh 全部通过
 
 ---
@@ -80,6 +88,6 @@
 ---
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
-- T-014: 在外部认证契约稳定后补本地装配 / 启动入口 / `Dockerfile`（容器镜像构建文件） 的最小部署骨架。
 - T-015: 收口 `event_log`（事件日志） / replay（补拉） / diagnostics（诊断） 的持久化对齐边界，为真实写入层预留稳定契约。
-- T-016: 在部署骨架与持久化边界稳定后，规划受控登录入口执行骨架，把认证契约接到实际运行时动作，但仍保持外部认证源只读。
+- T-016: 在部署骨架稳定后，规划受控登录入口执行骨架，把外部认证纯契约接到实际运行时动作，但仍保持外部认证源只读。
+- T-017: 处理低优先级横切项：基础 `invariants`（不变量） / `guards`（守卫） 工具沉淀与架构文档中的 `domain`（领域） 横切层补记。

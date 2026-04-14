@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   BotStatus,
   ConversationPriority,
+  EXTERNAL_AUTH_STATUSES,
   ExecPriority,
   ExecutionTaskKind,
   MessageSource,
@@ -14,6 +15,9 @@ import {
   ThreatLevel,
   ThreatRuleId,
   canTransition,
+  createExternalAuthSecretBinding,
+  createExternalAuthState,
+  createRuntimeScaffold,
   createSandboxCodeJob,
   createSkillCallJob,
   createTaskAcceptedLifecycleEvent,
@@ -85,7 +89,7 @@ describe("runtime 执行态模型", () => {
     expect(canTransition(BotStatus.SHUTDOWN, BotStatus.IDLE)).toBe(false);
   });
 
-  it("应根据中断来源分流到 IDLE 或 REFLEXING", () => {
+  it("应根据中断来源分流到 IDLE 或 REFLEXING，并在初始化 / 反射中排队", () => {
     const reflexDecision = resolveInterruptDecision(BotStatus.EXECUTING, {
       source: {
         type: "reflex",
@@ -130,6 +134,23 @@ describe("runtime 执行态模型", () => {
         reason: "newer_intent",
       },
     });
+    const reflexingInterruptDecision = resolveInterruptDecision(BotStatus.REFLEXING, {
+      source: {
+        type: "control",
+        command: "cancel",
+      },
+      reason: "owner_cancel",
+    });
+    const reflexingInterruptTransition = resolveTransition(BotStatus.REFLEXING, {
+      type: "interrupt",
+      signal: {
+        source: {
+          type: "control",
+          command: "cancel",
+        },
+        reason: "owner_cancel",
+      },
+    });
 
     expect(reflexDecision.accepted).toBe(true);
     expect(reflexDecision.to).toBe(BotStatus.REFLEXING);
@@ -144,6 +165,46 @@ describe("runtime 执行态模型", () => {
     expect(idleControlTransition.emittedEvents).toEqual([]);
     expect(initializingInterruptTransition.accepted).toBe(false);
     expect(initializingInterruptTransition.emittedEvents).toEqual([]);
+    expect(initializingInterruptTransition.interrupt_action).toBe("queue");
+    expect(reflexingInterruptDecision.action).toBe("queue");
+    expect(reflexingInterruptTransition.accepted).toBe(false);
+    expect(reflexingInterruptTransition.interrupt_action).toBe("queue");
+  });
+
+  it("应统一表达外部认证状态与运行时骨架初始态", () => {
+    const secret = createExternalAuthSecretBinding({
+      source: "env",
+      reference: "MC_EXTERNAL_AUTH_SECRET",
+      secret: "hunter2",
+    });
+    const pending = createExternalAuthState({
+      status: "pending",
+      secret,
+    });
+    const authenticated = createExternalAuthState({
+      status: "authenticated",
+      secret,
+    });
+    const failed = createExternalAuthState({
+      status: "failed",
+      failureReason: "missing_injected_secret",
+      secretSource: "env",
+      secretReference: "MC_EXTERNAL_AUTH_SECRET",
+    });
+    const runtimeScaffold = createRuntimeScaffold({
+      externalAuth: pending,
+    });
+
+    expect(EXTERNAL_AUTH_STATUSES).toEqual(["not_required", "pending", "authenticated", "failed"]);
+    expect(createExternalAuthState({ status: "not_required" }).entrypoint).toBe("none");
+    expect(pending.status).toBe("pending");
+    expect(authenticated.status).toBe("authenticated");
+    if (failed.status !== "failed") {
+      throw new Error("expected failed external auth state");
+    }
+    expect(failed.failure_reason).toBe("missing_injected_secret");
+    expect(runtimeScaffold.defaultStatus).toBe(BotStatus.INITIALIZING);
+    expect(runtimeScaffold.externalAuth).toBe(pending);
   });
 
   it("应集中维护 event_log 事件名与任务状态枚举", () => {

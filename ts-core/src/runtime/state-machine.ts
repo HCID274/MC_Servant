@@ -78,6 +78,8 @@ export interface RuntimeTransitionDecision {
   to: BotStatus;
   /** 转换原因。 */
   reason: RuntimeTransitionReason["type"];
+  /** 中断类转换的处置动作。 */
+  interrupt_action?: InterruptDecision["action"];
   /** 触发的事件清单。 */
   emittedEvents: readonly RuntimeEventType[];
 }
@@ -159,7 +161,7 @@ export function resolveInterruptDecision(
       from: currentStatus,
       accepted: false,
       to: currentStatus,
-      action: "ignore",
+      action: "queue",
       emittedEvents: [],
     };
   }
@@ -225,6 +227,7 @@ export function resolveTransition(
         reason.type,
         decision.emittedEvents,
         decision.accepted && canTransition(currentStatus, decision.to),
+        decision.action,
       );
     }
     case "reflex_done":
@@ -249,6 +252,7 @@ export function createTransitionDecision(
   reason: RuntimeTransitionReason["type"],
   emittedEvents: readonly RuntimeEventType[],
   accepted = canTransition(from, to),
+  interruptAction?: InterruptDecision["action"],
 ): RuntimeTransitionDecision {
   const emittedEventsForDecision: readonly RuntimeEventType[] = accepted
     ? from === to
@@ -263,6 +267,7 @@ export function createTransitionDecision(
     accepted,
     to,
     reason,
+    ...(interruptAction === undefined ? {} : { interrupt_action: interruptAction }),
     emittedEvents: emittedEventsForDecision,
   };
 }

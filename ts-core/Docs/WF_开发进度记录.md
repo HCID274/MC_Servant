@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-011` ~ `T-020`
-- 当前已完成任务：`T-011`、`T-012`
-- 当前批次摘要：已完成外部输入统一 ingress（入口） 契约与执行任务生命周期闭环契约，接口层的主人解析语义与运行时 / 工作线程 / 诊断侧的 `accepted`（已接受） / `started`（已开始） / `discarded`（已丢弃） / `terminal`（终态） 事件流已形成同一套强类型边界。
+- 当前已完成任务：`T-011`、`T-012`、`T-013`
+- 当前批次摘要：已完成外部输入统一 ingress（入口） 契约、执行任务生命周期闭环契约，以及 `runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 侧的外部认证纯契约与启动语义对齐，接口层、运行时层与装配层已逐步形成同一套可测试的强类型边界。
 
 ---
 
@@ -70,3 +70,34 @@
 
 - 预检结果：
   以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `12` 个测试文件、`64` 条测试全部通过。
+
+### T-013（已完成）
+
+- 任务目标：
+  在 `runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 这一组紧邻模块内，集中完成外部认证契约收口与当前已确认的一致性修补：把“是否需要认证、认证进行中、已认证、认证失败”与“明文登录密钥只允许通过部署注入”收口为同一套纯类型 / 纯函数边界，同时清除 `authme schema`（旧认证模式） 残留、修正 `sandbox`（沙箱） 日志保留期绑定错误、对齐 `INITIALIZING`（初始化） / `REFLEXING`（反射中） 的状态机语义。
+
+- 审查结论：
+  通过。本轮改动已把 `runtime`（运行时） 内的外部认证状态、`app/bootstrap`（应用装配） 的纯装配结果、`db/contracts.ts`（数据库契约） 的 `authme`（旧认证模式） 残留，以及 `data/contracts.ts`（数据配置契约） 中 `sandbox`（沙箱） 保留期的错误绑定一起收平；`INITIALIZING`（初始化） 默认起始态和 `REFLEXING`（反射中） 中断排队语义也已与 `02_RUNTIME_SPEC.md`（运行时规格） 对齐。
+
+- 核心文件：
+  `ts-core/src/runtime/contracts.ts`
+  `ts-core/src/runtime/state-machine.ts`
+  `ts-core/src/runtime/index.ts`
+  `ts-core/src/data/contracts.ts`
+  `ts-core/src/db/contracts.ts`
+  `ts-core/src/app/contracts.ts`
+  `ts-core/src/app/bootstrap.ts`
+  `ts-core/src/__tests__/runtime-model.spec.ts`
+  `ts-core/src/__tests__/db-config-model.spec.ts`
+  `ts-core/src/__tests__/app-smoke-model.spec.ts`
+  `ts-core/src/__tests__/scaffold.spec.ts`
+
+- 变更快照：
+  `runtime`（运行时） 新增统一的 `ExternalAuthState`（外部认证状态） / `ExternalAuthSecretBinding`（外部认证密钥绑定） 契约，并将 `createRuntimeScaffold()`（创建运行时骨架） 的默认状态切换为 `INITIALIZING`（初始化）。
+  `runtime/state-machine.ts`（运行时状态机） 将 `REFLEXING`（反射中） 收到中断时的处置从 `ignore`（忽略） 改为 `queue`（排队），并让 `resolveTransition()`（状态转换） 可观测暴露 `interrupt_action`（中断处置动作）。
+  `data/contracts.ts`（数据配置契约） 为 `sandbox`（沙箱） 日志保留期补上独立的 `SANDBOX_LOG_RETENTION_DAYS` / `SANDBOX_LOG_RETENTION` 环境变量绑定，不再复用任务日志配置。
+  `db/contracts.ts`（数据库契约） 的 `readonlySchemas`（只读模式） 已清空，不再暗示外部认证存在于 PostgreSQL（关系型数据库） 业务库内。
+  `app/bootstrap.ts`（应用装配） 新增纯函数 `createAppExternalAuthContract()`（创建应用外部认证装配结果），可无 IO（输入输出） 地表达“无需认证 / 缺少密钥失败 / 已注入密钥待认证”三类装配结果，并把结果暴露到 `bootstrap.auth` 与 `runtime.external_auth`。
+
+- 预检结果：
+  以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `12` 个测试文件、`66` 条测试全部通过。

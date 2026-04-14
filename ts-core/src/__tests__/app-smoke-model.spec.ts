@@ -25,7 +25,9 @@ describe("app（应用装配） 骨架", () => {
     expect(assembly.postgres.port).toBe(5433);
     expect(assembly.redis.state).toBe("bot:bot-app:state");
     expect(assembly.workers.conversation.queue).toBe("msg:bot-app");
-    expect(assembly.runtime.initial_status).toBe("idle");
+    expect(assembly.runtime.initial_status).toBe("initializing");
+    expect(assembly.runtime.external_auth.status).toBe("not_required");
+    expect(assembly.auth.entrypoint).toBe("none");
     expect(assembly.interfaces.health.service).toBe("ts-core");
     expect(assembly.sandbox.resource_limits.memory_limit_mb).toBe(128);
     expect(assembly.diagnostics.catalog.channels).toHaveLength(3);
@@ -84,6 +86,33 @@ describe("app（应用装配） 骨架", () => {
         dependencies: ["runtime", "workers", "realtime"],
       }),
     );
+  });
+
+  it("应暴露需要认证但缺少注入密钥的失败路径，以及已注入密钥的待认证路径", () => {
+    const missingSecretAssembly = createAppBootstrapContract({
+      botId: "bot-auth-missing",
+      now: "2026-04-14T00:00:00.000Z",
+      env: {
+        MC_EXTERNAL_AUTH_REQUIRED: "true",
+      },
+    });
+    const injectedSecretAssembly = createAppBootstrapContract({
+      botId: "bot-auth-ready",
+      now: "2026-04-14T00:00:00.000Z",
+      env: {
+        MC_EXTERNAL_AUTH_REQUIRED: "true",
+        MC_EXTERNAL_AUTH_SECRET: "hunter2",
+      },
+    });
+
+    expect(missingSecretAssembly.auth.state.status).toBe("failed");
+    expect(missingSecretAssembly.auth.entrypoint).toBe("game_chat_command");
+    expect(missingSecretAssembly.auth.secret_injected).toBe(false);
+    expect(missingSecretAssembly.runtime.initial_status).toBe("initializing");
+    expect(injectedSecretAssembly.auth.state.status).toBe("pending");
+    expect(injectedSecretAssembly.auth.entrypoint).toBe("game_chat_command");
+    expect(injectedSecretAssembly.auth.secret_injected).toBe(true);
+    expect(injectedSecretAssembly.runtime.external_auth.status).toBe("pending");
   });
 
   it("应拒绝空 bot 标识与倒置的生命周期顺序", () => {

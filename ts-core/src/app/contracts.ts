@@ -193,7 +193,7 @@ export function createAppLifecyclePlan(): AppLifecyclePlan {
       phase: "startup",
       subsystem: "runtime",
       dependsOn: ["prepare_diagnostics", "prepare_sandbox", "prepare_redis", "prepare_postgres"],
-      description: "创建运行时初始状态与 BotActor（机器人执行代理） 骨架入口。",
+      description: "创建运行时初始状态、外部认证装配结果与 BotActor（机器人执行代理） 骨架入口。",
     }),
     createLifecycleStep({
       name: "start_workers",
@@ -207,7 +207,7 @@ export function createAppLifecyclePlan(): AppLifecyclePlan {
       phase: "startup",
       subsystem: "realtime",
       dependsOn: ["prepare_runtime", "start_workers"],
-      description: "在运行时进入 IDLE（空闲） 后开放实时推送边界。",
+      description: "在运行时完成连接与外部认证、进入 IDLE（空闲） 后开放实时推送边界。",
     }),
     createLifecycleStep({
       name: "start_http",
@@ -330,7 +330,8 @@ export function createAppReadinessCatalog(): readonly AppReadinessDescriptor[] {
       subsystem: "runtime",
       readiness: "ready",
       dependencies: ["diagnostics", "sandbox", "redis", "postgres"] as const,
-      ready_when: "BotActor（机器人执行代理） 初始状态为 IDLE（空闲） 且中断模板可用。",
+      ready_when:
+        "BotActor（机器人执行代理） 初始状态为 INITIALIZING（初始化），且外部认证装配结果与中断模板已固定。",
     }),
     Object.freeze({
       subsystem: "workers",
@@ -342,7 +343,7 @@ export function createAppReadinessCatalog(): readonly AppReadinessDescriptor[] {
       subsystem: "realtime",
       readiness: "planned",
       dependencies: ["runtime", "workers"] as const,
-      ready_when: "运行时进入 IDLE（空闲） 后才允许打开实时推送。",
+      ready_when: "运行时完成连接与外部认证、进入 IDLE（空闲） 后才允许打开实时推送。",
     }),
     Object.freeze({
       subsystem: "http",

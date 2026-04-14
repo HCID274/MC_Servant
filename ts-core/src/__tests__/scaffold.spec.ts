@@ -45,7 +45,8 @@ describe("TS Core 工程骨架", () => {
   it("应能创建最小运行时骨架对象", () => {
     const runtimeScaffold = createRuntimeScaffold();
 
-    expect(runtimeScaffold.defaultStatus).toBe(BotStatus.IDLE);
+    expect(runtimeScaffold.defaultStatus).toBe(BotStatus.INITIALIZING);
+    expect(runtimeScaffold.externalAuth.status).toBe("not_required");
     expect(runtimeScaffold.supportedTaskKinds).toContain(ExecutionTaskKind.SkillCall);
     expect(runtimeScaffold.supportedTaskKinds).not.toContain("conversation");
     expect(runtimeScaffold.interruptTemplate.source.type).toBe("system");
@@ -177,7 +178,9 @@ describe("TS Core 工程骨架", () => {
     expect(() => assertAppLifecyclePlan(bootstrap.lifecycle)).not.toThrow();
     expect(bootstrap.interfaces.routes[0].path).toBe("/api/health");
     expect(bootstrap.migrations.entrypoint).toBe("src/db/migrate.ts");
-    expect(smoke.runtime.initial_status).toBe(BotStatus.IDLE);
+    expect(bootstrap.runtime.initial_status).toBe(BotStatus.INITIALIZING);
+    expect(bootstrap.auth.state.status).toBe("not_required");
+    expect(smoke.runtime.initial_status).toBe(BotStatus.INITIALIZING);
     expect(smoke.health.status).toBe("ok");
   });
 });

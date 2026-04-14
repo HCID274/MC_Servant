@@ -59,7 +59,7 @@ export interface BotStateCache {
 /** PostgreSQL（关系型数据库） schema 目录元信息。 */
 export const POSTGRES_SCHEMA_CONTRACT = Object.freeze({
   businessSchema: MC_SERVANT_SCHEMA_NAME,
-  readonlySchemas: ["authme"],
+  readonlySchemas: [],
   tables: MC_SERVANT_TABLE_NAMES,
 } satisfies PostgresSchemaContract);
 

@@ -9,6 +9,9 @@ export const runtimeModuleBoundary = {
   ],
   placeholderExports: [
     "BotStatus",
+    "EXTERNAL_AUTH_STATUSES",
+    "createExternalAuthSecretBinding",
+    "createExternalAuthState",
     "InterruptSource",
     "InterruptSignal",
     "ExecJob",

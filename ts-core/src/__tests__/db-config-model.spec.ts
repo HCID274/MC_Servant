@@ -25,6 +25,7 @@ describe("db 与配置契约", () => {
         LOGS_DIR: "./legacy-logs",
         EVENT_RETENTION: "45",
         TASK_LOG_RETENTION: "120",
+        SANDBOX_LOG_RETENTION: "33",
         LLM_LOG_RETENTION: "14",
         EMBED_DIM: "1536",
         PG_PORT: "6543",
@@ -48,7 +49,7 @@ describe("db 与配置契约", () => {
     expect(aliased.logs.baseDir).toBe("./legacy-logs");
     expect(aliased.logs.retention.eventLogDays).toBe(45);
     expect(aliased.logs.retention.taskLogDays).toBe(120);
-    expect(aliased.logs.retention.sandboxLogDays).toBe(120);
+    expect(aliased.logs.retention.sandboxLogDays).toBe(33);
     expect(aliased.logs.retention.llmLogDays).toBe(14);
     expect(aliased.embedding.dimensions).toBe(1536);
     expect(aliased.postgres.port).toBe(6543);
@@ -148,6 +149,7 @@ describe("db 与配置契约", () => {
     const migrations = createDrizzleMigrationMetadata();
 
     expect(POSTGRES_SCHEMA_CONTRACT.businessSchema).toBe("mc_servant");
+    expect(POSTGRES_SCHEMA_CONTRACT.readonlySchemas).toEqual([]);
     expect(POSTGRES_SCHEMA_CONTRACT.tables).toContain("task_history");
     expect(POSTGRES_EXTENSION_CONTRACTS.map((contract) => contract.name)).toEqual([
       "vector",

@@ -268,6 +268,13 @@ export const TASK_LOG_RETENTION_ENV_BINDING = {
   defaultValue: JSONL_RETENTION_DAYS.tasks,
 } as const satisfies ConfigEnvBinding<number>;
 
+/** `SANDBOX_LOG_RETENTION_DAYS` 配置绑定。 */
+export const SANDBOX_LOG_RETENTION_ENV_BINDING = {
+  envVar: "SANDBOX_LOG_RETENTION_DAYS",
+  aliases: ["SANDBOX_LOG_RETENTION"],
+  defaultValue: JSONL_RETENTION_DAYS.sandbox,
+} as const satisfies ConfigEnvBinding<number>;
+
 /** `LLM_LOG_RETENTION_DAYS` 配置绑定。 */
 export const LLM_LOG_RETENTION_ENV_BINDING = {
   envVar: "LLM_LOG_RETENTION_DAYS",
@@ -295,6 +302,7 @@ export const DATA_CONFIG_ENV_BINDINGS = Object.freeze({
   logsBaseDir: LOGS_BASE_DIR_ENV_BINDING,
   eventLogRetentionDays: EVENT_LOG_RETENTION_ENV_BINDING,
   taskLogRetentionDays: TASK_LOG_RETENTION_ENV_BINDING,
+  sandboxLogRetentionDays: SANDBOX_LOG_RETENTION_ENV_BINDING,
   llmLogRetentionDays: LLM_LOG_RETENTION_ENV_BINDING,
   embeddingDimensions: EMBEDDING_DIMENSIONS_ENV_BINDING,
 });
@@ -412,7 +420,7 @@ function createBaseDataConfig(env: DataConfigEnvironment): DataConfig {
       retention: Object.freeze({
         eventLogDays: readPositiveInteger(env, EVENT_LOG_RETENTION_ENV_BINDING),
         taskLogDays: readPositiveInteger(env, TASK_LOG_RETENTION_ENV_BINDING),
-        sandboxLogDays: readPositiveInteger(env, TASK_LOG_RETENTION_ENV_BINDING),
+        sandboxLogDays: readPositiveInteger(env, SANDBOX_LOG_RETENTION_ENV_BINDING),
         llmLogDays: readPositiveInteger(env, LLM_LOG_RETENTION_ENV_BINDING),
       }),
     }),
