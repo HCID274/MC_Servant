@@ -1,3 +1,5 @@
+import { assertNonEmptyString } from "../domain/invariants.js";
+
 /** Worker（工作线程） 类型清单。 */
 export const WORKER_KINDS = ["conversation", "bot", "brain"] as const;
 
@@ -52,12 +54,6 @@ export interface WorkerQueueCatalog<TBotId extends string = string> {
     readonly queue: BrainQueueName;
     readonly concurrency: "pooled";
   };
-}
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
 }
 
 /** 创建 `msg:{botId}`（消息队列） 名称。 */

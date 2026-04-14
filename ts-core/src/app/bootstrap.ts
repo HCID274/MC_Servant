@@ -8,6 +8,7 @@ import {
   createRedisKeyCatalog,
 } from "../db/index.js";
 import { createDiagnosticsCatalog } from "../diagnostics/index.js";
+import { assertNonEmptyString } from "../domain/invariants.js";
 import {
   API_ROUTE_DEFINITIONS,
   type HealthResponse,
@@ -190,12 +191,6 @@ export interface AppBootstrapContract<TBotId extends string = string> {
   readonly lifecycle: AppLifecyclePlan;
   /** 子系统依赖与就绪目录。 */
   readonly readiness: readonly AppReadinessDescriptor[];
-}
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
 }
 
 /** 创建应用装配层的外部认证结果。 */

@@ -1,4 +1,5 @@
 import type { MessageTriage } from "../domain/contracts.js";
+import { assertNonEmptyString } from "../domain/invariants.js";
 import {
   CONVERSATION_REPLY_MODES,
   type ConversationLlmReply,
@@ -24,12 +25,6 @@ export const CANCEL_REPLY_TEMPLATES = [
   "收到，我先停下当前动作喵~",
   "明白，这就先取消掉喵~",
 ] as const;
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
-}
 
 /** 为所有对外回复统一补上“喵”尾缀。 */
 export function ensureReplyEndsWithMeow(text: string): string {

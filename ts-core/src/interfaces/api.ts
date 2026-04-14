@@ -1,15 +1,10 @@
+import { assertNonEmptyString } from "../domain/invariants.js";
 import type { InterfaceBotStatusSnapshot } from "./contracts.js";
 import { createInterfaceBotStatusSnapshot } from "./contracts.js";
 import { type RealtimeEventEnvelope, cloneRealtimeEventEnvelope } from "./realtime.js";
 
 const DEFAULT_REPLAY_LIMIT = 50;
 const MIN_REPLAY_LIMIT = 1;
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
-}
 
 /** HTTP（超文本传输协议） 方法集合，用于描述接口层的最小路由元信息。 */
 export const API_METHODS = ["GET", "POST"] as const;

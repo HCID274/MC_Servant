@@ -1,4 +1,5 @@
 import type { PostgresConfig } from "../data/contracts.js";
+import { assertNonEmptyString } from "../domain/invariants.js";
 import {
   POSTGRES_EXTENSION_CONTRACTS,
   POSTGRES_SCHEMA_CONTRACT,
@@ -81,10 +82,4 @@ export function createPostgresConnectionDescriptor(
     schema: POSTGRES_SCHEMA_CONTRACT.businessSchema,
     requiredExtensions: POSTGRES_EXTENSION_CONTRACTS,
   });
-}
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
 }

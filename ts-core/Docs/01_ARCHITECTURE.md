@@ -54,6 +54,8 @@ TS Core 是一套以 TypeScript 为唯一执行核心的 Minecraft Bot Agent 系
 └─────────────────────────────────────────────────────────┘
 ```
 
+`src/domain/`（领域） 不属于新的第八个业务执行层，而是跨上述七层复用的**横切基础契约层**：只沉淀核心类型、基础不变量校验、通用只读辅助等与业务流程无关的公共边界。其他模块可以单向依赖 `domain`，但 `domain` 不得反向 import（导入） `runtime`（运行时）、`interfaces`（接口边界）、`app`（应用装配）、`db`（数据库） 等上层实现，从而维持依赖方向清晰与模块解耦。
+
 ### 各层选型理由
 
 **① 运行时基座 — Node.js + TypeScript (strict)**
@@ -659,6 +661,7 @@ ts-core/
 │   │   ├── realtime/     # Socket.io push
 │   │   ├── game-chat/    # Mineflayer chat adapter
 │   │   └── server-bridge/# JAR plugin communication
+│   ├── domain/           # shared invariants, readonly helpers, core contracts
 │   ├── diagnostics/      # JSONL logger, LLM transcript, run events
 │   ├── sandbox/          # isolated-vm integration, Facade API types, esbuild
 │   ├── workers/          # ConversationWorker, BotWorker, BrainWorker entries
@@ -670,6 +673,8 @@ ts-core/
 ├── tsconfig.json
 └── biome.json
 ```
+
+其中 `domain/`（领域） 作为横切基础层，只承载可被多模块复用的核心类型、基础校验和只读辅助，不直接承载业务流程、队列装配或外部 I/O（输入输出） 逻辑。
 
 ---
 

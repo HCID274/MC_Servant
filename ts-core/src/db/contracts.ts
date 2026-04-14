@@ -4,6 +4,7 @@ import {
   type McServantTableName,
 } from "../data/contracts.js";
 import type { ExecutionTaskKind } from "../domain/contracts.js";
+import { assertNonEmptyString } from "../domain/invariants.js";
 import type { BotStatus } from "../runtime/contracts.js";
 
 /** PostgreSQL（关系型数据库） 业务 schema 元信息。 */
@@ -113,10 +114,4 @@ export function createBotStateCache(input: {
         }),
     last_updated: input.last_updated,
   });
-}
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
 }

@@ -1,4 +1,5 @@
 import { ExecutionTaskKind } from "../domain/contracts.js";
+import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import type { ExecJob, ExecPriority, SkillCallJob, SkillCallJobInput } from "../runtime/tasking.js";
 import { createSandboxCodeJob, createSkillCallJob } from "../runtime/tasking.js";
 import type { SkillCallInput } from "../skills/contracts.js";
@@ -10,29 +11,6 @@ import type {
   ConversationSandboxCodePlanDraft,
   ConversationSkillCallPlanDraft,
 } from "./contracts.js";
-
-function cloneReadonlyValue<TValue>(value: TValue): TValue {
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map((item) => cloneReadonlyValue(item))) as TValue;
-  }
-
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value).map(([key, entryValue]) => [
-      key,
-      cloneReadonlyValue(entryValue),
-    ]);
-
-    return Object.freeze(Object.fromEntries(entries)) as TValue;
-  }
-
-  return value;
-}
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
-}
 
 /** 创建 Stage 2（第二阶段） 规划上下文，并锁死 `modify`（修改） 的补充信息要求。 */
 export function createConversationPlanningContext(

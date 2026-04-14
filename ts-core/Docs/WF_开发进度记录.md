@@ -11,8 +11,23 @@
 ## 当前批次
 
 - 批次范围：`T-011` ~ `T-020`
-- 当前已完成任务：`T-011`、`T-012`、`T-013`、`T-014`、`T-015`、`T-016`
-- 当前批次摘要：已完成外部输入统一 ingress（入口） 契约、执行任务生命周期闭环契约、`runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 侧的外部认证纯契约与启动语义对齐、最小本地启动 / 容器骨架、`event_log`（事件日志） / `task_history`（任务历史） / `JSONL`（结构化日志） / `replay`（补拉） 的纯持久化边界，以及“外部认证待执行 → 受控登录命令计划 → ready（就绪） 门控”的最小执行骨架；接口层、运行时层、装配层与持久化边界已经形成同一套可测试的强类型模型。
+- 当前已完成任务：`T-011`、`T-012`、`T-013`、`T-014`、`T-015`、`T-016`、`T-017`
+- 当前批次摘要：已完成外部输入统一 ingress（入口） 契约、执行任务生命周期闭环契约、`runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 侧的外部认证纯契约与启动语义对齐、最小本地启动 / 容器骨架、`event_log`（事件日志） / `task_history`（任务历史） / `JSONL`（结构化日志） / `replay`（补拉） 的纯持久化边界、“外部认证待执行 → 受控登录命令计划 → ready（就绪） 门控”的最小执行骨架，以及 `domain`（领域） 横切基础层上的共享不变量 / 通用只读辅助收口；接口层、运行时层、装配层、持久化层与基础契约层已经形成同一套可测试的强类型模型。
+
+### 2026-04-14 批次调度调整
+
+- 调整原因：
+  当前批次完成到 `T-017`（任务十七） 后，主干纯契约骨架已经覆盖核心模块；继续把 `T-018` ~ `T-020`（任务十八到二十） 全部用于 BrainWorker（摘要工作线程） / 部署文档 / 诊断占位等支线项，会延后真实 I/O（输入输出） 集成风险的暴露，也不利于尽快形成可运行 demo（演示）。
+- 新的排序原则：
+  保持“按模块批量下发”的切分方式不变，但从 `T-018`（任务十八） 起转为 **MVP（最小可运行闭环） 关键路径优先**。
+- 重排结果：
+  - `T-018`：改为 PostgreSQL（关系型数据库） / Redis（缓存） 真实连接与 Drizzle（数据库工具） 迁移运行入口
+  - `T-019`：改为 BullMQ（任务队列） / Fastify（接口网关） 真实启动骨架
+  - `T-020`：改为 Mineflayer（Minecraft 协议客户端） / observation（观测） / BotActor（机器人执行代理） 最小上线闭环
+- 后移说明：
+  原先计划中的 BrainWorker（摘要工作线程） 摘要 / 检索纯契约、部署文档补写、诊断占位边界，统一后移到关键链路跑通之后再排，默认落到 `T-026+`（任务二十六以后） 区间重新收口。
+- 序号规则：
+  `T-018`（任务十八） 尚未完成，因此保留原序号并重写任务内容；`T-011` ~ `T-017`（任务十一到十七） 已完成记录保持不变，不回排、不改号。
 
 ---
 
@@ -183,3 +198,43 @@
 
 - 预检结果：
   以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `15` 个测试文件、`80` 条测试全部通过。
+
+### T-017（已完成）
+
+- 任务目标：
+  在 `domain`（领域） + 若干纯契约模块这一组紧邻模块内，集中沉淀可复用的基础 `invariants`（不变量校验） / 只读辅助工具，替换当前散落的重复 `assertNonEmptyString`（非空字符串断言） 与少量重复只读克隆逻辑，并同步补记 `01_ARCHITECTURE.md`（架构文档） 中 `domain`（领域） 作为横切基础层的定位。
+
+- 审查结论：
+  通过。本轮抽取保持在“真通用基础工具”边界内，没有把运行时、接口层或数据层私有 shape（数据形状） 倒灌进 `domain`（领域）；白名单内重复的 `assertNonEmptyString`（非空字符串断言） 已全部收口到共享实现，`cloneReadonlyValue`（通用深只读克隆） 的替换点也仍保持原有深克隆 / 深冻结语义，没有引入新的业务语义漂移。
+
+- 核心文件：
+  `ts-core/Docs/01_ARCHITECTURE.md`
+  `ts-core/src/domain/index.ts`
+  `ts-core/src/domain/invariants.ts`
+  `ts-core/src/runtime/contracts.ts`
+  `ts-core/src/interfaces/contracts.ts`
+  `ts-core/src/interfaces/api.ts`
+  `ts-core/src/interfaces/game-chat/contracts.ts`
+  `ts-core/src/interfaces/server-bridge/contracts.ts`
+  `ts-core/src/app/bootstrap.ts`
+  `ts-core/src/db/contracts.ts`
+  `ts-core/src/db/connection.ts`
+  `ts-core/src/db/keys.ts`
+  `ts-core/src/conversation/chat.ts`
+  `ts-core/src/conversation/planning.ts`
+  `ts-core/src/conversation/triage.ts`
+  `ts-core/src/diagnostics/logs.ts`
+  `ts-core/src/workers/contracts.ts`
+  `ts-core/src/workers/queues.ts`
+  `ts-core/src/sandbox/execution.ts`
+  `ts-core/src/__tests__/scaffold.spec.ts`
+  `ts-core/src/__tests__/domain-invariants-model.spec.ts`
+
+- 变更快照：
+  `domain/invariants.ts`（领域基础不变量） 新增共享 `assertNonEmptyString`（非空字符串断言） 与 `cloneReadonlyValue`（通用深只读克隆），`domain/index.ts`（领域根导出） 与模块边界说明也已同步暴露这两个共享工具。
+  `runtime`（运行时） / `interfaces`（接口边界） / `app`（应用装配） / `db`（数据库） / `conversation`（对话） / `diagnostics`（诊断） / `workers`（工作线程） / `sandbox`（沙箱） 白名单模块已移除本地重复实现，统一改为单向依赖 `domain`（领域） 共享基础工具。
+  `01_ARCHITECTURE.md`（架构文档） 已明确 `domain`（领域） 是跨七层复用的横切基础契约层，而不是新的业务执行层；目录结构说明也同步补记了 `domain/`（领域目录） 的职责边界。
+  新增 `domain-invariants-model.spec.ts`（领域基础不变量测试），并更新 `scaffold.spec.ts`（工程骨架测试），锁定共享导出、代表性报错语义、深只读冻结行为以及根导出可见性。
+
+- 预检结果：
+  以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `16` 个测试文件、`83` 条测试全部通过。

@@ -1,6 +1,7 @@
 import type { SandboxJsonlLine } from "../diagnostics/contracts.js";
 import { assertDiagnosticStorageRef } from "../diagnostics/logs.js";
 import { ExecutionTaskKind } from "../domain/contracts.js";
+import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import { TaskHistoryStatus } from "../runtime/tasking.js";
 import {
   type AbortError,
@@ -16,23 +17,6 @@ import {
   type SandboxStepResult,
 } from "./contracts.js";
 
-function cloneReadonlyValue<TValue>(value: TValue): TValue {
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map((item) => cloneReadonlyValue(item))) as TValue;
-  }
-
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value).map(([key, entryValue]) => [
-      key,
-      cloneReadonlyValue(entryValue),
-    ]);
-
-    return Object.freeze(Object.fromEntries(entries)) as TValue;
-  }
-
-  return value;
-}
-
 function assertPositiveInteger(value: number, fieldName: string): void {
   if (!Number.isInteger(value) || value < 0) {
     throw new Error(`${fieldName} must be a non-negative integer`);
@@ -42,12 +26,6 @@ function assertPositiveInteger(value: number, fieldName: string): void {
 function assertPositiveNumber(value: number, fieldName: string): void {
   if (!Number.isFinite(value) || value < 0) {
     throw new Error(`${fieldName} must be a non-negative number`);
-  }
-}
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
   }
 }
 

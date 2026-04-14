@@ -1,4 +1,5 @@
 import { MessageSource } from "../../domain/contracts.js";
+import { assertNonEmptyString, cloneReadonlyValue } from "../../domain/invariants.js";
 import { type InterfaceEventEnvelope, createInterfaceEventEnvelope } from "../contracts.js";
 
 /** 服务端桥接入口固定使用的通道名。 */
@@ -26,29 +27,6 @@ export interface ServerBridgeEventEnvelope
   readonly runtime_effect: "observe_only";
   /** 事件扩展载荷。 */
   readonly payload?: Readonly<Record<string, unknown>>;
-}
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
-}
-
-function cloneReadonlyValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map((entry) => cloneReadonlyValue(entry)));
-  }
-
-  if (value !== null && typeof value === "object") {
-    const clonedEntries = Object.entries(value).map(([key, entryValue]) => [
-      key,
-      cloneReadonlyValue(entryValue),
-    ]);
-
-    return Object.freeze(Object.fromEntries(clonedEntries));
-  }
-
-  return value;
 }
 
 function cloneReadonlyPayload(

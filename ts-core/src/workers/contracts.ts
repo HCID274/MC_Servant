@@ -8,6 +8,7 @@ import type {
   ConversationRouteDecision,
   ConversationTemplateReply,
 } from "../conversation/contracts.js";
+import { assertNonEmptyString } from "../domain/invariants.js";
 import type { InterruptSignal } from "../runtime/contracts.js";
 import {
   type TaskFailedErrorSnapshot,
@@ -217,12 +218,6 @@ export interface PersistTaskSummaryAction {
 
 /** BrainWorker（摘要工作线程） 输出动作联合。 */
 export type BrainWorkerAction = PersistTaskSummaryAction;
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
-}
 
 /** 创建 ConversationWorker（对话工作线程） 输入任务。 */
 export function createConversationWorkerTask(input: {

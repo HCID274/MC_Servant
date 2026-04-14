@@ -1,4 +1,5 @@
 import { MessageSource } from "../../domain/contracts.js";
+import { assertNonEmptyString } from "../../domain/invariants.js";
 import { type InterfaceMessageEnvelope, createInterfaceMessageEnvelope } from "../contracts.js";
 
 /** 游戏聊天入口固定使用的通道名。 */
@@ -86,12 +87,6 @@ export type GameChatIngressDecision =
       /** 原始候选消息。 */
       readonly candidate: GameChatIngressCandidate;
     };
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
-}
 
 function assertOwnerResolutionConsistency(input: {
   owner_id: string | null;

@@ -1,4 +1,5 @@
 import { ConversationPriority, type MessageTriage } from "../domain/contracts.js";
+import { assertNonEmptyString } from "../domain/invariants.js";
 import { ExecPriority } from "../runtime/tasking.js";
 import { shouldSearchConversationMemory } from "./chat.js";
 import type {
@@ -18,12 +19,6 @@ function isConversationIntent(value: string): value is MessageTriage["intent"] {
 
 function isConversationPriority(value: string): value is ConversationPriority {
   return Object.values(ConversationPriority).includes(value as ConversationPriority);
-}
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
 }
 
 function toConversationTriageFor<TIntent extends MessageTriage["intent"]>(

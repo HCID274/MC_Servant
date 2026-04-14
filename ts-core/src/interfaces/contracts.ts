@@ -1,4 +1,5 @@
 import { MessageSource } from "../domain/contracts.js";
+import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import {
   type BotStatus,
   type ExternalAuthState,
@@ -229,23 +230,6 @@ function cloneSessionRecord(input: SessionRecord): SessionRecord {
   };
 }
 
-function freezeInterfaceValue<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map((item) => freezeInterfaceValue(item))) as T;
-  }
-
-  if (value && typeof value === "object") {
-    const clonedEntries = Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
-      key,
-      freezeInterfaceValue(entry),
-    ]);
-
-    return Object.freeze(Object.fromEntries(clonedEntries)) as T;
-  }
-
-  return value;
-}
-
 function assertSessionBotBinding(input: {
   requestBotId: string;
   sessionBotId: string;
@@ -254,12 +238,6 @@ function assertSessionBotBinding(input: {
     throw new Error(
       `Message submission bot_id mismatch: request=${input.requestBotId}, session=${input.sessionBotId}`,
     );
-  }
-}
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
   }
 }
 
@@ -451,7 +429,7 @@ export function createInterfaceExternalAuthSnapshot(input: {
   status: BotStatus;
   external_auth: ExternalAuthState;
 }): InterfaceExternalAuthSnapshot {
-  return freezeInterfaceValue({
+  return cloneReadonlyValue({
     state: createExternalAuthPublicState(input.external_auth),
     ready_gate: createRuntimeReadyGate({
       status: input.status,

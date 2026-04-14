@@ -8,6 +8,8 @@ import {
   MessageSource,
   RUNTIME_EVENT_TYPES,
   assertAppLifecyclePlan,
+  assertNonEmptyString,
+  cloneReadonlyValue,
   coreModuleBoundaries,
   createAppBootstrapContract,
   createAppSmokeAssembly,
@@ -47,6 +49,8 @@ describe("TS Core 工程骨架", () => {
     expect(ExecutionTaskKind.SkillCall).toBe("skill_call");
     expect(MessageSource.Web).toBe("web");
     expect(toExecPriority(ConversationPriority.Interrupt)).toBeNull();
+    expect(() => assertNonEmptyString("bot-root", "botId")).not.toThrow();
+    expect(Object.isFrozen(cloneReadonlyValue({ ok: true }))).toBe(true);
   });
 
   it("应能创建最小运行时骨架对象", () => {

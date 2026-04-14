@@ -1,3 +1,4 @@
+import { assertNonEmptyString } from "../domain/invariants.js";
 import {
   type BrainQueueName,
   type ExecQueueName,
@@ -86,10 +87,4 @@ export function createRedisKeyCatalog<TBotId extends string>(
       brain: createBullQueueKeyPattern(createBrainQueueName()),
     }),
   });
-}
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
 }

@@ -1,24 +1,8 @@
 import { type ExecutionTaskEnvelope, ExecutionTaskKind } from "../domain/contracts.js";
+import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import type { ReflexInterruptSource, ThreatAssessment } from "../observation/contracts.js";
 
 export type { ThreatAssessment } from "../observation/contracts.js";
-
-function freezeRuntimeValue<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map((item) => freezeRuntimeValue(item))) as T;
-  }
-
-  if (value && typeof value === "object") {
-    const clonedEntries = Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
-      key,
-      freezeRuntimeValue(entry),
-    ]);
-
-    return Object.freeze(Object.fromEntries(clonedEntries)) as T;
-  }
-
-  return value;
-}
 
 /** Bot 状态枚举，用于描述 BotActor 在运行时内的最小状态集合。 */
 export enum BotStatus {
@@ -413,7 +397,7 @@ export function createExternalAuthExecutionPlan(
         resolveExternalAuthExecutionSecret(state, secret),
       );
 
-      return freezeRuntimeValue({
+      return cloneReadonlyValue({
         status: "pending",
         next_action: nextAction,
         action_summary: {
@@ -460,7 +444,7 @@ export function createExternalAuthPublicState(state: ExternalAuthState): Externa
         action_summary: null,
       });
     case "pending": {
-      return freezeRuntimeValue({
+      return cloneReadonlyValue({
         status: "pending",
         required: true,
         entrypoint: "game_chat_command",
@@ -522,7 +506,7 @@ export function createRuntimeReadyGate(input: {
 
   const ready = blockedBy.length === 0;
 
-  return freezeRuntimeValue({
+  return cloneReadonlyValue({
     ready,
     status: ready ? "ready" : "blocked",
     runtime_status: input.status,
@@ -588,7 +572,7 @@ export function createRuntimeScaffold(
 ): RuntimeScaffold {
   const externalAuth = input.externalAuth ?? createExternalAuthState({ status: "not_required" });
 
-  return freezeRuntimeValue({
+  return cloneReadonlyValue({
     defaultStatus: BotStatus.INITIALIZING,
     externalAuth,
     externalAuthPlan: createExternalAuthExecutionPlan(externalAuth, input.externalAuthSecret),
@@ -605,12 +589,6 @@ export function createRuntimeScaffold(
       reason: "placeholder",
     },
   });
-}
-
-function assertNonEmptyString(value: string, fieldName: string): void {
-  if (value.trim().length === 0) {
-    throw new Error(`${fieldName} must be a non-empty string`);
-  }
 }
 
 function createExternalAuthActionSummary(): ExternalAuthActionSummary {
