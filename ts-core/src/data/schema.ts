@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import type { MessageTriage } from "../domain/contracts.js";
-import type { TaskStatusEventPayload } from "../runtime/events.js";
+import type { TaskFailedErrorSnapshot, TaskStatusEventPayload } from "../runtime/events.js";
 import type { SkillCallJob } from "../runtime/tasking.js";
 import {
   type BotConfigOverlay,
@@ -255,7 +255,7 @@ export const taskHistoryTable = mcServantSchema.table(
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     durationMs: integer("duration_ms"),
     totalSteps: integer("total_steps"),
-    error: jsonb("error").$type<Readonly<Record<string, unknown>>>(),
+    error: jsonb("error").$type<TaskFailedErrorSnapshot>(),
     interruptSource: jsonb("interrupt_source").$type<PersistedInterruptSource>(),
     messageId: text("message_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

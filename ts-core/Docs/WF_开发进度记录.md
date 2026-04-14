@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-011` ~ `T-020`
-- 当前已完成任务：`T-011`、`T-012`、`T-013`、`T-014`
-- 当前批次摘要：已完成外部输入统一 ingress（入口） 契约、执行任务生命周期闭环契约、`runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 侧的外部认证纯契约与启动语义对齐，以及最小本地启动 / 容器骨架；接口层、运行时层、装配层与打包入口已经逐步形成同一套可测试的强类型边界。
+- 当前已完成任务：`T-011`、`T-012`、`T-013`、`T-014`、`T-015`
+- 当前批次摘要：已完成外部输入统一 ingress（入口） 契约、执行任务生命周期闭环契约、`runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 侧的外部认证纯契约与启动语义对齐、最小本地启动 / 容器骨架，以及 `event_log`（事件日志） / `task_history`（任务历史） / `JSONL`（结构化日志） / `replay`（补拉） 的纯持久化边界；接口层、运行时层、装配层与持久化边界已经形成同一套可测试的强类型模型。
 
 ---
 
@@ -131,3 +131,30 @@
 
 - 预检结果：
   以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `13` 个测试文件、`69` 条测试全部通过。
+
+### T-015（已完成）
+
+- 任务目标：
+  在 `db`（数据库元信息） / `data`（数据持久化契约） / `diagnostics`（诊断） / `interfaces`（接口补拉） 这一组紧邻模块内，集中收口 `event_log`（事件日志） / `task_history`（任务历史） / `JSONL`（结构化日志） / `replay`（补拉） 的纯契约边界，为后续真实写入层与补拉接口实现预留一致、可测试、不可变的持久化模型。
+
+- 审查结论：
+  通过。首轮审查曾因 `task_history.log_ref`（任务日志引用） 被硬编码为只接受 `tasks/*.jsonl` 而打回，这会让 `sandbox_code`（沙箱代码） 任务与既有 `diagnostics`（诊断） `sandbox`（沙箱） 通道规则冲突；本轮已改为按任务类型分别校验 `log_ref`，并把回归测试改成覆盖“合法 `sandbox/*.jsonl + sandbox/*.code.ts` 可通过”，`skill_call`（技能调用） 误用 `sandbox` 路径仍会被拒绝。
+
+- 核心文件：
+  `ts-core/src/data/contracts.ts`
+  `ts-core/src/data/schema.ts`
+  `ts-core/src/diagnostics/contracts.ts`
+  `ts-core/src/interfaces/api.ts`
+  `ts-core/src/interfaces/realtime.ts`
+  `ts-core/src/__tests__/data-model.spec.ts`
+  `ts-core/src/__tests__/interfaces-model.spec.ts`
+  `ts-core/src/__tests__/persistence-replay-model.spec.ts`
+
+- 变更快照：
+  `data/contracts.ts`（数据契约） 收口了 `event_log`（事件日志） / `task_history`（任务历史） 的纯记录模型、`step.progress`（步骤进度） 载荷、终态补丁构造器、未闭合任务检测输入输出，以及可测试的 `TASK_PERSISTENCE_WRITE_SEQUENCE`（持久化写入顺序） / `createTaskPersistencePlan()`（持久化计划构造器）。
+  `interfaces/api.ts`（补拉接口） / `interfaces/realtime.ts`（实时事件） 明确了 `replay`（补拉） 的 `bot_id + after_seq + limit` 过滤、默认 / 封顶 `50`、升序返回与深只读切边。
+  `diagnostics/contracts.ts`（诊断契约） 复用 `data`（数据层） 的步骤状态常量，避免 `progress`（进度） 状态枚举漂移；`data/schema.ts`（数据表结构） 也把 `task_history.error`（任务历史错误快照） 收紧到结构化错误类型。
+  本轮返修额外修正了 `task_history.log_ref`（任务日志引用） 的任务类型分流：`skill_call`（技能调用） 对齐 `tasks/*.jsonl`，`sandbox_code`（沙箱代码） 对齐 `sandbox/*.jsonl` + `sandbox/*.code.ts`。
+
+- 预检结果：
+  以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `14` 个测试文件、`76` 条测试全部通过。

@@ -20,6 +20,7 @@ import {
   createWebMessageEnvelope,
   extractBearerToken,
   normalizeReplayLimit,
+  selectReplayEvents,
   validateSessionAuthorization,
 } from "../index.js";
 
@@ -40,8 +41,13 @@ const invalidMessageRequest: MessageSubmissionRequest = {
 };
 void invalidMessageRequest;
 
-// @ts-expect-error replay（补拉） 请求的 afterSeq 必须是数字。
-createReplayRequest({ botId: "bot-1", afterSeq: "1", limit: 10 });
+const invalidReplayRequestInput: Parameters<typeof createReplayRequest>[0] = {
+  botId: "bot-1",
+  // @ts-expect-error replay（补拉） 请求的 afterSeq 必须是数字。
+  afterSeq: "1",
+  limit: 10,
+};
+void invalidReplayRequestInput;
 
 describe("interfaces 模块契约", () => {
   it("应导出 interfaces（接口层） 模块与最小路由集合", () => {
@@ -125,7 +131,7 @@ describe("interfaces 模块契约", () => {
       bot_id: "bot-1",
       type: "task.started" as "task.started" | "task.completed",
       created_at: "2026-04-13T12:00:03.000Z",
-      payload: { job_id: "job-1" },
+      payload: { job_id: "job-1", nested: { step: 1 } },
     };
     const event = createRealtimeEventEnvelope({
       seq: sourceEvent.seq,
@@ -159,10 +165,11 @@ describe("interfaces 模块契约", () => {
 
     sourceEvent.type = "task.completed";
     sourceEvent.payload.job_id = "job-2";
+    sourceEvent.payload.nested.step = 2;
 
     expect(RUNTIME_EVENT_TYPES).toContain(event.type);
     expect(replayResponse.events[0]?.type).toBe("task.started");
-    expect(replayResponse.events[0]?.payload).toEqual({ job_id: "job-1" });
+    expect(replayResponse.events[0]?.payload).toEqual({ job_id: "job-1", nested: { step: 1 } });
     expect(replayResponse.limit).toBe(50);
     expect(normalizeReplayLimit(undefined)).toBe(50);
     expect(statusQuery.bot_id).toBe("bot-1");
@@ -170,5 +177,91 @@ describe("interfaces 模块契约", () => {
     expect(health.service).toBe("ts-core");
     expect(Object.isFrozen(replayResponse.events)).toBe(true);
     expect(Object.isFrozen(replayResponse.events[0])).toBe(true);
+    expect(Object.isFrozen(replayResponse.events[0]?.payload ?? {})).toBe(true);
+    expect(
+      Object.isFrozen(
+        (replayResponse.events[0]?.payload as { nested?: object } | undefined)?.nested,
+      ),
+    ).toBe(true);
+  });
+
+  it("应按 bot_id + after_seq + limit 语义筛选并排序 replay（补拉） 事件", () => {
+    const request = createReplayRequest({
+      botId: "bot-1",
+      afterSeq: 8,
+      limit: 2,
+    });
+
+    const selected = selectReplayEvents({
+      request,
+      events: [
+        createRealtimeEventEnvelope({
+          seq: 12,
+          botId: "bot-1",
+          type: "task.completed",
+          createdAt: "2026-04-13T12:00:12.000Z",
+          payload: { job_id: "job-3" },
+        }),
+        createRealtimeEventEnvelope({
+          seq: 7,
+          botId: "bot-1",
+          type: "task.started",
+          createdAt: "2026-04-13T12:00:07.000Z",
+          payload: { job_id: "job-old" },
+        }),
+        createRealtimeEventEnvelope({
+          seq: 9,
+          botId: "bot-2",
+          type: "task.started",
+          createdAt: "2026-04-13T12:00:09.000Z",
+          payload: { job_id: "job-other" },
+        }),
+        createRealtimeEventEnvelope({
+          seq: 11,
+          botId: "bot-1",
+          type: "task.failed",
+          createdAt: "2026-04-13T12:00:11.000Z",
+          payload: { job_id: "job-2", error: { message: "boom" } },
+        }),
+        createRealtimeEventEnvelope({
+          seq: 10,
+          botId: "bot-1",
+          type: "step.progress",
+          createdAt: "2026-04-13T12:00:10.000Z",
+          payload: { job_id: "job-2", step_index: 0 },
+        }),
+      ],
+    });
+
+    expect(selected.map((event) => event.seq)).toEqual([10, 11]);
+    expect(selected.every((event) => event.bot_id === "bot-1")).toBe(true);
+  });
+
+  it("应拒绝非法 replay（补拉） 边界输入", () => {
+    expect(() =>
+      createReplayRequest({
+        botId: "bot-1",
+        afterSeq: -1,
+      }),
+    ).toThrow(/afterSeq/);
+
+    expect(() => normalizeReplayLimit(0)).toThrow(/positive integer/);
+
+    expect(() =>
+      createReplayResponse({
+        request: createReplayRequest({
+          botId: "bot-1",
+          afterSeq: 0,
+        }),
+        state: {
+          bot_id: "bot-2",
+          status: BotStatus.IDLE,
+          intent_epoch: 1,
+          last_event_seq: 0,
+          updated_at: "2026-04-13T12:00:00.000Z",
+        },
+        events: [],
+      }),
+    ).toThrow(/state bot_id/);
   });
 });

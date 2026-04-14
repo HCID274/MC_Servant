@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_LOGS_BASE_DIR,
+  DEFAULT_UNCLOSED_TASK_LIMIT,
   EVENT_LOG_RETENTION_DAYS,
   ExecutionTaskKind,
   JSONL_DIRECTORY_POLICIES,
@@ -15,6 +16,9 @@ import {
   SESSION_SUMMARIES_GENERATED_COLUMNS,
   SESSION_SUMMARIES_SEARCH_INDEXES,
   TASK_HISTORY_STATUS_VALUES,
+  TASK_PERSISTENCE_WRITE_SEQUENCE,
+  TASK_PROGRESS_EVENT_TYPE,
+  TASK_PROGRESS_STATUSES,
   TASK_SUMMARIES_GENERATED_COLUMNS,
   TASK_SUMMARIES_SEARCH_INDEXES,
   TaskHistoryStatus,
@@ -45,6 +49,8 @@ describe("data 持久化契约", () => {
 
   it("应让事件类型与任务状态直接复用现有运行时契约", () => {
     expect(PERSISTED_EVENT_TYPES).toEqual(RUNTIME_EVENT_TYPES);
+    expect(TASK_PROGRESS_EVENT_TYPE).toBe("step.progress");
+    expect(TASK_PROGRESS_STATUSES).toEqual(["ok", "err", "abort"]);
     expect(TASK_HISTORY_STATUS_VALUES).toEqual([
       TaskHistoryStatus.Accepted,
       TaskHistoryStatus.Started,
@@ -78,10 +84,32 @@ describe("data 持久化契约", () => {
 
   it("应集中暴露冷热日志保留期常量", () => {
     expect(DEFAULT_LOGS_BASE_DIR).toBe("./logs");
+    expect(DEFAULT_UNCLOSED_TASK_LIMIT).toBe(5);
     expect(EVENT_LOG_RETENTION_DAYS).toBe(30);
     expect(JSONL_RETENTION_DAYS.tasks).toBe(90);
     expect(JSONL_RETENTION_DAYS.llm).toBe(30);
     expect(JSONL_DIRECTORY_POLICIES.sandbox.refFields).toEqual(["log_ref", "code_ref"]);
+  });
+
+  it("应编码任务生命周期写入顺序而不是散落在注释里", () => {
+    expect(
+      TASK_PERSISTENCE_WRITE_SEQUENCE.map((step) => ({
+        order: step.order,
+        phase: step.phase,
+        target: step.target,
+      })),
+    ).toEqual([
+      { order: 1, phase: "accepted", target: "task_history" },
+      { order: 2, phase: "accepted", target: "event_log" },
+      { order: 3, phase: "started", target: "task_history" },
+      { order: 4, phase: "started", target: "event_log" },
+      { order: 5, phase: "progress", target: "event_log" },
+      { order: 6, phase: "progress", target: "jsonl" },
+      { order: 7, phase: "terminal", target: "task_history" },
+      { order: 8, phase: "terminal", target: "event_log" },
+      { order: 9, phase: "terminal", target: "brain_queue" },
+      { order: 10, phase: "brain_summary", target: "task_summaries" },
+    ]);
   });
 
   it("应暴露 sessions 部分索引与摘要检索契约", () => {

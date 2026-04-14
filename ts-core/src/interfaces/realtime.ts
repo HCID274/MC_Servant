@@ -23,7 +23,24 @@ function cloneRealtimePayload(
     return undefined;
   }
 
-  return Object.freeze({ ...payload });
+  return cloneRealtimeValue(payload);
+}
+
+function cloneRealtimeValue<TValue>(value: TValue): TValue {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((item) => cloneRealtimeValue(item))) as TValue;
+  }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).map(([key, entryValue]) => [
+      key,
+      cloneRealtimeValue(entryValue),
+    ]);
+
+    return Object.freeze(Object.fromEntries(entries)) as TValue;
+  }
+
+  return value;
 }
 
 /** 创建实时推送事件，用于复用 runtime/events.ts（运行时事件） 的同名类型集合。 */

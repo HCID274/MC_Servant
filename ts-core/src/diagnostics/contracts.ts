@@ -1,3 +1,4 @@
+import { TASK_PROGRESS_STATUSES, type TaskProgressStatus } from "../data/contracts.js";
 import { JSONL_LOG_DIRECTORIES, type JsonlLogDirectory } from "../data/logs.js";
 import type { ExecutionTaskKind } from "../domain/contracts.js";
 import type { InterruptSource } from "../runtime/contracts.js";
@@ -28,10 +29,10 @@ export interface JsonlErrorSnapshot {
 }
 
 /** tasks（任务执行） 通道允许的步骤状态。 */
-export const TASK_LOG_STEP_STATUSES = ["ok", "err", "abort"] as const;
+export const TASK_LOG_STEP_STATUSES = TASK_PROGRESS_STATUSES;
 
 /** tasks（任务执行） 通道步骤状态联合类型。 */
-export type TaskLogStepStatus = (typeof TASK_LOG_STEP_STATUSES)[number];
+export type TaskLogStepStatus = TaskProgressStatus;
 
 /** tasks（任务执行） 通道的开始事件结构。 */
 export interface TaskStartedJsonlLine {

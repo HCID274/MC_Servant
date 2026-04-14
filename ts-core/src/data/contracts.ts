@@ -3,9 +3,23 @@ import {
   RUNTIME_EVENT_TYPES,
   type RuntimeEventLogEntry,
   type RuntimeEventType,
+  type TaskFailedErrorSnapshot,
+  type TaskLifecycleEvent,
+  type TaskLifecycleEventPayloadByStatus,
+  type TaskLifecycleEventTypeByStatus,
 } from "../runtime/events.js";
-import { type ExecJob, type InterruptedTaskRecord, TaskHistoryStatus } from "../runtime/tasking.js";
-import { DEFAULT_LOGS_BASE_DIR, EVENT_LOG_RETENTION_DAYS, JSONL_RETENTION_DAYS } from "./logs.js";
+import {
+  type ExecJob,
+  type InterruptedTaskRecord,
+  TaskHistoryStatus,
+  type TaskTerminalStatus,
+} from "../runtime/tasking.js";
+import {
+  DEFAULT_LOGS_BASE_DIR,
+  EVENT_LOG_RETENTION_DAYS,
+  JSONL_RETENTION_DAYS,
+  isValidStorageRef,
+} from "./logs.js";
 
 /** mc_servant 业务 schema 名称。 */
 export const MC_SERVANT_SCHEMA_NAME = "mc_servant" as const;
@@ -48,9 +62,6 @@ export const PERSISTED_EVENT_TYPES = [...RUNTIME_EVENT_TYPES] as const;
 /** event_log 表事件类型联合。 */
 export type PersistedEventType = RuntimeEventType;
 
-/** event_log 表 payload 结构。 */
-export type PersistedEventPayload = RuntimeEventLogEntry["payload"];
-
 /** task_history 表允许的任务类型清单。 */
 export const TASK_HISTORY_TASK_TYPES = [
   ExecutionTaskKind.SkillCall,
@@ -86,8 +97,811 @@ export type TaskSummaryStatus = (typeof TASK_SUMMARY_STATUS_VALUES)[number];
 /** task_history.interrupt_source 的持久化类型。 */
 export type PersistedInterruptSource = InterruptedTaskRecord["interrupt_source"];
 
+/** step.progress（步骤进度） 允许的状态清单。 */
+export const TASK_PROGRESS_STATUSES = ["ok", "err", "abort"] as const;
+
+/** step.progress（步骤进度） 状态联合类型。 */
+export type TaskProgressStatus = (typeof TASK_PROGRESS_STATUSES)[number];
+
+/** task.accepted / started / discarded / completed / failed / interrupted 事件类型联合。 */
+export type PersistedTaskLifecycleEventType<TStatus extends TaskHistoryStatus = TaskHistoryStatus> =
+  TaskLifecycleEventTypeByStatus<TStatus>;
+
+/** task.completed / failed / interrupted 终态事件类型联合。 */
+export type PersistedTaskTerminalEventType = PersistedTaskLifecycleEventType<TaskTerminalStatus>;
+
+/** step.progress（步骤进度） 事件类型常量。 */
+export const TASK_PROGRESS_EVENT_TYPE = "step.progress" as const satisfies PersistedEventType;
+
+/** event_log（事件日志） 内的步骤进度载荷。 */
+export interface TaskProgressPersistedEventPayload {
+  /** 任务标识。 */
+  readonly job_id: string;
+  /** 执行任务类型。 */
+  readonly type: PersistedTaskType;
+  /** 原始用户消息标识。 */
+  readonly message_id: string;
+  /** 意图纪元。 */
+  readonly epoch: number;
+  /** 步骤索引。 */
+  readonly step_index: number;
+  /** 动作名。 */
+  readonly action: string;
+  /** 步骤状态。 */
+  readonly status: TaskProgressStatus;
+  /** 步骤参数快照。 */
+  readonly params?: Readonly<Record<string, unknown>>;
+  /** 步骤结果快照。 */
+  readonly result?: Readonly<Record<string, unknown>>;
+  /** 步骤耗时。 */
+  readonly duration_ms?: number;
+  /** 错误快照。 */
+  readonly error?: TaskFailedErrorSnapshot;
+}
+
+/** 按 event_log（事件日志） 类型索引的 payload（载荷） 联合。 */
+export type PersistedEventPayloadByType<TType extends PersistedEventType> =
+  TType extends PersistedTaskLifecycleEventType<TaskHistoryStatus.Accepted>
+    ? TaskLifecycleEventPayloadByStatus<TaskHistoryStatus.Accepted>
+    : TType extends PersistedTaskLifecycleEventType<TaskHistoryStatus.Started>
+      ? TaskLifecycleEventPayloadByStatus<TaskHistoryStatus.Started>
+      : TType extends PersistedTaskLifecycleEventType<TaskHistoryStatus.Discarded>
+        ? TaskLifecycleEventPayloadByStatus<TaskHistoryStatus.Discarded>
+        : TType extends PersistedTaskLifecycleEventType<TaskHistoryStatus.Completed>
+          ? TaskLifecycleEventPayloadByStatus<TaskHistoryStatus.Completed>
+          : TType extends PersistedTaskLifecycleEventType<TaskHistoryStatus.Failed>
+            ? TaskLifecycleEventPayloadByStatus<TaskHistoryStatus.Failed>
+            : TType extends PersistedTaskLifecycleEventType<TaskHistoryStatus.Interrupted>
+              ? TaskLifecycleEventPayloadByStatus<TaskHistoryStatus.Interrupted>
+              : TType extends typeof TASK_PROGRESS_EVENT_TYPE
+                ? TaskProgressPersistedEventPayload
+                : NonNullable<RuntimeEventLogEntry["payload"]>;
+
 /** Embedding（向量） 默认维度。 */
 export const DEFAULT_EMBEDDING_DIMENSIONS = 1024 as const;
+
+/** event_log 表 payload 结构。 */
+export type PersistedEventPayload = PersistedEventPayloadByType<PersistedEventType>;
+
+/** event_log（事件日志） 的纯记录结构。 */
+export interface PersistedEventLogRecord<TType extends PersistedEventType = PersistedEventType> {
+  /** 自增序号。 */
+  readonly seq?: number;
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** 关联会话标识。 */
+  readonly session_id?: string;
+  /** 事件类型。 */
+  readonly type: TType;
+  /** 事件载荷。 */
+  readonly payload: PersistedEventPayloadByType<TType>;
+  /** 创建时间。 */
+  readonly created_at: string;
+}
+
+/** 基于 task.* 生命周期构造的 event_log（事件日志） 记录。 */
+export type PersistedTaskLifecycleEventLogRecord<TStatus extends TaskHistoryStatus> =
+  PersistedEventLogRecord<PersistedTaskLifecycleEventType<TStatus>>;
+
+/** task.started（任务开始） 的持久化事件记录。 */
+export type PersistedTaskStartedEventLogRecord =
+  PersistedTaskLifecycleEventLogRecord<TaskHistoryStatus.Started>;
+
+/** task.completed / failed / interrupted 的持久化终态事件记录。 */
+export type PersistedTaskTerminalEventLogRecord =
+  | PersistedTaskLifecycleEventLogRecord<TaskHistoryStatus.Completed>
+  | PersistedTaskLifecycleEventLogRecord<TaskHistoryStatus.Failed>
+  | PersistedTaskLifecycleEventLogRecord<TaskHistoryStatus.Interrupted>;
+
+/** step.progress（步骤进度） 的持久化事件记录。 */
+export type PersistedTaskProgressEventLogRecord = PersistedEventLogRecord<
+  typeof TASK_PROGRESS_EVENT_TYPE
+>;
+
+/** task_history（任务历史） accepted（已接受） 快照基类。 */
+export interface PersistedTaskHistoryAcceptedRecordBase {
+  /** 主键；与 job_id / message_id 对齐。 */
+  readonly id: string;
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** 执行任务类型。 */
+  readonly type: PersistedTaskType;
+  /** 意图纪元。 */
+  readonly intent_epoch: number;
+  /** 当前状态。 */
+  readonly status: TaskHistoryStatus.Accepted;
+  /** tasks/（任务执行日志） JSONL 相对路径。 */
+  readonly log_ref: string;
+  /** 规划时快照时间戳。 */
+  readonly snapshot_ts: number;
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 创建时间。 */
+  readonly created_at: string;
+}
+
+/** `skill_call`（技能调用） 的 task_history accepted（已接受） 记录。 */
+export interface PersistedSkillCallTaskHistoryAcceptedRecord
+  extends PersistedTaskHistoryAcceptedRecordBase {
+  /** 固定为 `skill_call`。 */
+  readonly type: ExecutionTaskKind.SkillCall;
+  /** 技能名。 */
+  readonly skill: string;
+  /** 技能参数。 */
+  readonly params: ExecJob extends infer TJob
+    ? TJob extends { readonly type: ExecutionTaskKind.SkillCall; readonly params: infer TParams }
+      ? Readonly<TParams>
+      : never
+    : never;
+}
+
+/** `sandbox_code`（沙箱代码） 的 task_history accepted（已接受） 记录。 */
+export interface PersistedSandboxCodeTaskHistoryAcceptedRecord
+  extends PersistedTaskHistoryAcceptedRecordBase {
+  /** 固定为 `sandbox_code`。 */
+  readonly type: ExecutionTaskKind.SandboxCode;
+  /** 原始代码引用。 */
+  readonly code_ref: string;
+}
+
+/** task_history（任务历史） accepted（已接受） 快照联合。 */
+export type PersistedTaskHistoryAcceptedRecord =
+  | PersistedSkillCallTaskHistoryAcceptedRecord
+  | PersistedSandboxCodeTaskHistoryAcceptedRecord;
+
+/** task_history（任务历史） started（已开始） 更新结构。 */
+export interface PersistedTaskHistoryStartedPatch {
+  /** 任务标识。 */
+  readonly id: string;
+  /** 更新后的状态。 */
+  readonly status: TaskHistoryStatus.Started;
+  /** 开始时间。 */
+  readonly started_at: string;
+}
+
+/** task_history（任务历史） 终态更新基类。 */
+export interface PersistedTaskHistoryTerminalPatchBase<TStatus extends TaskTerminalStatus> {
+  /** 任务标识。 */
+  readonly id: string;
+  /** 更新后的状态。 */
+  readonly status: TStatus;
+  /** 完成时间。 */
+  readonly finished_at: string;
+  /** 总耗时。 */
+  readonly duration_ms: number;
+  /** 总步骤数。 */
+  readonly total_steps: number;
+}
+
+/** task_history（任务历史） completed（已完成） 更新结构。 */
+export interface PersistedTaskHistoryCompletedPatch
+  extends PersistedTaskHistoryTerminalPatchBase<TaskHistoryStatus.Completed> {}
+
+/** task_history（任务历史） failed（已失败） 更新结构。 */
+export interface PersistedTaskHistoryFailedPatch
+  extends PersistedTaskHistoryTerminalPatchBase<TaskHistoryStatus.Failed> {
+  /** 失败错误快照。 */
+  readonly error: TaskFailedErrorSnapshot;
+}
+
+/** task_history（任务历史） interrupted（已中断） 更新结构。 */
+export interface PersistedTaskHistoryInterruptedPatch
+  extends PersistedTaskHistoryTerminalPatchBase<TaskHistoryStatus.Interrupted> {
+  /** 中断来源。 */
+  readonly interrupt_source: PersistedInterruptSource;
+  /** 中断原因。 */
+  readonly reason: string;
+}
+
+/** task_history（任务历史） 终态更新联合。 */
+export type PersistedTaskHistoryTerminalPatch =
+  | PersistedTaskHistoryCompletedPatch
+  | PersistedTaskHistoryFailedPatch
+  | PersistedTaskHistoryInterruptedPatch;
+
+/** 崩溃恢复的未闭合任务检测默认上限。 */
+export const DEFAULT_UNCLOSED_TASK_LIMIT = 5 as const;
+
+/** 崩溃恢复的未闭合任务检测输入。 */
+export interface UnclosedTaskDetectionInput {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** 候选的 started（已开始） 事件集合。 */
+  readonly started_events: readonly PersistedTaskStartedEventLogRecord[];
+  /** 已闭合的终态事件集合。 */
+  readonly terminal_events: readonly PersistedTaskTerminalEventLogRecord[];
+  /** 最多返回条数。 */
+  readonly limit: number;
+}
+
+/** 单条未闭合任务候选。 */
+export interface UnclosedTaskCandidate {
+  /** 任务标识。 */
+  readonly job_id: string;
+  /** 执行任务类型。 */
+  readonly type: PersistedTaskType;
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 意图纪元。 */
+  readonly epoch: number;
+  /** 对应 started（已开始） 事件序号。 */
+  readonly started_seq?: number;
+  /** 对应 started（已开始） 时间。 */
+  readonly started_at: string;
+}
+
+/** 未闭合任务检测结果。 */
+export interface UnclosedTaskDetectionResult {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** 实际使用上限。 */
+  readonly limit: number;
+  /** 未闭合任务列表。 */
+  readonly open_tasks: readonly UnclosedTaskCandidate[];
+}
+
+/** 持久化写入阶段清单。 */
+export const TASK_PERSISTENCE_PHASES = [
+  "accepted",
+  "started",
+  "progress",
+  "terminal",
+  "brain_summary",
+] as const;
+
+/** 持久化写入阶段联合类型。 */
+export type TaskPersistencePhase = (typeof TASK_PERSISTENCE_PHASES)[number];
+
+/** 持久化写入目标清单。 */
+export const PERSISTENCE_TARGETS = [
+  "task_history",
+  "event_log",
+  "jsonl",
+  "brain_queue",
+  "task_summaries",
+  "session_summaries",
+] as const;
+
+/** 持久化写入目标联合类型。 */
+export type PersistenceTarget = (typeof PERSISTENCE_TARGETS)[number];
+
+/** 持久化底座类型清单。 */
+export const PERSISTENCE_STORES = ["postgres", "jsonl", "queue"] as const;
+
+/** 持久化底座联合类型。 */
+export type PersistenceStore = (typeof PERSISTENCE_STORES)[number];
+
+/** 单步持久化顺序描述器。 */
+export interface PersistenceWriteStep {
+  /** 顺序号。 */
+  readonly order: number;
+  /** 所属阶段。 */
+  readonly phase: TaskPersistencePhase;
+  /** 写入目标。 */
+  readonly target: PersistenceTarget;
+  /** 底座类型。 */
+  readonly store: PersistenceStore;
+  /** 动作名。 */
+  readonly operation: "insert" | "update" | "append" | "enqueue";
+  /** 简要说明。 */
+  readonly description: string;
+}
+
+/** 文档收口后的任务生命周期写入顺序。 */
+export const TASK_PERSISTENCE_WRITE_SEQUENCE = Object.freeze([
+  Object.freeze({
+    order: 1,
+    phase: "accepted",
+    target: "task_history",
+    store: "postgres",
+    operation: "insert",
+    description: "msg 队列入队时先创建 accepted 任务索引",
+  }),
+  Object.freeze({
+    order: 2,
+    phase: "accepted",
+    target: "event_log",
+    store: "postgres",
+    operation: "insert",
+    description: "accepted 生命周期事件作为 append-only 真理源补齐",
+  }),
+  Object.freeze({
+    order: 3,
+    phase: "started",
+    target: "task_history",
+    store: "postgres",
+    operation: "update",
+    description: "BotWorker 取出任务时把状态推进到 started",
+  }),
+  Object.freeze({
+    order: 4,
+    phase: "started",
+    target: "event_log",
+    store: "postgres",
+    operation: "insert",
+    description: "started 生命周期事件进入 event_log",
+  }),
+  Object.freeze({
+    order: 5,
+    phase: "progress",
+    target: "event_log",
+    store: "postgres",
+    operation: "insert",
+    description: "每步进度先写 event_log 保持审计连续性",
+  }),
+  Object.freeze({
+    order: 6,
+    phase: "progress",
+    target: "jsonl",
+    store: "jsonl",
+    operation: "append",
+    description: "冷日志按相同步骤追加 JSONL 细节",
+  }),
+  Object.freeze({
+    order: 7,
+    phase: "terminal",
+    target: "task_history",
+    store: "postgres",
+    operation: "update",
+    description: "真实终态先更新 task_history，failed / interrupted 必须带完整原因",
+  }),
+  Object.freeze({
+    order: 8,
+    phase: "terminal",
+    target: "event_log",
+    store: "postgres",
+    operation: "insert",
+    description: "终态事件写入 event_log，供 replay 与恢复复用",
+  }),
+  Object.freeze({
+    order: 9,
+    phase: "terminal",
+    target: "brain_queue",
+    store: "queue",
+    operation: "enqueue",
+    description: "真实终态之后异步触发 BrainWorker 摘要链路",
+  }),
+  Object.freeze({
+    order: 10,
+    phase: "brain_summary",
+    target: "task_summaries",
+    store: "postgres",
+    operation: "insert",
+    description: "BrainWorker 异步生成 task_summaries",
+  }),
+] as const satisfies readonly PersistenceWriteStep[]);
+
+/** 读取指定阶段的持久化写入计划。 */
+export function createTaskPersistencePlan(input: {
+  phase: Exclude<TaskPersistencePhase, "brain_summary">;
+}): readonly PersistenceWriteStep[];
+/** 读取 BrainWorker（摘要工作线程） 阶段的持久化写入计划。 */
+export function createTaskPersistencePlan(input: {
+  phase: "brain_summary";
+  includeSessionAggregation?: boolean;
+}): readonly PersistenceWriteStep[];
+/** 读取指定阶段的持久化写入计划。 */
+export function createTaskPersistencePlan(input: {
+  phase: TaskPersistencePhase;
+  includeSessionAggregation?: boolean;
+}): readonly PersistenceWriteStep[] {
+  const selectedSteps = TASK_PERSISTENCE_WRITE_SEQUENCE.filter(
+    (step) => step.phase === input.phase,
+  );
+
+  if (input.phase !== "brain_summary" || input.includeSessionAggregation !== true) {
+    return Object.freeze(selectedSteps);
+  }
+
+  return Object.freeze([
+    ...selectedSteps,
+    Object.freeze({
+      order: 11,
+      phase: "brain_summary",
+      target: "session_summaries",
+      store: "postgres",
+      operation: "insert",
+      description: "满足聚合条件后异步写入 session_summaries",
+    }),
+  ]);
+}
+
+/** 创建只读 event_log（事件日志） 记录。 */
+export function createPersistedEventLogRecord<TType extends PersistedEventType>(input: {
+  seq?: number;
+  bot_id: string;
+  session_id?: string;
+  type: TType;
+  payload: PersistedEventPayloadByType<TType>;
+  created_at: string;
+}): PersistedEventLogRecord<TType> {
+  assertPersistedIdentifier(input.bot_id, "bot_id");
+  assertPersistedTimestamp(input.created_at, "created_at");
+
+  if (input.seq !== undefined) {
+    assertPositiveInteger(input.seq, "seq");
+  }
+
+  if (input.session_id !== undefined) {
+    assertPersistedIdentifier(input.session_id, "session_id");
+  }
+
+  return Object.freeze({
+    ...(input.seq === undefined ? {} : { seq: input.seq }),
+    bot_id: input.bot_id,
+    ...(input.session_id === undefined ? {} : { session_id: input.session_id }),
+    type: input.type,
+    payload: clonePersistedValue(input.payload),
+    created_at: input.created_at,
+  });
+}
+
+/** 从 runtime（运行时） 生命周期事件创建 event_log（事件日志） 记录。 */
+export function createPersistedTaskLifecycleEventLogRecord<
+  TStatus extends TaskHistoryStatus,
+>(input: {
+  seq?: number;
+  bot_id: string;
+  session_id?: string;
+  lifecycle: TaskLifecycleEvent<TStatus>;
+  created_at: string;
+}): PersistedTaskLifecycleEventLogRecord<TStatus> {
+  return createPersistedEventLogRecord({
+    ...(input.seq === undefined ? {} : { seq: input.seq }),
+    bot_id: input.bot_id,
+    ...(input.session_id === undefined ? {} : { session_id: input.session_id }),
+    type: input.lifecycle.event_type,
+    payload: input.lifecycle.payload as unknown as PersistedEventPayloadByType<
+      PersistedTaskLifecycleEventType<TStatus>
+    >,
+    created_at: input.created_at,
+  }) as PersistedTaskLifecycleEventLogRecord<TStatus>;
+}
+
+/** 创建 step.progress（步骤进度） 的 event_log（事件日志） 记录。 */
+export function createPersistedTaskProgressEventLogRecord(input: {
+  seq?: number;
+  bot_id: string;
+  session_id?: string;
+  job: ExecJob;
+  created_at: string;
+  step_index: number;
+  action: string;
+  status: TaskProgressStatus;
+  params?: Readonly<Record<string, unknown>>;
+  result?: Readonly<Record<string, unknown>>;
+  duration_ms?: number;
+  error?: TaskFailedErrorSnapshot;
+}): PersistedTaskProgressEventLogRecord {
+  assertPersistedIdentifier(input.bot_id, "bot_id");
+  assertPersistedTimestamp(input.created_at, "created_at");
+  assertNonNegativeInteger(input.step_index, "step_index");
+  assertPersistedIdentifier(input.action, "action");
+
+  if (input.seq !== undefined) {
+    assertPositiveInteger(input.seq, "seq");
+  }
+  if (input.session_id !== undefined) {
+    assertPersistedIdentifier(input.session_id, "session_id");
+  }
+  if (input.duration_ms !== undefined) {
+    assertNonNegativeInteger(input.duration_ms, "duration_ms");
+  }
+  if (input.status === "err" && input.error === undefined) {
+    throw new Error("step.progress with err status requires error");
+  }
+
+  return createPersistedEventLogRecord({
+    ...(input.seq === undefined ? {} : { seq: input.seq }),
+    bot_id: input.bot_id,
+    ...(input.session_id === undefined ? {} : { session_id: input.session_id }),
+    type: TASK_PROGRESS_EVENT_TYPE,
+    payload: {
+      job_id: input.job.message_id,
+      type: input.job.type,
+      message_id: input.job.message_id,
+      epoch: input.job.intent_epoch,
+      step_index: input.step_index,
+      action: input.action,
+      status: input.status,
+      ...(input.params === undefined ? {} : { params: clonePersistedValue(input.params) }),
+      ...(input.result === undefined ? {} : { result: clonePersistedValue(input.result) }),
+      ...(input.duration_ms === undefined ? {} : { duration_ms: input.duration_ms }),
+      ...(input.error === undefined ? {} : { error: clonePersistedValue(input.error) }),
+    },
+    created_at: input.created_at,
+  });
+}
+
+/** 创建 task_history accepted（已接受） 快照。 */
+export function createPersistedTaskHistoryAcceptedRecord(input: {
+  bot_id: string;
+  job: ExecJob;
+  log_ref: string;
+  code_ref?: string;
+  created_at: string;
+}): PersistedTaskHistoryAcceptedRecord {
+  assertPersistedIdentifier(input.bot_id, "bot_id");
+  assertPersistedTimestamp(input.created_at, "created_at");
+
+  if (input.job.type === ExecutionTaskKind.SandboxCode) {
+    assertTaskHistoryLogRef(input.log_ref, "sandbox");
+
+    if (input.code_ref === undefined) {
+      throw new Error("sandbox_code task history requires code_ref");
+    }
+
+    assertSandboxCodeRef(input.code_ref);
+
+    return Object.freeze({
+      id: input.job.message_id,
+      bot_id: input.bot_id,
+      type: ExecutionTaskKind.SandboxCode,
+      intent_epoch: input.job.intent_epoch,
+      status: TaskHistoryStatus.Accepted,
+      log_ref: input.log_ref,
+      code_ref: input.code_ref,
+      snapshot_ts: input.job.snapshot_ts,
+      message_id: input.job.message_id,
+      created_at: input.created_at,
+    });
+  }
+
+  if (input.code_ref !== undefined) {
+    throw new Error("skill_call task history must not include code_ref");
+  }
+
+  assertTaskHistoryLogRef(input.log_ref, "tasks");
+
+  return Object.freeze({
+    id: input.job.message_id,
+    bot_id: input.bot_id,
+    type: ExecutionTaskKind.SkillCall,
+    intent_epoch: input.job.intent_epoch,
+    status: TaskHistoryStatus.Accepted,
+    skill: input.job.skill,
+    params: clonePersistedValue(input.job.params),
+    log_ref: input.log_ref,
+    snapshot_ts: input.job.snapshot_ts,
+    message_id: input.job.message_id,
+    created_at: input.created_at,
+  });
+}
+
+/** 创建 task_history started（已开始） 更新。 */
+export function createPersistedTaskHistoryStartedPatch(input: {
+  id: string;
+  started_at: string;
+}): PersistedTaskHistoryStartedPatch {
+  assertPersistedIdentifier(input.id, "id");
+  assertPersistedTimestamp(input.started_at, "started_at");
+
+  return Object.freeze({
+    id: input.id,
+    status: TaskHistoryStatus.Started,
+    started_at: input.started_at,
+  });
+}
+
+/** 创建 task_history completed（已完成） 更新。 */
+export function createPersistedTaskHistoryTerminalPatch(input: {
+  id: string;
+  status: TaskHistoryStatus.Completed;
+  finished_at: string;
+  duration_ms: number;
+  total_steps: number;
+}): PersistedTaskHistoryCompletedPatch;
+/** 创建 task_history failed（已失败） 更新。 */
+export function createPersistedTaskHistoryTerminalPatch(input: {
+  id: string;
+  status: TaskHistoryStatus.Failed;
+  finished_at: string;
+  duration_ms: number;
+  total_steps: number;
+  error: TaskFailedErrorSnapshot;
+}): PersistedTaskHistoryFailedPatch;
+/** 创建 task_history interrupted（已中断） 更新。 */
+export function createPersistedTaskHistoryTerminalPatch(input: {
+  id: string;
+  status: TaskHistoryStatus.Interrupted;
+  finished_at: string;
+  duration_ms: number;
+  total_steps: number;
+  interrupt_source: PersistedInterruptSource;
+  reason: string;
+}): PersistedTaskHistoryInterruptedPatch;
+/** 创建 task_history 终态更新。 */
+export function createPersistedTaskHistoryTerminalPatch(input: {
+  id: string;
+  status: TaskTerminalStatus;
+  finished_at: string;
+  duration_ms: number;
+  total_steps: number;
+  error?: TaskFailedErrorSnapshot;
+  interrupt_source?: PersistedInterruptSource;
+  reason?: string;
+}): PersistedTaskHistoryTerminalPatch {
+  assertPersistedIdentifier(input.id, "id");
+  assertPersistedTimestamp(input.finished_at, "finished_at");
+  assertNonNegativeInteger(input.duration_ms, "duration_ms");
+  assertNonNegativeInteger(input.total_steps, "total_steps");
+
+  switch (input.status) {
+    case TaskHistoryStatus.Completed:
+      return Object.freeze({
+        id: input.id,
+        status: TaskHistoryStatus.Completed,
+        finished_at: input.finished_at,
+        duration_ms: input.duration_ms,
+        total_steps: input.total_steps,
+      });
+    case TaskHistoryStatus.Failed:
+      if (input.error === undefined) {
+        throw new Error("failed task history patch requires error");
+      }
+      return Object.freeze({
+        id: input.id,
+        status: TaskHistoryStatus.Failed,
+        finished_at: input.finished_at,
+        duration_ms: input.duration_ms,
+        total_steps: input.total_steps,
+        error: clonePersistedValue(input.error),
+      });
+    case TaskHistoryStatus.Interrupted:
+      if (input.interrupt_source === undefined) {
+        throw new Error("interrupted task history patch requires interrupt_source");
+      }
+      if (!input.reason || input.reason.trim().length === 0) {
+        throw new Error("interrupted task history patch requires reason");
+      }
+      return Object.freeze({
+        id: input.id,
+        status: TaskHistoryStatus.Interrupted,
+        finished_at: input.finished_at,
+        duration_ms: input.duration_ms,
+        total_steps: input.total_steps,
+        interrupt_source: clonePersistedValue(input.interrupt_source),
+        reason: input.reason,
+      });
+  }
+}
+
+/** 创建崩溃恢复用的未闭合任务检测输入。 */
+export function createUnclosedTaskDetectionInput(input: {
+  bot_id: string;
+  started_events: readonly PersistedTaskStartedEventLogRecord[];
+  terminal_events: readonly PersistedTaskTerminalEventLogRecord[];
+  limit?: number;
+}): UnclosedTaskDetectionInput {
+  assertPersistedIdentifier(input.bot_id, "bot_id");
+
+  const limit = normalizeUnclosedTaskLimit(input.limit);
+  const startedEvents = input.started_events.map((event) => {
+    assertReplayBotBinding(input.bot_id, event.bot_id, "started_events.bot_id");
+    return createPersistedEventLogRecord(event);
+  }) as readonly PersistedTaskStartedEventLogRecord[];
+  const terminalEvents = input.terminal_events.map((event) => {
+    assertReplayBotBinding(input.bot_id, event.bot_id, "terminal_events.bot_id");
+    return createPersistedEventLogRecord(event);
+  }) as readonly PersistedTaskTerminalEventLogRecord[];
+
+  return Object.freeze({
+    bot_id: input.bot_id,
+    started_events: Object.freeze(startedEvents),
+    terminal_events: Object.freeze(terminalEvents),
+    limit,
+  });
+}
+
+/** 计算未闭合任务列表，用于纯函数化表达 event_log 崩溃恢复查询结果。 */
+export function detectUnclosedTasks(
+  input: UnclosedTaskDetectionInput,
+): UnclosedTaskDetectionResult {
+  const closedJobIds = new Set(input.terminal_events.map((event) => event.payload.job_id));
+  const openTasks = input.started_events
+    .filter((event) => !closedJobIds.has(event.payload.job_id))
+    .sort(compareUnclosedTaskCandidates)
+    .slice(0, input.limit)
+    .map((event) =>
+      Object.freeze({
+        job_id: event.payload.job_id,
+        type: event.payload.type,
+        message_id: event.payload.message_id,
+        epoch: event.payload.epoch,
+        ...(event.seq === undefined ? {} : { started_seq: event.seq }),
+        started_at: event.created_at,
+      }),
+    );
+
+  return Object.freeze({
+    bot_id: input.bot_id,
+    limit: input.limit,
+    open_tasks: Object.freeze(openTasks),
+  });
+}
+
+function clonePersistedValue<TValue>(value: TValue): TValue {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((item) => clonePersistedValue(item))) as TValue;
+  }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).map(([key, entryValue]) => [
+      key,
+      clonePersistedValue(entryValue),
+    ]);
+
+    return Object.freeze(Object.fromEntries(entries)) as TValue;
+  }
+
+  return value;
+}
+
+function assertPersistedIdentifier(value: string, fieldName: string): void {
+  if (value.trim().length === 0) {
+    throw new Error(`${fieldName} must be a non-empty string`);
+  }
+}
+
+function assertPersistedTimestamp(value: string, fieldName: string): void {
+  if (Number.isNaN(Date.parse(value))) {
+    throw new Error(`${fieldName} must be a valid timestamp`);
+  }
+}
+
+function assertPositiveInteger(value: number, fieldName: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${fieldName} must be a positive integer`);
+  }
+}
+
+function assertNonNegativeInteger(value: number, fieldName: string): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${fieldName} must be a non-negative integer`);
+  }
+}
+
+function assertTaskHistoryLogRef(value: string, channel: "tasks" | "sandbox"): void {
+  if (!isValidStorageRef(value) || !value.startsWith(`${channel}/`) || !value.endsWith(".jsonl")) {
+    throw new Error(`task_history.log_ref must point to ${channel}/*.jsonl: ${value}`);
+  }
+}
+
+function assertSandboxCodeRef(value: string): void {
+  if (!isValidStorageRef(value) || !value.startsWith("sandbox/") || !value.endsWith(".code.ts")) {
+    throw new Error(`task_history.code_ref must point to sandbox/*.code.ts: ${value}`);
+  }
+}
+
+function normalizeUnclosedTaskLimit(limit: number | undefined): number {
+  if (limit === undefined) {
+    return DEFAULT_UNCLOSED_TASK_LIMIT;
+  }
+
+  assertPositiveInteger(limit, "limit");
+  return limit;
+}
+
+function assertReplayBotBinding(
+  expectedBotId: string,
+  actualBotId: string,
+  fieldName: string,
+): void {
+  if (expectedBotId !== actualBotId) {
+    throw new Error(`${fieldName} must match bot_id`);
+  }
+}
+
+function compareUnclosedTaskCandidates(
+  left: PersistedTaskStartedEventLogRecord,
+  right: PersistedTaskStartedEventLogRecord,
+): number {
+  if (left.seq !== undefined && right.seq !== undefined && left.seq !== right.seq) {
+    return right.seq - left.seq;
+  }
+
+  return Date.parse(right.created_at) - Date.parse(left.created_at);
+}
 
 /** 配置环境变量绑定定义。 */
 export interface ConfigEnvBinding<

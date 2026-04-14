@@ -5,6 +5,12 @@ import { type RealtimeEventEnvelope, cloneRealtimeEventEnvelope } from "./realti
 const DEFAULT_REPLAY_LIMIT = 50;
 const MIN_REPLAY_LIMIT = 1;
 
+function assertNonEmptyString(value: string, fieldName: string): void {
+  if (value.trim().length === 0) {
+    throw new Error(`${fieldName} must be a non-empty string`);
+  }
+}
+
 /** HTTP（超文本传输协议） 方法集合，用于描述接口层的最小路由元信息。 */
 export const API_METHODS = ["GET", "POST"] as const;
 
@@ -135,7 +141,11 @@ export function normalizeReplayLimit(limit: number | undefined): number {
     return DEFAULT_REPLAY_LIMIT;
   }
 
-  return Math.min(Math.max(limit, MIN_REPLAY_LIMIT), DEFAULT_REPLAY_LIMIT);
+  if (!Number.isInteger(limit) || limit < MIN_REPLAY_LIMIT) {
+    throw new Error("replay limit must be a positive integer");
+  }
+
+  return Math.min(limit, DEFAULT_REPLAY_LIMIT);
 }
 
 /** 创建 replay（补拉） 请求，用于标准化 GET /api/replay 的查询参数。 */
@@ -144,11 +154,31 @@ export function createReplayRequest(input: {
   afterSeq: number;
   limit?: number;
 }): ReplayRequest {
+  assertNonEmptyString(input.botId, "botId");
+
+  if (!Number.isInteger(input.afterSeq) || input.afterSeq < 0) {
+    throw new Error("afterSeq must be a non-negative integer");
+  }
+
   return Object.freeze({
     bot_id: input.botId,
     after_seq: input.afterSeq,
     limit: normalizeReplayLimit(input.limit),
   });
+}
+
+/** 选择符合 replay（补拉） 语义的事件批次。 */
+export function selectReplayEvents(input: {
+  request: ReplayRequest;
+  events: readonly RealtimeEventEnvelope[];
+}): readonly RealtimeEventEnvelope[] {
+  const selectedEvents = input.events
+    .filter((event) => event.bot_id === input.request.bot_id && event.seq > input.request.after_seq)
+    .sort((left, right) => left.seq - right.seq)
+    .slice(0, input.request.limit)
+    .map((event) => cloneRealtimeEventEnvelope(event));
+
+  return Object.freeze(selectedEvents);
 }
 
 /** 创建 replay（补拉） 响应，用于返回状态快照与事件列表的只读组合。 */
@@ -157,7 +187,14 @@ export function createReplayResponse(input: {
   state: InterfaceBotStatusSnapshot;
   events: readonly RealtimeEventEnvelope[];
 }): ReplayResponse {
-  const events = Object.freeze(input.events.map((event) => cloneRealtimeEventEnvelope(event)));
+  if (input.state.bot_id !== input.request.bot_id) {
+    throw new Error("replay state bot_id must match request.bot_id");
+  }
+
+  const events = selectReplayEvents({
+    request: input.request,
+    events: input.events,
+  });
 
   return Object.freeze({
     bot_id: input.request.bot_id,
