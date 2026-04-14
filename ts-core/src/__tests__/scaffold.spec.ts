@@ -7,7 +7,10 @@ import {
   ExecutionTaskKind,
   MessageSource,
   RUNTIME_EVENT_TYPES,
+  assertAppLifecyclePlan,
   coreModuleBoundaries,
+  createAppBootstrapContract,
+  createAppSmokeAssembly,
   createDataConfig,
   createDiagnosticsCatalog,
   createDrizzleMigrationMetadata,
@@ -159,5 +162,22 @@ describe("TS Core 工程骨架", () => {
     expect(redisKeys.intentEpoch).toBe("bot:bot-root:intent_epoch");
     expect(redisKeys.queues.exec).toBe("bull:bot:bot-root:exec:*");
     expect(migrations.migrationsDirectory).toBe("src/db/migrations");
+  });
+
+  it("应从根入口导出 app（应用装配） 的组合根契约", () => {
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-root",
+      now: "2026-04-14T00:00:00.000Z",
+    });
+    const smoke = createAppSmokeAssembly({
+      botId: "bot-root",
+      now: "2026-04-14T00:00:00.000Z",
+    });
+
+    expect(() => assertAppLifecyclePlan(bootstrap.lifecycle)).not.toThrow();
+    expect(bootstrap.interfaces.routes[0].path).toBe("/api/health");
+    expect(bootstrap.migrations.entrypoint).toBe("src/db/migrate.ts");
+    expect(smoke.runtime.initial_status).toBe(BotStatus.IDLE);
+    expect(smoke.health.status).toBe("ok");
   });
 });

@@ -31,6 +31,7 @@ export * from "./runtime/index.js";
 export * from "./skills/index.js";
 export * from "./observation/index.js";
 export * from "./world-model/index.js";
+export * from "./app/index.js";
 export * from "./interfaces/index.js";
 export * from "./conversation/index.js";
 export * from "./workers/index.js";

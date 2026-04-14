@@ -30,8 +30,9 @@
 │  │   ├─ task_summaries      Level 1 摘要 + embedding        │
 │  │   └─ session_summaries   Level 2 聚合摘要                │
 │  │                                                          │
-│  └─ authme schema（已有，不改动）                             │
-│      └─ authme 表           MC 服务器登录验证                 │
+│  └─ 外部认证源（部署相关，只读适配）                           │
+│      └─ 例如 EasyAuth + SQLite                                │
+│         MC 服务器登录验证                                      │
 │                                                             │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
@@ -60,7 +61,14 @@
 CREATE SCHEMA IF NOT EXISTS mc_servant;
 ```
 
-所有业务表在 `mc_servant` schema 下。`authme` schema 是 MC 服务器自带的登录验证表，TS Core 只读不写。
+所有业务表在 `mc_servant` schema 下。
+
+MC（Minecraft） 服务器登录认证不属于 TS Core（TypeScript 单核心） 的业务真理源。Phase 1（第一阶段） 将其建模为**外部认证源**：
+
+- TS Core（TypeScript 单核心） 不接管、不迁移、不双写外部认证数据；
+- 若需要读取注册状态、最近认证时间或用户名映射，只能通过只读适配层访问；
+- 当前已知部署样例为 EasyAuth（离线服认证模组） + SQLite（嵌入式数据库），但设计上不得写死为某一种模组或某一种表结构；
+- 机器人自动登录所需的明文密码必须由 TS Core（TypeScript 单核心） 独立持有或由部署注入，不能依赖外部认证库中的密码哈希反推。
 
 ### 2.2 扩展依赖
 

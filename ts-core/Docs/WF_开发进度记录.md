@@ -177,3 +177,20 @@
   - `data`（数据） 模块已集中收口基础设施配置默认值、环境变量主名 / 历史别名、日志根目录 / 保留期与 `bots.config`（机器人配置） overlay（覆盖合并） 纯函数；运行时消费侧不再直接依赖自由 `Record<string, unknown>`（任意键值对象）。
   - Redis（缓存） / BullMQ（队列） 键命名已通过 `workers/queues.ts`（工作线程队列命名） 复用收口，`bot:{botId}:intent_epoch`、`bot:{botId}:state`、`bot:{botId}:snapshot` 与 `bull:msg:{botId}:*` / `bull:bot:{botId}:exec:*` / `bull:brain:*` 的关系可由纯函数目录直接读出，不再散落平行字符串集合。
   - 测试已覆盖根导出、环境变量归一化、Bot 级配置覆盖、Redis（缓存） 键目录、状态缓存、PostgreSQL（关系型数据库） / migration（迁移） 元信息与负向校验；当前仍未接入真实 `pg`（驱动）、`Redis`（缓存） 客户端、迁移执行器、文件系统写入或网络 I/O（输入输出）。
+
+## T-010
+
+- **审查结论**: 通过
+- **核心文件**:
+  - `ts-core/src/app/index.ts`
+  - `ts-core/src/app/contracts.ts`
+  - `ts-core/src/app/bootstrap.ts`
+  - `ts-core/src/app/smoke.ts`
+  - `ts-core/src/index.ts`
+  - `ts-core/src/__tests__/app-smoke-model.spec.ts`
+  - `ts-core/src/__tests__/scaffold.spec.ts`
+- **变更快照**:
+  - 建立 `app`（应用装配） 组合根，使用 `data`（数据） / `db`（数据库） / `diagnostics`（诊断） / `sandbox`（沙箱） / `runtime`（运行时） / `workers`（工作线程） / `interfaces`（接口层） 的公开导出拼装单进程纯契约，并通过根入口对外暴露。
+  - 启动 / 关闭生命周期已用纯数据计划建模并锁定顺序：启动侧保证 `runtime`（运行时） 与 `workers`（工作线程） 先于 `realtime`（实时推送） / `http`（超文本传输协议），关闭侧保证先中断运行时、再停 Worker（工作线程） / HTTP（超文本传输协议） / realtime（实时推送）、最后释放 Redis（缓存） 与 PostgreSQL（关系型数据库） 描述。
+  - 新增单 Bot（机器人） 的无 MC（Minecraft） 冒烟装配摘要，可直接读出配置透传结果、PG（关系型数据库） 连接描述、Redis（缓存） 键目录、三队列目录、运行时初始状态、健康检查基线，以及各子系统 readiness（就绪） / dependency（依赖） 目录。
+  - 测试已覆盖根导出、装配结果、生命周期顺序、配置透传与负向校验；本轮未引入新的业务模块名、真实外部适配器实例或跨模块内部实现依赖。

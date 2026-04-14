@@ -45,7 +45,7 @@ Phase 1 一主一 Bot，系统内只有**一个** BotActor 实例。它在进程
 
 ```typescript
 enum BotActorState {
-  INITIALIZING = 'initializing',  // Mineflayer 连接中、AuthMe 登录中
+  INITIALIZING = 'initializing',  // Mineflayer 连接中、外部认证流程处理中
   IDLE         = 'idle',          // 等待任务
   EXECUTING    = 'executing',     // 正在执行沙箱代码或 skill
   REFLEXING    = 'reflexing',     // 正在执行脊髓反射动作
@@ -63,9 +63,9 @@ enum BotActorState {
                     ┌───────────────┐
                     │ INITIALIZING  │
                     │ Mineflayer连接 │
-                    │ AuthMe 登录   │
+                    │ 外部认证流程  │
                     └───────┬───────┘
-                            │ 连接成功 + 登录完成
+                            │ 连接成功 + 认证完成
                             │ [emit: bot.ready]
                             ▼
               ┌────────────────────────────┐
@@ -149,7 +149,7 @@ enum BotActorState {
 
 | 起始状态 | 触发条件 | 目标状态 | 守卫条件 | 副作用 |
 |---------|---------|---------|---------|--------|
-| INITIALIZING | Mineflayer 连接成功 + AuthMe 完成 | IDLE | — | emit `bot.ready` |
+| INITIALIZING | Mineflayer 连接成功 + 外部认证完成 | IDLE | — | emit `bot.ready` |
 | INITIALIZING | 连接失败 / 超时 | INITIALIZING | 重试次数 < 3 | 等待 5s 重试 |
 | INITIALIZING | 重试耗尽 | SHUTDOWN | — | 记录 fatal 错误，进程退出由 Docker 重启 |
 | IDLE | exec 队列取出 job | EXECUTING | epoch ≥ 当前 epoch 且 snapshot 校验通过 | 创建 AbortController，emit `task.started` |
@@ -683,7 +683,7 @@ try {
     │  ├─ 创建 Mineflayer Bot 实例
     │  ├─ 连接 MC Server
     │  ├─ 等待 spawn 事件
-    │  ├─ AuthMe 登录（如需要，通过 JAR Bridge 或 chat 命令）
+    │  ├─ 执行外部认证流程（如需要，通过聊天命令、服务端桥接或其他受控入口）
     │  └─ 初始化 observation 模块（开始监听事件、采集首次快照）
     │
 5. BotActor 进入 IDLE
