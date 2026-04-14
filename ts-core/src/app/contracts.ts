@@ -95,6 +95,15 @@ export interface AppReadinessDescriptor {
   readonly ready_when: string;
 }
 
+/**
+ * 创建一个不可变的生命周期步骤对象。
+ * 
+ * 架构设计：
+ * 该函数用于标准化系统启动或关闭过程中的每一个独立步骤，确保配置信息的完整性。
+ * 
+ * @param input 步骤配置项
+ * @returns 冻结后的生命周期步骤
+ */
 function createLifecycleStep<TName extends AppLifecycleStepName>(input: {
   name: TName;
   phase: AppLifecyclePhase;
@@ -111,6 +120,17 @@ function createLifecycleStep<TName extends AppLifecycleStepName>(input: {
   });
 }
 
+/**
+ * 校验生命周期阶段内的步骤顺序是否合法。
+ * 
+ * 架构意图：
+ * 1. 阶段一致性：确保所有步骤都处于其声明的阶段（如 startup 或 shutdown）。
+ * 2. 依赖拓扑校验：利用数组索引判断依赖顺序。一个步骤的所有依赖必须在数组中排在其之前。
+ * 3. 健壮性：防止生命周期配置中出现循环依赖或缺失依赖。
+ * 
+ * @param steps 生命周期步骤列表
+ * @param phase 目标生命周期阶段
+ */
 function assertLifecyclePhaseOrder(
   steps: readonly AppLifecycleStep[],
   phase: AppLifecyclePhase,

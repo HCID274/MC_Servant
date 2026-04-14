@@ -1,3 +1,13 @@
+/**
+ * 应用引导与装配层。
+ * 
+ * 架构职责：
+ * 1. 组合根（Composition Root）：将各个子系统（数据、数据库、诊断、运行时、沙箱等）的契约装配成一个完整的引导对象。
+ * 2. 依赖管理：定义并管理基础设施资源（PostgreSQL, Redis）的生命周期与初始化顺序。
+ * 3. 环境适配：负责从环境变量和机器人配置中解析并注入必要的认证、配置等外部依赖。
+ * 4. 契约暴露：为上层应用提供统一的引导接口，确保系统各部分在启动前已正确就绪。
+ */
+
 import { type DataConfig, type DataConfigEnvironment, createDataConfig } from "../data/index.js";
 import {
   type DrizzleMigrationMetadata,
@@ -269,7 +279,18 @@ export function createAppExternalAuthContract(
   return createAppExternalAuthContractFromRuntimeState(runtimeState);
 }
 
-/** 创建应用装配结果，用于把现有公开契约收口为单进程组合根。 */
+/**
+ * 创建应用装配结果，用于把现有公开契约收口为单进程组合根。
+ * 
+ * 架构设计：
+ * 该函数是整个应用的“大脑装配点”，它负责：
+ * 1. 验证基础输入的合法性（Bot ID, 时间戳）。
+ * 2. 依次初始化配置、生命周期计划、数据库描述、运行时骨架和诊断目录。
+ * 3. 将分散的子系统对象聚合成一个不可变的 AppBootstrapContract，供启动流程使用。
+ * 
+ * @param input 应用引导输入
+ * @returns 完整的引导契约对象
+ */
 export function createAppBootstrapContract<TBotId extends string>(
   input: AppBootstrapInput<TBotId>,
 ): AppBootstrapContract<TBotId> {
@@ -340,7 +361,19 @@ export function createAppBootstrapContract<TBotId extends string>(
   });
 }
 
-/** 基于应用装配结果创建真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源。 */
+/**
+ * 基于应用装配结果创建真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源。
+ * 
+ * 架构设计：
+ * 该函数负责物理资源的实例化，包括：
+ * 1. 按照 create_order 指定的顺序（通常是 Postgres -> Redis）建立连接。
+ * 2. 封装资源关闭逻辑，确保在发生故障或系统停机时能正确回收资源。
+ * 3. 提供异常回滚机制，若中间某个资源创建失败，会尝试逆序清理已创建的资源。
+ * 
+ * @param bootstrap 引导契约
+ * @param dependencies 可注入的资源依赖（用于 Mock 或自定义连接）
+ * @returns 运行时资源句柄
+ */
 export async function createAppRuntimeResources<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
   dependencies: AppRuntimeResourceDependencies = {},
@@ -389,7 +422,15 @@ export async function createAppRuntimeResources<TBotId extends string>(
   }
 }
 
-/** 按应用约定顺序关闭真实资源；即使前一步失败也会继续清理后续资源。 */
+/**
+ * 按应用约定顺序关闭真实资源；即使前一步失败也会继续清理后续资源。
+ * 
+ * 架构设计：
+ * 遵循 close_order（通常与创建顺序相反），采用“尽力而为”的清理策略，
+ * 捕获并汇总所有关闭过程中的错误，确保基础设施连接被安全释放。
+ * 
+ * @param input 包含资源实例和目录信息的输入
+ */
 export async function closeAppRuntimeResources<TBotId extends string>(input: {
   directory: AppResourceDirectory<TBotId>;
   postgres?: PostgresRuntimeResource;
@@ -418,6 +459,14 @@ export async function closeAppRuntimeResources<TBotId extends string>(input: {
   throw closeErrors[0];
 }
 
+/**
+ * 解析应用外部认证决策。
+ * 
+ * 架构意图：
+ * 1. 策略分发：根据环境变量或 Bot 配置判断是否需要认证。
+ * 2. 秘密绑定：尝试从环境变量或配置中解析并绑定明文密钥。
+ * 3. 失败预测：若配置要求认证但未找到有效密钥，立即宣告状态为失败，避免进入后续复杂的认证流程。
+ */
 function resolveAppExternalAuthResolution(
   input: {
     env?: DataConfigEnvironment;
@@ -489,6 +538,15 @@ function createAppRuntimeScaffoldContract(scaffold: RuntimeScaffold): AppRuntime
   });
 }
 
+/**
+ * 创建应用资源目录。
+ * 
+ * 架构意图：
+ * 1. 声明式时序：显式定义资源的创建、关闭和回滚顺序。
+ * 2. 映射关系：将抽象的资源名（如 'postgres'）与具体的描述符和元信息关联。
+ * 
+ * @param input 包含连接描述符和元信息的输入
+ */
 function createAppResourceDirectory<TBotId extends string>(input: {
   botId: TBotId;
   postgres: PostgresConnectionDescriptor;
