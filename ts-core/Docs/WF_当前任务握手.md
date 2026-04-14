@@ -1,72 +1,72 @@
 # 当前任务握手区
 
-【任务序号】: T-012
+【任务序号】: T-013
 【当前状态】: 待开发
 
 ---
 
 ## Manager 任务指令
 
-**任务目标**: 建立 `runtime`（运行时） / `workers`（工作线程） / `diagnostics`（诊断） 之间的任务生命周期事件闭环，把 `accepted`（已接受） / `started`（已开始） / `discarded`（已丢弃） / `terminal`（终态） 相关事件与动作收口为可测试的纯契约，确保“消息入执行队列后如何形成统一事件流与诊断摘要”有同一套强类型表达；本任务只做类型、纯函数与动作建模，不接入真实 BullMQ（队列） / PostgreSQL（关系型数据库） / JSONL（结构化日志） 文件写入。
+**任务目标**: 建立外部认证源适配的最小运行时契约，把“是否需要认证、认证进行中、已认证、认证失败”与“明文登录密钥只允许通过部署注入”收口为同一套纯类型 / 纯函数边界，并移除现有代码里把外部认证误建模为 PostgreSQL（关系型数据库） `authme schema`（认证模式） 的过时耦合；本任务不读取 EasyAuth（离线服认证模组） SQLite（嵌入式数据库）、不接入真实 Mineflayer（Minecraft 协议客户端） 登录、不发送真实聊天登录命令。
 
 **上下文说明**:
-1. `T-011` 已完成网页端、游戏聊天、服务端桥接三类 ingress（入口） 的统一标准化，当前主线缺口转为“进入主线后的执行任务如何形成 accepted / started / terminal（已接受 / 已开始 / 终态） 事件闭环并保持可观测”。
-2. `01_ARCHITECTURE.md`（架构文档） 与 `02_RUNTIME_SPEC.md`（运行时规格） 已明确要求：任务进入 exec（执行） 队列时写 `task.accepted`，BotWorker（机器人工作线程） 取出后进入 `task.started`，执行结束后统一收口到 `task.completed` / `task.failed` / `task.interrupted`，epoch（意图纪元） 过期任务走 `task.discarded`；这些事件同时服务于 event_log（事件日志）、replay（补拉） 与调试。
-3. 当前仓内已有 `runtime/events.ts`（运行时事件）、`runtime/tasking.ts`（执行任务）、`workers/contracts.ts`（工作线程动作）、`diagnostics/contracts.ts`（诊断日志） 等骨架，但 accepted / started / discarded / terminal（已接受 / 已开始 / 已丢弃 / 终态） 仍分散在枚举、动作和日志行中，缺少统一的任务生命周期类型闭环。
-4. 本任务继续坚持模块边界：`runtime`（运行时） 负责事件类型与状态语义，`workers`（工作线程） 负责消费 / 产出动作建模，`diagnostics`（诊断） 负责日志摘要契约；不得把 PG（关系型数据库） 写入、BullMQ（队列） 实例控制或真实恢复扫描逻辑塞进这批契约层代码。
+1. `T-012` 已完成 `runtime`（运行时） / `workers`（工作线程） / `diagnostics`（诊断） 的任务生命周期闭环，当前主线缺口转为“BotActor（机器人执行代理） 在 `INITIALIZING`（初始化） 阶段如何表达外部认证流程边界”。
+2. `02_RUNTIME_SPEC.md`（运行时规格） 已明确 `INITIALIZING`（初始化） 包含“Mineflayer 连接中、外部认证流程处理中”，且只有“连接成功 + 外部认证完成”才能进入 `IDLE`（空闲）；因此外部认证不能继续只是注释语义，必须在运行时契约层有可测试表达。
+3. `05_DATA_SPEC.md`（数据规格） 与需求变更索引已确认：MC（Minecraft） 登录认证当前真实部署为 EasyAuth（离线服认证模组） + SQLite（嵌入式数据库），它是**外部认证源**，不是 TS Core（TypeScript 单核心） PostgreSQL（关系型数据库） 主业务库的一部分；TS Core 不接管、不迁移、不双写它的数据，机器人登录明文密码只能由部署注入。
+4. 仓内当前仍有旧假设残留：`ts-core/src/db/contracts.ts` 还把只读依赖 schema（模式） 写成 `authme`，这会把后续实现继续拖回“外部认证在 PG（关系型数据库） 内”的错误路径；本任务要把该耦合清掉，并建立可扩展但不写死 EasyAuth（离线服认证模组） 表结构的最小契约。
+5. 本任务仍然是模块级契约收口：允许在 `runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 内补齐边界与导出，但不得接入真实数据库查询、真实聊天命令发送、真实 JAR Bridge（服务端桥接） 登录流程或 Docker（容器） 启动脚本。
 
 **输入文件白名单（Coder 仅限读取以下文件）**:
-1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 3.2 节《全链路数据流》、第 8 节《Event Protocol》、第 15 节《模块划分》、第 18 节《Phase 1 范围》
-2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 1 节《职责边界》、第 2 节《状态机》、第 5.1 节《BotWorker 与 BotActor 的关系》、第 6.1 节《启动序列》、第 8 节《事件发射》
-3. `ts-core/Docs/05_DATA_SPEC.md` — 第 2.3 节《全表一览》中 `event_log` / `task_history` 段落、第 6 节《event_log 查询模式》、第 9 节《数据一致性约定》
+1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 2 节《系统总体结构》中的双视角输入段落、第 3.1 节《队列划分》
+2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 2.1 节《状态枚举》、第 2.2 节《状态转换图》、第 2.3 节《转换规则详表》、第 6.1 节《启动序列》
+3. `ts-core/Docs/05_DATA_SPEC.md` — 第 1 节《总览》中的外部认证源段落、第 2.1 节《Schema 隔离》
 4. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》
-5. `ts-core/scripts/pre_review.sh` — 全文件
-6. `ts-core/src/index.ts` — 全文件
-7. `ts-core/src/runtime/index.ts` — 全文件
+5. `ts-core/Docs/WF_需求变更索引.md` — 2026-04-14《MC 认证真理源确认（EasyAuth + SQLite）》条目
+6. `ts-core/scripts/pre_review.sh` — 全文件
+7. `ts-core/src/index.ts` — 全文件
 8. `ts-core/src/runtime/contracts.ts` — 全文件
-9. `ts-core/src/runtime/events.ts` — 全文件
-10. `ts-core/src/runtime/tasking.ts` — 全文件
-11. `ts-core/src/workers/index.ts` — 全文件
-12. `ts-core/src/workers/contracts.ts` — 全文件
-13. `ts-core/src/workers/queues.ts` — 全文件
-14. `ts-core/src/diagnostics/index.ts` — 全文件
-15. `ts-core/src/diagnostics/contracts.ts` — 全文件
-16. `ts-core/src/interfaces/realtime.ts` — 全文件
-17. `ts-core/src/__tests__/runtime-model.spec.ts` — 全文件
-18. `ts-core/src/__tests__/conversation-workers-model.spec.ts` — 全文件
-19. `ts-core/src/__tests__/sandbox-diagnostics-model.spec.ts` — 全文件
-20. `ts-core/src/__tests__/runtime-worker-event-model.spec.ts` — 全文件（允许新建）
+9. `ts-core/src/runtime/state-machine.ts` — 全文件
+10. `ts-core/src/runtime/index.ts` — 全文件
+11. `ts-core/src/data/contracts.ts` — 全文件
+12. `ts-core/src/data/index.ts` — 全文件
+13. `ts-core/src/db/contracts.ts` — 全文件
+14. `ts-core/src/db/index.ts` — 全文件
+15. `ts-core/src/app/contracts.ts` — 全文件
+16. `ts-core/src/app/bootstrap.ts` — 全文件
+17. `ts-core/src/app/index.ts` — 全文件
+18. `ts-core/src/__tests__/runtime-model.spec.ts` — 全文件
+19. `ts-core/src/__tests__/db-config-model.spec.ts` — 全文件
+20. `ts-core/src/__tests__/app-smoke-model.spec.ts` — 全文件
 
 **核心逻辑要求**:
-1. 必须把 `task.accepted` / `task.started` / `task.discarded` / `task.completed` / `task.failed` / `task.interrupted` 相关 payload（载荷） 与状态语义收口为同一套运行时生命周期契约；不得继续让 `runtime`（运行时）、`workers`（工作线程）、`diagnostics`（诊断） 各自维护一套平行字段名。
-2. `workers`（工作线程） 侧必须能纯函数表达以下动作边界：ConversationWorker（对话工作线程） 产出 accepted（已接受） 事件意图，BotWorker（机器人工作线程） 产出 started / discarded / terminal（已开始 / 已丢弃 / 终态） 事件意图，BrainWorker（摘要工作线程） 只消费终态任务；不得把真实队列消费、数据库写入或 Bot 写操作塞进动作构造器。
-3. `diagnostics`（诊断） 侧必须补齐与任务生命周期一致的最小 JSONL（结构化日志） 摘要契约，至少保证 started（已开始） 与 terminal（终态） 语义和运行时事件对齐；不得再造与 `TaskHistoryStatus`（任务历史状态） 平行的终态字符串集。
-4. 必须显式表达 `discarded`（已丢弃） 与真正终态的区别：`discarded` 表示过期 / 不执行的 exec job（执行任务），不能错误进入 BrainWorker（摘要工作线程） 终态处理链，也不能伪装成 `failed`（失败）。
-5. 本任务不得引入真实 BullMQ（队列） / PostgreSQL（关系型数据库） / JSONL（结构化日志） 文件 I/O、不得新增核心模块名、不得接入启动恢复扫描或真实 replay（补拉） 查询；只补齐契约、纯函数与测试。
+1. 必须在 `runtime`（运行时） 内建立统一的外部认证状态 / 配置契约，至少能无歧义表达：`not_required`（无需认证） / `pending`（认证进行中） / `authenticated`（已认证） / `failed`（认证失败）；不得再把外部认证停留在注释层或散落成多套布尔字段。
+2. 必须显式表达“明文登录密钥由部署注入”的边界：允许通过 `env`（环境变量） / `botConfig`（机器人配置） 等纯配置输入声明登录密钥来源，但不得把外部认证密码哈希、SQLite（嵌入式数据库） 路径、EasyAuth（离线服认证模组） 表结构或查询逻辑写进运行时契约。
+3. `db`（数据库元信息） / `data`（数据配置） / `app`（应用装配） 侧必须清除把外部认证误建模为 PostgreSQL（关系型数据库） `authme schema`（认证模式） 的过时耦合；TS Core（TypeScript 单核心） 的 PostgreSQL（关系型数据库） 仍只描述业务真理源，不承担外部认证源只读 schema（模式） 假设。
+4. `app/bootstrap`（应用装配） 必须能纯函数暴露当前 Bot（机器人） 的外部认证装配结果，使后续启动流程可以在不接真实 IO（输入输出） 的前提下判断“是否需要认证、认证应使用哪类受控入口、密钥是否已注入”；但本任务不得真正执行登录命令。
+5. 不得引入真实 EasyAuth（离线服认证模组） 读取、不得新增 PostgreSQL（关系型数据库） 同步表、不得把外部认证状态写入 `event_log`（事件日志） / `task_history`（任务历史） 持久化层、不得接入 Dockerfile（容器镜像构建文件） 或部署脚本。
 
 **验收标准**:
-1. `runtime`（运行时） 已存在统一的任务生命周期事件类型 / 载荷构造边界，能够无歧义表达 accepted / started / discarded / terminal（已接受 / 已开始 / 已丢弃 / 终态） 语义。
-2. `workers`（工作线程） 已能纯函数产出 accepted（已接受） / started（已开始） / discarded（已丢弃） / terminal（终态） 的动作或事件构造结果，且 BrainWorker（摘要工作线程） 只接收真实终态任务。
-3. `diagnostics`（诊断） 中 tasks（任务执行） 通道的开始 / 终态摘要契约已与运行时事件和 `TaskHistoryStatus`（任务历史状态） 对齐，不存在新的平行状态字符串集。
-4. 新增或更新测试已覆盖 accepted / started / discarded / terminal（已接受 / 已开始 / 已丢弃 / 终态） 闭环、丢弃与终态分流、根导出可见性与只读边界。
+1. `runtime`（运行时） 已存在统一的外部认证状态与配置契约，且与 `INITIALIZING`（初始化） → `IDLE`（空闲） 的状态机语义一致。
+2. `data`（数据配置） / `app`（应用装配） 已能纯函数表达“认证是否启用、入口方式、密钥注入来源 / 缺失”的最小装配结果。
+3. `db/contracts.ts`（数据库契约） 中不再把外部认证错误表述为 PostgreSQL（关系型数据库） `authme schema`（认证模式） 或其他写死的 PG（关系型数据库） 只读 schema（模式）。
+4. 新增或更新测试已覆盖：无需认证路径、需要认证但缺少注入密钥的失败路径、装配层可见性，以及清除旧 `authme`（旧认证模式） 假设后的导出一致性。
 5. 执行 `bash ts-core/scripts/pre_review.sh` 后仍能通过。
 
 ---
 
 ## Coder 自检清单
-- [ ] 任务序号核对为 `T-012`
+- [ ] 任务序号核对为 `T-013`
 - [ ] 仅读取并修改白名单内文件
 - [ ] 新增导出符号均补充中文文档注释
-- [ ] `runtime`（运行时） / `workers`（工作线程） / `diagnostics`（诊断） 仅补齐任务生命周期契约与纯函数，未接入真实 BullMQ（队列） / PostgreSQL（关系型数据库） / JSONL（结构化日志） 文件 I/O
-- [ ] `accepted` / `started` / `discarded` / `terminal`（已接受 / 已开始 / 已丢弃 / 终态） 字段命名与 `TaskHistoryStatus`（任务历史状态） 语义已统一，不存在新的平行状态集
-- [ ] `discarded`（已丢弃） 未被错误送入 BrainWorker（摘要工作线程） 终态链路
-- [ ] 未新增核心模块名，未越过 `runtime`（运行时） / `workers`（工作线程） / `diagnostics`（诊断） 边界吞并其他模块职责
+- [ ] 外部认证仅建模为运行时 / 装配层纯契约，未接入 EasyAuth（离线服认证模组） SQLite（嵌入式数据库） 读取、真实聊天命令或真实服务端桥接登录逻辑
+- [ ] PostgreSQL（关系型数据库） 契约中已移除 `authme`（旧认证模式） 只读 schema（模式） 假设
+- [ ] 明文登录密钥边界仅来自部署注入，未把哈希反推、库表路径或查询逻辑混入配置 / 运行时模型
+- [ ] 新增或更新测试覆盖“无需认证 / 需要认证 / 缺少密钥失败”与应用装配可见性
 - [ ] 执行 bash ts-core/scripts/pre_review.sh 全部通过
 
 ---
 
 ## Manager 打回记录（仅 被打回 时填写）
-- 暂无
 
 ---
 
@@ -80,6 +80,6 @@
 ---
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
-- T-013: 建立外部认证源适配的最小运行时契约，收口“需要认证 / 已认证 / 认证失败”状态与注入式登录密钥边界，但不读取 EasyAuth（离线服认证模组） 数据库。
-- T-014: 在本地启动边界与外部认证边界稳定后补部署骨架，收口 `Dockerfile`（容器镜像构建文件） / 启动入口 / 环境变量装配的最小契约。
-- T-015: 收口 `event_log`（事件日志） / replay（补拉） / diagnostics（诊断） 的持久化对齐边界，为后续真实写入层实现预留稳定契约。
+- T-014: 在外部认证契约稳定后补本地装配 / 启动入口 / `Dockerfile`（容器镜像构建文件） 的最小部署骨架。
+- T-015: 收口 `event_log`（事件日志） / replay（补拉） / diagnostics（诊断） 的持久化对齐边界，为真实写入层预留稳定契约。
+- T-016: 在部署骨架与持久化边界稳定后，规划受控登录入口执行骨架，把认证契约接到实际运行时动作，但仍保持外部认证源只读。

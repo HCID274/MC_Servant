@@ -9,7 +9,20 @@ import type {
   ConversationTemplateReply,
 } from "../conversation/contracts.js";
 import type { InterruptSignal } from "../runtime/contracts.js";
-import type { ExecJob, TaskHistoryStatus } from "../runtime/tasking.js";
+import {
+  type TaskFailedErrorSnapshot,
+  type TaskLifecycleEvent,
+  createTaskAcceptedLifecycleEvent,
+  createTaskDiscardedLifecycleEvent,
+  createTaskStartedLifecycleEvent,
+  createTaskTerminalLifecycleEvent,
+} from "../runtime/events.js";
+import {
+  type ExecJob,
+  type TaskDiscardReason,
+  TaskHistoryStatus,
+  type TaskTerminalStatus,
+} from "../runtime/tasking.js";
 import {
   type BrainQueueName,
   type ExecQueueName,
@@ -106,11 +119,34 @@ export interface EnqueueExecAction {
   readonly exec_job: ExecJob;
 }
 
+/** Worker（工作线程） 产出的任务生命周期事件动作。 */
+export interface EmitTaskLifecycleAction<TStatus extends TaskHistoryStatus = TaskHistoryStatus> {
+  /** 动作类型。 */
+  readonly type: "emit_task_lifecycle";
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** 对齐 runtime（运行时） 的生命周期事件。 */
+  readonly lifecycle: TaskLifecycleEvent<TStatus>;
+}
+
+/** ConversationWorker（对话工作线程） 产出的 accepted（已接受） 生命周期动作。 */
+export type EmitTaskAcceptedAction = EmitTaskLifecycleAction<TaskHistoryStatus.Accepted>;
+
+/** BotWorker（机器人工作线程） 产出的 started（已开始） 生命周期动作。 */
+export type EmitTaskStartedAction = EmitTaskLifecycleAction<TaskHistoryStatus.Started>;
+
+/** BotWorker（机器人工作线程） 产出的 discarded（已丢弃） 生命周期动作。 */
+export type EmitTaskDiscardedAction = EmitTaskLifecycleAction<TaskHistoryStatus.Discarded>;
+
+/** BotWorker（机器人工作线程） 产出的终态生命周期动作。 */
+export type EmitTaskTerminalAction = EmitTaskLifecycleAction<TaskTerminalStatus>;
+
 /** ConversationWorker（对话工作线程） 输出动作联合。 */
 export type ConversationWorkerAction =
   | BroadcastReplyAction
   | InterruptRuntimeAction
-  | EnqueueExecAction;
+  | EnqueueExecAction
+  | EmitTaskAcceptedAction;
 
 /** `chat`（闲聊） 路由对应的 Worker 动作输入。 */
 export interface ConversationChatWorkerActionInput {
@@ -156,18 +192,6 @@ export type ConversationWorkerActionInput =
   | ConversationCancelWorkerActionInput
   | ConversationExecWorkerActionInput;
 
-/** BotWorker（机器人工作线程） 产出的终态事件动作。 */
-export interface EmitTaskTerminalAction {
-  /** 动作类型。 */
-  readonly type: "emit_task_terminal";
-  /** 目标 Bot 标识。 */
-  readonly bot_id: string;
-  /** 原始消息标识。 */
-  readonly message_id: string;
-  /** 终态状态。 */
-  readonly status: BrainTaskStatus;
-}
-
 /** BotWorker（机器人工作线程） 产出的摘要入队动作。 */
 export interface EnqueueBrainAction {
   /** 动作类型。 */
@@ -177,7 +201,11 @@ export interface EnqueueBrainAction {
 }
 
 /** BotWorker（机器人工作线程） 输出动作联合。 */
-export type BotWorkerAction = EmitTaskTerminalAction | EnqueueBrainAction;
+export type BotWorkerAction =
+  | EmitTaskStartedAction
+  | EmitTaskDiscardedAction
+  | EmitTaskTerminalAction
+  | EnqueueBrainAction;
 
 /** BrainWorker（摘要工作线程） 产出的摘要持久化动作。 */
 export interface PersistTaskSummaryAction {
@@ -349,34 +377,139 @@ export function createConversationWorkerActions(
           exec_job: input.exec_job,
         }),
       );
+      actions.push(
+        Object.freeze({
+          type: "emit_task_lifecycle",
+          bot_id: input.bot_id,
+          lifecycle: createTaskAcceptedLifecycleEvent(input.exec_job),
+        }),
+      );
       break;
   }
 
   return Object.freeze(actions);
 }
 
-/** 根据 BotWorker（机器人工作线程） 的终态结果生成输出动作集合。 */
-export function createBotWorkerActions(input: {
-  task: BotWorkerTask;
-  status: BrainTaskStatus;
-}): readonly BotWorkerAction[] {
-  return Object.freeze([
-    Object.freeze({
-      type: "emit_task_terminal",
-      bot_id: input.task.bot_id,
-      message_id: input.task.exec_job.message_id,
-      status: input.status,
-    }),
-    Object.freeze({
-      type: "enqueue_brain",
-      task: createBrainWorkerTask({
-        bot_id: input.task.bot_id,
-        message_id: input.task.exec_job.message_id,
-        intent_epoch: input.task.exec_job.intent_epoch,
-        status: input.status,
-      }),
-    }),
-  ]);
+/** 根据 BotWorker（机器人工作线程） 的生命周期阶段生成输出动作集合。 */
+export function createBotWorkerActions(
+  input:
+    | {
+        task: BotWorkerTask;
+        phase: "started";
+      }
+    | {
+        task: BotWorkerTask;
+        phase: "discarded";
+        discard_reason: TaskDiscardReason;
+        current_epoch?: number;
+      }
+    | {
+        task: BotWorkerTask;
+        phase: "terminal";
+        status: TaskHistoryStatus.Completed;
+        total_steps: number;
+        duration_ms: number;
+      }
+    | {
+        task: BotWorkerTask;
+        phase: "terminal";
+        status: TaskHistoryStatus.Failed;
+        total_steps: number;
+        duration_ms: number;
+        error: TaskFailedErrorSnapshot;
+        last_step?: string;
+      }
+    | {
+        task: BotWorkerTask;
+        phase: "terminal";
+        status: TaskHistoryStatus.Interrupted;
+        total_steps: number;
+        duration_ms: number;
+        interrupt_source: InterruptSignal["source"];
+        reason: string;
+      },
+): readonly BotWorkerAction[] {
+  switch (input.phase) {
+    case "started":
+      return Object.freeze([
+        Object.freeze({
+          type: "emit_task_lifecycle",
+          bot_id: input.task.bot_id,
+          lifecycle: createTaskStartedLifecycleEvent(input.task.exec_job),
+        }),
+      ]);
+    case "discarded":
+      return Object.freeze([
+        Object.freeze({
+          type: "emit_task_lifecycle",
+          bot_id: input.task.bot_id,
+          lifecycle: createTaskDiscardedLifecycleEvent({
+            job: input.task.exec_job,
+            discard_reason: input.discard_reason,
+            ...(input.current_epoch !== undefined ? { current_epoch: input.current_epoch } : {}),
+          }),
+        }),
+      ]);
+    case "terminal": {
+      const lifecycle = (() => {
+        switch (input.status) {
+          case TaskHistoryStatus.Completed:
+            return createTaskTerminalLifecycleEvent({
+              job: input.task.exec_job,
+              status: TaskHistoryStatus.Completed,
+              total_steps: input.total_steps,
+              duration_ms: input.duration_ms,
+            });
+          case TaskHistoryStatus.Failed:
+            if (input.error === undefined) {
+              throw new Error("failed terminal actions require error");
+            }
+
+            return createTaskTerminalLifecycleEvent({
+              job: input.task.exec_job,
+              status: TaskHistoryStatus.Failed,
+              total_steps: input.total_steps,
+              duration_ms: input.duration_ms,
+              error: input.error,
+              ...(input.last_step ? { last_step: input.last_step } : {}),
+            });
+          case TaskHistoryStatus.Interrupted:
+            if (input.interrupt_source === undefined) {
+              throw new Error("interrupted terminal actions require interrupt_source");
+            }
+            if (input.reason === undefined) {
+              throw new Error("interrupted terminal actions require reason");
+            }
+
+            return createTaskTerminalLifecycleEvent({
+              job: input.task.exec_job,
+              status: TaskHistoryStatus.Interrupted,
+              total_steps: input.total_steps,
+              duration_ms: input.duration_ms,
+              interrupt_source: input.interrupt_source,
+              reason: input.reason,
+            });
+        }
+      })();
+
+      return Object.freeze([
+        Object.freeze({
+          type: "emit_task_lifecycle",
+          bot_id: input.task.bot_id,
+          lifecycle,
+        }),
+        Object.freeze({
+          type: "enqueue_brain",
+          task: createBrainWorkerTask({
+            bot_id: input.task.bot_id,
+            message_id: input.task.exec_job.message_id,
+            intent_epoch: input.task.exec_job.intent_epoch,
+            status: input.status,
+          }),
+        }),
+      ]);
+    }
+  }
 }
 
 /** 根据 BrainWorker（摘要工作线程） 输入生成最小持久化动作。 */

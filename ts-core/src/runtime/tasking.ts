@@ -24,6 +24,37 @@ export enum TaskHistoryStatus {
   Discarded = "discarded",
 }
 
+/** 任务生命周期状态清单，用于集中维护 task_history（任务历史） 六态。 */
+export const TASK_HISTORY_STATUSES = [
+  TaskHistoryStatus.Accepted,
+  TaskHistoryStatus.Started,
+  TaskHistoryStatus.Completed,
+  TaskHistoryStatus.Failed,
+  TaskHistoryStatus.Interrupted,
+  TaskHistoryStatus.Discarded,
+] as const;
+
+/** 可进入 BrainWorker（摘要工作线程） 的真实终态清单。 */
+export const TASK_TERMINAL_STATUSES = [
+  TaskHistoryStatus.Completed,
+  TaskHistoryStatus.Failed,
+  TaskHistoryStatus.Interrupted,
+] as const;
+
+/** 任务被丢弃时允许的原因枚举。 */
+export const TASK_DISCARD_REASONS = ["intent_epoch_stale", "snapshot_stale"] as const;
+
+/** 可进入 BrainWorker（摘要工作线程） 的真实终态联合。 */
+export type TaskTerminalStatus = (typeof TASK_TERMINAL_STATUSES)[number];
+
+/** 任务被丢弃时的原因联合。 */
+export type TaskDiscardReason = (typeof TASK_DISCARD_REASONS)[number];
+
+/** 判断给定状态是否属于真实终态。 */
+export function isTaskTerminalStatus(status: TaskHistoryStatus): status is TaskTerminalStatus {
+  return TASK_TERMINAL_STATUSES.includes(status as TaskTerminalStatus);
+}
+
 /** 执行任务公共字段。 */
 export interface ExecJobBase {
   /** 执行任务类型。 */
@@ -109,7 +140,7 @@ export function createSkillCallJob<TInput extends SkillCallJobInput>(
     params: input.params,
   } as Extract<SkillCallInput, { skill: TInput["skill"] }>);
 
-  return {
+  return Object.freeze({
     type: ExecutionTaskKind.SkillCall,
     message_id: input.message_id,
     intent_epoch: input.intent_epoch,
@@ -118,7 +149,7 @@ export function createSkillCallJob<TInput extends SkillCallJobInput>(
     skillCall,
     skill: skillCall.skill,
     params: skillCall.params,
-  } as unknown as Extract<SkillCallJob, { skill: TInput["skill"] }>;
+  }) as unknown as Extract<SkillCallJob, { skill: TInput["skill"] }>;
 }
 
 /** 创建 sandbox_code 执行任务。 */
@@ -129,12 +160,12 @@ export function createSandboxCodeJob(input: {
   priority: ExecPriority;
   code: string;
 }): SandboxCodeJob {
-  return {
+  return Object.freeze({
     type: ExecutionTaskKind.SandboxCode,
     message_id: input.message_id,
     intent_epoch: input.intent_epoch,
     snapshot_ts: input.snapshot_ts,
     priority: input.priority,
     code: input.code,
-  };
+  });
 }

@@ -14,6 +14,8 @@ export const workersModuleBoundary = {
     "createBotWorkerTask",
     "createBrainWorkerTask",
     "createConversationWorkerActions",
+    "createBotWorkerActions",
+    "createBrainWorkerActions",
     "createInterruptSignalFromRoute",
   ],
 } satisfies ModuleBoundary;

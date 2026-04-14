@@ -1,5 +1,13 @@
 import { JSONL_LOG_DIRECTORIES, type JsonlLogDirectory } from "../data/logs.js";
 import type { ExecutionTaskKind } from "../domain/contracts.js";
+import type { InterruptSource } from "../runtime/contracts.js";
+import type {
+  TaskFailedErrorSnapshot,
+  TaskLifecycleEvent,
+  TaskLifecycleEventPayloadByStatus,
+  TaskLifecycleEventTypeByStatus,
+} from "../runtime/events.js";
+import { TaskHistoryStatus, type TaskTerminalStatus } from "../runtime/tasking.js";
 
 /** diagnostics（诊断） 模块支持的 JSONL（结构化日志） 通道清单。 */
 export const DIAGNOSTIC_LOG_CHANNELS = [...JSONL_LOG_DIRECTORIES] as const;
@@ -118,6 +126,187 @@ export type TaskJsonlLine<TAction extends string = string> =
   | TaskCompletedJsonlLine
   | TaskFailedJsonlLine
   | TaskInterruptedJsonlLine;
+
+/** tasks（任务执行） 通道允许写入摘要的生命周期状态。 */
+export type TaskLifecycleSummaryStatus = TaskHistoryStatus.Started | TaskTerminalStatus;
+
+/** tasks（任务执行） 通道 started（已开始） 摘要结构。 */
+export interface TaskStartedSummaryJsonlLine {
+  /** Unix 时间戳（秒）。 */
+  readonly t: number;
+  /** 诊断通道。 */
+  readonly channel: "tasks";
+  /** 生命周期状态。 */
+  readonly status: TaskHistoryStatus.Started;
+  /** 对齐 runtime（运行时） 的事件名。 */
+  readonly e: TaskLifecycleEventTypeByStatus<TaskHistoryStatus.Started>;
+  /** 任务标识。 */
+  readonly job: string;
+  /** 执行任务类型。 */
+  readonly type: ExecutionTaskKind;
+  /** 意图纪元。 */
+  readonly epoch: number;
+}
+
+/** tasks（任务执行） 通道终态摘要公共结构。 */
+export interface TaskTerminalSummaryJsonlLineBase<TStatus extends TaskTerminalStatus> {
+  /** Unix 时间戳（秒）。 */
+  readonly t: number;
+  /** 诊断通道。 */
+  readonly channel: "tasks";
+  /** 生命周期状态。 */
+  readonly status: TStatus;
+  /** 对齐 runtime（运行时） 的事件名。 */
+  readonly e: TaskLifecycleEventTypeByStatus<TStatus>;
+  /** 任务标识。 */
+  readonly job: string;
+  /** 执行任务类型。 */
+  readonly type: ExecutionTaskKind;
+  /** 意图纪元。 */
+  readonly epoch: number;
+  /** 总步骤数。 */
+  readonly steps: number;
+  /** 总耗时。 */
+  readonly ms: number;
+}
+
+/** tasks（任务执行） 通道 completed（已完成） 摘要结构。 */
+export interface TaskCompletedSummaryJsonlLine
+  extends TaskTerminalSummaryJsonlLineBase<TaskHistoryStatus.Completed> {}
+
+/** tasks（任务执行） 通道 failed（已失败） 摘要结构。 */
+export interface TaskFailedSummaryJsonlLine
+  extends TaskTerminalSummaryJsonlLineBase<TaskHistoryStatus.Failed> {
+  /** 失败错误快照。 */
+  readonly err: TaskFailedErrorSnapshot;
+  /** 最后一个已知步骤名。 */
+  readonly last_step?: string;
+}
+
+/** tasks（任务执行） 通道 interrupted（已中断） 摘要结构。 */
+export interface TaskInterruptedSummaryJsonlLine
+  extends TaskTerminalSummaryJsonlLineBase<TaskHistoryStatus.Interrupted> {
+  /** 中断来源。 */
+  readonly interrupt_source: InterruptSource;
+  /** 中断原因。 */
+  readonly reason: string;
+}
+
+/** tasks（任务执行） 通道生命周期摘要联合。 */
+export type TaskLifecycleSummaryJsonlLine =
+  | TaskStartedSummaryJsonlLine
+  | TaskCompletedSummaryJsonlLine
+  | TaskFailedSummaryJsonlLine
+  | TaskInterruptedSummaryJsonlLine;
+
+function freezeDiagnosticValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((item) => freezeDiagnosticValue(item))) as T;
+  }
+  if (value && typeof value === "object") {
+    const clonedEntries = Object.entries(value as Record<string, unknown>).map(
+      ([key, entryValue]) => [key, freezeDiagnosticValue(entryValue)],
+    );
+
+    return Object.freeze(Object.fromEntries(clonedEntries)) as T;
+  }
+
+  return value;
+}
+
+/** 创建 started（已开始） 生命周期摘要行。 */
+export function createTaskLifecycleSummaryJsonlLine(input: {
+  t: number;
+  lifecycle: TaskLifecycleEvent<TaskHistoryStatus.Started>;
+}): TaskStartedSummaryJsonlLine;
+
+/** 创建 completed（已完成） 生命周期摘要行。 */
+export function createTaskLifecycleSummaryJsonlLine(input: {
+  t: number;
+  lifecycle: TaskLifecycleEvent<TaskHistoryStatus.Completed>;
+}): TaskCompletedSummaryJsonlLine;
+
+/** 创建 failed（已失败） 生命周期摘要行。 */
+export function createTaskLifecycleSummaryJsonlLine(input: {
+  t: number;
+  lifecycle: TaskLifecycleEvent<TaskHistoryStatus.Failed>;
+}): TaskFailedSummaryJsonlLine;
+
+/** 创建 interrupted（已中断） 生命周期摘要行。 */
+export function createTaskLifecycleSummaryJsonlLine(input: {
+  t: number;
+  lifecycle: TaskLifecycleEvent<TaskHistoryStatus.Interrupted>;
+}): TaskInterruptedSummaryJsonlLine;
+
+/** 创建 tasks（任务执行） 通道的生命周期摘要行。 */
+export function createTaskLifecycleSummaryJsonlLine(input: {
+  t: number;
+  lifecycle: TaskLifecycleEvent<TaskLifecycleSummaryStatus>;
+}): TaskLifecycleSummaryJsonlLine {
+  switch (input.lifecycle.status) {
+    case TaskHistoryStatus.Started:
+      return Object.freeze({
+        t: input.t,
+        channel: "tasks",
+        status: TaskHistoryStatus.Started,
+        e: "task.started",
+        job: input.lifecycle.payload.job_id,
+        type: input.lifecycle.payload.type,
+        epoch: input.lifecycle.payload.epoch,
+      });
+    case TaskHistoryStatus.Completed: {
+      const payload = input.lifecycle
+        .payload as TaskLifecycleEventPayloadByStatus<TaskHistoryStatus.Completed>;
+      return Object.freeze({
+        t: input.t,
+        channel: "tasks",
+        status: TaskHistoryStatus.Completed,
+        e: "task.completed",
+        job: payload.job_id,
+        type: payload.type,
+        epoch: payload.epoch,
+        steps: payload.total_steps,
+        ms: payload.duration_ms,
+      });
+    }
+    case TaskHistoryStatus.Failed: {
+      const payload = input.lifecycle
+        .payload as TaskLifecycleEventPayloadByStatus<TaskHistoryStatus.Failed>;
+      return Object.freeze({
+        t: input.t,
+        channel: "tasks",
+        status: TaskHistoryStatus.Failed,
+        e: "task.failed",
+        job: payload.job_id,
+        type: payload.type,
+        epoch: payload.epoch,
+        steps: payload.total_steps,
+        ms: payload.duration_ms,
+        err: freezeDiagnosticValue(payload.error),
+        ...(payload.last_step ? { last_step: payload.last_step } : {}),
+      });
+    }
+    case TaskHistoryStatus.Interrupted: {
+      const payload = input.lifecycle
+        .payload as TaskLifecycleEventPayloadByStatus<TaskHistoryStatus.Interrupted>;
+      return Object.freeze({
+        t: input.t,
+        channel: "tasks",
+        status: TaskHistoryStatus.Interrupted,
+        e: "task.interrupted",
+        job: payload.job_id,
+        type: payload.type,
+        epoch: payload.epoch,
+        steps: payload.total_steps,
+        ms: payload.duration_ms,
+        interrupt_source: freezeDiagnosticValue(payload.interrupt_source),
+        reason: payload.reason,
+      });
+    }
+  }
+
+  throw new Error("Unhandled task lifecycle summary status");
+}
 
 /** sandbox（沙箱执行） 通道允许的阶段名。 */
 export const SANDBOX_LOG_PHASES = [

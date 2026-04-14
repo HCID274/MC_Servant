@@ -11,6 +11,7 @@ export const diagnosticsModuleBoundary = {
     "diagnosticsModuleBoundary",
     "createDiagnosticsCatalog",
     "createTaskLogLine",
+    "createTaskLifecycleSummaryJsonlLine",
     "createSandboxLogLine",
   ],
 } satisfies ModuleBoundary;

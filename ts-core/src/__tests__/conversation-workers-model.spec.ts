@@ -168,7 +168,13 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
       "interrupt_runtime",
       "broadcast_reply",
       "enqueue_exec",
+      "emit_task_lifecycle",
     ]);
+    expect(modifyActions[3]?.type).toBe("emit_task_lifecycle");
+    if (modifyActions[3]?.type !== "emit_task_lifecycle") {
+      throw new Error("expected accepted lifecycle action");
+    }
+    expect(modifyActions[3].lifecycle.status).toBe(TaskHistoryStatus.Accepted);
   });
 
   it("应拒绝给 cancel（取消） 路径传入非 template（模板） 回复", () => {
@@ -293,12 +299,19 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     });
     const botActions = createBotWorkerActions({
       task: botTask,
+      phase: "terminal",
       status: TaskHistoryStatus.Completed,
+      total_steps: 1,
+      duration_ms: 3200,
     });
+    const lifecycleAction = botActions.find((action) => action.type === "emit_task_lifecycle");
     const enqueueBrainAction = botActions.find((action) => action.type === "enqueue_brain");
 
     if (!enqueueBrainAction) {
       throw new Error("enqueue_brain action missing");
+    }
+    if (!lifecycleAction || lifecycleAction.type !== "emit_task_lifecycle") {
+      throw new Error("emit_task_lifecycle action missing");
     }
 
     const brainActions = createBrainWorkerActions({
@@ -314,9 +327,82 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
       }),
     ).toBe(true);
     expect(botActions.map((action) => action.type)).toEqual([
-      "emit_task_terminal",
+      "emit_task_lifecycle",
       "enqueue_brain",
     ]);
+    expect(lifecycleAction.lifecycle.status).toBe(TaskHistoryStatus.Completed);
     expect(brainActions[0]?.type).toBe("persist_task_summary");
+  });
+
+  it("应让 BotWorker（机器人工作线程） 将 started / discarded / terminal 分流，并阻止 discarded（已丢弃） 进入 BrainWorker", () => {
+    const botTask = createBotWorkerTask({
+      bot_id: "bot-008",
+      exec_job: createExecJobFromPlan({
+        plan: createSkillCallPlanDraft({
+          reply: "我去砍树",
+          skill: "cutTree",
+          params: { count: 1 },
+        }),
+        message_id: "msg-discarded",
+        intent_epoch: 14,
+        snapshot_ts: 162,
+        priority: ExecPriority.Normal,
+      }),
+    });
+    const startedActions = createBotWorkerActions({
+      task: botTask,
+      phase: "started",
+    });
+    const discardedActions = createBotWorkerActions({
+      task: botTask,
+      phase: "discarded",
+      discard_reason: "intent_epoch_stale",
+      current_epoch: 15,
+    });
+
+    expect(startedActions).toHaveLength(1);
+    expect(startedActions[0]?.type).toBe("emit_task_lifecycle");
+    if (startedActions[0]?.type !== "emit_task_lifecycle") {
+      throw new Error("expected started lifecycle action");
+    }
+    expect(startedActions[0].lifecycle.status).toBe(TaskHistoryStatus.Started);
+    expect(discardedActions).toHaveLength(1);
+    expect(discardedActions[0]?.type).toBe("emit_task_lifecycle");
+    if (discardedActions[0]?.type !== "emit_task_lifecycle") {
+      throw new Error("expected discarded lifecycle action");
+    }
+    expect(discardedActions[0].lifecycle.status).toBe(TaskHistoryStatus.Discarded);
+    if (discardedActions[0].lifecycle.status !== TaskHistoryStatus.Discarded) {
+      throw new Error("expected discarded lifecycle payload");
+    }
+    expect(discardedActions[0].lifecycle.payload.current_epoch).toBe(15);
+    expect(discardedActions.some((action) => action.type === "enqueue_brain")).toBe(false);
+  });
+
+  it("应拒绝构造缺少 error（错误快照） 的 failed（失败） 终态动作", () => {
+    const botTask = createBotWorkerTask({
+      bot_id: "bot-008",
+      exec_job: createExecJobFromPlan({
+        plan: createSkillCallPlanDraft({
+          reply: "我去挖矿",
+          skill: "mine",
+          params: { blockName: "coal_ore", count: 1 },
+        }),
+        message_id: "msg-failed-missing-error",
+        intent_epoch: 16,
+        snapshot_ts: 163,
+        priority: ExecPriority.Urgent,
+      }),
+    });
+
+    expect(() =>
+      createBotWorkerActions({
+        task: botTask,
+        phase: "terminal",
+        status: TaskHistoryStatus.Failed,
+        total_steps: 2,
+        duration_ms: 1800,
+      } as unknown as Parameters<typeof createBotWorkerActions>[0]),
+    ).toThrow(/require error/);
   });
 });

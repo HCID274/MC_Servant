@@ -1,7 +1,13 @@
 import { type EventLogEntry, EventLogLevel, type MessageSource } from "../domain/contracts.js";
 import type { ThreatLevel, ThreatRuleId } from "../observation/contracts.js";
 import type { BotStatus, InterruptSource } from "./contracts.js";
-import type { TaskHistoryStatus } from "./tasking.js";
+import {
+  type ExecJob,
+  type TaskDiscardReason,
+  TaskHistoryStatus,
+  type TaskTerminalStatus,
+  isTaskTerminalStatus,
+} from "./tasking.js";
 
 /** 运行时事件类型常量表，用于集中收敛 event_log 名称。 */
 export const RUNTIME_EVENT_TYPES = [
@@ -55,6 +61,138 @@ export interface TaskStatusEventPayload {
   status: TaskHistoryStatus;
 }
 
+/** 任务生命周期事件与状态之间的映射表。 */
+export const TASK_LIFECYCLE_EVENT_TYPE_BY_STATUS = Object.freeze({
+  accepted: "task.accepted",
+  started: "task.started",
+  discarded: "task.discarded",
+  completed: "task.completed",
+  failed: "task.failed",
+  interrupted: "task.interrupted",
+} as const satisfies Record<TaskHistoryStatus, RuntimeEventType>);
+
+/** 任务生命周期公共载荷。 */
+export interface TaskLifecyclePayloadBase<TStatus extends TaskHistoryStatus> {
+  /** 任务标识。 */
+  readonly job_id: string;
+  /** 任务状态。 */
+  readonly status: TStatus;
+  /** 执行任务类型。 */
+  readonly type: ExecJob["type"];
+  /** 原始用户消息标识。 */
+  readonly message_id: string;
+  /** 意图纪元。 */
+  readonly epoch: number;
+}
+
+/** 任务 accepted（已接受） 事件载荷。 */
+export interface TaskAcceptedEventPayload
+  extends TaskLifecyclePayloadBase<TaskHistoryStatus.Accepted> {
+  /** 执行队列优先级。 */
+  readonly priority: ExecJob["priority"];
+  /** 规划时快照时间戳。 */
+  readonly snapshot_ts: number;
+}
+
+/** 任务 started（已开始） 事件载荷。 */
+export interface TaskStartedEventPayload
+  extends TaskLifecyclePayloadBase<TaskHistoryStatus.Started> {}
+
+/** 任务 discarded（已丢弃） 事件载荷。 */
+export interface TaskDiscardedEventPayload
+  extends TaskLifecyclePayloadBase<TaskHistoryStatus.Discarded> {
+  /** 丢弃原因。 */
+  readonly discard_reason: TaskDiscardReason;
+  /** 当前最新意图纪元。 */
+  readonly current_epoch?: number;
+}
+
+/** 任务终态公共载荷。 */
+export interface TaskTerminalEventPayloadBase<TStatus extends TaskTerminalStatus>
+  extends TaskLifecyclePayloadBase<TStatus> {
+  /** 总步骤数。 */
+  readonly total_steps: number;
+  /** 总耗时。 */
+  readonly duration_ms: number;
+}
+
+/** 任务 completed（已完成） 事件载荷。 */
+export interface TaskCompletedEventPayload
+  extends TaskTerminalEventPayloadBase<TaskHistoryStatus.Completed> {}
+
+/** 任务 failed（已失败） 事件载荷中的错误快照。 */
+export interface TaskFailedErrorSnapshot {
+  /** 错误分类名。 */
+  readonly name?: string;
+  /** 错误消息。 */
+  readonly message: string;
+  /** 可选错误码。 */
+  readonly error_code?: string;
+}
+
+/** 任务 failed（已失败） 事件载荷。 */
+export interface TaskFailedEventPayload
+  extends TaskTerminalEventPayloadBase<TaskHistoryStatus.Failed> {
+  /** 失败错误快照。 */
+  readonly error: TaskFailedErrorSnapshot;
+  /** 最后一个已知步骤名。 */
+  readonly last_step?: string;
+}
+
+/** 任务 interrupted（已中断） 事件载荷。 */
+export interface TaskInterruptedLifecycleEventPayload
+  extends TaskTerminalEventPayloadBase<TaskHistoryStatus.Interrupted> {
+  /** 中断来源。 */
+  readonly interrupt_source: InterruptSource;
+  /** 中断原因。 */
+  readonly reason: string;
+}
+
+/** 单条任务生命周期事件载荷联合。 */
+export type TaskLifecycleEventPayload =
+  | TaskAcceptedEventPayload
+  | TaskStartedEventPayload
+  | TaskDiscardedEventPayload
+  | TaskCompletedEventPayload
+  | TaskFailedEventPayload
+  | TaskInterruptedLifecycleEventPayload;
+
+/** 任务终态事件载荷联合。 */
+export type TaskTerminalEventPayload =
+  | TaskCompletedEventPayload
+  | TaskFailedEventPayload
+  | TaskInterruptedLifecycleEventPayload;
+
+/** 按状态索引的任务生命周期事件载荷。 */
+export type TaskLifecycleEventPayloadByStatus<TStatus extends TaskHistoryStatus> =
+  TStatus extends TaskHistoryStatus.Accepted
+    ? TaskAcceptedEventPayload
+    : TStatus extends TaskHistoryStatus.Started
+      ? TaskStartedEventPayload
+      : TStatus extends TaskHistoryStatus.Discarded
+        ? TaskDiscardedEventPayload
+        : TStatus extends TaskHistoryStatus.Completed
+          ? TaskCompletedEventPayload
+          : TStatus extends TaskHistoryStatus.Failed
+            ? TaskFailedEventPayload
+            : TStatus extends TaskHistoryStatus.Interrupted
+              ? TaskInterruptedLifecycleEventPayload
+              : never;
+
+/** 按状态索引的任务生命周期事件类型。 */
+export type TaskLifecycleEventTypeByStatus<TStatus extends TaskHistoryStatus> =
+  (typeof TASK_LIFECYCLE_EVENT_TYPE_BY_STATUS)[TStatus];
+
+/** 统一任务生命周期事件结构。 */
+export interface TaskLifecycleEvent<TStatus extends TaskHistoryStatus = TaskHistoryStatus> {
+  /** 生命周期状态。 */
+  readonly status: TStatus;
+  /** 对应的 runtime 事件类型。 */
+  readonly event_type: TaskLifecycleEventTypeByStatus<TStatus>;
+  /** 该状态对应的事件载荷。 */
+  readonly payload: TaskLifecycleEventPayloadByStatus<TStatus>;
+}
+
 /** 反射触发事件载荷。 */
 export interface ReflexTriggeredEventPayload {
   /** 规则标识。 */
@@ -63,6 +201,34 @@ export interface ReflexTriggeredEventPayload {
   threat_level: ThreatLevel;
   /** 参与评估的实体标识。 */
   entities: readonly string[];
+}
+
+function freezeTaskValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((item) => freezeTaskValue(item))) as T;
+  }
+  if (value && typeof value === "object") {
+    const clonedEntries = Object.entries(value as Record<string, unknown>).map(
+      ([key, entryValue]) => [key, freezeTaskValue(entryValue)],
+    );
+
+    return Object.freeze(Object.fromEntries(clonedEntries)) as T;
+  }
+
+  return value;
+}
+
+function createTaskLifecyclePayloadBase<TStatus extends TaskHistoryStatus>(
+  job: ExecJob,
+  status: TStatus,
+): TaskLifecyclePayloadBase<TStatus> {
+  return Object.freeze({
+    job_id: job.message_id,
+    status,
+    type: job.type,
+    message_id: job.message_id,
+    epoch: job.intent_epoch,
+  });
 }
 
 /** 判断给定字符串是否为合法运行时事件类型。 */
@@ -90,4 +256,138 @@ export function createRuntimeEventLogEntry(input: {
     ...(input.taskId ? { taskId: input.taskId } : {}),
     ...(input.botId ? { botId: input.botId } : {}),
   };
+}
+
+/** 创建任务 accepted（已接受） 生命周期事件。 */
+export function createTaskAcceptedLifecycleEvent(
+  job: ExecJob,
+): TaskLifecycleEvent<TaskHistoryStatus.Accepted> {
+  return Object.freeze({
+    status: TaskHistoryStatus.Accepted,
+    event_type: TASK_LIFECYCLE_EVENT_TYPE_BY_STATUS.accepted,
+    payload: Object.freeze({
+      ...createTaskLifecyclePayloadBase(job, TaskHistoryStatus.Accepted),
+      priority: job.priority,
+      snapshot_ts: job.snapshot_ts,
+    }),
+  }) as TaskLifecycleEvent<TaskHistoryStatus.Accepted>;
+}
+
+/** 创建任务 started（已开始） 生命周期事件。 */
+export function createTaskStartedLifecycleEvent(
+  job: ExecJob,
+): TaskLifecycleEvent<TaskHistoryStatus.Started> {
+  return Object.freeze({
+    status: TaskHistoryStatus.Started,
+    event_type: TASK_LIFECYCLE_EVENT_TYPE_BY_STATUS.started,
+    payload: createTaskLifecyclePayloadBase(job, TaskHistoryStatus.Started),
+  }) as TaskLifecycleEvent<TaskHistoryStatus.Started>;
+}
+
+/** 创建任务 discarded（已丢弃） 生命周期事件。 */
+export function createTaskDiscardedLifecycleEvent(input: {
+  job: ExecJob;
+  discard_reason: TaskDiscardReason;
+  current_epoch?: number;
+}): TaskLifecycleEvent<TaskHistoryStatus.Discarded> {
+  if (input.discard_reason === "intent_epoch_stale" && input.current_epoch === undefined) {
+    throw new Error("intent_epoch_stale discarded event requires current_epoch");
+  }
+
+  return Object.freeze({
+    status: TaskHistoryStatus.Discarded,
+    event_type: TASK_LIFECYCLE_EVENT_TYPE_BY_STATUS.discarded,
+    payload: Object.freeze({
+      ...createTaskLifecyclePayloadBase(input.job, TaskHistoryStatus.Discarded),
+      discard_reason: input.discard_reason,
+      ...(input.current_epoch !== undefined ? { current_epoch: input.current_epoch } : {}),
+    }),
+  }) as TaskLifecycleEvent<TaskHistoryStatus.Discarded>;
+}
+
+/** 创建任务终态生命周期事件。 */
+export function createTaskTerminalLifecycleEvent(
+  input:
+    | {
+        job: ExecJob;
+        status: TaskHistoryStatus.Completed;
+        total_steps: number;
+        duration_ms: number;
+      }
+    | {
+        job: ExecJob;
+        status: TaskHistoryStatus.Failed;
+        total_steps: number;
+        duration_ms: number;
+        error: TaskFailedErrorSnapshot;
+        last_step?: string;
+      }
+    | {
+        job: ExecJob;
+        status: TaskHistoryStatus.Interrupted;
+        total_steps: number;
+        duration_ms: number;
+        interrupt_source: InterruptSource;
+        reason: string;
+      },
+): TaskLifecycleEvent<TaskTerminalStatus> {
+  if (!isTaskTerminalStatus(input.status)) {
+    throw new Error(`Status ${input.status} is not a terminal task status`);
+  }
+
+  const basePayload = {
+    ...createTaskLifecyclePayloadBase(input.job, input.status),
+    total_steps: input.total_steps,
+    duration_ms: input.duration_ms,
+  };
+
+  switch (input.status) {
+    case TaskHistoryStatus.Completed:
+      return Object.freeze({
+        status: TaskHistoryStatus.Completed,
+        event_type: TASK_LIFECYCLE_EVENT_TYPE_BY_STATUS.completed,
+        payload: Object.freeze(basePayload),
+      }) as TaskLifecycleEvent<TaskTerminalStatus>;
+    case TaskHistoryStatus.Failed:
+      return Object.freeze({
+        status: TaskHistoryStatus.Failed,
+        event_type: TASK_LIFECYCLE_EVENT_TYPE_BY_STATUS.failed,
+        payload: Object.freeze({
+          ...basePayload,
+          error: freezeTaskValue(input.error),
+          ...(input.last_step ? { last_step: input.last_step } : {}),
+        }),
+      }) as TaskLifecycleEvent<TaskTerminalStatus>;
+    case TaskHistoryStatus.Interrupted:
+      return Object.freeze({
+        status: TaskHistoryStatus.Interrupted,
+        event_type: TASK_LIFECYCLE_EVENT_TYPE_BY_STATUS.interrupted,
+        payload: Object.freeze({
+          ...basePayload,
+          interrupt_source: freezeTaskValue(input.interrupt_source),
+          reason: input.reason,
+        }),
+      }) as TaskLifecycleEvent<TaskTerminalStatus>;
+  }
+
+  throw new Error("Unhandled terminal task status");
+}
+
+/** 将任务生命周期事件包裹为 event_log（事件日志） 条目。 */
+export function createTaskLifecycleEventLogEntry<TStatus extends TaskHistoryStatus>(input: {
+  eventId: string;
+  lifecycle: TaskLifecycleEvent<TStatus>;
+  source: MessageSource;
+  timestamp: string;
+  botId?: string;
+}): RuntimeEventLogEntry {
+  return createRuntimeEventLogEntry({
+    eventId: input.eventId,
+    type: input.lifecycle.event_type,
+    source: input.source,
+    timestamp: input.timestamp,
+    payload: input.lifecycle.payload as unknown as Readonly<Record<string, unknown>>,
+    taskId: input.lifecycle.payload.job_id,
+    ...(input.botId ? { botId: input.botId } : {}),
+  });
 }

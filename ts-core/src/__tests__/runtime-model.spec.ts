@@ -5,14 +5,23 @@ import {
   ConversationPriority,
   ExecPriority,
   ExecutionTaskKind,
+  MessageSource,
   RUNTIME_EVENT_TYPES,
+  TASK_HISTORY_STATUSES,
+  TASK_LIFECYCLE_EVENT_TYPE_BY_STATUS,
+  TASK_TERMINAL_STATUSES,
   TaskHistoryStatus,
   ThreatLevel,
   ThreatRuleId,
   canTransition,
   createSandboxCodeJob,
   createSkillCallJob,
+  createTaskAcceptedLifecycleEvent,
+  createTaskDiscardedLifecycleEvent,
+  createTaskLifecycleEventLogEntry,
+  createTaskTerminalLifecycleEvent,
   isRuntimeEventType,
+  isTaskTerminalStatus,
   resolveInterruptDecision,
   resolveTransition,
   toExecPriority,
@@ -142,5 +151,59 @@ describe("runtime 执行态模型", () => {
     expect(isRuntimeEventType("task.unknown")).toBe(false);
     expect(RUNTIME_EVENT_TYPES).toContain("state.transition");
     expect(TaskHistoryStatus.Discarded).toBe("discarded");
+    expect(TASK_HISTORY_STATUSES).toContain(TaskHistoryStatus.Accepted);
+    expect(TASK_TERMINAL_STATUSES).toEqual([
+      TaskHistoryStatus.Completed,
+      TaskHistoryStatus.Failed,
+      TaskHistoryStatus.Interrupted,
+    ]);
+    expect(TASK_LIFECYCLE_EVENT_TYPE_BY_STATUS.accepted).toBe("task.accepted");
+    expect(isTaskTerminalStatus(TaskHistoryStatus.Discarded)).toBe(false);
+    expect(isTaskTerminalStatus(TaskHistoryStatus.Completed)).toBe(true);
+  });
+
+  it("应创建统一的 accepted / discarded / terminal 生命周期事件", () => {
+    const job = createSandboxCodeJob({
+      message_id: "msg-life-1",
+      intent_epoch: 12,
+      snapshot_ts: 1_712_930_123,
+      priority: ExecPriority.Normal,
+      code: "await api.chat.say('ok')",
+    });
+    const accepted = createTaskAcceptedLifecycleEvent(job);
+    const discarded = createTaskDiscardedLifecycleEvent({
+      job,
+      discard_reason: "intent_epoch_stale",
+      current_epoch: 13,
+    });
+    const terminal = createTaskTerminalLifecycleEvent({
+      job,
+      status: TaskHistoryStatus.Interrupted,
+      total_steps: 2,
+      duration_ms: 4800,
+      interrupt_source: {
+        type: "control",
+        command: "interrupt",
+      },
+      reason: "owner_stop",
+    });
+    const acceptedLog = createTaskLifecycleEventLogEntry({
+      eventId: "evt-001",
+      lifecycle: accepted,
+      source: MessageSource.Web,
+      timestamp: "2026-04-14T00:00:00.000Z",
+      botId: "bot-008",
+    });
+
+    expect(accepted.event_type).toBe("task.accepted");
+    expect(accepted.payload.priority).toBe(ExecPriority.Normal);
+    expect(discarded.payload.current_epoch).toBe(13);
+    expect(terminal.event_type).toBe("task.interrupted");
+    if (terminal.status !== TaskHistoryStatus.Interrupted) {
+      throw new Error("expected interrupted terminal lifecycle");
+    }
+    expect((terminal.payload as { reason: string }).reason).toBe("owner_stop");
+    expect(acceptedLog.type).toBe("task.accepted");
+    expect(acceptedLog.taskId).toBe("msg-life-1");
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   type AbortError,
+  ExecPriority,
   ExecutionTaskKind,
   PHASE1_SKILL_NAMES,
   SANDBOX_BOT_SKILL_BINDINGS,
@@ -11,9 +12,11 @@ import {
   type SandboxExecutionRequest,
   type SandboxStepParamsByAction,
   TaskHistoryStatus,
+  type TaskLifecycleEvent,
   createDiagnosticsCatalog,
   createLlmLogLine,
   createLlmLogRef,
+  createSandboxCodeJob,
   createSandboxCodeRef,
   createSandboxError,
   createSandboxExecutionFailure,
@@ -25,8 +28,11 @@ import {
   createSandboxLogRef,
   createSandboxResourceLimits,
   createSandboxStepResult,
+  createTaskLifecycleSummaryJsonlLine,
   createTaskLogLine,
   createTaskLogRef,
+  createTaskStartedLifecycleEvent,
+  createTaskTerminalLifecycleEvent,
 } from "../index.js";
 
 const validBindings: typeof SANDBOX_BOT_SKILL_BINDINGS = SANDBOX_BOT_SKILL_BINDINGS;
@@ -138,6 +144,45 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(Object.isFrozen(taskStep.p ?? {})).toBe(true);
     expect(Object.isFrozen(sandboxLine.r ?? {})).toBe(true);
     expect(Object.isFrozen(llmLine.meta)).toBe(true);
+  });
+
+  it("应让 tasks（任务执行） 摘要与运行时 started / terminal（已开始 / 终态） 生命周期对齐", () => {
+    const job = createSandboxCodeJob({
+      message_id: "T-008",
+      intent_epoch: 6,
+      snapshot_ts: 1_712_940_000,
+      priority: ExecPriority.Normal,
+      code: "await api.chat.say('ok')",
+    });
+    const startedSummary = createTaskLifecycleSummaryJsonlLine({
+      t: 1_712_940_001,
+      lifecycle: createTaskStartedLifecycleEvent(job),
+    });
+    const failedLifecycle = createTaskTerminalLifecycleEvent({
+      job,
+      status: TaskHistoryStatus.Failed,
+      total_steps: 2,
+      duration_ms: 9800,
+      error: {
+        name: "StaticCheckError",
+        message: "Forbidden import detected",
+      },
+      last_step: "goTo",
+    });
+    if (failedLifecycle.status !== TaskHistoryStatus.Failed) {
+      throw new Error("expected failed terminal lifecycle");
+    }
+    const failedSummary = createTaskLifecycleSummaryJsonlLine({
+      t: 1_712_940_099,
+      lifecycle: failedLifecycle as TaskLifecycleEvent<TaskHistoryStatus.Failed>,
+    });
+
+    expect(startedSummary.status).toBe(TaskHistoryStatus.Started);
+    expect(startedSummary.e).toBe("task.started");
+    expect(failedSummary.status).toBe(TaskHistoryStatus.Failed);
+    expect(failedSummary.e).toBe("task.failed");
+    expect(failedSummary.err.message).toBe("Forbidden import detected");
+    expect(Object.isFrozen(failedSummary.err)).toBe(true);
   });
 
   it("应创建携带阶段日志与终态摘要的 sandbox（沙箱执行） 请求和结果", () => {
