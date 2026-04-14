@@ -12,9 +12,13 @@ import {
   createBotConfigOverlay,
   createBotStateCache,
   createDataConfig,
+  createDrizzleKitConfigSnapshot,
   createDrizzleMigrationMetadata,
   createPostgresConnectionDescriptor,
+  createPostgresRuntimePoolConfig,
+  createRedisConnectionDescriptor,
   createRedisKeyCatalog,
+  createRedisRuntimeClientOptions,
 } from "../index.js";
 
 describe("db 与配置契约", () => {
@@ -131,22 +135,26 @@ describe("db 与配置契约", () => {
     ).toThrow("botConfig.logs.retention.llmLogDays must be a positive integer");
   });
 
-  it("应声明 PostgreSQL 元信息、迁移目录与 Redis 键规则", () => {
-    const postgres = createPostgresConnectionDescriptor(
-      createDataConfig({
-        env: {
-          PG_HOST: "db.internal",
-          PG_DATABASE: "mc_servant",
-          PG_USER: "servant",
-          PG_PASSWORD: "secret",
-          PG_PORT: "6432",
-          PG_POOL_MIN: "3",
-          PG_POOL_MAX: "9",
-        },
-      }).postgres,
-    );
+  it("应声明 PostgreSQL 元信息、真实连接选项、迁移目录与 Redis 键规则", () => {
+    const dataConfig = createDataConfig({
+      env: {
+        PG_HOST: "db.internal",
+        PG_DATABASE: "mc_servant",
+        PG_USER: "servant",
+        PG_PASSWORD: "secret",
+        PG_PORT: "6432",
+        PG_POOL_MIN: "3",
+        PG_POOL_MAX: "9",
+        REDIS_URL: "redis://cache.internal:6380",
+      },
+    });
+    const postgres = createPostgresConnectionDescriptor(dataConfig.postgres);
+    const postgresPool = createPostgresRuntimePoolConfig(postgres);
+    const redisConnection = createRedisConnectionDescriptor(dataConfig.redis);
+    const redisOptions = createRedisRuntimeClientOptions();
     const redisKeys = createRedisKeyCatalog("bot-007");
-    const migrations = createDrizzleMigrationMetadata();
+    const migrations = createDrizzleMigrationMetadata({ postgres });
+    const drizzleKitConfig = createDrizzleKitConfigSnapshot(migrations);
 
     expect(POSTGRES_SCHEMA_CONTRACT.businessSchema).toBe("mc_servant");
     expect(POSTGRES_SCHEMA_CONTRACT.readonlySchemas).toEqual([]);
@@ -159,16 +167,40 @@ describe("db 与配置契约", () => {
     expect(postgres.port).toBe(6432);
     expect(postgres.schema).toBe("mc_servant");
     expect(postgres.requiredExtensions).toBe(POSTGRES_EXTENSION_CONTRACTS);
+    expect(postgresPool).toEqual({
+      host: "db.internal",
+      port: 6432,
+      database: "mc_servant",
+      user: "servant",
+      password: "secret",
+      min: 3,
+      max: 9,
+    });
+    expect(redisConnection.driver).toBe("ioredis");
+    expect(redisConnection.url).toBe("redis://cache.internal:6380");
+    expect(redisConnection.bullmq_compatible).toBe(true);
+    expect(redisOptions).toEqual({
+      lazyConnect: true,
+      enableReadyCheck: true,
+      maxRetriesPerRequest: null,
+    });
     expect(redisKeys.intentEpoch).toBe("bot:bot-007:intent_epoch");
     expect(redisKeys.state).toBe("bot:bot-007:state");
     expect(redisKeys.snapshot).toBe("bot:bot-007:snapshot");
     expect(redisKeys.queues.conversation).toBe("bull:msg:bot-007:*");
     expect(redisKeys.queues.exec).toBe("bull:bot:bot-007:exec:*");
     expect(redisKeys.queues.brain).toBe("bull:brain:*");
-    expect(migrations.schemaDirectory).toBe("src/db/schema");
+    expect(migrations.schemaFile).toBe("src/data/schema.ts");
+    expect(migrations.schemaDirectory).toBe("src/data");
     expect(migrations.migrationsDirectory).toBe("src/db/migrations");
+    expect(migrations.configFile).toBe("drizzle.config.ts");
     expect(migrations.entrypoint).toBe("src/db/migrate.ts");
     expect(migrations.fileNamePattern).toBe(String.raw`^\d{4}_[a-z0-9_]+\.sql$`);
+    expect(migrations.connection).toBe(postgres);
+    expect(drizzleKitConfig.schema).toBe("src/data/schema.ts");
+    expect(drizzleKitConfig.out).toBe("src/db/migrations");
+    expect(drizzleKitConfig.dbCredentials.host).toBe("db.internal");
+    expect(drizzleKitConfig.schemaFilter).toEqual(["mc_servant"]);
   });
 
   it("应校验 Redis 状态缓存结构", () => {

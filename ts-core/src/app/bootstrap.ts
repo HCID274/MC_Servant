@@ -2,10 +2,18 @@ import { type DataConfig, type DataConfigEnvironment, createDataConfig } from ".
 import {
   type DrizzleMigrationMetadata,
   type PostgresConnectionDescriptor,
+  type PostgresRuntimeDependencies,
+  type PostgresRuntimeResource,
+  type RedisConnectionDescriptor,
   type RedisKeyCatalog,
+  type RedisRuntimeDependencies,
+  type RedisRuntimeResource,
   createDrizzleMigrationMetadata,
   createPostgresConnectionDescriptor,
+  createPostgresRuntimeResource,
+  createRedisConnectionDescriptor,
   createRedisKeyCatalog,
+  createRedisRuntimeResource,
 } from "../db/index.js";
 import { createDiagnosticsCatalog } from "../diagnostics/index.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
@@ -151,6 +159,60 @@ export interface AppDiagnosticsContract {
   readonly catalog: ReturnType<typeof createDiagnosticsCatalog>;
 }
 
+/** 真实 I/O（输入输出） 资源名称清单。 */
+export const APP_RUNTIME_RESOURCE_NAMES = ["postgres", "redis"] as const;
+
+/** 真实 I/O（输入输出） 资源名称联合类型。 */
+export type AppRuntimeResourceName = (typeof APP_RUNTIME_RESOURCE_NAMES)[number];
+
+/** 应用装配层暴露的真实资源目录。 */
+export interface AppResourceDirectory<TBotId extends string = string> {
+  /** 创建顺序。 */
+  readonly create_order: readonly AppRuntimeResourceName[];
+  /** 关闭顺序。 */
+  readonly close_order: readonly AppRuntimeResourceName[];
+  /** 失败回滚顺序，按“已创建资源的逆序”生效。 */
+  readonly cleanup_on_failure: readonly AppRuntimeResourceName[];
+  /** PostgreSQL（关系型数据库） 资源目录。 */
+  readonly postgres: {
+    /** 连接描述符。 */
+    readonly descriptor: PostgresConnectionDescriptor;
+    /** 迁移入口元信息。 */
+    readonly migrations: DrizzleMigrationMetadata;
+  };
+  /** Redis（缓存） 资源目录。 */
+  readonly redis: {
+    /** 连接描述符。 */
+    readonly descriptor: RedisConnectionDescriptor;
+    /** 键目录。 */
+    readonly keys: RedisKeyCatalog<TBotId>;
+    /** 与后续 BullMQ（任务队列） 复用的意图说明。 */
+    readonly reuse_for: "bullmq_shared_connection";
+  };
+}
+
+/** 应用装配层创建出的真实资源句柄。 */
+export interface AppRuntimeResources<TBotId extends string = string> {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: TBotId;
+  /** 资源目录快照。 */
+  readonly directory: AppResourceDirectory<TBotId>;
+  /** PostgreSQL（关系型数据库） 运行时资源。 */
+  readonly postgres: PostgresRuntimeResource;
+  /** Redis（缓存） 运行时资源。 */
+  readonly redis: RedisRuntimeResource;
+  /** 按约定顺序关闭已创建资源。 */
+  close(): Promise<void>;
+}
+
+/** 真实资源工厂的可注入依赖。 */
+export interface AppRuntimeResourceDependencies {
+  /** PostgreSQL（关系型数据库） 工厂注入。 */
+  readonly postgres?: PostgresRuntimeDependencies;
+  /** Redis（缓存） 工厂注入。 */
+  readonly redis?: RedisRuntimeDependencies;
+}
+
 /** 应用装配输入，用于从纯配置构建单进程组合根。 */
 export interface AppBootstrapInput<TBotId extends string = string> {
   /** 目标 Bot 标识。 */
@@ -187,6 +249,8 @@ export interface AppBootstrapContract<TBotId extends string = string> {
   readonly diagnostics: AppDiagnosticsContract;
   /** Drizzle migration（迁移） 元信息。 */
   readonly migrations: DrizzleMigrationMetadata;
+  /** 真实资源目录。 */
+  readonly resources: AppResourceDirectory<TBotId>;
   /** 启动 / 关闭生命周期计划。 */
   readonly lifecycle: AppLifecyclePlan;
   /** 子系统依赖与就绪目录。 */
@@ -224,6 +288,10 @@ export function createAppBootstrapContract<TBotId extends string>(
     ...(input.botConfig === undefined ? {} : { botConfig: selectDataBotConfig(input.botConfig) }),
   });
   const lifecycle = createAppLifecyclePlan();
+  const postgres = createPostgresConnectionDescriptor(config.postgres);
+  const redisKeys = createRedisKeyCatalog(input.botId);
+  const redisConnection = createRedisConnectionDescriptor(config.redis);
+  const migrations = createDrizzleMigrationMetadata({ postgres });
   const runtimeScaffold = createRuntimeScaffold({
     externalAuth: runtimeExternalAuthResolution.state,
     ...(runtimeExternalAuthResolution.secret === undefined
@@ -239,8 +307,8 @@ export function createAppBootstrapContract<TBotId extends string>(
     bot_id: input.botId,
     config,
     auth: externalAuth,
-    postgres: createPostgresConnectionDescriptor(config.postgres),
-    redis: createRedisKeyCatalog(input.botId),
+    postgres,
+    redis: redisKeys,
     workers: createWorkerQueueCatalog(input.botId),
     runtime: Object.freeze({
       initial_status: runtimeScaffold.defaultStatus,
@@ -259,10 +327,95 @@ export function createAppBootstrapContract<TBotId extends string>(
     diagnostics: Object.freeze({
       catalog: createDiagnosticsCatalog(),
     }),
-    migrations: createDrizzleMigrationMetadata(),
+    migrations,
+    resources: createAppResourceDirectory({
+      botId: input.botId,
+      postgres,
+      migrations,
+      redisKeys,
+      redisConnection,
+    }),
     lifecycle,
     readiness: createAppReadinessCatalog(),
   });
+}
+
+/** 基于应用装配结果创建真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源。 */
+export async function createAppRuntimeResources<TBotId extends string>(
+  bootstrap: AppBootstrapContract<TBotId>,
+  dependencies: AppRuntimeResourceDependencies = {},
+): Promise<AppRuntimeResources<TBotId>> {
+  const created: Partial<{
+    postgres: PostgresRuntimeResource;
+    redis: RedisRuntimeResource;
+  }> = {};
+
+  try {
+    created.postgres = await createPostgresRuntimeResource(
+      bootstrap.resources.postgres.descriptor,
+      dependencies.postgres,
+    );
+    created.redis = await createRedisRuntimeResource(
+      bootstrap.resources.redis.descriptor,
+      dependencies.redis,
+    );
+    const postgres = created.postgres;
+    const redis = created.redis;
+
+    if (postgres === undefined || redis === undefined) {
+      throw new Error("app runtime resources require postgres and redis");
+    }
+
+    return Object.freeze({
+      bot_id: bootstrap.bot_id,
+      directory: bootstrap.resources,
+      postgres,
+      redis,
+      async close(): Promise<void> {
+        await closeAppRuntimeResources({
+          directory: bootstrap.resources,
+          postgres,
+          redis,
+        });
+      },
+    });
+  } catch (error) {
+    await closeAppRuntimeResources({
+      directory: bootstrap.resources,
+      ...(created.postgres === undefined ? {} : { postgres: created.postgres }),
+      ...(created.redis === undefined ? {} : { redis: created.redis }),
+    }).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** 按应用约定顺序关闭真实资源；即使前一步失败也会继续清理后续资源。 */
+export async function closeAppRuntimeResources<TBotId extends string>(input: {
+  directory: AppResourceDirectory<TBotId>;
+  postgres?: PostgresRuntimeResource;
+  redis?: RedisRuntimeResource;
+}): Promise<void> {
+  const closeErrors: unknown[] = [];
+
+  for (const resourceName of input.directory.close_order) {
+    try {
+      if (resourceName === "redis" && input.redis !== undefined) {
+        await input.redis.close();
+      }
+
+      if (resourceName === "postgres" && input.postgres !== undefined) {
+        await input.postgres.close();
+      }
+    } catch (error) {
+      closeErrors.push(error);
+    }
+  }
+
+  if (closeErrors.length === 0) {
+    return;
+  }
+
+  throw closeErrors[0];
 }
 
 function resolveAppExternalAuthResolution(
@@ -333,6 +486,29 @@ function createAppRuntimeScaffoldContract(scaffold: RuntimeScaffold): AppRuntime
     readyGate: scaffold.readyGate,
     supportedTaskKinds: scaffold.supportedTaskKinds,
     interruptTemplate: scaffold.interruptTemplate,
+  });
+}
+
+function createAppResourceDirectory<TBotId extends string>(input: {
+  botId: TBotId;
+  postgres: PostgresConnectionDescriptor;
+  migrations: DrizzleMigrationMetadata;
+  redisKeys: RedisKeyCatalog<TBotId>;
+  redisConnection: RedisConnectionDescriptor;
+}): AppResourceDirectory<TBotId> {
+  return Object.freeze({
+    create_order: Object.freeze(["postgres", "redis"] as const),
+    close_order: Object.freeze(["redis", "postgres"] as const),
+    cleanup_on_failure: Object.freeze(["redis", "postgres"] as const),
+    postgres: Object.freeze({
+      descriptor: input.postgres,
+      migrations: input.migrations,
+    }),
+    redis: Object.freeze({
+      descriptor: input.redisConnection,
+      keys: input.redisKeys,
+      reuse_for: "bullmq_shared_connection",
+    }),
   });
 }
 

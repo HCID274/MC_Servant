@@ -4,6 +4,8 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
 当前仓库已经提供一个最小本地启动骨架：`src/main.ts`（可执行入口） 只消费纯 `app`（应用装配） 结果，输出可读的启动摘要，不连接真实 Redis（缓存） / PostgreSQL（关系型数据库） / Fastify（接口网关） / Socket.io（实时推送） / Mineflayer（Minecraft 协议客户端）。
 
+同时，仓库现在已经提供可被后续 BullMQ（任务队列） / Fastify（接口网关） 复用的真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源工厂，以及 Drizzle（数据库工具） migration（迁移） 执行入口；默认启动摘要仍不会主动连接这些外部资源。
+
 ## 开发命令
 
 - 安装依赖：`pnpm install`
@@ -14,12 +16,15 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 - 开发：`pnpm dev`
 - 构建：`pnpm build`
 - 运行构建产物：`pnpm start`
+- 生成迁移：`pnpm db:generate`
+- 执行迁移：`pnpm db:migrate`
 - 预检：`bash scripts/pre_review.sh`
 
 ## 当前范围
 
 - 提供单进程、单容器的最小启动骨架与纯装配摘要。
-- 不包含真实运行时连接、数据库连接、网络监听或 Mineflayer 业务实现。
+- 已包含 PostgreSQL（关系型数据库） / Redis（缓存） 真实资源工厂、统一关闭边界和 Drizzle（数据库工具） migration（迁移） 入口。
+- 默认入口仍不自动启动 HTTP（超文本传输协议） / BullMQ（任务队列） / Mineflayer（Minecraft 协议客户端）。
 
 ## 最小本地启动
 
@@ -53,3 +58,11 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 - 运行镜像：`docker run --rm --env-file .env.example ts-core-local`
 
 当前容器启动后同样只输出启动摘要，不开放真实 HTTP（超文本传输协议） / Socket.io（实时推送） 端口。
+
+## 数据库迁移
+
+1. 准备 PostgreSQL（关系型数据库） 相关环境变量：`PG_HOST`、`PG_PORT`、`PG_DATABASE`、`PG_USER`、`PG_PASSWORD`
+2. 生成 migration（迁移） 文件：`pnpm db:generate`
+3. 执行 migration（迁移）：`pnpm db:migrate`
+
+`drizzle.config.ts`（迁移配置） 与 `src/db/migrate.ts`（迁移执行入口） 会复用和运行时装配相同的 PostgreSQL（关系型数据库） 配置解析逻辑，避免命令行与应用侧各自维护一套连接参数。

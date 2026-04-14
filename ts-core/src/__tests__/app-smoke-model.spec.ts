@@ -24,6 +24,11 @@ describe("app（应用装配） 骨架", () => {
     expect(assembly.postgres.host).toBe("pg.internal");
     expect(assembly.postgres.port).toBe(5433);
     expect(assembly.redis.state).toBe("bot:bot-app:state");
+    expect(assembly.resources.create_order).toEqual(["postgres", "redis"]);
+    expect(assembly.resources.close_order).toEqual(["redis", "postgres"]);
+    expect(assembly.resources.postgres.descriptor).toBe(assembly.postgres);
+    expect(assembly.resources.redis.keys).toBe(assembly.redis);
+    expect(assembly.resources.redis.descriptor.url).toBe("redis://cache.internal:6380");
     expect(assembly.workers.conversation.queue).toBe("msg:bot-app");
     expect(assembly.runtime.initial_status).toBe("initializing");
     expect(assembly.runtime.external_auth.status).toBe("not_required");
@@ -80,6 +85,7 @@ describe("app（应用装配） 骨架", () => {
     expect(smoke.postgres.pool.min).toBe(3);
     expect(smoke.postgres.pool.max).toBe(9);
     expect(smoke.redis.queues.exec).toBe("bull:bot:bot-smoke:exec:*");
+    expect(smoke.resources.redis.reuse_for).toBe("bullmq_shared_connection");
     expect(smoke.health.status).toBe("ok");
     expect(smoke.readiness).toContainEqual(
       expect.objectContaining({

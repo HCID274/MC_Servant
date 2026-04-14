@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-011` ~ `T-020`
-- 当前已完成任务：`T-011`、`T-012`、`T-013`、`T-014`、`T-015`、`T-016`、`T-017`
-- 当前批次摘要：已完成外部输入统一 ingress（入口） 契约、执行任务生命周期闭环契约、`runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 侧的外部认证纯契约与启动语义对齐、最小本地启动 / 容器骨架、`event_log`（事件日志） / `task_history`（任务历史） / `JSONL`（结构化日志） / `replay`（补拉） 的纯持久化边界、“外部认证待执行 → 受控登录命令计划 → ready（就绪） 门控”的最小执行骨架，以及 `domain`（领域） 横切基础层上的共享不变量 / 通用只读辅助收口；接口层、运行时层、装配层、持久化层与基础契约层已经形成同一套可测试的强类型模型。
+- 当前已完成任务：`T-011`、`T-012`、`T-013`、`T-014`、`T-015`、`T-016`、`T-017`、`T-018`
+- 当前批次摘要：已完成外部输入统一 ingress（入口） 契约、执行任务生命周期闭环契约、`runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 侧的外部认证纯契约与启动语义对齐、最小本地启动 / 容器骨架、`event_log`（事件日志） / `task_history`（任务历史） / `JSONL`（结构化日志） / `replay`（补拉） 的纯持久化边界、”外部认证待执行 → 受控登录命令计划 → ready（就绪） 门控”的最小执行骨架、`domain`（领域） 横切基础层上的共享不变量 / 通用只读辅助收口，以及 PostgreSQL（关系型数据库） / Redis（缓存） 真实资源工厂与 Drizzle（数据库工具） migration（迁移） 真实执行入口；接口层、运行时层、装配层、持久化层、基础契约层与真实 I/O（输入输出） 资源工厂已经形成同一套可测试、可组装的强类型模型。
 
 ### 2026-04-14 批次调度调整
 
@@ -238,3 +238,37 @@
 
 - 预检结果：
   以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `16` 个测试文件、`83` 条测试全部通过。
+
+### T-018（已完成）
+
+- 任务目标：
+  在 `db`（数据库） + `data`（数据配置） + `app`（应用装配） 这一组紧邻模块内，完成第一块真实 I/O（输入输出） 接入：把 PostgreSQL（关系型数据库） / Redis（缓存） 从纯描述符推进为可实例化、可关闭、可被后续 BullMQ（任务队列） / Fastify（接口网关） 复用的最小运行时资源工厂，并补齐 Drizzle（数据库工具） migration（迁移） 真实执行入口。
+
+- 审查结论：
+  通过。PostgreSQL 资源工厂基于 `pg.Pool` + `drizzle-orm` 构建，具备 warmup probe、`close()` 和创建失败清理边界。Redis 连接工厂选择 `ioredis` 并锁死 `maxRetriesPerRequest: null` / `lazyConnect` / `enableReadyCheck`，与下一任务 BullMQ 接线完全兼容。Drizzle migration 入口通过 `runDrizzleMigrations()` 复用同一份 PostgreSQL 描述符，先确保扩展再执行迁移，`finally` 保证关池。应用装配层新增资源目录与 LIFO 关闭顺序（创建：postgres → redis，关闭：redis → postgres），失败时自动清理已创建资源。全部通过依赖注入实现无外部服务测试。
+
+- 核心文件：
+  `ts-core/src/db/connection.ts`
+  `ts-core/src/db/migrations.ts`
+  `ts-core/src/db/migrate.ts`
+  `ts-core/src/db/index.ts`
+  `ts-core/drizzle.config.ts`
+  `ts-core/src/app/bootstrap.ts`
+  `ts-core/src/app/smoke.ts`
+  `ts-core/package.json`
+  `ts-core/tsconfig.json`
+  `ts-core/README.md`
+  `ts-core/src/__tests__/db-runtime-io-model.spec.ts`
+  `ts-core/src/__tests__/db-config-model.spec.ts`
+  `ts-core/src/__tests__/app-smoke-model.spec.ts`
+  `ts-core/src/__tests__/scaffold.spec.ts`
+
+- 变更快照：
+  `db/connection.ts`（数据库连接） 新增 `createPostgresRuntimeResource()` / `createRedisRuntimeResource()` 两个异步工厂函数，各自基于注入式依赖构建真实运行时资源并暴露 `close()` 生命周期边界；同时补齐 `createPostgresRuntimePoolConfig()` 和 `createRedisRuntimeClientOptions()` 将描述符映射到运行时参数。
+  `db/migrations.ts`（数据库迁移） 新增 `runDrizzleMigrations()` 异步函数，复用 PostgreSQL 资源工厂创建临时连接、执行扩展安装 SQL 和 drizzle migrate、在 `finally` 中关池；`createDrizzleMigrationMetadata()` 与 `createDrizzleKitConfigSnapshot()` 为 CLI 和 drizzle-kit 配置提供统一数据源。
+  `db/migrate.ts`（迁移 CLI 入口） 为 `pnpm db:migrate` 提供顶层可执行脚本；`drizzle.config.ts`（迁移工具配置） 消费同一份元信息生成 drizzle-kit 所需配置。
+  `app/bootstrap.ts`（应用装配） 新增 `AppResourceDirectory` / `AppRuntimeResources` / `createAppRuntimeResources()` / `closeAppRuntimeResources()`，定义创建顺序（postgres → redis）、关闭顺序（redis → postgres）与失败回滚策略，并将资源目录挂载到 `AppBootstrapContract.resources`。
+  `package.json`（项目清单） 引入 `pg` / `ioredis` / `drizzle-orm` 运行时依赖，`@types/pg` / `drizzle-kit` 开发依赖，新增 `db:generate` / `db:migrate` 脚本。
+
+- 预检结果：
+  以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `17` 个测试文件、`88` 条测试全部通过。

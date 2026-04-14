@@ -12,10 +12,12 @@ import {
   cloneReadonlyValue,
   coreModuleBoundaries,
   createAppBootstrapContract,
+  createAppRuntimeResources,
   createAppSmokeAssembly,
   createAppStartupSummary,
   createDataConfig,
   createDiagnosticsCatalog,
+  createDrizzleKitConfigSnapshot,
   createDrizzleMigrationMetadata,
   createEnvironmentSnapshot,
   createExternalAuthExecutionPlan,
@@ -26,7 +28,11 @@ import {
   createInterfaceExternalAuthSnapshot,
   createMessageQueueName,
   createMessageTriage,
+  createPostgresConnectionDescriptor,
+  createPostgresRuntimePoolConfig,
+  createRedisConnectionDescriptor,
   createRedisKeyCatalog,
+  createRedisRuntimeClientOptions,
   createRuntimeReadyGate,
   createRuntimeScaffold,
   createSandboxFacadeContract,
@@ -34,6 +40,7 @@ import {
   createStatusResponse,
   createWorkerQueueCatalog,
   createWorldModelQueryBoundary,
+  runDrizzleMigrations,
   toExecPriority,
 } from "../index.js";
 
@@ -179,14 +186,22 @@ describe("TS Core 工程骨架", () => {
         EMBEDDING_DIMENSIONS: "1536",
       },
     });
+    const postgres = createPostgresConnectionDescriptor(config.postgres);
+    const redisConnection = createRedisConnectionDescriptor(config.redis);
     const redisKeys = createRedisKeyCatalog("bot-root");
-    const migrations = createDrizzleMigrationMetadata();
+    const migrations = createDrizzleMigrationMetadata({ postgres });
+    const drizzleKitConfig = createDrizzleKitConfigSnapshot(migrations);
 
     expect(config.logs.baseDir).toBe("./root-logs");
     expect(config.embedding.dimensions).toBe(1536);
+    expect(createPostgresRuntimePoolConfig(postgres).host).toBe("localhost");
+    expect(redisConnection.bullmq_compatible).toBe(true);
+    expect(createRedisRuntimeClientOptions().maxRetriesPerRequest).toBeNull();
     expect(redisKeys.intentEpoch).toBe("bot:bot-root:intent_epoch");
     expect(redisKeys.queues.exec).toBe("bull:bot:bot-root:exec:*");
     expect(migrations.migrationsDirectory).toBe("src/db/migrations");
+    expect(drizzleKitConfig.schema).toBe("src/data/schema.ts");
+    expect(typeof runDrizzleMigrations).toBe("function");
   });
 
   it("应从根入口导出 app（应用装配） 的组合根契约", () => {
@@ -202,11 +217,14 @@ describe("TS Core 工程骨架", () => {
     expect(() => assertAppLifecyclePlan(bootstrap.lifecycle)).not.toThrow();
     expect(bootstrap.interfaces.routes[0].path).toBe("/api/health");
     expect(bootstrap.migrations.entrypoint).toBe("src/db/migrate.ts");
+    expect(bootstrap.resources.redis.reuse_for).toBe("bullmq_shared_connection");
     expect(bootstrap.runtime.initial_status).toBe(BotStatus.INITIALIZING);
     expect(bootstrap.auth.state.status).toBe("not_required");
     expect(smoke.runtime.initial_status).toBe(BotStatus.INITIALIZING);
+    expect(smoke.resources.close_order).toEqual(["redis", "postgres"]);
     expect(smoke.health.status).toBe("ok");
     expect(createAppStartupSummary(bootstrap).io_boundary.connects_real_io).toBe(false);
+    expect(typeof createAppRuntimeResources).toBe("function");
   });
 
   it("应从根入口导出外部认证执行计划、脱敏状态与就绪门控", () => {

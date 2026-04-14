@@ -9,15 +9,19 @@ export * from "./migrations.js";
 export const dbModuleBoundary = {
   moduleName: "db",
   responsibilities: [
-    "声明 PostgreSQL 连接、schema 与扩展的纯元信息边界",
-    "统一 Redis 键命名、状态缓存与 BullMQ 键模式契约",
-    "集中沉淀 Drizzle migration 目录与命令元信息",
+    "声明 PostgreSQL 连接、schema 与扩展，以及真实资源工厂边界",
+    "统一 Redis 键命名、状态缓存、BullMQ 键模式与真实连接工厂契约",
+    "集中沉淀 Drizzle migration 共享配置与执行入口",
   ],
   placeholderExports: [
     "dbModuleBoundary",
     "POSTGRES_SCHEMA_CONTRACT",
     "createPostgresConnectionDescriptor",
+    "createPostgresRuntimeResource",
+    "createRedisConnectionDescriptor",
+    "createRedisRuntimeResource",
     "createRedisKeyCatalog",
     "createDrizzleMigrationMetadata",
+    "runDrizzleMigrations",
   ],
 } satisfies ModuleBoundary;

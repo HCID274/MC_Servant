@@ -16,6 +16,6 @@
     "types": ["node", "vitest/globals"],
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "vitest.config.ts", "drizzle.config.ts"],
   "exclude": ["dist", "node_modules", "src/__tests__"]
 }
