@@ -27,6 +27,8 @@ describe("app（应用装配） 骨架", () => {
     expect(assembly.workers.conversation.queue).toBe("msg:bot-app");
     expect(assembly.runtime.initial_status).toBe("initializing");
     expect(assembly.runtime.external_auth.status).toBe("not_required");
+    expect(assembly.runtime.ready_gate.ready).toBe(false);
+    expect(assembly.runtime.ready_gate.blocked_by).toEqual(["runtime_initializing"]);
     expect(assembly.auth.entrypoint).toBe("none");
     expect(assembly.interfaces.health.service).toBe("ts-core");
     expect(assembly.sandbox.resource_limits.memory_limit_mb).toBe(128);
@@ -108,11 +110,38 @@ describe("app（应用装配） 骨架", () => {
     expect(missingSecretAssembly.auth.state.status).toBe("failed");
     expect(missingSecretAssembly.auth.entrypoint).toBe("game_chat_command");
     expect(missingSecretAssembly.auth.secret_injected).toBe(false);
+    expect(missingSecretAssembly.auth.state).not.toHaveProperty("secret");
     expect(missingSecretAssembly.runtime.initial_status).toBe("initializing");
+    expect(missingSecretAssembly.runtime.ready_gate.ready).toBe(false);
+    expect(missingSecretAssembly.runtime.ready_gate.blocked_by).toContain("external_auth_failed");
     expect(injectedSecretAssembly.auth.state.status).toBe("pending");
     expect(injectedSecretAssembly.auth.entrypoint).toBe("game_chat_command");
     expect(injectedSecretAssembly.auth.secret_injected).toBe(true);
+    expect(injectedSecretAssembly.auth.state.action_summary?.command_preview).toBe(
+      "/login <redacted>",
+    );
+    expect(injectedSecretAssembly.auth.state).not.toHaveProperty("secret");
     expect(injectedSecretAssembly.runtime.external_auth.status).toBe("pending");
+    expect(injectedSecretAssembly.runtime.external_auth).not.toHaveProperty("secret");
+    expect(injectedSecretAssembly.runtime.scaffold.externalAuth.status).toBe("pending");
+    expect(injectedSecretAssembly.runtime.scaffold.externalAuth).not.toHaveProperty("secret");
+    expect(injectedSecretAssembly.runtime.scaffold.externalAuthPlan).toEqual({
+      status: "pending",
+      action_summary: {
+        kind: "login_command",
+        entrypoint: "game_chat_command",
+        target: "minecraft_chat",
+        command_preview: "/login <redacted>",
+        retry_allowed: true,
+      },
+      retry_allowed: true,
+      ready_for_idle: false,
+    });
+    expect(injectedSecretAssembly.runtime.scaffold.externalAuthPlan).not.toHaveProperty(
+      "next_action",
+    );
+    expect(injectedSecretAssembly.runtime.ready_gate.ready).toBe(false);
+    expect(injectedSecretAssembly.runtime.ready_gate.blocked_by).toContain("external_auth_pending");
   });
 
   it("应拒绝空 bot 标识与倒置的生命周期顺序", () => {

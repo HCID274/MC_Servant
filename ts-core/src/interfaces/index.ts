@@ -13,6 +13,7 @@ export const interfacesModuleBoundary: ModuleBoundary = {
     "API_ROUTE_DEFINITIONS",
     "createSessionRecord",
     "createWebMessageEnvelope",
+    "createInterfaceExternalAuthSnapshot",
     "createGameChatIngressDecision",
     "createServerBridgeEventEnvelope",
     "createStatusResponse",

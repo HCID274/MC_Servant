@@ -1,4 +1,9 @@
-import { BotStatus, type InterruptSignal } from "./contracts.js";
+import {
+  BotStatus,
+  type ExternalAuthState,
+  type InterruptSignal,
+  createRuntimeReadyGate,
+} from "./contracts.js";
 import type { RuntimeEventType } from "./events.js";
 
 /** 状态转换原因结构，用于表达文档中的关键触发条件。 */
@@ -6,6 +11,8 @@ export type RuntimeTransitionReason =
   | {
       /** 初始化完成。 */
       type: "ready";
+      /** 当前外部认证状态。 */
+      external_auth: ExternalAuthState;
     }
   | {
       /** 初始化重试。 */
@@ -195,7 +202,17 @@ export function resolveTransition(
 ): RuntimeTransitionDecision {
   switch (reason.type) {
     case "ready":
-      return createTransitionDecision(currentStatus, BotStatus.IDLE, reason.type, ["bot.ready"]);
+      return createTransitionDecision(
+        currentStatus,
+        BotStatus.IDLE,
+        reason.type,
+        ["bot.ready"],
+        canTransition(currentStatus, BotStatus.IDLE) &&
+          createRuntimeReadyGate({
+            status: BotStatus.IDLE,
+            externalAuth: reason.external_auth,
+          }).ready,
+      );
     case "initializing_retry":
       return createTransitionDecision(currentStatus, BotStatus.INITIALIZING, reason.type, []);
     case "initializing_retry_exhausted":

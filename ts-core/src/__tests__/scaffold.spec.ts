@@ -16,10 +16,16 @@ import {
   createDiagnosticsCatalog,
   createDrizzleMigrationMetadata,
   createEnvironmentSnapshot,
+  createExternalAuthExecutionPlan,
+  createExternalAuthPublicState,
+  createExternalAuthSecretBinding,
+  createExternalAuthState,
   createHealthResponse,
+  createInterfaceExternalAuthSnapshot,
   createMessageQueueName,
   createMessageTriage,
   createRedisKeyCatalog,
+  createRuntimeReadyGate,
   createRuntimeScaffold,
   createSandboxFacadeContract,
   createSessionRecord,
@@ -48,6 +54,7 @@ describe("TS Core 工程骨架", () => {
 
     expect(runtimeScaffold.defaultStatus).toBe(BotStatus.INITIALIZING);
     expect(runtimeScaffold.externalAuth.status).toBe("not_required");
+    expect(runtimeScaffold.readyGate.status).toBe("blocked");
     expect(runtimeScaffold.supportedTaskKinds).toContain(ExecutionTaskKind.SkillCall);
     expect(runtimeScaffold.supportedTaskKinds).not.toContain("conversation");
     expect(runtimeScaffold.interruptTemplate.source.type).toBe("system");
@@ -116,10 +123,22 @@ describe("TS Core 工程骨架", () => {
         updated_at: "2026-04-13T00:00:00.000Z",
       },
     });
+    const authSnapshot = createInterfaceExternalAuthSnapshot({
+      status: BotStatus.INITIALIZING,
+      external_auth: createExternalAuthState({
+        status: "pending",
+        secret: createExternalAuthSecretBinding({
+          source: "env",
+          reference: "MC_EXTERNAL_AUTH_SECRET",
+          secret: "hunter2",
+        }),
+      }),
+    });
 
     expect(session.bot_id).toBe("bot-root");
     expect(health.status).toBe("ok");
     expect(status.bot.status).toBe(BotStatus.IDLE);
+    expect(authSnapshot.state.action_summary?.command_preview).toBe("/login <redacted>");
   });
 
   it("应从根入口导出 sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
@@ -184,5 +203,28 @@ describe("TS Core 工程骨架", () => {
     expect(smoke.runtime.initial_status).toBe(BotStatus.INITIALIZING);
     expect(smoke.health.status).toBe("ok");
     expect(createAppStartupSummary(bootstrap).io_boundary.connects_real_io).toBe(false);
+  });
+
+  it("应从根入口导出外部认证执行计划、脱敏状态与就绪门控", () => {
+    const secret = createExternalAuthSecretBinding({
+      source: "env",
+      reference: "MC_EXTERNAL_AUTH_SECRET",
+      secret: "hunter2",
+    });
+    const pendingState = createExternalAuthState({
+      status: "pending",
+      secret,
+    });
+    const executionPlan = createExternalAuthExecutionPlan(pendingState, secret);
+    const publicState = createExternalAuthPublicState(pendingState);
+    const readyGate = createRuntimeReadyGate({
+      status: BotStatus.INITIALIZING,
+      externalAuth: pendingState,
+    });
+
+    expect(pendingState).not.toHaveProperty("secret");
+    expect(executionPlan.next_action?.command).toBe("/login hunter2");
+    expect(publicState.action_summary?.command_preview).toBe("/login <redacted>");
+    expect(readyGate.blocked_by).toContain("external_auth_pending");
   });
 });

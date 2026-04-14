@@ -1,5 +1,10 @@
 import { MessageSource } from "../domain/contracts.js";
-import type { BotStatus } from "../runtime/contracts.js";
+import {
+  type BotStatus,
+  type ExternalAuthState,
+  createExternalAuthPublicState,
+  createRuntimeReadyGate,
+} from "../runtime/contracts.js";
 
 const SESSION_TTL_DAYS = 7;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -195,6 +200,14 @@ export interface InterfaceBotStatusSnapshot {
   readonly active_task_id?: string;
 }
 
+/** 接口层外部认证快照，用于输出脱敏认证状态与 ready（就绪） 门控。 */
+export interface InterfaceExternalAuthSnapshot {
+  /** 脱敏后的认证状态。 */
+  readonly state: ReturnType<typeof createExternalAuthPublicState>;
+  /** 当前 ready（就绪） 门控结果。 */
+  readonly ready_gate: ReturnType<typeof createRuntimeReadyGate>;
+}
+
 /** 健康检查响应结构，用于描述 GET /api/health 的纯输出。 */
 export interface HealthResponse {
   /** 当前服务名。 */
@@ -214,6 +227,23 @@ function cloneSessionRecord(input: SessionRecord): SessionRecord {
     expires_at: input.expires_at,
     created_at: input.created_at,
   };
+}
+
+function freezeInterfaceValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((item) => freezeInterfaceValue(item))) as T;
+  }
+
+  if (value && typeof value === "object") {
+    const clonedEntries = Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+      key,
+      freezeInterfaceValue(entry),
+    ]);
+
+    return Object.freeze(Object.fromEntries(clonedEntries)) as T;
+  }
+
+  return value;
 }
 
 function assertSessionBotBinding(input: {
@@ -413,6 +443,20 @@ export function createInterfaceBotStatusSnapshot(
     last_event_seq: input.last_event_seq,
     updated_at: input.updated_at,
     ...(input.active_task_id ? { active_task_id: input.active_task_id } : {}),
+  });
+}
+
+/** 创建接口层外部认证快照，用于坚持脱敏输出与 ready（就绪） 门控对齐。 */
+export function createInterfaceExternalAuthSnapshot(input: {
+  status: BotStatus;
+  external_auth: ExternalAuthState;
+}): InterfaceExternalAuthSnapshot {
+  return freezeInterfaceValue({
+    state: createExternalAuthPublicState(input.external_auth),
+    ready_gate: createRuntimeReadyGate({
+      status: input.status,
+      externalAuth: input.external_auth,
+    }),
   });
 }
 

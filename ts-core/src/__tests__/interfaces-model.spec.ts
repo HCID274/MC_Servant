@@ -7,7 +7,10 @@ import {
   MessageSource,
   type MessageSubmissionRequest,
   RUNTIME_EVENT_TYPES,
+  createExternalAuthSecretBinding,
+  createExternalAuthState,
   createHealthResponse,
+  createInterfaceExternalAuthSnapshot,
   createMessageAcceptedResponse,
   createRealtimeEventEnvelope,
   createReplayRequest,
@@ -235,6 +238,33 @@ describe("interfaces 模块契约", () => {
 
     expect(selected.map((event) => event.seq)).toEqual([10, 11]);
     expect(selected.every((event) => event.bot_id === "bot-1")).toBe(true);
+  });
+
+  it("应仅输出脱敏的接口层外部认证快照并复用 ready（就绪） 门控", () => {
+    const snapshot = createInterfaceExternalAuthSnapshot({
+      status: BotStatus.INITIALIZING,
+      external_auth: createExternalAuthState({
+        status: "pending",
+        secret: createExternalAuthSecretBinding({
+          source: "env",
+          reference: "MC_EXTERNAL_AUTH_SECRET",
+          secret: "hunter2",
+        }),
+      }),
+    });
+
+    expect(snapshot.state.status).toBe("pending");
+    expect(snapshot.state.action_summary?.command_preview).toBe("/login <redacted>");
+    expect(snapshot.state).not.toHaveProperty("secret");
+    expect(snapshot.ready_gate.ready).toBe(false);
+    expect(snapshot.ready_gate.blocked_by).toEqual([
+      "runtime_initializing",
+      "external_auth_pending",
+    ]);
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.state)).toBe(true);
+    expect(Object.isFrozen(snapshot.state.action_summary ?? {})).toBe(true);
+    expect(Object.isFrozen(snapshot.ready_gate)).toBe(true);
   });
 
   it("应拒绝非法 replay（补拉） 边界输入", () => {

@@ -15,8 +15,11 @@ import {
   ThreatLevel,
   ThreatRuleId,
   canTransition,
+  createExternalAuthExecutionPlan,
+  createExternalAuthPublicState,
   createExternalAuthSecretBinding,
   createExternalAuthState,
+  createRuntimeReadyGate,
   createRuntimeScaffold,
   createSandboxCodeJob,
   createSkillCallJob,
@@ -193,18 +196,63 @@ describe("runtime 执行态模型", () => {
     });
     const runtimeScaffold = createRuntimeScaffold({
       externalAuth: pending,
+      externalAuthSecret: secret,
+    });
+    const pendingPlan = createExternalAuthExecutionPlan(pending, secret);
+    const pendingPublicState = createExternalAuthPublicState(pending);
+    const notRequiredReadyGate = createRuntimeReadyGate({
+      status: BotStatus.IDLE,
+      externalAuth: createExternalAuthState({ status: "not_required" }),
+    });
+    const pendingReadyGate = createRuntimeReadyGate({
+      status: BotStatus.INITIALIZING,
+      externalAuth: pending,
+    });
+    const readyTransition = resolveTransition(BotStatus.INITIALIZING, {
+      type: "ready",
+      external_auth: authenticated,
+    });
+    const blockedReadyTransition = resolveTransition(BotStatus.INITIALIZING, {
+      type: "ready",
+      external_auth: pending,
     });
 
     expect(EXTERNAL_AUTH_STATUSES).toEqual(["not_required", "pending", "authenticated", "failed"]);
     expect(createExternalAuthState({ status: "not_required" }).entrypoint).toBe("none");
     expect(pending.status).toBe("pending");
     expect(authenticated.status).toBe("authenticated");
+    expect(pending).not.toHaveProperty("secret");
+    expect(authenticated).not.toHaveProperty("secret");
+    expect(pending).toMatchObject({
+      secret_source: "env",
+      secret_reference: "MC_EXTERNAL_AUTH_SECRET",
+    });
     if (failed.status !== "failed") {
       throw new Error("expected failed external auth state");
     }
     expect(failed.failure_reason).toBe("missing_injected_secret");
     expect(runtimeScaffold.defaultStatus).toBe(BotStatus.INITIALIZING);
-    expect(runtimeScaffold.externalAuth).toBe(pending);
+    expect(runtimeScaffold.externalAuth).toEqual(pending);
+    expect(runtimeScaffold.externalAuthPlan).toEqual(pendingPlan);
+    expect(runtimeScaffold.readyGate.status).toBe("blocked");
+    expect(runtimeScaffold.readyGate.blocked_by).toContain("runtime_initializing");
+    expect(runtimeScaffold.readyGate.blocked_by).toContain("external_auth_pending");
+    expect(pendingPlan.status).toBe("pending");
+    expect(pendingPlan.next_action.command).toBe("/login hunter2");
+    expect(pendingPlan.action_summary?.command_preview).toBe("/login <redacted>");
+    expect(pendingPlan.action_summary).not.toHaveProperty("command");
+    expect(pendingPublicState.action_summary?.command_preview).toBe("/login <redacted>");
+    expect(pendingPublicState as Record<string, unknown>).not.toHaveProperty("secret");
+    expect(notRequiredReadyGate.ready).toBe(true);
+    expect(notRequiredReadyGate.blocked_by).toEqual([]);
+    expect(pendingReadyGate.ready).toBe(false);
+    expect(pendingReadyGate.can_emit_bot_ready).toBe(false);
+    expect(pendingReadyGate.blocked_by).toEqual(["runtime_initializing", "external_auth_pending"]);
+    expect(readyTransition.accepted).toBe(true);
+    expect(readyTransition.to).toBe(BotStatus.IDLE);
+    expect(readyTransition.emittedEvents).toContain("bot.ready");
+    expect(blockedReadyTransition.accepted).toBe(false);
+    expect(blockedReadyTransition.emittedEvents).toEqual([]);
   });
 
   it("应集中维护 event_log 事件名与任务状态枚举", () => {

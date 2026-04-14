@@ -15,10 +15,14 @@ import {
 } from "../interfaces/index.js";
 import {
   BotStatus,
+  type ExternalAuthActionSummary,
   type ExternalAuthEntrypoint,
+  type ExternalAuthPublicState,
   type ExternalAuthSecretBinding,
   type ExternalAuthState,
+  type RuntimeReadyGate,
   type RuntimeScaffold,
+  createExternalAuthPublicState,
   createExternalAuthSecretBinding,
   createExternalAuthState,
   createRuntimeScaffold,
@@ -50,15 +54,82 @@ export interface AppRuntimeContract {
   /** 初始状态。 */
   readonly initial_status: BotStatus;
   /** 外部认证状态。 */
-  readonly external_auth: ExternalAuthState;
-  /** 运行时骨架。 */
-  readonly scaffold: RuntimeScaffold;
+  readonly external_auth: ExternalAuthPublicState;
+  /** 运行时骨架公开视图。 */
+  readonly scaffold: AppRuntimeScaffoldContract;
+  /** 初始 ready（就绪） 门控结果。 */
+  readonly ready_gate: RuntimeReadyGate;
+}
+
+/** 应用装配层暴露的外部认证计划公开视图。 */
+export type AppExternalAuthPlanContract =
+  | {
+      /** 对应的认证状态。 */
+      readonly status: "not_required";
+      /** 对外脱敏摘要。 */
+      readonly action_summary: null;
+      /** 是否允许重试。 */
+      readonly retry_allowed: false;
+      /** 是否已满足认证前置。 */
+      readonly ready_for_idle: true;
+    }
+  | {
+      /** 对应的认证状态。 */
+      readonly status: "pending";
+      /** 对外脱敏摘要。 */
+      readonly action_summary: ExternalAuthActionSummary;
+      /** 是否允许重试。 */
+      readonly retry_allowed: true;
+      /** 是否已满足认证前置。 */
+      readonly ready_for_idle: false;
+    }
+  | {
+      /** 对应的认证状态。 */
+      readonly status: "authenticated";
+      /** 对外脱敏摘要。 */
+      readonly action_summary: null;
+      /** 是否允许重试。 */
+      readonly retry_allowed: false;
+      /** 是否已满足认证前置。 */
+      readonly ready_for_idle: true;
+    }
+  | {
+      /** 对应的认证状态。 */
+      readonly status: "failed";
+      /** 对外脱敏摘要。 */
+      readonly action_summary: null;
+      /** 是否允许重试。 */
+      readonly retry_allowed: false;
+      /** 是否已满足认证前置。 */
+      readonly ready_for_idle: false;
+      /** 失败原因。 */
+      readonly failure_reason: "missing_injected_secret";
+      /** 期望的密钥来源。 */
+      readonly secret_source: "env" | "bot_config" | null;
+      /** 期望的密钥引用。 */
+      readonly secret_reference: string | null;
+    };
+
+/** 应用装配层暴露的运行时骨架公开视图。 */
+export interface AppRuntimeScaffoldContract {
+  /** 默认启动状态。 */
+  readonly defaultStatus: RuntimeScaffold["defaultStatus"];
+  /** 外部认证状态公开视图。 */
+  readonly externalAuth: ExternalAuthPublicState;
+  /** 外部认证执行计划公开视图。 */
+  readonly externalAuthPlan: AppExternalAuthPlanContract;
+  /** 初始就绪门控结果。 */
+  readonly readyGate: RuntimeScaffold["readyGate"];
+  /** 当前阶段声明支持的执行任务类型。 */
+  readonly supportedTaskKinds: RuntimeScaffold["supportedTaskKinds"];
+  /** 当前阶段提供的中断信号模板。 */
+  readonly interruptTemplate: RuntimeScaffold["interruptTemplate"];
 }
 
 /** 应用装配层暴露的外部认证结果。 */
 export interface AppExternalAuthContract {
-  /** 运行时可消费的统一认证状态。 */
-  readonly state: ExternalAuthState;
+  /** 对外暴露的脱敏认证状态。 */
+  readonly state: ExternalAuthPublicState;
   /** 当前受控入口。 */
   readonly entrypoint: ExternalAuthEntrypoint;
   /** 明文密钥是否已完成部署注入。 */
@@ -134,46 +205,9 @@ export function createAppExternalAuthContract(
     botConfig?: unknown;
   } = {},
 ): AppExternalAuthContract {
-  const env = input.env ?? {};
-  const botConfig = asOptionalPlainObject(input.botConfig, "botConfig");
-  const authConfig = asOptionalPlainObject(botConfig?.auth, "botConfig.auth");
-  const authRequired =
-    readOptionalBoolean(env, "MC_EXTERNAL_AUTH_REQUIRED") ??
-    readOptionalBooleanField(authConfig?.required, "botConfig.auth.required") ??
-    false;
+  const runtimeState = resolveAppExternalAuthResolution(input).state;
 
-  if (!authRequired) {
-    return Object.freeze({
-      state: createExternalAuthState({ status: "not_required" }),
-      entrypoint: "none",
-      secret_injected: false,
-    });
-  }
-
-  const entrypoint = resolveRequiredAuthEntrypoint(env, authConfig);
-  const secretBinding = resolveExternalAuthSecretBinding(env, authConfig);
-
-  if (secretBinding === undefined) {
-    return Object.freeze({
-      state: createExternalAuthState({
-        status: "failed",
-        failureReason: "missing_injected_secret",
-        secretSource: inferSecretSource(authConfig),
-        secretReference: inferSecretReference(authConfig),
-      }),
-      entrypoint,
-      secret_injected: false,
-    });
-  }
-
-  return Object.freeze({
-    state: createExternalAuthState({
-      status: "pending",
-      secret: secretBinding,
-    }),
-    entrypoint,
-    secret_injected: true,
-  });
+  return createAppExternalAuthContractFromRuntimeState(runtimeState);
 }
 
 /** 创建应用装配结果，用于把现有公开契约收口为单进程组合根。 */
@@ -183,17 +217,23 @@ export function createAppBootstrapContract<TBotId extends string>(
   assertNonEmptyString(input.botId, "botId");
   assertNonEmptyString(input.now, "now");
 
-  const externalAuth = createAppExternalAuthContract({
+  const runtimeExternalAuthResolution = resolveAppExternalAuthResolution({
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.botConfig === undefined ? {} : { botConfig: input.botConfig }),
   });
+  const externalAuth = createAppExternalAuthContractFromRuntimeState(
+    runtimeExternalAuthResolution.state,
+  );
   const config = createDataConfig({
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.botConfig === undefined ? {} : { botConfig: selectDataBotConfig(input.botConfig) }),
   });
   const lifecycle = createAppLifecyclePlan();
   const runtimeScaffold = createRuntimeScaffold({
-    externalAuth: externalAuth.state,
+    externalAuth: runtimeExternalAuthResolution.state,
+    ...(runtimeExternalAuthResolution.secret === undefined
+      ? {}
+      : { externalAuthSecret: runtimeExternalAuthResolution.secret }),
   });
 
   if (runtimeScaffold.defaultStatus !== BotStatus.INITIALIZING) {
@@ -210,7 +250,8 @@ export function createAppBootstrapContract<TBotId extends string>(
     runtime: Object.freeze({
       initial_status: runtimeScaffold.defaultStatus,
       external_auth: externalAuth.state,
-      scaffold: runtimeScaffold,
+      scaffold: createAppRuntimeScaffoldContract(runtimeScaffold),
+      ready_gate: runtimeScaffold.readyGate,
     }),
     interfaces: Object.freeze({
       routes: API_ROUTE_DEFINITIONS,
@@ -227,6 +268,115 @@ export function createAppBootstrapContract<TBotId extends string>(
     lifecycle,
     readiness: createAppReadinessCatalog(),
   });
+}
+
+function resolveAppExternalAuthResolution(
+  input: {
+    env?: DataConfigEnvironment;
+    botConfig?: unknown;
+  } = {},
+): {
+  readonly state: ExternalAuthState;
+  readonly secret?: ExternalAuthSecretBinding;
+} {
+  const env = input.env ?? {};
+  const botConfig = asOptionalPlainObject(input.botConfig, "botConfig");
+  const authConfig = asOptionalPlainObject(botConfig?.auth, "botConfig.auth");
+  const authRequired =
+    readOptionalBoolean(env, "MC_EXTERNAL_AUTH_REQUIRED") ??
+    readOptionalBooleanField(authConfig?.required, "botConfig.auth.required") ??
+    false;
+
+  if (!authRequired) {
+    return Object.freeze({
+      state: createExternalAuthState({ status: "not_required" }),
+    });
+  }
+
+  const entrypoint = resolveRequiredAuthEntrypoint(env, authConfig);
+  const secretBinding = resolveExternalAuthSecretBinding(env, authConfig);
+
+  if (secretBinding === undefined) {
+    return Object.freeze({
+      state: createExternalAuthState({
+        status: "failed",
+        failureReason: "missing_injected_secret",
+        secretSource: inferSecretSource(authConfig),
+        secretReference: inferSecretReference(authConfig),
+      }),
+    });
+  }
+
+  if (entrypoint !== "game_chat_command") {
+    throw new Error("external auth entrypoint must be game_chat_command");
+  }
+
+  return Object.freeze({
+    state: createExternalAuthState({
+      status: "pending",
+      secret: secretBinding,
+    }),
+    secret: secretBinding,
+  });
+}
+
+function createAppExternalAuthContractFromRuntimeState(
+  runtimeState: ExternalAuthState,
+): AppExternalAuthContract {
+  return Object.freeze({
+    state: createExternalAuthPublicState(runtimeState),
+    entrypoint: runtimeState.entrypoint,
+    secret_injected: runtimeState.status === "pending" || runtimeState.status === "authenticated",
+  });
+}
+
+function createAppRuntimeScaffoldContract(scaffold: RuntimeScaffold): AppRuntimeScaffoldContract {
+  return Object.freeze({
+    defaultStatus: scaffold.defaultStatus,
+    externalAuth: createExternalAuthPublicState(scaffold.externalAuth),
+    externalAuthPlan: createAppExternalAuthPlanContract(scaffold.externalAuthPlan),
+    readyGate: scaffold.readyGate,
+    supportedTaskKinds: scaffold.supportedTaskKinds,
+    interruptTemplate: scaffold.interruptTemplate,
+  });
+}
+
+function createAppExternalAuthPlanContract(
+  plan: RuntimeScaffold["externalAuthPlan"],
+): AppExternalAuthPlanContract {
+  switch (plan.status) {
+    case "not_required":
+      return Object.freeze({
+        status: "not_required",
+        action_summary: null,
+        retry_allowed: false,
+        ready_for_idle: true,
+      });
+    case "pending":
+      return Object.freeze({
+        status: "pending",
+        action_summary: plan.action_summary,
+        retry_allowed: true,
+        ready_for_idle: false,
+      });
+    case "authenticated":
+      return Object.freeze({
+        status: "authenticated",
+        action_summary: null,
+        retry_allowed: false,
+        ready_for_idle: true,
+      });
+    case "failed":
+      return Object.freeze({
+        status: "failed",
+        action_summary: null,
+        retry_allowed: false,
+        ready_for_idle: false,
+        failure_reason: plan.failure_reason,
+        secret_source: plan.secret_source,
+        secret_reference: plan.secret_reference,
+      });
+  }
 }
 
 function selectDataBotConfig(input: unknown): unknown {

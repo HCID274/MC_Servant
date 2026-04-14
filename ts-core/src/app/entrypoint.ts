@@ -56,6 +56,8 @@ export interface AppStartupSummary<TBotId extends string = string> {
   readonly initial_status: AppBootstrapContract<TBotId>["runtime"]["initial_status"];
   /** 外部认证装配结果。 */
   readonly external_auth: AppExternalAuthContract;
+  /** 当前 ready（就绪） 门控结果。 */
+  readonly ready_gate: AppBootstrapContract<TBotId>["runtime"]["ready_gate"];
   /** 启动序列摘要。 */
   readonly startup_plan: readonly AppEntrypointStepSummary[];
   /** 关闭序列摘要。 */
@@ -99,6 +101,7 @@ export function createAppStartupSummary<TBotId extends string>(
     bot_id: bootstrap.bot_id,
     initial_status: bootstrap.runtime.initial_status,
     external_auth: bootstrap.auth,
+    ready_gate: bootstrap.runtime.ready_gate,
     startup_plan: Object.freeze(
       bootstrap.lifecycle.startup.map((step, index) =>
         createStepSummary(step, index + 1, readinessIndex),
@@ -129,6 +132,17 @@ export function renderAppStartupSummary<TBotId extends string>(
     `external_auth.status: ${summary.external_auth.state.status}`,
     `external_auth.entrypoint: ${summary.external_auth.entrypoint}`,
     `external_auth.secret_injected: ${String(summary.external_auth.secret_injected)}`,
+    ...(summary.external_auth.state.action_summary
+      ? [
+          `external_auth.command_preview: ${summary.external_auth.state.action_summary.command_preview}`,
+        ]
+      : []),
+    `ready_gate.status: ${summary.ready_gate.status}`,
+    `ready_gate.ready: ${String(summary.ready_gate.ready)}`,
+    `ready_gate.can_open_realtime: ${String(summary.ready_gate.can_open_realtime)}`,
+    `ready_gate.can_open_http: ${String(summary.ready_gate.can_open_http)}`,
+    `ready_gate.can_emit_bot_ready: ${String(summary.ready_gate.can_emit_bot_ready)}`,
+    `ready_gate.blocked_by: ${summary.ready_gate.blocked_by.join(", ") || "none"}`,
     "startup_plan:",
     ...summary.startup_plan.map(
       (step) =>
