@@ -11,7 +11,9 @@
 | `ts-core/agent.md` | Agent 协作索引入口（三角色共同起点） |
 | `ts-core/Docs/09_AGENT_WORKFLOW.md` | 工作流完整规范：角色定义、职责边界、状态流转、Prompt 模板 |
 | `ts-core/Docs/WF_当前任务握手.md` | 当前活跃任务（Manager 写 / Coder 读+填反馈） |
-| `ts-core/Docs/WF_开发进度记录.md` | 已完成任务追加记录（仅 Manager 写入） |
+| `ts-core/Docs/WF_开发进度记录.md` | 当前批次的详细进度记录（仅 Manager 写入） |
+| `ts-core/Docs/WF_任务阶段压缩记录.md` | 已完成批次的压缩归档（仅 Manager 写入，默认优先读取） |
+| `ts-core/Docs/WF_开发进度明细归档/` | 已完成批次的详细明细归档（仅 Manager 写入，按需展开） |
 | `ts-core/Docs/WF_需求变更索引.md` | 需求变更摘要（Consultant 追加 / Manager 读取） |
 
 如果你不是以特定角色启动的（即没有收到 Manager/Coder/Consultant 的 Prompt），仍然必须遵守本文件中的所有约束。
@@ -163,6 +165,12 @@
 - 旧 `backend/Docs/` 保留为历史资料，不再作为 TS Core 的主实现导航入口。
 - 旧 `docs/architecture-*.md` 已被 `ts-core/Docs/01-08` 系列取代，仅保留为历史参考。
 - `ts-core` 自身的运行说明、脚本说明、模块说明，优先放在 `ts-core/README.md` 或其局部文档中，不反向堆回 `AGENTS.md`。
+- `ts-core/Docs/WF_开发进度记录.md` 只保留当前批次（每 10 个任务一批）的详细记录，避免后续协作默认读取过长历史。
+- 一个批次完成后，由 Manager 将该批次：
+  1. 压缩写入 `ts-core/Docs/WF_任务阶段压缩记录.md`
+  2. 详细明细迁入 `ts-core/Docs/WF_开发进度明细归档/`
+  3. 再将 `ts-core/Docs/WF_开发进度记录.md` 重置为下一批次的空白详细账本
+- 历史上下文默认先读压缩记录；只有需要追具体实现细节时，才按需读取 `WF_开发进度明细归档/` 中对应批次文件。
 
 ## 12. 安全与配置
 

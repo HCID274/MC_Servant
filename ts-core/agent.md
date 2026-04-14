@@ -49,7 +49,9 @@ TS Core 是以 TypeScript 为唯一执行核心的 Minecraft Bot Agent 系统，
 | 文件 | 用途 | 读写权限 |
 |---|---|---|
 | `Docs/WF_当前任务握手.md` | 当前活跃任务 + 队列预览 | Manager 写 / Coder 读+填反馈 |
-| `Docs/WF_开发进度记录.md` | 已完成任务追加记录 | Manager 追加 |
+| `Docs/WF_开发进度记录.md` | 当前批次（10 个任务以内） 的详细进度记录 | Manager 写 |
+| `Docs/WF_任务阶段压缩记录.md` | 已完成批次的阶段压缩归档，默认优先读取 | Manager 追加 |
+| `Docs/WF_开发进度明细归档/` | 已完成批次的详细明细归档，按需读取 | Manager 追加 |
 | `Docs/WF_需求变更索引.md` | 需求变更摘要 | Consultant 追加 / Manager 读 |
 
 ### 预检脚本

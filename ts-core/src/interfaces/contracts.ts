@@ -15,6 +15,22 @@ export const WEB_MESSAGE_CHANNEL = "web" as const;
 /** 网页端消息在接口层固定使用的来源。 */
 export const WEB_MESSAGE_SOURCE = MessageSource.Web;
 
+/** 接口层统一入口通道集合。 */
+export const INTERFACE_INGRESS_CHANNELS = [
+  WEB_MESSAGE_CHANNEL,
+  "game_chat",
+  "server_bridge",
+] as const;
+
+/** 接口层统一入口通道联合类型。 */
+export type InterfaceIngressChannel = (typeof INTERFACE_INGRESS_CHANNELS)[number];
+
+/** 接口层统一主人标识缺席语义，`null` 表示当前入口没有主人上下文。 */
+export type InterfaceOwnerId = string | null;
+
+/** 接口层统一会话标识缺席语义，`null` 表示当前入口不经过网页登录会话。 */
+export type InterfaceSessionId = string | null;
+
 /** 登录请求结构，用于承载轻身份模式下的账号密码登录输入。 */
 export interface SessionLoginRequest {
   /** 用户名。 */
@@ -97,23 +113,56 @@ export interface MessageSubmissionRequest {
 }
 
 /** 网页端标准化消息结构，用于把 HTTP（超文本传输协议） 输入投影成统一消息事件。 */
-export interface WebMessageEnvelope {
+export type WebMessageEnvelope = InterfaceMessageEnvelope<
+  typeof WEB_MESSAGE_SOURCE,
+  typeof WEB_MESSAGE_CHANNEL,
+  string,
+  string
+>;
+
+/** 接口层统一消息包结构，用于收口所有文本入口的关键字段命名。 */
+export interface InterfaceMessageEnvelope<
+  TSource extends MessageSource = MessageSource,
+  TChannel extends InterfaceIngressChannel = InterfaceIngressChannel,
+  TOwnerId extends InterfaceOwnerId = InterfaceOwnerId,
+  TSessionId extends InterfaceSessionId = InterfaceSessionId,
+> {
   /** 目标 Bot 标识。 */
   readonly bot_id: string;
-  /** 发送者主人标识。 */
-  readonly owner_id: string;
-  /** 关联会话标识。 */
-  readonly session_id: string;
+  /** 主人标识；`null` 表示当前入口没有主人上下文。 */
+  readonly owner_id: TOwnerId;
+  /** 会话标识；`null` 表示当前入口不经过网页登录会话。 */
+  readonly session_id: TSessionId;
   /** 全局唯一消息标识。 */
   readonly message_id: string;
   /** 文本内容。 */
   readonly content: string;
   /** 消息来源。 */
-  readonly source: typeof WEB_MESSAGE_SOURCE;
+  readonly source: TSource;
   /** 消息通道。 */
-  readonly channel: typeof WEB_MESSAGE_CHANNEL;
+  readonly channel: TChannel;
   /** 标准化完成时间。 */
-  readonly created_at: string;
+  readonly timestamp: string;
+}
+
+/** 接口层统一事件包结构，用于收口非文本入口的关键字段命名。 */
+export interface InterfaceEventEnvelope<
+  TSource extends MessageSource = MessageSource,
+  TChannel extends InterfaceIngressChannel = InterfaceIngressChannel,
+  TOwnerId extends InterfaceOwnerId = InterfaceOwnerId,
+> {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** 主人标识；`null` 表示当前事件没有主人上下文。 */
+  readonly owner_id: TOwnerId;
+  /** 全局唯一事件标识。 */
+  readonly event_id: string;
+  /** 事件来源。 */
+  readonly source: TSource;
+  /** 事件通道。 */
+  readonly channel: TChannel;
+  /** 标准化完成时间。 */
+  readonly timestamp: string;
 }
 
 /** 消息入队响应结构，用于描述 HTTP（超文本传输协议） 入口的立即返回结果。 */
@@ -178,9 +227,75 @@ function assertSessionBotBinding(input: {
   }
 }
 
+function assertNonEmptyString(value: string, fieldName: string): void {
+  if (value.trim().length === 0) {
+    throw new Error(`${fieldName} must be a non-empty string`);
+  }
+}
+
 /** 创建只读会话记录，用于统一 sessions（会话） 表投影。 */
 export function createSessionRecord(input: SessionRecord): SessionRecord {
   return Object.freeze(cloneSessionRecord(input));
+}
+
+/** 创建统一消息包，用于收口网页端与游戏聊天入口的关键字段。 */
+export function createInterfaceMessageEnvelope<
+  TSource extends MessageSource,
+  TChannel extends InterfaceIngressChannel,
+  TOwnerId extends InterfaceOwnerId,
+  TSessionId extends InterfaceSessionId,
+>(input: {
+  bot_id: string;
+  owner_id: TOwnerId;
+  session_id: TSessionId;
+  message_id: string;
+  content: string;
+  source: TSource;
+  channel: TChannel;
+  timestamp: string;
+}): InterfaceMessageEnvelope<TSource, TChannel, TOwnerId, TSessionId> {
+  assertNonEmptyString(input.bot_id, "bot_id");
+  assertNonEmptyString(input.message_id, "message_id");
+  assertNonEmptyString(input.content, "content");
+  assertNonEmptyString(input.timestamp, "timestamp");
+
+  return Object.freeze({
+    bot_id: input.bot_id,
+    owner_id: input.owner_id,
+    session_id: input.session_id,
+    message_id: input.message_id,
+    content: input.content,
+    source: input.source,
+    channel: input.channel,
+    timestamp: input.timestamp,
+  });
+}
+
+/** 创建统一事件包，用于收口服务端桥接等非文本入口的关键字段。 */
+export function createInterfaceEventEnvelope<
+  TSource extends MessageSource,
+  TChannel extends InterfaceIngressChannel,
+  TOwnerId extends InterfaceOwnerId,
+>(input: {
+  bot_id: string;
+  owner_id: TOwnerId;
+  event_id: string;
+  source: TSource;
+  channel: TChannel;
+  timestamp: string;
+}): InterfaceEventEnvelope<TSource, TChannel, TOwnerId> {
+  assertNonEmptyString(input.bot_id, "bot_id");
+  assertNonEmptyString(input.event_id, "event_id");
+  assertNonEmptyString(input.timestamp, "timestamp");
+
+  return Object.freeze({
+    bot_id: input.bot_id,
+    owner_id: input.owner_id,
+    event_id: input.event_id,
+    source: input.source,
+    channel: input.channel,
+    timestamp: input.timestamp,
+  });
 }
 
 /** 创建登录成功响应，用于输出最小会话鉴权结果。 */
@@ -259,7 +374,7 @@ export function createWebMessageEnvelope(input: {
     sessionBotId: input.session.bot_id,
   });
 
-  return Object.freeze({
+  return createInterfaceMessageEnvelope({
     bot_id: input.session.bot_id,
     owner_id: input.session.owner_id,
     session_id: input.session.id,
@@ -267,7 +382,7 @@ export function createWebMessageEnvelope(input: {
     content: input.request.content,
     source: WEB_MESSAGE_SOURCE,
     channel: WEB_MESSAGE_CHANNEL,
-    created_at: input.createdAt,
+    timestamp: input.createdAt,
   });
 }
 

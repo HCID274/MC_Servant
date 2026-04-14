@@ -40,6 +40,7 @@ export enum ExecutionTaskKind {
 export enum MessageSource {
   Web = "web",
   Game = "game",
+  ServerBridge = "server_bridge",
   System = "system",
 }
 
