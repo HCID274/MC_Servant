@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-011` ~ `T-020`
-- 当前已完成任务：`T-011`、`T-012`、`T-013`
-- 当前批次摘要：已完成外部输入统一 ingress（入口） 契约、执行任务生命周期闭环契约，以及 `runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 侧的外部认证纯契约与启动语义对齐，接口层、运行时层与装配层已逐步形成同一套可测试的强类型边界。
+- 当前已完成任务：`T-011`、`T-012`、`T-013`、`T-014`
+- 当前批次摘要：已完成外部输入统一 ingress（入口） 契约、执行任务生命周期闭环契约、`runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 侧的外部认证纯契约与启动语义对齐，以及最小本地启动 / 容器骨架；接口层、运行时层、装配层与打包入口已经逐步形成同一套可测试的强类型边界。
 
 ---
 
@@ -101,3 +101,33 @@
 
 - 预检结果：
   以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `12` 个测试文件、`66` 条测试全部通过。
+
+### T-014（已完成）
+
+- 任务目标：
+  在 `app`（应用装配） / 项目打包入口这一组模块内，补齐 TS Core（TypeScript 单核心） 的最小本地启动与容器化骨架：建立专用可执行入口、把纯装配结果转成可读的启动摘要，并收口 `Dockerfile`（容器镜像构建文件） / `.dockerignore`（容器忽略文件） / `package.json`（项目清单） 脚本与最小运行说明。
+
+- 审查结论：
+  通过。首轮审查曾因 `package.json`（项目清单） 的 `main` / `types`（库入口元信息） 仍指向不存在的构建产物，以及 `Dockerfile`（容器文件） 会把测试产物一起带入运行镜像而打回；本轮已把库入口元信息对齐到真实产物路径，并将运行镜像复制范围收口到 `dist/src`，`tsconfig.json`（编译配置） 也已排除 `src/__tests__`（测试目录），打包边界与运行边界已经一致。
+
+- 核心文件：
+  `ts-core/package.json`
+  `ts-core/tsconfig.json`
+  `ts-core/README.md`
+  `ts-core/Dockerfile`
+  `ts-core/.dockerignore`
+  `ts-core/.env.example`
+  `ts-core/src/app/index.ts`
+  `ts-core/src/app/entrypoint.ts`
+  `ts-core/src/main.ts`
+  `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
+  `ts-core/src/__tests__/scaffold.spec.ts`
+
+- 变更快照：
+  `app/entrypoint.ts`（应用启动入口） 新增纯函数启动摘要构造与可注入输出执行器，`main.ts`（可执行入口） 只负责读取环境变量、装配 `createAppBootstrapContract()`（应用装配结果） 并打印摘要，不混入真实 Redis（缓存） / PostgreSQL（关系型数据库） / Fastify（接口网关） / Socket.io（实时推送） / Mineflayer（Minecraft 协议客户端） 连接。
+  `package.json`（项目清单） 的 `dev` / `start`（开发 / 运行） 脚本已经统一切到 `src/main.ts` / `dist/src/main.js`，并把 `main` / `types`（库入口元信息） 对齐到实际编译产物 `dist/src/index.js` 与 `dist/src/index.d.ts`。
+  `Dockerfile`（容器文件） / `.dockerignore`（容器忽略文件） / `README.md`（运行说明） / `.env.example`（环境变量样例） 已形成最小单进程容器骨架；运行镜像只复制 `dist/src`，不再把测试产物一并带入。
+  `app-entrypoint`（应用启动入口） 测试补齐了脚本 / 镜像命令 / 库入口元信息 / 测试目录排除的关键断言，锁死了本轮修复点。
+
+- 预检结果：
+  以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `13` 个测试文件、`69` 条测试全部通过。

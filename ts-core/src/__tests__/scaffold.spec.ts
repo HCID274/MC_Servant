@@ -11,6 +11,7 @@ import {
   coreModuleBoundaries,
   createAppBootstrapContract,
   createAppSmokeAssembly,
+  createAppStartupSummary,
   createDataConfig,
   createDiagnosticsCatalog,
   createDrizzleMigrationMetadata,
@@ -182,5 +183,6 @@ describe("TS Core 工程骨架", () => {
     expect(bootstrap.auth.state.status).toBe("not_required");
     expect(smoke.runtime.initial_status).toBe(BotStatus.INITIALIZING);
     expect(smoke.health.status).toBe("ok");
+    expect(createAppStartupSummary(bootstrap).io_boundary.connects_real_io).toBe(false);
   });
 });
