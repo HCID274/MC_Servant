@@ -12,7 +12,9 @@ import {
   cloneReadonlyValue,
   coreModuleBoundaries,
   createAppBootstrapContract,
+  createAppProcessRuntime,
   createAppRuntimeResources,
+  createAppRuntimeServices,
   createAppSmokeAssembly,
   createAppStartupSummary,
   createDataConfig,
@@ -26,6 +28,7 @@ import {
   createExternalAuthState,
   createHealthResponse,
   createInterfaceExternalAuthSnapshot,
+  createInterfaceServerRuntime,
   createMessageQueueName,
   createMessageTriage,
   createPostgresConnectionDescriptor,
@@ -38,6 +41,7 @@ import {
   createSandboxFacadeContract,
   createSessionRecord,
   createStatusResponse,
+  createWorkerBullmqRuntime,
   createWorkerQueueCatalog,
   createWorldModelQueryBoundary,
   runDrizzleMigrations,
@@ -177,6 +181,7 @@ describe("TS Core 工程骨架", () => {
     expect(queueCatalog.conversation.queue).toBe(createMessageQueueName("bot-root"));
     expect(queueCatalog.bot.queue).toBe("bot:bot-root:exec");
     expect(queueCatalog.brain.queue).toBe("brain");
+    expect(typeof createWorkerBullmqRuntime).toBe("function");
   });
 
   it("应从根入口导出 db（数据库） 与 data（数据） 的基础设施契约", () => {
@@ -218,13 +223,21 @@ describe("TS Core 工程骨架", () => {
     expect(bootstrap.interfaces.routes[0].path).toBe("/api/health");
     expect(bootstrap.migrations.entrypoint).toBe("src/db/migrate.ts");
     expect(bootstrap.resources.redis.reuse_for).toBe("bullmq_shared_connection");
+    expect(bootstrap.services.http.listen).toEqual({
+      host: "0.0.0.0",
+      port: 3000,
+    });
     expect(bootstrap.runtime.initial_status).toBe(BotStatus.INITIALIZING);
     expect(bootstrap.auth.state.status).toBe("not_required");
     expect(smoke.runtime.initial_status).toBe(BotStatus.INITIALIZING);
     expect(smoke.resources.close_order).toEqual(["redis", "postgres"]);
+    expect(smoke.services.close_order).toEqual(["http", "workers"]);
     expect(smoke.health.status).toBe("ok");
     expect(createAppStartupSummary(bootstrap).io_boundary.connects_real_io).toBe(false);
     expect(typeof createAppRuntimeResources).toBe("function");
+    expect(typeof createAppRuntimeServices).toBe("function");
+    expect(typeof createAppProcessRuntime).toBe("function");
+    expect(typeof createInterfaceServerRuntime).toBe("function");
   });
 
   it("应从根入口导出外部认证执行计划、脱敏状态与就绪门控", () => {

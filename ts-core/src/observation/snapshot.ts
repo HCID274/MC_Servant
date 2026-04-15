@@ -1,6 +1,6 @@
 /**
  * 环境快照构建与威胁评估实现。
- * 
+ *
  * 架构职责：
  * 1. 数据聚合：通过 createEnvironmentSnapshot 将来自不同源（Mineflayer 和 JAR Bridge）的观测片段合并为全局一致的环境快照。
  * 2. 状态稳压：实现深度的克隆与冻结逻辑，确保快照在被各个模块（Runtime, Sandbox）消费时是绝对只读的。
@@ -213,12 +213,12 @@ function mergeOwnerSnapshot(
 
 /**
  * 创建环境快照。
- * 
+ *
  * 架构意图：
  * 它是系统感知的“合成器”。它接收来自 Mineflayer（主要负责基础状态、背包、装备）
  * 和 JAR Bridge（主要负责扩展实体、方块和服务器元数据）的原始输入，
  * 并根据优先级和完整性规则合并成一个全局唯一的 EnvironmentSnapshot。
- * 
+ *
  * @param input 包含 Mineflayer 和 JAR Bridge 观测输入的源
  * @returns 合并并冻结后的环境快照
  */
@@ -340,12 +340,12 @@ function pickThreatRule(input: ThreatDetectorInput): {
 
 /**
  * 评估环境快照中的威胁。
- * 
+ *
  * 架构意图：
  * 它是 Bot 的“边缘计算”单元，负责快速判定环境风险。
  * 策略包括：生命值过低、着火、正在坠落、以及被敌对生物包围等。
  * 如果评估命中规则，将返回 ThreatAssessment，用于在运行时触发“反射式中断”。
- * 
+ *
  * @param input 包含快照和敌对实体的检测输入
  * @returns 威胁评估结果或 null
  */
@@ -423,12 +423,12 @@ export function createObservationWorldView(
 
 /**
  * 创建观测模块的只读边界。
- * 
+ *
  * 架构意图：
  * 它是 Observation 模块的“对外接口”。通过封装 snapshotSource，
  * 它向上层提供了查询当前快照、主人快照和三维世界视图（World View）的标准化方法。
  * 这种封装确保了调用方始终只能获取到观测数据的快照副本，从而保证了线程/任务间的隔离。
- * 
+ *
  * @param snapshotSource 提供最新快照的源对象
  * @returns 完整的只读边界对象
  */

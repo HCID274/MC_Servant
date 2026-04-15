@@ -1,6 +1,6 @@
 /**
  * 沙箱门面（Facade）契约实现。
- * 
+ *
  * 架构职责：
  * 1. 能力映射：将系统内部的真实技能（goTo, mine 等）和观测能力映射为沙箱内部可见的方法和字段。
  * 2. 权限控制：通过 `access` 属性明确区分读操作（read）和写动作（write），为后续沙箱执行器的权限校验提供依据。
@@ -64,12 +64,12 @@ export const SANDBOX_BOT_SKILL_BINDINGS = Object.freeze({
 
 /**
  * 创建 Facade API 的最小顶层契约描述。
- * 
+ *
  * 架构意图：
  * 它是沙箱环境的“能力说明书”。通过这个工厂函数，系统构建出一个完整的、分区的 API 目录，
  * 包括动作（bot）、世界（world）、知识（knowledge）、记忆（memory）、聊天（chat）、主人（owner）和任务（task）。
  * 每一个条目都包含访问模式和参数顺序等契约细节，用于指导沙箱执行器的运行时注入。
- * 
+ *
  * @returns 不可变的沙箱门面契约
  */
 export function createSandboxFacadeContract(): SandboxFacadeContract {

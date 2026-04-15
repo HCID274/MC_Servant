@@ -1,8 +1,10 @@
+import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 
 import {
   assertAppLifecyclePlan,
   createAppBootstrapContract,
+  createAppProcessRuntime,
   createAppSmokeAssembly,
 } from "../app/index.js";
 
@@ -29,6 +31,10 @@ describe("app（应用装配） 骨架", () => {
     expect(assembly.resources.postgres.descriptor).toBe(assembly.postgres);
     expect(assembly.resources.redis.keys).toBe(assembly.redis);
     expect(assembly.resources.redis.descriptor.url).toBe("redis://cache.internal:6380");
+    expect(assembly.services.create_order).toEqual(["workers", "http"]);
+    expect(assembly.services.close_order).toEqual(["http", "workers"]);
+    expect(assembly.services.workers.catalog).toBe(assembly.workers);
+    expect(assembly.services.http.routes[2].path).toBe("/api/message");
     expect(assembly.workers.conversation.queue).toBe("msg:bot-app");
     expect(assembly.runtime.initial_status).toBe("initializing");
     expect(assembly.runtime.external_auth.status).toBe("not_required");
@@ -53,8 +59,8 @@ describe("app（应用装配） 骨架", () => {
     expect(assembly.lifecycle.shutdown.map((step) => step.name)).toEqual([
       "interrupt_runtime",
       "transition_runtime_shutdown",
-      "stop_workers",
       "stop_http",
+      "stop_workers",
       "stop_realtime",
       "disconnect_runtime_transport",
       "release_redis",
@@ -86,6 +92,10 @@ describe("app（应用装配） 骨架", () => {
     expect(smoke.postgres.pool.max).toBe(9);
     expect(smoke.redis.queues.exec).toBe("bull:bot:bot-smoke:exec:*");
     expect(smoke.resources.redis.reuse_for).toBe("bullmq_shared_connection");
+    expect(smoke.services.http.listen).toEqual({
+      host: "0.0.0.0",
+      port: 3000,
+    });
     expect(smoke.health.status).toBe("ok");
     expect(smoke.readiness).toContainEqual(
       expect.objectContaining({
@@ -179,5 +189,67 @@ describe("app（应用装配） 骨架", () => {
         shutdown: [],
       }),
     ).toThrow("Lifecycle step start_http must be ordered after start_realtime");
+  });
+
+  it("应按 HTTP、BullMQ、Redis、PostgreSQL 顺序关闭完整进程资源", async () => {
+    const closeOrder: string[] = [];
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-process",
+      now: "2026-04-15T00:00:00.000Z",
+    });
+    const runtime = await createAppProcessRuntime(bootstrap, {
+      infrastructure: {
+        postgres: {
+          createPool: () => ({
+            end: async () => {
+              closeOrder.push("postgres");
+            },
+          }),
+          createDrizzle: () => ({}),
+          warmupPool: async () => undefined,
+        },
+        redis: {
+          createClient: () => ({}),
+          connectClient: async () => undefined,
+          closeClient: async () => {
+            closeOrder.push("redis");
+          },
+        },
+      },
+      services: {
+        workers: {
+          createQueue: ({ name }) => ({
+            name,
+            close: async () => {
+              closeOrder.push(name);
+            },
+          }),
+        },
+        http: {
+          createServer: () => {
+            const server = Fastify();
+            const originalClose = server.close.bind(server);
+
+            server.close = async () => {
+              closeOrder.push("http");
+              return originalClose();
+            };
+
+            return server;
+          },
+        },
+      },
+    });
+
+    await runtime.close();
+
+    expect(closeOrder).toEqual([
+      "http",
+      "brain",
+      "bot:bot-process:exec",
+      "msg:bot-process",
+      "redis",
+      "postgres",
+    ]);
   });
 });

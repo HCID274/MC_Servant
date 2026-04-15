@@ -1,6 +1,6 @@
 /**
  * 应用引导与装配层。
- * 
+ *
  * 架构职责：
  * 1. 组合根（Composition Root）：将各个子系统（数据、数据库、诊断、运行时、沙箱等）的契约装配成一个完整的引导对象。
  * 2. 依赖管理：定义并管理基础设施资源（PostgreSQL, Redis）的生命周期与初始化顺序。
@@ -30,7 +30,13 @@ import { assertNonEmptyString } from "../domain/invariants.js";
 import {
   API_ROUTE_DEFINITIONS,
   type HealthResponse,
+  type InterfaceBotStatusSnapshot,
+  type InterfaceServerDependencies,
+  type InterfaceServerListenOptions,
+  type InterfaceServerRuntime,
   createHealthResponse,
+  createInterfaceBotStatusSnapshot,
+  createInterfaceServerRuntime,
 } from "../interfaces/index.js";
 import {
   BotStatus,
@@ -52,7 +58,13 @@ import {
   createSandboxFacadeContract,
   createSandboxResourceLimits,
 } from "../sandbox/index.js";
-import { type WorkerQueueCatalog, createWorkerQueueCatalog } from "../workers/index.js";
+import {
+  type WorkerBullmqDependencies,
+  type WorkerBullmqRuntime,
+  type WorkerQueueCatalog,
+  createWorkerBullmqRuntime,
+  createWorkerQueueCatalog,
+} from "../workers/index.js";
 import {
   type AppLifecyclePlan,
   type AppReadinessDescriptor,
@@ -169,7 +181,7 @@ export interface AppDiagnosticsContract {
   readonly catalog: ReturnType<typeof createDiagnosticsCatalog>;
 }
 
-/** 真实 I/O（输入输出） 资源名称清单。 */
+/** 基础设施真实 I/O（输入输出） 资源名称清单。 */
 export const APP_RUNTIME_RESOURCE_NAMES = ["postgres", "redis"] as const;
 
 /** 真实 I/O（输入输出） 资源名称联合类型。 */
@@ -223,6 +235,80 @@ export interface AppRuntimeResourceDependencies {
   readonly redis?: RedisRuntimeDependencies;
 }
 
+/** 服务层真实资源名称清单。 */
+export const APP_SERVICE_RESOURCE_NAMES = ["workers", "http"] as const;
+
+/** 服务层真实资源名称联合类型。 */
+export type AppServiceResourceName = (typeof APP_SERVICE_RESOURCE_NAMES)[number];
+
+/** 应用装配层暴露的服务资源目录。 */
+export interface AppServiceDirectory<TBotId extends string = string> {
+  /** 创建顺序。 */
+  readonly create_order: readonly AppServiceResourceName[];
+  /** 关闭顺序。 */
+  readonly close_order: readonly AppServiceResourceName[];
+  /** 失败回滚顺序。 */
+  readonly cleanup_on_failure: readonly AppServiceResourceName[];
+  /** BullMQ（任务队列） 三队列资源目录。 */
+  readonly workers: {
+    /** 三队列目录。 */
+    readonly catalog: WorkerQueueCatalog<TBotId>;
+    /** 共享 Redis（缓存） 客户端复用说明。 */
+    readonly redis_reuse: "shared_client";
+  };
+  /** Fastify（接口网关） 资源目录。 */
+  readonly http: {
+    /** 最小路由目录。 */
+    readonly routes: typeof API_ROUTE_DEFINITIONS;
+    /** 默认监听参数。 */
+    readonly listen: InterfaceServerListenOptions;
+  };
+}
+
+/** 服务层真实资源工厂依赖。 */
+export interface AppRuntimeServiceDependencies {
+  /** BullMQ（任务队列） 依赖注入。 */
+  readonly workers?: WorkerBullmqDependencies;
+  /** Fastify（接口网关） 依赖注入。 */
+  readonly http?: InterfaceServerDependencies;
+}
+
+/** 应用装配层创建出的服务运行时句柄。 */
+export interface AppRuntimeServices<TBotId extends string = string> {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: TBotId;
+  /** 基础设施资源句柄。 */
+  readonly infrastructure: AppRuntimeResources<TBotId>;
+  /** 服务资源目录。 */
+  readonly directory: AppServiceDirectory<TBotId>;
+  /** BullMQ（任务队列） 三队列运行时句柄。 */
+  readonly workers: WorkerBullmqRuntime<TBotId>;
+  /** Fastify（接口网关） 运行时句柄。 */
+  readonly http: InterfaceServerRuntime<TBotId>;
+  /** 按约定顺序关闭服务层资源。 */
+  close(): Promise<void>;
+}
+
+/** 应用进程组合资源。 */
+export interface AppProcessRuntime<TBotId extends string = string> {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: TBotId;
+  /** 基础设施资源句柄。 */
+  readonly infrastructure: AppRuntimeResources<TBotId>;
+  /** 服务层资源句柄。 */
+  readonly services: AppRuntimeServices<TBotId>;
+  /** 关闭完整进程资源。 */
+  close(): Promise<void>;
+}
+
+/** 应用进程组合资源工厂依赖。 */
+export interface AppProcessRuntimeDependencies {
+  /** 基础设施资源依赖。 */
+  readonly infrastructure?: AppRuntimeResourceDependencies;
+  /** 服务层资源依赖。 */
+  readonly services?: AppRuntimeServiceDependencies;
+}
+
 /** 应用装配输入，用于从纯配置构建单进程组合根。 */
 export interface AppBootstrapInput<TBotId extends string = string> {
   /** 目标 Bot 标识。 */
@@ -261,6 +347,8 @@ export interface AppBootstrapContract<TBotId extends string = string> {
   readonly migrations: DrizzleMigrationMetadata;
   /** 真实资源目录。 */
   readonly resources: AppResourceDirectory<TBotId>;
+  /** 服务层资源目录。 */
+  readonly services: AppServiceDirectory<TBotId>;
   /** 启动 / 关闭生命周期计划。 */
   readonly lifecycle: AppLifecyclePlan;
   /** 子系统依赖与就绪目录。 */
@@ -281,13 +369,13 @@ export function createAppExternalAuthContract(
 
 /**
  * 创建应用装配结果，用于把现有公开契约收口为单进程组合根。
- * 
+ *
  * 架构设计：
  * 该函数是整个应用的“大脑装配点”，它负责：
  * 1. 验证基础输入的合法性（Bot ID, 时间戳）。
  * 2. 依次初始化配置、生命周期计划、数据库描述、运行时骨架和诊断目录。
  * 3. 将分散的子系统对象聚合成一个不可变的 AppBootstrapContract，供启动流程使用。
- * 
+ *
  * @param input 应用引导输入
  * @returns 完整的引导契约对象
  */
@@ -313,6 +401,7 @@ export function createAppBootstrapContract<TBotId extends string>(
   const redisKeys = createRedisKeyCatalog(input.botId);
   const redisConnection = createRedisConnectionDescriptor(config.redis);
   const migrations = createDrizzleMigrationMetadata({ postgres });
+  const workersCatalog = createWorkerQueueCatalog(input.botId);
   const runtimeScaffold = createRuntimeScaffold({
     externalAuth: runtimeExternalAuthResolution.state,
     ...(runtimeExternalAuthResolution.secret === undefined
@@ -330,7 +419,7 @@ export function createAppBootstrapContract<TBotId extends string>(
     auth: externalAuth,
     postgres,
     redis: redisKeys,
-    workers: createWorkerQueueCatalog(input.botId),
+    workers: workersCatalog,
     runtime: Object.freeze({
       initial_status: runtimeScaffold.defaultStatus,
       external_auth: externalAuth.state,
@@ -350,11 +439,14 @@ export function createAppBootstrapContract<TBotId extends string>(
     }),
     migrations,
     resources: createAppResourceDirectory({
-      botId: input.botId,
       postgres,
       migrations,
       redisKeys,
       redisConnection,
+    }),
+    services: createAppServiceDirectory({
+      workers: workersCatalog,
+      httpListen: createAppHttpListenOptions(),
     }),
     lifecycle,
     readiness: createAppReadinessCatalog(),
@@ -363,13 +455,13 @@ export function createAppBootstrapContract<TBotId extends string>(
 
 /**
  * 基于应用装配结果创建真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源。
- * 
+ *
  * 架构设计：
  * 该函数负责物理资源的实例化，包括：
  * 1. 按照 create_order 指定的顺序（通常是 Postgres -> Redis）建立连接。
  * 2. 封装资源关闭逻辑，确保在发生故障或系统停机时能正确回收资源。
  * 3. 提供异常回滚机制，若中间某个资源创建失败，会尝试逆序清理已创建的资源。
- * 
+ *
  * @param bootstrap 引导契约
  * @param dependencies 可注入的资源依赖（用于 Mock 或自定义连接）
  * @returns 运行时资源句柄
@@ -424,11 +516,11 @@ export async function createAppRuntimeResources<TBotId extends string>(
 
 /**
  * 按应用约定顺序关闭真实资源；即使前一步失败也会继续清理后续资源。
- * 
+ *
  * 架构设计：
  * 遵循 close_order（通常与创建顺序相反），采用“尽力而为”的清理策略，
  * 捕获并汇总所有关闭过程中的错误，确保基础设施连接被安全释放。
- * 
+ *
  * @param input 包含资源实例和目录信息的输入
  */
 export async function closeAppRuntimeResources<TBotId extends string>(input: {
@@ -460,8 +552,162 @@ export async function closeAppRuntimeResources<TBotId extends string>(input: {
 }
 
 /**
+ * 创建服务层运行时资源。
+ *
+ * @param bootstrap 引导契约
+ * @param infrastructure 已创建的基础设施资源
+ * @param dependencies 可注入的服务层依赖
+ * @returns BullMQ（任务队列） 与 Fastify（接口网关） 组合运行时
+ */
+export async function createAppRuntimeServices<TBotId extends string>(
+  bootstrap: AppBootstrapContract<TBotId>,
+  infrastructure: AppRuntimeResources<TBotId>,
+  dependencies: AppRuntimeServiceDependencies = {},
+): Promise<AppRuntimeServices<TBotId>> {
+  const created: Partial<{
+    workers: WorkerBullmqRuntime<TBotId>;
+    http: InterfaceServerRuntime<TBotId>;
+  }> = {};
+
+  try {
+    created.workers = createWorkerBullmqRuntime(
+      {
+        botId: bootstrap.bot_id,
+        redis: infrastructure.redis,
+      },
+      dependencies.workers,
+    );
+    created.http = createInterfaceServerRuntime(
+      {
+        bot_id: bootstrap.bot_id,
+        health: bootstrap.interfaces.health,
+        default_status: createAppDefaultInterfaceStatusSnapshot(bootstrap),
+        listen: bootstrap.services.http.listen,
+      },
+      dependencies.http,
+    );
+    const workers = created.workers;
+    const http = created.http;
+
+    if (workers === undefined || http === undefined) {
+      throw new Error("app runtime services require workers and http");
+    }
+
+    return Object.freeze({
+      bot_id: bootstrap.bot_id,
+      infrastructure,
+      directory: bootstrap.services,
+      workers,
+      http,
+      async close(): Promise<void> {
+        await closeAppRuntimeServices({
+          directory: bootstrap.services,
+          workers,
+          http,
+        });
+      },
+    });
+  } catch (error) {
+    await closeAppRuntimeServices({
+      directory: bootstrap.services,
+      ...(created.workers === undefined ? {} : { workers: created.workers }),
+      ...(created.http === undefined ? {} : { http: created.http }),
+    }).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * 按服务层约定顺序关闭 Fastify（接口网关） 与 BullMQ（任务队列）。
+ *
+ * @param input 服务资源与目录信息
+ */
+export async function closeAppRuntimeServices<TBotId extends string>(input: {
+  directory: AppServiceDirectory<TBotId>;
+  workers?: WorkerBullmqRuntime<TBotId>;
+  http?: InterfaceServerRuntime<TBotId>;
+}): Promise<void> {
+  const closeErrors: unknown[] = [];
+
+  for (const resourceName of input.directory.close_order) {
+    try {
+      if (resourceName === "http" && input.http !== undefined) {
+        await input.http.close();
+      }
+
+      if (resourceName === "workers" && input.workers !== undefined) {
+        await input.workers.close();
+      }
+    } catch (error) {
+      closeErrors.push(error);
+    }
+  }
+
+  if (closeErrors.length > 0) {
+    throw closeErrors[0];
+  }
+}
+
+/**
+ * 创建完整应用进程资源。
+ *
+ * @param bootstrap 引导契约
+ * @param dependencies 基础设施与服务层依赖
+ * @returns 可统一关闭的完整进程资源
+ */
+export async function createAppProcessRuntime<TBotId extends string>(
+  bootstrap: AppBootstrapContract<TBotId>,
+  dependencies: AppProcessRuntimeDependencies = {},
+): Promise<AppProcessRuntime<TBotId>> {
+  let infrastructure: AppRuntimeResources<TBotId> | undefined;
+  let services: AppRuntimeServices<TBotId> | undefined;
+
+  try {
+    infrastructure = await createAppRuntimeResources(bootstrap, dependencies.infrastructure);
+    services = await createAppRuntimeServices(bootstrap, infrastructure, dependencies.services);
+    const createdInfrastructure = infrastructure;
+    const createdServices = services;
+
+    return Object.freeze({
+      bot_id: bootstrap.bot_id,
+      infrastructure: createdInfrastructure,
+      services: createdServices,
+      async close(): Promise<void> {
+        const closeErrors: unknown[] = [];
+
+        try {
+          await createdServices.close();
+        } catch (error) {
+          closeErrors.push(error);
+        }
+
+        try {
+          await createdInfrastructure.close();
+        } catch (error) {
+          closeErrors.push(error);
+        }
+
+        if (closeErrors.length > 0) {
+          throw closeErrors[0];
+        }
+      },
+    });
+  } catch (error) {
+    if (services !== undefined) {
+      await services.close().catch(() => undefined);
+    }
+
+    if (infrastructure !== undefined) {
+      await infrastructure.close().catch(() => undefined);
+    }
+
+    throw error;
+  }
+}
+
+/**
  * 解析应用外部认证决策。
- * 
+ *
  * 架构意图：
  * 1. 策略分发：根据环境变量或 Bot 配置判断是否需要认证。
  * 2. 秘密绑定：尝试从环境变量或配置中解析并绑定明文密钥。
@@ -540,15 +786,14 @@ function createAppRuntimeScaffoldContract(scaffold: RuntimeScaffold): AppRuntime
 
 /**
  * 创建应用资源目录。
- * 
+ *
  * 架构意图：
  * 1. 声明式时序：显式定义资源的创建、关闭和回滚顺序。
  * 2. 映射关系：将抽象的资源名（如 'postgres'）与具体的描述符和元信息关联。
- * 
+ *
  * @param input 包含连接描述符和元信息的输入
  */
 function createAppResourceDirectory<TBotId extends string>(input: {
-  botId: TBotId;
   postgres: PostgresConnectionDescriptor;
   migrations: DrizzleMigrationMetadata;
   redisKeys: RedisKeyCatalog<TBotId>;
@@ -567,6 +812,44 @@ function createAppResourceDirectory<TBotId extends string>(input: {
       keys: input.redisKeys,
       reuse_for: "bullmq_shared_connection",
     }),
+  });
+}
+
+function createAppHttpListenOptions(): InterfaceServerListenOptions {
+  return Object.freeze({
+    host: "0.0.0.0",
+    port: 3000,
+  });
+}
+
+function createAppServiceDirectory<TBotId extends string>(input: {
+  workers: WorkerQueueCatalog<TBotId>;
+  httpListen: InterfaceServerListenOptions;
+}): AppServiceDirectory<TBotId> {
+  return Object.freeze({
+    create_order: Object.freeze(["workers", "http"] as const),
+    close_order: Object.freeze(["http", "workers"] as const),
+    cleanup_on_failure: Object.freeze(["http", "workers"] as const),
+    workers: Object.freeze({
+      catalog: input.workers,
+      redis_reuse: "shared_client",
+    }),
+    http: Object.freeze({
+      routes: API_ROUTE_DEFINITIONS,
+      listen: input.httpListen,
+    }),
+  });
+}
+
+function createAppDefaultInterfaceStatusSnapshot<TBotId extends string>(
+  bootstrap: AppBootstrapContract<TBotId>,
+): InterfaceBotStatusSnapshot {
+  return createInterfaceBotStatusSnapshot({
+    bot_id: bootstrap.bot_id,
+    status: bootstrap.runtime.initial_status,
+    intent_epoch: 0,
+    last_event_seq: 0,
+    updated_at: bootstrap.interfaces.health.timestamp,
   });
 }
 

@@ -1,6 +1,6 @@
 /**
  * 应用执行入口与启动摘要渲染。
- * 
+ *
  * 架构职责：
  * 1. 启动摘要构建：将复杂的引导契约（Bootstrap Contract）转换为易于理解和测试的启动摘要（Startup Summary）。
  * 2. IO 边界定义：显式声明当前入口是否涉及真实 IO 连接，起到安全隔离的作用。
@@ -103,12 +103,12 @@ function createStepSummary(
 
 /**
  * 根据纯装配结果构造可测试的启动摘要。
- * 
+ *
  * 架构设计：
  * 1. 扁平化：将深层嵌套的引导信息提取为顶层的摘要字段。
  * 2. 状态映射：将子系统的就绪状态与生命周期步骤关联，便于诊断启动依赖。
  * 3. IO 标记：明确标识当前环境为 bootstrap_only，不触碰真实基础设施。
- * 
+ *
  * @param bootstrap 引导契约
  * @returns 启动摘要
  */
@@ -143,14 +143,14 @@ export function createAppStartupSummary<TBotId extends string>(
 
 /**
  * 把启动摘要渲染为可直接输出到控制台的文本。
- * 
+ *
  * 架构设计：
  * 该函数负责将结构化的摘要数据转化为人类可读的列表，包括：
  * 1. 基础元信息（Bot ID, 状态）。
  * 2. 认证状态与秘密注入情况。
  * 3. 就绪门控（Ready Gate）的详细阻塞原因。
  * 4. 完整的启动与关闭计划序列。
- * 
+ *
  * @param summary 启动摘要
  * @returns 渲染后的字符串
  */
@@ -196,11 +196,11 @@ export function renderAppStartupSummary<TBotId extends string>(
 
 /**
  * 执行可注入输出端的最小启动入口。
- * 
+ *
  * 架构设计：
  * 这是应用在 process.main 之后的第一个逻辑入口，它解耦了“生成摘要”与“如何输出摘要”，
  * 允许在测试环境或不同的宿主环境中灵活替换 write 回调。
- * 
+ *
  * @param input 包含引导契约和输出回调的输入
  * @returns 启动摘要
  */

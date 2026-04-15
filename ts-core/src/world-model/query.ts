@@ -1,6 +1,6 @@
 /**
  * 世界模型查询逻辑与评分算法。
- * 
+ *
  * 架构职责：
  * 1. 资源评分：实现 `scoreCluster` 启发式算法，根据资源密度（block_count）和距离评估资源簇的价值。
  * 2. 候选块筛选：实现 `selectBestClusterCandidate` 逻辑，优先选择暴露（exposed）且分数高的方块，支撑采集技能的精准定位。
@@ -62,11 +62,11 @@ function scoreCluster(cluster: ResourceClusterSummary): number {
 
 /**
  * 查询指定资源键的资源簇列表。
- * 
+ *
  * 架构意图：
  * 它是资源检索的基础。它从上下文中筛选出属于当前快照版本且匹配资源键的簇，
  * 并按评分（scoreCluster）降序排列，返回冻结的副本。
- * 
+ *
  * @param input 包含查询上下文、资源键和最大数量限制的输入
  * @returns 排序后的资源簇摘要列表
  */
@@ -92,12 +92,12 @@ export function queryResourceClusters(input: {
 
 /**
  * 查询最优资源簇。
- * 
+ *
  * 架构意图：
  * 作为一个“选优器”，它接收 ResourceProfile（定义了寻找什么的逻辑），
  * 并返回评分最高的一个 ResourceClusterSummary。这为上层决策（如“我该去哪砍树”）
  * 提供了直接的领域模型结果。
- * 
+ *
  * @param input 包含查询上下文和资源画像的输入
  * @returns 最优簇结果或 null
  */
@@ -126,13 +126,13 @@ export function queryBestResourceCluster(input: {
 
 /**
  * 选择资源簇中的最佳候选块。
- * 
+ *
  * 架构算法：
  * 它是采集动作的“精确定位器”。它的筛选优先级如下：
  * 1. 暴露优先：优先选择 is_exposed 为 true 的块（易于触达）。
  * 2. 分数优先：在同样可见的情况下，选择启发式评分最高的块。
  * 3. 距离优先：最后选择距离 Bot 最近的块。
- * 
+ *
  * @param input 包含资源簇摘要的输入
  * @returns 选中的候选块详情或 null
  */
@@ -166,12 +166,12 @@ export function selectBestClusterCandidate(input: {
 
 /**
  * 创建世界模型的只读查询边界。
- * 
+ *
  * 架构意图：
  * 它是 WorldModel 模块的“对外只读接口”。通过封装当前上下文，
  * 它向上层提供了查询资源簇、选优簇和选优块的标准化方法。
  * 这种封装确保了调用方只需关注“查什么”，而无需理解底层的评分和筛选算法。
- * 
+ *
  * @param context 当前查询上下文
  * @returns 完整的只读查询边界对象
  */
@@ -209,11 +209,11 @@ export function createWorldModelQueryBoundary(
 
 /**
  * 创建世界模型的刷新契约边界。
- * 
+ *
  * 架构意图：
  * 显式定义了认知的“写接口”。虽然 Phase 1 暂未实现真实刷新逻辑，
  * 但通过这个占位接口，强制执行了读写分离架构，为后续接入异步资源扫描留出了明确的切入点。
- * 
+ *
  * @returns 刷新边界对象
  */
 export function createWorldModelRefreshBoundary(): WorldModelRefreshBoundary {

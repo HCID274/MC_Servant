@@ -1,6 +1,6 @@
 /**
  * 环境观测与快照模块。
- * 
+ *
  * 架构职责：
  * 1. 状态映射：定义 Minecraft 游戏环境的只读快照契约（Environment Snapshot），涵盖机器人状态、周边实体及世界元数据。
  * 2. 观测抽象：提供 ObservationReadBoundary，将底层的 Mineflayer 或跨语言 Bridge 的原始观测数据抽象为领域模型。

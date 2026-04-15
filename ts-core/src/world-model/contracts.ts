@@ -1,6 +1,6 @@
 /**
  * 世界模型契约与资源查询协议。
- * 
+ *
  * 架构职责：
  * 1. 资源抽象：定义 ResourceProfile 和 ResourceClusterSummary，将底层方块数据抽象为高层的“资源”概念。
  * 2. 空间语义：定义 ResourceBlockCandidate，包含位置、距离、可见性（is_exposed）及启发式评分（score）。

@@ -1,6 +1,6 @@
 /**
  * 观测模块契约与数据结构。
- * 
+ *
  * 架构职责：
  * 1. 统一环境表示：定义 EnvironmentSnapshot，作为系统内唯一的可信环境副本，解耦了底层的 Mineflayer 或 Bridge 细节。
  * 2. 观测模型：涵盖位置（Position）、物品（Inventory）、装备（Equipment）、实体（Entity）和方块（Block）的标准化摘要结构。

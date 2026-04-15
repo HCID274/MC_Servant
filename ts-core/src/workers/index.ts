@@ -1,6 +1,6 @@
 /**
  * 异步工作线程与任务队列模块。
- * 
+ *
  * 架构职责：
  * 1. 队列管理：定义并维护对话（Conversation）、执行（Bot/Exec）和摘要（Brain）三类任务队列的命名规范与物理目录。
  * 2. Worker 契约：定义各类工作线程的输入任务包（Worker Task）与输出动作（Worker Actions）结构，收口跨线程通信协议。
@@ -20,6 +20,7 @@ export const workersModuleBoundary = {
   placeholderExports: [
     "workersModuleBoundary",
     "createWorkerQueueCatalog",
+    "createWorkerBullmqRuntime",
     "createConversationWorkerTask",
     "createBotWorkerTask",
     "createBrainWorkerTask",
@@ -31,4 +32,5 @@ export const workersModuleBoundary = {
 } satisfies ModuleBoundary;
 
 export * from "./queues.js";
+export * from "./bullmq.js";
 export * from "./contracts.js";

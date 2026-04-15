@@ -1,6 +1,6 @@
 /**
  * 外部接入与接口契约模块。
- * 
+ *
  * 架构职责：
  * 1. 通讯协议定义：定义 HTTP API 路由、实时推送（Realtime）和 Server Bridge 的消息包结构。
  * 2. 入口（Ingress）标准化：统一 Web 端、Minecraft 游戏内聊天和跨服桥接的输入边界。
@@ -29,11 +29,13 @@ export const interfacesModuleBoundary: ModuleBoundary = {
     "createStatusResponse",
     "createReplayResponse",
     "createRealtimeEventEnvelope",
+    "createInterfaceServerRuntime",
   ],
 };
 
 export * from "./contracts.js";
 export * from "./api.js";
 export * from "./realtime.js";
+export * from "./server.js";
 export * from "./game-chat/index.js";
 export * from "./server-bridge/index.js";

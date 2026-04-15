@@ -1,6 +1,6 @@
 /**
  * 领域模型核心契约。
- * 
+ *
  * 架构职责：
  * 1. 顶层抽象：定义系统模块清单（CORE_MODULE_NAMES）和基础通信协议（TaskEnvelope, EventLogEntry）。
  * 2. 状态语料：统一全系统的任务类型（TaskKind）、优先级（Priority）、消息来源（MessageSource）和日志级别（LogLevel）枚举。

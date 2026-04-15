@@ -1,6 +1,6 @@
 /**
  * 数据库与基础设施接入模块。
- * 
+ *
  * 架构职责：
  * 1. 物理连接管理：封装 PostgreSQL (Drizzle ORM) 与 Redis (ioredis) 的连接池管理、描述符生成及资源生命周期（Resource Lifecycle）。
  * 2. 存储契约（Catalog）：定义统一的 Redis 键命名规范（Key Catalog）和任务队列存储模型。

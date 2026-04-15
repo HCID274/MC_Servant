@@ -1,6 +1,6 @@
 /**
  * 技能契约与参数校验逻辑。
- * 
+ *
  * 架构职责：
  * 1. 技能建模：定义系统支持的原子技能（goTo, mine, cutTree, collect, equip）及其强类型参数。
  * 2. 元数据管理：为每个技能提供分类（Category）、摘要（Summary）和参数键（ParameterKeys），用于 LLM 规划和调试。
@@ -232,11 +232,11 @@ export function isEquipSkillParams(params: unknown): params is EquipSkillParams 
 
 /**
  * 创建与技能目录强绑定的只读技能调用结构。
- * 
+ *
  * 架构意图：
  * 作为一个工厂函数，它负责将技能名与其对应的参数进行最终的绑定，并执行浅克隆和冻结。
  * 它确保了在跨越模块边界（如从 conversation 到 runtime）时，技能调用对象是不可变的。
- * 
+ *
  * @param input 包含技能名和参数的输入
  * @returns 经过冻结的技能调用对象
  */

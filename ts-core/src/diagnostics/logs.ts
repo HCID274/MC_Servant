@@ -1,6 +1,6 @@
 /**
  * 诊断日志路径管理与校验逻辑。
- * 
+ *
  * 架构职责：
  * 1. 路径工厂：为 tasks, sandbox, llm 通道提供标准化的日志引用（log_ref）和代码引用（code_ref）生成函数。
  * 2. 严格校验：通过 assertDiagnosticStorageRef 确保引用的合法性，防止越权访问或错误的路径格式（如 log_ref 必须以 .jsonl 结尾）。
@@ -45,11 +45,11 @@ function assertJsonlErrorSnapshot(value: JsonlErrorSnapshot | undefined): void {
 
 /**
  * 创建诊断通道目录。
- * 
+ *
  * 架构意图：
  * 聚合所有支持的诊断通道（tasks, sandbox, llm）的元数据，包括其保留期（retention_days）
  * 和允许的持久化引用字段（ref_fields）。这为上层提供了统一的诊断能力视图。
- * 
+ *
  * @returns 不可变的诊断通道目录
  */
 export function createDiagnosticsCatalog(): Readonly<{
@@ -79,12 +79,12 @@ export function getDiagnosticsChannelPolicy(channel: DiagnosticLogChannel): Json
 
 /**
  * 校验诊断日志引用的合法性。
- * 
+ *
  * 架构约束：
  * 1. 字段权限：确保所使用的引用字段（log_ref/code_ref）属于对应的通道策略。
  * 2. 路径隔离：强制要求路径必须以对应通道名开头（如 tasks/）。
  * 3. 格式规范：log_ref 必须以 .jsonl 结尾，code_ref 必须以 .code.ts 结尾。
- * 
+ *
  * @param input 包含通道、引用字段和待校验值的输入
  */
 export function assertDiagnosticStorageRef(input: {
@@ -157,13 +157,13 @@ export function createLlmLogRef(input: {
 
 /**
  * 创建任务执行通道的只读日志行。
- * 
+ *
  * 架构意图：
  * 作为一个“稳压工厂”，它负责在日志行被最终处理前，对其内部字段进行严格校验：
  * 1. 任务元数据（Job ID, Epoch）校验。
  * 2. 步骤逻辑一致性校验（如 err 状态必须携带错误对象）。
  * 3. 时序元信息校验。
- * 
+ *
  * @param input 原始日志行对象
  * @returns 经过校验并克隆的只读日志行
  */
@@ -210,12 +210,12 @@ export function createTaskLogLine<TAction extends string, TLine extends TaskJson
 
 /**
  * 创建沙箱执行通道的只读日志行。
- * 
+ *
  * 架构意图：
  * 负责校验沙箱执行周期的各个阶段（precheck, transpile, facade_call 等）：
  * 1. 阶段必填项校验（如 precheck 失败必须带 violation）。
  * 2. 耗时统计合法性校验。
- * 
+ *
  * @param input 原始沙箱日志行
  * @returns 经过校验的只读日志行
  */
@@ -267,11 +267,11 @@ export function createSandboxLogLine<TLine extends SandboxJsonlLine>(input: TLin
 
 /**
  * 创建大语言模型通道的只读日志行。
- * 
+ *
  * 架构意图：
  * 负责校验 LLM 调用的关键元数据（模型名, Token 数, 耗时, 角色内容等），
  * 确保调用流水线的诊断信息完整。
- * 
+ *
  * @param input 原始 LLM 日志行
  * @returns 经过校验的只读日志行
  */

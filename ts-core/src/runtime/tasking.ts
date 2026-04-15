@@ -1,6 +1,6 @@
 /**
  * 运行时任务建模与工厂。
- * 
+ *
  * 架构职责：
  * 1. 任务全生命周期定义：通过 TaskHistoryStatus 定义任务从接受、开始到完成、失败、中断或丢弃的完整状态机。
  * 2. 执行任务建模：定义 ExecJob 及其子类（SkillCallJob, SandboxCodeJob），封装任务执行所需的全部元数据。
@@ -62,11 +62,11 @@ export type TaskDiscardReason = (typeof TASK_DISCARD_REASONS)[number];
 
 /**
  * 判断给定状态是否属于真实终态。
- * 
+ *
  * 架构意图：
  * 用于识别任务是否已经结束（Completed, Failed, 或 Interrupted），
  * 处于终态的任务通常会触发后续的持久化摘要（Brain Summary）流程。
- * 
+ *
  * @param status 任务历史状态
  * @returns 是否为终态
  */
@@ -138,11 +138,11 @@ export interface InterruptedTaskRecord {
 
 /**
  * 由对话优先级推导执行队列优先级。
- * 
+ *
  * 架构意图：
  * 建立起用户对话感知的紧迫度与底层调度引擎优先级之间的映射。
  * 特别注意：Interrupt 优先级在此处返回 null，因为它代表一种“立即动作”而非“排队优先级”。
- * 
+ *
  * @param priority 对话优先级
  * @returns 对应的执行优先级或 null
  */
@@ -161,11 +161,11 @@ export function toExecPriority(priority: ConversationPriority): ExecPriority | n
 
 /**
  * 创建技能调用执行任务。
- * 
+ *
  * 架构意图：
  * 作为一个工厂函数，它将技能目录中的 SkillCall 逻辑与运行时的调度元数据（Message ID, Epoch, Priority）相结合，
  * 产出一个完整的、可被 BotActor 消费的任务对象。它确保了生成的任务对象满足强类型的技能参数约束。
- * 
+ *
  * @param input 包含调度元数据和技能调用详情的输入
  * @returns 强类型的技能调用任务对象
  */
@@ -191,11 +191,11 @@ export function createSkillCallJob<TInput extends SkillCallJobInput>(
 
 /**
  * 创建沙箱代码执行任务。
- * 
+ *
  * 架构意图：
  * 将待执行的源代码与运行时调度元数据封装为标准的 SandboxCodeJob。
  * 这种封装使得 BotActor 可以透明地处理技能调用和沙箱代码执行，两者共享一致的调度模型。
- * 
+ *
  * @param input 包含调度元数据和源代码的输入
  * @returns 经过冻结的沙箱代码任务对象
  */

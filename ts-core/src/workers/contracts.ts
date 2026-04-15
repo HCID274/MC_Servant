@@ -1,6 +1,6 @@
 /**
  * 工作线程通信契约与动作编排。
- * 
+ *
  * 架构职责：
  * 1. 输入包装：定义 Conversation, Bot, Brain 三类 Worker 的标准输入任务包（Worker Task）。
  * 2. 输出指令：定义 Worker 执行完成后产出的指令集（Actions），如广播回复、入队任务、触发中断和发射生命周期事件。
@@ -231,11 +231,11 @@ export type BrainWorkerAction = PersistTaskSummaryAction;
 
 /**
  * 创建对话工作线程（ConversationWorker）的输入任务。
- * 
+ *
  * 架构意图：
  * 将用户消息及其运行时元数据（纪元、快照时间戳）封装为 Worker 可消费的任务包。
  * 强制要求任务包内的 bot_id 与消息内的一致，确保数据一致性。
- * 
+ *
  * @param input 包含 Bot ID 和消息上下文的输入
  * @returns 经过校验并冻结的任务包
  */
@@ -263,10 +263,10 @@ export function createConversationWorkerTask(input: {
 
 /**
  * 创建机器人工作线程（BotWorker）的输入任务。
- * 
+ *
  * 架构意图：
  * 封装待执行的运行时任务（ExecJob），并指定其目标执行队列。
- * 
+ *
  * @param input 包含 Bot ID 和执行任务的输入
  * @returns 经过冻结的任务包
  */
@@ -286,11 +286,11 @@ export function createBotWorkerTask(input: {
 
 /**
  * 创建摘要工作线程（BrainWorker）的输入任务。
- * 
+ *
  * 架构意图：
  * 封装任务终态摘要所需的最小上下文（Bot ID, Message ID, Epoch, Status），
  * 用于触发后续的异步持久化和 RAG 索引。
- * 
+ *
  * @param input 包含 Bot ID, 消息 ID, 纪元和终态状态的输入
  * @returns 经过冻结的任务包
  */
@@ -317,12 +317,12 @@ export function createBrainWorkerTask(input: {
 
 /**
  * 将路由决策桥接为运行时中断信号。
- * 
+ *
  * 架构意图：
  * 实现对话路由（Conversation Route）到运行时（Runtime）之间的协议映射。
  * 它从路由类型中提取中断原因（cancel, modify 或 triage reason），
  * 并建立起基于意图纪元（Intent Epoch）的中断溯源。
- * 
+ *
  * @param input 包含路由决策和意图纪元的输入
  * @returns 运行时中断信号
  */
@@ -354,7 +354,7 @@ export function createInterruptSignalFromRoute(input: {
 
 /**
  * 根据对话工作线程的路由结果生成输出动作集合。
- * 
+ *
  * 架构意图：
  * 它是对话处理流水线的“动作编排器”。它负责根据路由类型（Chat, Cancel, Plan, Modify）
  * 组合出一系列的异步指令：
@@ -362,7 +362,7 @@ export function createInterruptSignalFromRoute(input: {
  * 2. 广播回复：生成 `broadcast_reply` 向用户反馈。
  * 3. 任务入队：针对规划类路由，生成 `enqueue_exec`。
  * 4. 事件发射：生成 `emit_task_lifecycle` (Accepted) 用于持久化审计。
- * 
+ *
  * @param input 包含 Bot ID, 路由, 纪元, 回复及可选任务的输入
  * @returns 动作数组
  */
@@ -446,13 +446,13 @@ export function createConversationWorkerActions(
 
 /**
  * 根据机器人工作线程的生命周期阶段生成输出动作集合。
- * 
+ *
  * 架构意图：
  * 它是执行流水线的“动作编排器”。它根据任务的不同执行阶段（Started, Discarded, Terminal）
  * 生成相应的后续指令：
  * 1. 状态同步：发射 `emit_task_lifecycle` 确保任务历史和持久化状态实时更新。
  * 2. 摘要触发：当任务进入终态（Terminal）时，自动生成 `enqueue_brain` 动作，触发后续的 BrainWorker 摘要流程。
- * 
+ *
  * @param input 包含任务、阶段及状态特定详情的判别联合输入
  * @returns 动作数组
  */
@@ -579,11 +579,11 @@ export function createBotWorkerActions(
 
 /**
  * 根据摘要工作线程的输入生成最小持久化动作。
- * 
+ *
  * 架构意图：
  * 它是摘要处理流水线的末端动作生成器。目前它负责生成 `persist_task_summary` 指令，
  * 标志着任务摘要已就绪并可进行物理持久化。
- * 
+ *
  * @param input 包含摘要任务的输入
  * @returns 动作数组
  */

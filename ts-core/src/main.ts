@@ -2,11 +2,11 @@ import { createAppBootstrapContract, runAppEntrypoint } from "./app/index.js";
 
 /**
  * 创建当前进程的环境变量快照。
- * 
+ *
  * 架构意图：
  * 1. 确保在应用运行期间环境变量是不可变的（Readonly），防止运行时意外修改。
  * 2. 隔离 Node.js process.env 的动态性，提供一个稳定的配置来源。
- * 
+ *
  * @param env 原始环境变量对象
  * @returns 冻结后的环境变量记录
  */
@@ -26,7 +26,7 @@ function createProcessEnvironmentSnapshot(
 
 /**
  * 解析当前机器人的唯一标识符。
- * 
+ *
  * @param env 环境变量
  * @returns 机器人 ID
  */
@@ -42,7 +42,7 @@ function resolveBotId(env: NodeJS.ProcessEnv): string {
 
 /**
  * 将启动过程中捕获的错误格式化为可读字符串。
- * 
+ *
  * @param error 捕获的异常对象
  */
 function formatStartupError(error: unknown): string {
@@ -55,7 +55,7 @@ function formatStartupError(error: unknown): string {
 
 /**
  * 应用主入口点。
- * 
+ *
  * 架构职责：
  * 1. 初始化引导契约（Bootstrap Contract）：汇集环境快照、时间戳和机器人标识。
  * 2. 启动应用入口（App Entrypoint）：将引导信息注入业务逻辑，并设置标准的输出通道。

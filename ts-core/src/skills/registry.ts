@@ -1,6 +1,6 @@
 /**
  * 技能注册表实现。
- * 
+ *
  * 架构职责：
  * 1. 技能容器：提供 SkillRegistry 接口及其实现，用于管理 Bot 可用的技能集合。
  * 2. 纯函数演进：通过 registerSkillDefinition 以纯函数方式演进注册表，每次更新均返回新的只读快照。
@@ -25,11 +25,11 @@ export interface SkillRegistry {
 
 /**
  * 创建技能注册表。
- * 
+ *
  * 架构意图：
  * 作为一个工厂函数，它将输入的技能定义数组转化为按技能名索引的映射表（Map），
  * 并封装为不可变的 SkillRegistry 对象。
- * 
+ *
  * @param definitions 初始技能定义数组
  * @returns 只读的技能注册表快照
  */
@@ -47,11 +47,11 @@ export function createSkillRegistry(definitions: readonly SkillDefinition[] = []
 
 /**
  * 在注册表上追加或覆盖一个技能定义。
- * 
+ *
  * 架构设计：
  * 遵循不可变数据模式。它不会修改传入的 registry，
  * 而是通过组合旧定义和新定义来创建一个全新的 SkillRegistry 实例。
- * 
+ *
  * @param registry 原注册表
  * @param definition 待注册的技能定义
  * @returns 演进后的新注册表
@@ -81,10 +81,10 @@ export function hasSkillDefinition(registry: SkillRegistry, name: SkillName): bo
 
 /**
  * 列出当前注册表中的所有技能定义。
- * 
+ *
  * 架构意图：
  * 强制按 Phase 1 定义的固定顺序输出技能，确保下游（如 LLM Context 构造）看到的技能列表具有确定性。
- * 
+ *
  * @param registry 技能注册表
  * @returns 排序后的技能定义数组
  */
@@ -99,10 +99,10 @@ export function listSkillDefinitions(registry: SkillRegistry): readonly SkillDef
 
 /**
  * 创建内置 Phase 1 技能的初始注册表。
- * 
+ *
  * 架构意图：
  * 提供系统默认的技能集，支撑 BotActor 初始阶段的动作执行能力。
- * 
+ *
  * @returns 包含 goTo, mine, cutTree, collect, equip 的注册表
  */
 export function createPhase1SkillRegistry(): SkillRegistry {

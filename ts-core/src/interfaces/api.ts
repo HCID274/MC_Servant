@@ -1,6 +1,6 @@
 /**
  * HTTP API 路由定义与请求响应规范。
- * 
+ *
  * 架构职责：
  * 1. 路由清单：定义系统支持的 HTTP 接口（Health, Status, Message, Replay）及其元数据（方法、路径、鉴权模式）。
  * 2. 请求标准化：提供 StatusQuery, ReplayRequest 等请求对象的验证与归一化逻辑（如 Replay 条数限制）。
@@ -112,10 +112,10 @@ export const API_ROUTE_DEFINITIONS = Object.freeze([
 
 /**
  * 读取指定路由定义。
- * 
+ *
  * 架构意图：
  * 提供一个强类型的接口来查询 API 定义，确保系统其他部分引用的路由配置始终与 API_ROUTE_DEFINITIONS 保持一致。
- * 
+ *
  * @param name 路由名称
  * @returns 对应的路由定义
  */
@@ -150,11 +150,11 @@ export function createStatusResponse(input: {
 
 /**
  * 归一化 replay 补拉条数。
- * 
+ *
  * 架构意图：
  * 强制执行 API 的分页策略。如果未指定 limit，则使用默认值；
  * 如果 limit 过大，则将其截断为最大允许值（50 条），防止大规模数据查询对系统造成压力。
- * 
+ *
  * @param limit 输入的条数限制
  * @returns 最终生效的条数限制
  */
@@ -172,10 +172,10 @@ export function normalizeReplayLimit(limit: number | undefined): number {
 
 /**
  * 创建补拉请求。
- * 
+ *
  * 架构意图：
  * 验证并封装补拉请求参数。它确保 afterSeq 为非负整数，并调用 normalizeReplayLimit 来确定 limit。
- * 
+ *
  * @param input 包含 Bot ID, 起始序号和可选限制的输入
  * @returns 经过校验的 ReplayRequest
  */
@@ -199,13 +199,13 @@ export function createReplayRequest(input: {
 
 /**
  * 选择并筛选符合补拉语义的事件批次。
- * 
+ *
  * 架构意图：
  * 实现增量同步的核心算法：
  * 1. 过滤：仅保留属于特定 bot_id 且 seq 大于 after_seq 的事件。
  * 2. 排序：按 seq 升序排列，确保同步时序。
  * 3. 截断：按 limit 限制返回数量。
- * 
+ *
  * @param input 包含请求和原始事件列表的输入
  * @returns 经过筛选并冻结的事件数组
  */
@@ -224,11 +224,11 @@ export function selectReplayEvents(input: {
 
 /**
  * 创建补拉响应。
- * 
+ *
  * 架构意图：
  * 聚合补拉请求、当前状态快照和筛选后的事件批次，生成最终的 ReplayResponse 对象。
  * 它确保了响应数据的完整性和不可变性。
- * 
+ *
  * @param input 包含请求、当前状态和事件列表的输入
  * @returns 完整的补拉响应对象
  */

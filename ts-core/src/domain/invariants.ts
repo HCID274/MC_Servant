@@ -1,6 +1,6 @@
 /**
  * 领域不变量校验与只读辅助。
- * 
+ *
  * 架构职责：
  * 1. 基础校验：提供 assertNonEmptyString 等通用的运行时字段校验，确保领域对象的完整性。
  * 2. 深度冻结：通过 cloneReadonlyValue 实现对象和数组的深层克隆与冻结，强制执行不可变数据（Immutable Data）模式。
@@ -15,11 +15,11 @@ export function assertNonEmptyString(value: string, fieldName: string): void {
 
 /**
  * 深克隆并递归冻结对象或数组。
- * 
+ *
  * 架构意图：
  * 在系统各个模块的“出口”或“入口”处调用，确保传递的数据在后续流程中不会被意外修改，
  * 从而维护系统的状态可预测性。
- * 
+ *
  * @param value 原始值
  * @returns 冻结后的深层副本
  */

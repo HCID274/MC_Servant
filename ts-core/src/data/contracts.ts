@@ -1,6 +1,6 @@
 /**
  * 数据契约与持久化模型转换。
- * 
+ *
  * 架构职责：
  * 1. 契约定义：定义所有可持久化到数据库的对象结构（Event Log, Task History, Config 等）。
  * 2. 状态映射：将运行时的动态对象（如 ExecJob, RuntimeEvent）映射为符合数据库 Schema 的持久化记录。
@@ -492,12 +492,12 @@ export function createTaskPersistencePlan(input: {
 }): readonly PersistenceWriteStep[];
 /**
  * 获取任务持久化写入计划。
- * 
+ *
  * 架构意图：
  * 该函数根据任务的当前生命周期阶段（如 entry, running, terminal, brain_summary），
  * 从全局写入序列（TASK_PERSISTENCE_WRITE_SEQUENCE）中筛选出对应的持久化步骤。
  * 它确保了数据库更新的时序性，并支持 BrainWorker 阶段的可选会话聚合。
- * 
+ *
  * @param input 包含阶段和可选聚合标志的输入
  * @returns 经过筛选的持久化写入步骤
  */
@@ -528,11 +528,11 @@ export function createTaskPersistencePlan(input: {
 
 /**
  * 创建持久化事件日志记录。
- * 
+ *
  * 架构意图：
  * 作为一个工厂函数，它负责验证输入的基础标识符（bot_id）和时间戳（created_at），
  * 并生成一个符合数据库 Schema 的只读事件日志对象。
- * 
+ *
  * @param input 包含 seq, bot_id, session_id, type, payload 和 created_at 的输入
  * @returns 经过验证和克隆的只读记录
  */
@@ -567,11 +567,11 @@ export function createPersistedEventLogRecord<TType extends PersistedEventType>(
 
 /**
  * 从运行时生命周期事件创建持久化事件日志记录。
- * 
+ *
  * 架构意图：
  * 负责将运行时的 TaskLifecycleEvent 转换为持久化层可识别的 EventLogRecord。
  * 这是一个关键的适配器，确保了运行时状态机事件能够无损地进入持久化流水线。
- * 
+ *
  * @param input 包含 seq, bot_id, session_id, lifecycle 事件和 created_at 的输入
  * @returns 对应的生命周期持久化记录
  */
@@ -598,13 +598,13 @@ export function createPersistedTaskLifecycleEventLogRecord<
 
 /**
  * 创建步骤进度（step.progress）的持久化事件记录。
- * 
+ *
  * 架构意图：
  * 专门用于记录任务执行过程中的每一个原子步骤。
  * 它从运行时 ExecJob 中提取核心元数据（job_id, type, message_id, epoch），
  * 并结合当前的步骤状态（status）、索引（step_index）及输入输出参数（params/result），
  * 生成细粒度的进度记录。
- * 
+ *
  * @param input 包含 job, step_index, action, status 等执行细节的输入
  * @returns 步骤进度持久化记录
  */
@@ -664,14 +664,14 @@ export function createPersistedTaskProgressEventLogRecord(input: {
 
 /**
  * 创建任务历史已接受（Accepted）记录。
- * 
+ *
  * 架构意图：
  * 当任务刚被系统接受时，创建其初始持久化快照。
  * 它负责根据任务类型（沙箱代码或技能调用）分发逻辑：
  * 1. 沙箱代码：强制要求 code_ref。
  * 2. 技能调用：禁止 code_ref，提取技能名和参数。
  * 同时校验 log_ref 的频道一致性，确保数据存储的物理隔离。
- * 
+ *
  * @param input 包含 bot_id, job, log_ref, code_ref 和 created_at 的输入
  * @returns 初始化的任务历史记录
  */
@@ -731,10 +731,10 @@ export function createPersistedTaskHistoryAcceptedRecord(input: {
 
 /**
  * 创建任务历史开始执行（Started）更新补丁。
- * 
+ *
  * 架构意图：
  * 当任务由“就绪”转为“执行中”时，记录其真实的开始时间，用于后续的耗时统计。
- * 
+ *
  * @param input 任务 ID 和开始时间
  * @returns 状态更新补丁
  */
@@ -781,13 +781,13 @@ export function createPersistedTaskHistoryTerminalPatch(input: {
 }): PersistedTaskHistoryInterruptedPatch;
 /**
  * 创建任务历史终态（Terminal）更新补丁。
- * 
+ *
  * 架构意图：
  * 统一处理任务进入 Completed, Failed 或 Interrupted 终态时的持久化数据补丁。
  * 它负责校验终态参数的完整性：
  * 1. Failed 状态：强制要求携带错误信息（error）。
  * 2. Interrupted 状态：强制要求携带中断来源信息（interrupt_source）。
- * 
+ *
  * @param input 包含任务 ID, 终态类型, 完成时间, 耗时, 总步数及相关信息的输入
  * @returns 终态更新补丁
  */
@@ -1206,13 +1206,13 @@ export type DataConfigEnvironment = Readonly<Record<string, string | undefined>>
 
 /**
  * 创建基础设施配置（DataConfig）。
- * 
+ *
  * 架构意图：
  * 它是配置加载的组合根，负责：
  * 1. 基础加载：从环境变量快照中解析基础配置。
  * 2. 覆盖解析：将传入的 Bot 级配置（botConfig）解析为强类型的 Overlay 对象。
  * 3. 策略合并：将 Overlay 合并到基础配置中，实现“环境配置为底，Bot 配置覆盖”的层级逻辑。
- * 
+ *
  * @param input 包含环境变量和 Bot 级覆盖配置的可选输入
  * @returns 最终生效的 DataConfig
  */
@@ -1230,12 +1230,12 @@ export function createDataConfig(
 
 /**
  * 解析并校验 Bot 级覆盖配置。
- * 
+ *
  * 架构意图：
  * 作为一个“守门员”，它负责将数据库或 API 传入的非结构化（unknown）配置对象，
  * 按照白名单机制（logs, embedding）清洗并转换为强类型的 BotConfigOverlay。
  * 这确保了动态配置的安全性，防止意外的 key 干扰系统行为。
- * 
+ *
  * @param input 原始 Bot 配置对象
  * @returns 经过校验和清洗的覆盖对象
  */
@@ -1262,12 +1262,12 @@ export function createBotConfigOverlay(input: unknown): BotConfigOverlay {
 
 /**
  * 将 Bot 级覆盖合并到基础配置。
- * 
+ *
  * 架构意图：
  * 实现具体的合并策略。例如，日志根目录（baseDir）和各目录的保留期（retention）
  * 会根据 Overlay 中的值决定是使用全局默认值还是 Bot 自定义值。
  * 它确保了生成的最终配置（DataConfig）是完全冻结（Object.freeze）且自包含的。
- * 
+ *
  * @param baseConfig 基础配置
  * @param overlay 覆盖配置
  * @returns 合并后的 DataConfig

@@ -2,9 +2,9 @@
 
 TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
-当前仓库已经提供一个最小本地启动骨架：`src/main.ts`（可执行入口） 只消费纯 `app`（应用装配） 结果，输出可读的启动摘要，不连接真实 Redis（缓存） / PostgreSQL（关系型数据库） / Fastify（接口网关） / Socket.io（实时推送） / Mineflayer（Minecraft 协议客户端）。
+当前仓库已经提供一个最小本地启动骨架：`src/main.ts`（可执行入口） 只消费纯 `app`（应用装配） 结果，输出可读的启动摘要，不自动连接真实 Redis（缓存） / PostgreSQL（关系型数据库） / BullMQ（任务队列） / Fastify（接口网关） / Socket.io（实时推送） / Mineflayer（Minecraft 协议客户端）。
 
-同时，仓库现在已经提供可被后续 BullMQ（任务队列） / Fastify（接口网关） 复用的真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源工厂，以及 Drizzle（数据库工具） migration（迁移） 执行入口；默认启动摘要仍不会主动连接这些外部资源。
+同时，仓库现在已经提供可被后续消息链路复用的真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源工厂、BullMQ（任务队列） 三队列运行时工厂、Fastify（接口网关） 服务器骨架，以及 Drizzle（数据库工具） migration（迁移） 执行入口；默认启动摘要仍不会主动连接这些外部资源。
 
 ## 开发命令
 
@@ -24,7 +24,7 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
 - 提供单进程、单容器的最小启动骨架与纯装配摘要。
 - 已包含 PostgreSQL（关系型数据库） / Redis（缓存） 真实资源工厂、统一关闭边界和 Drizzle（数据库工具） migration（迁移） 入口。
-- 默认入口仍不自动启动 HTTP（超文本传输协议） / BullMQ（任务队列） / Mineflayer（Minecraft 协议客户端）。
+- 默认入口仍不自动启动 HTTP（超文本传输协议） / BullMQ（任务队列） / Mineflayer（Minecraft 协议客户端）；这些真实运行时句柄需通过 `app`（应用装配） 层的组合工厂显式创建。
 
 ## 最小本地启动
 

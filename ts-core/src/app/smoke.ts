@@ -1,6 +1,6 @@
 /**
  * 应用冒烟测试与装配摘要。
- * 
+ *
  * 架构职责：
  * 1. 冒烟装配（Smoke Assembly）：提供一个轻量级的装配视图，用于在不启动真实服务的情况下验证配置和依赖关系的正确性。
  * 2. 隔离验证：确保在脱离 Minecraft (MC) 协议栈的情况下，核心业务组件（数据库、Redis、Worker 等）的装配逻辑依然稳健。
@@ -31,6 +31,8 @@ export interface AppSmokeAssembly<TBotId extends string = string> {
   readonly runtime: AppBootstrapContract<TBotId>["runtime"];
   /** 真实资源目录。 */
   readonly resources: AppBootstrapContract<TBotId>["resources"];
+  /** 服务层资源目录。 */
+  readonly services: AppBootstrapContract<TBotId>["services"];
   /** 健康检查输出基线。 */
   readonly health: AppBootstrapContract<TBotId>["interfaces"]["health"];
   /** 子系统依赖与就绪目录。 */
@@ -41,11 +43,11 @@ export interface AppSmokeAssembly<TBotId extends string = string> {
 
 /**
  * 创建单 Bot（机器人） 的无 MC（Minecraft） 冒烟装配摘要。
- * 
+ *
  * 架构设计：
  * 该函数通过调用标准的 createAppBootstrapContract 来获取完整的引导契约，
  * 然后将其投影为一个更适合冒烟测试观察的“装配摘要”结构。
- * 
+ *
  * @param input 引导输入
  * @returns 冒烟装配摘要
  */
@@ -62,6 +64,7 @@ export function createAppSmokeAssembly<TBotId extends string>(
     workers: assembly.workers,
     runtime: assembly.runtime,
     resources: assembly.resources,
+    services: assembly.services,
     health: assembly.interfaces.health,
     readiness: assembly.readiness,
     lifecycle: assembly.lifecycle,

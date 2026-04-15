@@ -97,10 +97,10 @@ export interface AppReadinessDescriptor {
 
 /**
  * 创建一个不可变的生命周期步骤对象。
- * 
+ *
  * 架构设计：
  * 该函数用于标准化系统启动或关闭过程中的每一个独立步骤，确保配置信息的完整性。
- * 
+ *
  * @param input 步骤配置项
  * @returns 冻结后的生命周期步骤
  */
@@ -122,12 +122,12 @@ function createLifecycleStep<TName extends AppLifecycleStepName>(input: {
 
 /**
  * 校验生命周期阶段内的步骤顺序是否合法。
- * 
+ *
  * 架构意图：
  * 1. 阶段一致性：确保所有步骤都处于其声明的阶段（如 startup 或 shutdown）。
  * 2. 依赖拓扑校验：利用数组索引判断依赖顺序。一个步骤的所有依赖必须在数组中排在其之前。
  * 3. 健壮性：防止生命周期配置中出现循环依赖或缺失依赖。
- * 
+ *
  * @param steps 生命周期步骤列表
  * @param phase 目标生命周期阶段
  */
@@ -260,24 +260,24 @@ export function createAppLifecyclePlan(): AppLifecyclePlan {
       description: "等待中断完成后把运行时切换到 SHUTDOWN（关闭） 状态。",
     }),
     createLifecycleStep({
-      name: "stop_workers",
-      phase: "shutdown",
-      subsystem: "workers",
-      dependsOn: ["transition_runtime_shutdown"],
-      description: "停止三个 Worker（工作线程） 接收新任务。",
-    }),
-    createLifecycleStep({
       name: "stop_http",
       phase: "shutdown",
       subsystem: "http",
-      dependsOn: ["stop_workers"],
-      description: "停止 HTTP（超文本传输协议） 新请求进入。",
+      dependsOn: ["transition_runtime_shutdown"],
+      description: "先停止 HTTP（超文本传输协议） 新请求进入。",
+    }),
+    createLifecycleStep({
+      name: "stop_workers",
+      phase: "shutdown",
+      subsystem: "workers",
+      dependsOn: ["stop_http"],
+      description: "在停止新请求后，再停止三个 Worker（工作线程） 接收新任务。",
     }),
     createLifecycleStep({
       name: "stop_realtime",
       phase: "shutdown",
       subsystem: "realtime",
-      dependsOn: ["stop_http"],
+      dependsOn: ["stop_workers"],
       description: "广播 bot.offline 后关闭实时推送连接。",
     }),
     createLifecycleStep({

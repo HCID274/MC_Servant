@@ -1,6 +1,6 @@
 /**
  * 结构化日志契约与行工厂。
- * 
+ *
  * 架构职责：
  * 1. 协议定义：定义 tasks, sandbox, llm 三个通道的 JSONL 行结构。使用短字段名（如 t, e, i, s）以优化存储和传输。
  * 2. 转换逻辑：提供核心工厂函数，将运行时的复杂事件（如 TaskLifecycleEvent）转换为紧凑的、持久化友好的日志行。
@@ -226,12 +226,12 @@ function freezeDiagnosticValue<T>(value: T): T {
 
 /**
  * 创建任务执行通道的生命周期摘要行。
- * 
+ *
  * 架构意图：
  * 它是运行时生命周期事件到 JSONL 持久化行的“翻译官”。
  * 针对 Started, Completed, Failed, Interrupted 四种状态，分别映射为不同的日志载荷。
  * 尤其在 Failed 和 Interrupted 状态下，它会额外提取错误信息或中断来源。
- * 
+ *
  * @param input 包含 Unix 时间戳和生命周期事件的输入
  * @returns 格式化后的 JSONL 摘要行
  */

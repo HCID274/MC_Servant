@@ -1,6 +1,6 @@
 /**
  * Redis 键名管理与命名空间。
- * 
+ *
  * 架构职责：
  * 1. 命名空间隔离：通过 `bot:{botId}:*` 前缀确保不同 Bot 之间的数据在 Redis 中物理隔离。
  * 2. 模式标准化：定义意图纪元（Intent Epoch）、状态（State）、观测快照（Snapshot）以及 BullMQ 队列键的统一命名模式。
@@ -52,10 +52,10 @@ export interface RedisKeyCatalog<TBotId extends string = string> {
 
 /**
  * 创建意图纪元键名。
- * 
+ *
  * 架构意图：
  * 生成一个按 Bot 隔离的 Redis Key，用于存储当前的纪元计数。
- * 
+ *
  * @param botId Bot 唯一标识
  * @returns 意图纪元键名
  */
@@ -69,10 +69,10 @@ export function createIntentEpochKey<TBotId extends string>(
 
 /**
  * 创建状态缓存键名。
- * 
+ *
  * 架构意图：
  * 生成一个按 Bot 隔离的 Redis Key，用于存储实时的 Bot 状态快照。
- * 
+ *
  * @param botId Bot 唯一标识
  * @returns 状态缓存键名
  */
@@ -84,10 +84,10 @@ export function createBotStateKey<TBotId extends string>(botId: TBotId): BotStat
 
 /**
  * 创建观测快照键名。
- * 
+ *
  * 架构意图：
  * 生成一个按 Bot 隔离的 Redis Key，用于存储最新的环境观测快照。
- * 
+ *
  * @param botId Bot 唯一标识
  * @returns 观测快照键名
  */
@@ -108,11 +108,11 @@ export function createBullQueueKeyPattern<TQueue extends WorkerQueueName>(
 
 /**
  * 创建按 Bot 视角收口的 Redis 键目录。
- * 
+ *
  * 架构意图：
  * 作为一个聚合工厂，它将分散的 Key 生成逻辑整合在一起，
  * 为业务层提供一个一站式的“Key 导航表”，包括状态键、快照键以及各 Worker 队列的键模式。
- * 
+ *
  * @param botId Bot 唯一标识
  * @returns 完整的 RedisKeyCatalog
  */

@@ -1,6 +1,6 @@
 /**
  * 数据库物理连接与资源实例化。
- * 
+ *
  * 架构职责：
  * 1. 资源抽象：将基础设施配置转换为运行时可操作的 PostgresRuntimeResource 和 RedisRuntimeResource。
  * 2. 连接池管理：封装 pg (PostgreSQL) 连接池和 ioredis 客户端的创建、预热（Warmup）与优雅关闭。
@@ -176,11 +176,11 @@ export interface RedisRuntimeDependencies {
 
 /**
  * 基于纯配置创建 PostgreSQL 连接描述符。
- * 
+ *
  * 架构意图：
  * 该函数负责验证数据库连接参数的合法性，并绑定业务 Schema 契约（PostgresSchemaContract）
  * 以及必须安装的数据库扩展（requiredExtensions）。
- * 
+ *
  * @param config 基础设施配置
  * @returns 不可变的连接描述符
  */
@@ -273,12 +273,12 @@ export function createRedisRuntimeClientOptions(): RedisRuntimeClientOptions {
 
 /**
  * 创建 PostgreSQL 真实运行时资源。
- * 
+ *
  * 架构设计：
  * 1. 实例化：调用工厂创建物理连接池。
  * 2. 预热：通过 warmupPool 确保连接池可用。
  * 3. 包装：集成 Drizzle ORM 句柄，并封装 close 清理逻辑。
- * 
+ *
  * @param descriptor 连接描述符
  * @param dependencies 可注入的依赖
  * @returns PostgreSQL 运行时资源
@@ -312,11 +312,11 @@ export async function createPostgresRuntimeResource(
 
 /**
  * 创建 Redis 真实运行时资源。
- * 
+ *
  * 架构设计：
  * 1. 配置注入：强制锁定 lazyConnect 和 BullMQ 兼容性选项。
  * 2. 延迟连接：支持在资源创建后手动触发 connect。
- * 
+ *
  * @param descriptor 连接描述符
  * @param dependencies 可注入的依赖
  * @returns Redis 运行时资源
@@ -392,7 +392,7 @@ function createDefaultRedisClient(
 
   const RedisConstructor = RedisModule as unknown as new (
     url: string,
-    options: RedisOptions,
+    connectionOptions: RedisOptions,
   ) => RedisClientLike;
 
   return new RedisConstructor(descriptor.url, redisOptions);

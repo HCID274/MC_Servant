@@ -1,6 +1,6 @@
 /**
  * 数据库 Schema 与 Drizzle ORM 表定义。
- * 
+ *
  * 架构职责：
  * 1. 物理模型定义：使用 Drizzle ORM 定义 PostgreSQL 表结构，包括主外键、索引、唯一约束等。
  * 2. 向量化支持：配置 pgvector 相关的向量列与 HNSW 索引，支撑 RAG（检索增强生成）功能。
@@ -149,7 +149,7 @@ export const SESSION_SUMMARIES_SEARCH_INDEXES = [
 
 /**
  * 用户（所有者）表。
- * 
+ *
  * 架构意图：
  * 承载管理系统的基本身份信息与认证凭证（密码 Hash）。
  */
@@ -164,7 +164,7 @@ export const ownersTable = mcServantSchema.table("owners", {
 
 /**
  * 机器人配置表。
- * 
+ *
  * 架构意图：
  * 存储 Bot 的核心配置，包括人格模板、目标 Minecraft 服务器以及动态配置覆盖（config 字段）。
  */
@@ -217,7 +217,7 @@ export const sessionsTable = mcServantSchema.table(
 
 /**
  * 对话消息表。
- * 
+ *
  * 架构意图：
  * 记录 Bot 与主人之间的完整对话流，通过 sessionId 关联特定会话，为 LLM 提供长短期记忆背景。
  */
@@ -245,7 +245,7 @@ export const chatMessagesTable = mcServantSchema.table(
 
 /**
  * 事件日志表。
- * 
+ *
  * 架构意图：
  * 存储系统运行期间的各类原子事件（状态机迁移、心跳、IO 结果等），用于审计和回溯系统行为。
  */
@@ -267,7 +267,7 @@ export const eventLogTable = mcServantSchema.table(
 
 /**
  * 任务历史表。
- * 
+ *
  * 架构意图：
  * 记录每一个任务（技能调用或沙箱代码）的详细生命周期，包括状态切换、日志引用（logRef）和耗时统计。
  */
@@ -305,7 +305,7 @@ export const taskHistoryTable = mcServantSchema.table(
 
 /**
  * 任务摘要与向量表。
- * 
+ *
  * 架构意图：
  * 存储任务执行完成后的 LLM 总结及其 Embedding 向量，支持基于语义相似度的 RAG 检索。
  */
@@ -334,7 +334,7 @@ export const taskSummariesTable = mcServantSchema.table(
 
 /**
  * 会话摘要与向量表。
- * 
+ *
  * 架构意图：
  * 记录一个会话内多个相关任务的聚合总结及其向量表示。
  */
@@ -366,7 +366,7 @@ export const mcServantTables = {
 
 /**
  * 生成 SQL CHECK 约束。
- * 
+ *
  * 架构意图：
  * 在数据库层面强制文本列的取值范围，弥补 Drizzle ORM 在特定 pg 版本下对文本枚举校验的不足。
  */

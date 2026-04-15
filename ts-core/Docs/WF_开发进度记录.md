@@ -11,7 +11,7 @@
 ## 当前批次
 
 - 批次范围：`T-011` ~ `T-020`
-- 当前已完成任务：`T-011`、`T-012`、`T-013`、`T-014`、`T-015`、`T-016`、`T-017`、`T-018`
+- 当前已完成任务：`T-011`、`T-012`、`T-013`、`T-014`、`T-015`、`T-016`、`T-017`、`T-018`、`T-019`
 - 当前批次摘要：已完成外部输入统一 ingress（入口） 契约、执行任务生命周期闭环契约、`runtime`（运行时） / `data`（数据配置） / `db`（数据库元信息） / `app`（应用装配） 侧的外部认证纯契约与启动语义对齐、最小本地启动 / 容器骨架、`event_log`（事件日志） / `task_history`（任务历史） / `JSONL`（结构化日志） / `replay`（补拉） 的纯持久化边界、”外部认证待执行 → 受控登录命令计划 → ready（就绪） 门控”的最小执行骨架、`domain`（领域） 横切基础层上的共享不变量 / 通用只读辅助收口，以及 PostgreSQL（关系型数据库） / Redis（缓存） 真实资源工厂与 Drizzle（数据库工具） migration（迁移） 真实执行入口；接口层、运行时层、装配层、持久化层、基础契约层与真实 I/O（输入输出） 资源工厂已经形成同一套可测试、可组装的强类型模型。
 
 ### 2026-04-14 批次调度调整
@@ -272,3 +272,36 @@
 
 - 预检结果：
   以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `17` 个测试文件、`88` 条测试全部通过。
+
+### T-019（已完成）
+
+- 任务目标：
+  在 `workers`（工作线程） + `interfaces`（接口边界） + `app`（应用装配） 这一组紧邻模块内，接入真实 BullMQ（任务队列） 队列实例与 Fastify（接口网关） 启动骨架，使系统具备可启动、可监听、可关闭的最小 HTTP（超文本传输协议） 服务与任务入队能力。
+
+- 审查结论：
+  通过。首轮审查曾因 `interfaces/server.ts`（接口服务） 会接受任意请求 `bot_id`（机器人标识） 并伪造单 Bot（单机器人） 进程的 200 / 202 响应，以及空白字符串输入会走普通 `Error`（错误） 路径而打回；本轮已把 `/api/status`、`/api/message`、`/api/replay` 三条路由统一收口到“当前运行时 `bot_id` 是唯一合法目标”，`bot_id mismatch`（机器人标识不一致） 与空白 `bot_id` / `message_id` / `content`（机器人标识 / 消息标识 / 内容） 都会稳定返回 `400`（请求错误），阻塞性逻辑问题已消除。
+
+- 核心文件：
+  `ts-core/package.json`
+  `ts-core/pnpm-lock.yaml`
+  `ts-core/README.md`
+  `ts-core/src/workers/bullmq.ts`
+  `ts-core/src/workers/index.ts`
+  `ts-core/src/interfaces/server.ts`
+  `ts-core/src/interfaces/index.ts`
+  `ts-core/src/app/contracts.ts`
+  `ts-core/src/app/bootstrap.ts`
+  `ts-core/src/app/smoke.ts`
+  `ts-core/src/__tests__/workers-bullmq-model.spec.ts`
+  `ts-core/src/__tests__/interfaces-server-model.spec.ts`
+  `ts-core/src/__tests__/app-smoke-model.spec.ts`
+  `ts-core/src/__tests__/scaffold.spec.ts`
+
+- 变更快照：
+  `workers/bullmq.ts`（任务队列运行时） 新增真实 BullMQ（任务队列） 三队列工厂，基于共享 `ioredis`（Redis 客户端库） 连接创建 `msg:{botId}`、`bot:{botId}:exec`、`brain` 三组 `Queue`（队列），并暴露统一 `close()`（关闭） 生命周期边界与依赖注入测试入口。
+  `interfaces/server.ts`（接口服务） 新增真实 Fastify（接口网关） 服务器骨架，注册 `GET /api/health`、`GET /api/status`、`POST /api/message`、`GET /api/replay` 四条最小路由，支持 `listen()`（监听） / `close()`（关闭） 与 `fastify.inject()`（注入测试）；同时把跨 Bot（跨机器人） 请求拒绝与空白字符串 `400`（请求错误） 边界锁死在路由层。
+  `app/bootstrap.ts`（应用装配） / `app/contracts.ts`（应用生命周期契约） 新增服务层资源目录与组合工厂，把 BullMQ（任务队列） 与 Fastify（接口网关） 纳入应用运行时，并将关闭顺序明确为 `http -> workers -> redis -> postgres`。
+  回归测试新增了三类边界：BullMQ（任务队列） 三队列创建 / 关闭顺序、Fastify（接口网关） 四路由响应结构、以及 `bot_id mismatch`（机器人标识不一致） 与空白输入的 `400`（请求错误） 路径。
+
+- 预检结果：
+  以 Coder（编码代理） 回填结果为准：`bash ts-core/scripts/pre_review.sh` 通过；Vitest（测试） `19` 个测试文件、`94` 条测试全部通过。

@@ -1,6 +1,6 @@
 /**
  * 运行时状态机逻辑。
- * 
+ *
  * 架构职责：
  * 1. 状态转移校验：实现 `canTransition` 逻辑，确保 BotActor 严格遵循预设的状态迁移图（Initializing -> Idle -> Executing 等）。
  * 2. 中断判定策略：通过 `resolveInterruptDecision` 实现复杂的中断决策逻辑，区分抢占式中断（如 Reflex）与排队式中断。
@@ -118,12 +118,12 @@ export function isBotStatus(value: string): value is BotStatus {
 
 /**
  * 判断给定转换是否属于合法的状态迁移路径。
- * 
+ *
  * 架构意图：
  * 它是状态机的“守门员”，严格执行文档中定义的有向图。
  * 例如：一旦进入 SHUTDOWN 状态，就不允许再迁往任何其他状态；
  * 只有 IDLE 或 EXECUTING 才能迁往 REFLEXING 等。
- * 
+ *
  * @param from 起始状态
  * @param to 目标状态
  * @returns 是否允许转换
@@ -161,14 +161,14 @@ export function canTransition(from: BotStatus, to: BotStatus): boolean {
 
 /**
  * 解析中断信号对当前状态的具体影响。
- * 
+ *
  * 架构意图：
  * 实现中断优先级逻辑：
  * 1. reflex 类型中断：具有最高优先级，即使在执行中也会强制进入 REFLEXING 状态。
  * 2. 状态约束：在 INITIALIZING 或 REFLEXING 状态下收到的中断会被标记为 "queue"（待处理），
  *    而在 DEAD 或 SHUTDOWN 状态下则会被忽略。
  * 3. 任务抢占：在 EXECUTING 状态下收到控制类中断会触发 "transition" 回 IDLE 状态。
- * 
+ *
  * @param currentStatus 当前 Bot 状态
  * @param signal 收到的中断信号
  * @returns 中断决策对象
@@ -231,14 +231,14 @@ export function resolveInterruptDecision(
 
 /**
  * 根据外部原因解析状态转换的最终结果。
- * 
+ *
  * 架构意图：
  * 它是状态机的核心分发器（Dispatcher），将各种异步事件（任务完成、死亡、中断、就绪等）
  * 映射为具体的 TransitionDecision。它负责处理复杂的逻辑，例如：
  * - 在任务拉取时校验纪元和快照的新鲜度。
  * - 在就绪事件中校验外部认证门控。
  * - 结合中断决策逻辑处理中断信号。
- * 
+ *
  * @param currentStatus 当前 Bot 状态
  * @param reason 触发转换的原因载荷
  * @returns 最终的转换决策
@@ -311,12 +311,12 @@ export function resolveTransition(
 
 /**
  * 创建统一格式的状态转换决策。
- * 
+ *
  * 架构意图：
  * 作为一个工厂函数，它负责填充决策对象中的公共字段，
  * 特别是自动补全副作用事件列表。如果转换被接受且涉及状态变更，
  * 它会自动将 `state.transition` 加入待触发事件清单，确保系统的可观测性。
- * 
+ *
  * @param from 起始状态
  * @param to 目标状态
  * @param reason 触发原因类型
