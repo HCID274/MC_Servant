@@ -17,6 +17,15 @@ import { type WorkerQueueCatalog, createWorkerQueueCatalog } from "./queues.js";
 export interface BullmqQueueLike<TName extends WorkerQueueName = WorkerQueueName> {
   /** 当前队列名称。 */
   readonly name: TName;
+  /** 添加任务到队列，真实路径代理到底层 BullMQ（任务队列） Queue.add。 */
+  add?(
+    name: string,
+    data: unknown,
+    options?: Readonly<{
+      jobId?: string;
+      priority?: number;
+    }>,
+  ): Promise<Readonly<{ id?: string | number }>>;
   /** 关闭队列句柄。 */
   close(): Promise<unknown>;
 }
@@ -58,13 +67,32 @@ export interface WorkerBullmqDependencies {
   readonly closeQueue?: (queue: BullmqQueueLike) => Promise<void>;
 }
 
+/** 把契约队列名转换为 BullMQ（任务队列） 允许的物理队列名。 */
+export function createBullmqPhysicalQueueName(name: WorkerQueueName): string {
+  return name.replaceAll(":", "__");
+}
+
 function createBullmqQueue<TName extends WorkerQueueName>(input: {
   name: TName;
   connection: RedisClientLike;
 }): BullmqQueueLike<TName> {
-  return new Queue(input.name, {
+  const queue = new Queue(createBullmqPhysicalQueueName(input.name), {
     connection: input.connection as QueueOptions["connection"],
-  }) as unknown as BullmqQueueLike<TName>;
+  });
+  const queueLike: BullmqQueueLike<TName> = {
+    name: input.name,
+    add: async (
+      name: string,
+      data: unknown,
+      options?: Readonly<{
+        jobId?: string;
+        priority?: number;
+      }>,
+    ) => queue.add(name, data, options),
+    close: async () => queue.close(),
+  };
+
+  return Object.freeze(queueLike);
 }
 
 function createQueueRuntime<TName extends WorkerQueueName>(input: {

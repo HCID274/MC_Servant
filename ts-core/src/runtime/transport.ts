@@ -43,6 +43,8 @@ export interface MineflayerEventSource {
 export interface MineflayerBotHandle extends MineflayerEventSource {
   /** Mineflayer（Minecraft 协议客户端） 实际登录用户名。 */
   readonly username?: string;
+  /** 向 Minecraft（我的世界） 游戏聊天频道写入文本。 */
+  chat?(text: string): void | Promise<void>;
   /** 断开连接的优先方法。 */
   quit?(reason?: string): void;
   /** 断开连接的兼容方法。 */
@@ -102,6 +104,8 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   connect(): Promise<MineflayerTransportSnapshot<TBotId>>;
   /** 断开 Mineflayer（Minecraft 协议客户端） 连接。 */
   disconnect(reason?: string): Promise<MineflayerTransportSnapshot<TBotId>>;
+  /** 通过当前 Mineflayer（Minecraft 协议客户端） 连接发送聊天文本。 */
+  chat(text: string): Promise<void>;
   /** 获取当前连接描述快照。 */
   getSnapshot(): MineflayerTransportSnapshot<TBotId>;
   /** 获取当前只读事件源；未连接或已回收时为 null。 */
@@ -231,6 +235,19 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
 
       return createSnapshot();
     },
+    async chat(text: string): Promise<void> {
+      assertNonEmptyString(text, "chat.text");
+
+      if (state !== "connected" || bot === null) {
+        throw new Error("Mineflayer transport must be connected before chat");
+      }
+
+      if (typeof bot.chat !== "function") {
+        throw new Error("Mineflayer bot handle does not expose chat");
+      }
+
+      await bot.chat(text);
+    },
     getSnapshot(): MineflayerTransportSnapshot<TBotId> {
       return createSnapshot();
     },
@@ -312,7 +329,9 @@ function waitForMineflayerSpawn(bot: MineflayerBotHandle, timeoutMs: number): Pr
     let settled = false;
     const removeListeners: Array<() => void> = [];
     const timeout = setTimeout(() => {
-      settle(() => reject(new Error("Mineflayer transport connect timed out before spawn")));
+      settle(() =>
+        reject(new Error("Mineflayer transport connect timed out before login or spawn")),
+      );
     }, timeoutMs);
 
     const settle = (finish: () => void) => {
@@ -329,13 +348,16 @@ function waitForMineflayerSpawn(bot: MineflayerBotHandle, timeoutMs: number): Pr
     };
 
     removeListeners.push(
+      // EasyAuth（离线服认证模组） 可能在 spawn（生成） 前先要求聊天注册/登录；
+      // 对最小聊天闭环而言 login（协议登录） 后已经具备 chat（聊天） 写能力。
+      addOnceListener(bot, "login", () => settle(resolve)),
       addOnceListener(bot, "spawn", () => settle(resolve)),
       addOnceListener(bot, "end", () =>
-        settle(() => reject(new Error("Mineflayer transport ended before spawn"))),
+        settle(() => reject(new Error("Mineflayer transport ended before login or spawn"))),
       ),
       addOnceListener(bot, "kicked", (reason) =>
         settle(() =>
-          reject(new Error(`Mineflayer transport kicked before spawn: ${String(reason)}`)),
+          reject(new Error(`Mineflayer transport kicked before login or spawn: ${String(reason)}`)),
         ),
       ),
       addOnceListener(bot, "error", (error) => settle(() => reject(error))),

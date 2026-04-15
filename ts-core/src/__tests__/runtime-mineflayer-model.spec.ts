@@ -71,6 +71,36 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(transport.getEventSource()).toBeNull();
   });
 
+  it("应允许 EasyAuth（离线服认证模组） 场景在 login（协议登录） 后进入最小聊天连接态", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-login-ready",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    createdBots[0]?.emit("login");
+
+    const connected = await connectPromise;
+
+    expect(connected.state).toBe("connected");
+    expect(connected.connected).toBe(true);
+    expect(transport.getEventSource()).not.toBeNull();
+
+    await transport.disconnect("test shutdown");
+  });
+
   it("应在 spawn（生成） 前失败时回收 Bot（机器人） 与运行时监听器", async () => {
     const failedBot = new FakeMineflayerBot();
     const transport = createMineflayerRuntimeTransport(
@@ -95,6 +125,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     });
     expect(failedBot.closed).toBe(true);
     expect(transport.getEventSource()).toBeNull();
+    expect(failedBot.listenerCount("login")).toBe(0);
     expect(failedBot.listenerCount("spawn")).toBe(0);
     expect(failedBot.listenerCount("end")).toBe(0);
     expect(failedBot.listenerCount("kicked")).toBe(0);

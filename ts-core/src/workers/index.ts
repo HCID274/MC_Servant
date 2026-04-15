@@ -28,9 +28,11 @@ export const workersModuleBoundary = {
     "createBotWorkerActions",
     "createBrainWorkerActions",
     "createInterruptSignalFromRoute",
+    "createConversationWorkerRuntime",
   ],
 } satisfies ModuleBoundary;
 
 export * from "./queues.js";
 export * from "./bullmq.js";
 export * from "./contracts.js";
+export * from "./conversation-worker.js";

@@ -1,4 +1,8 @@
-import { createAppBootstrapContract, runAppEntrypoint } from "./app/index.js";
+import {
+  createAppBootstrapContract,
+  createAppExternalAuthSecretFromEnvironment,
+  startAppOnlineRuntime,
+} from "./app/index.js";
 
 /**
  * 创建当前进程的环境变量快照。
@@ -61,19 +65,51 @@ function formatStartupError(error: unknown): string {
  * 2. 启动应用入口（App Entrypoint）：将引导信息注入业务逻辑，并设置标准的输出通道。
  * 3. 错误边界处理：捕获启动阶段的所有致命错误并安全退出。
  */
-function main(): void {
+async function main(): Promise<void> {
   try {
+    const env = createProcessEnvironmentSnapshot(process.env);
     const bootstrap = createAppBootstrapContract({
       botId: resolveBotId(process.env),
       now: new Date().toISOString(),
-      env: createProcessEnvironmentSnapshot(process.env),
+      env,
     });
-
-    runAppEntrypoint({
+    const runtime = await startAppOnlineRuntime({
       bootstrap,
+      dependencies: {
+        runtime: (() => {
+          const externalAuthSecret = createAppExternalAuthSecretFromEnvironment({ env });
+
+          return externalAuthSecret === undefined ? {} : { externalAuthSecret };
+        })(),
+      },
       write: (message) => {
         process.stdout.write(`${message}\n`);
       },
+    });
+
+    const shutdown = async () => {
+      await runtime.close();
+    };
+
+    process.once("SIGINT", () => {
+      shutdown()
+        .then(() => {
+          process.exitCode = 0;
+        })
+        .catch((error) => {
+          process.stderr.write(formatStartupError(error));
+          process.exitCode = 1;
+        });
+    });
+    process.once("SIGTERM", () => {
+      shutdown()
+        .then(() => {
+          process.exitCode = 0;
+        })
+        .catch((error) => {
+          process.stderr.write(formatStartupError(error));
+          process.exitCode = 1;
+        });
     });
   } catch (error) {
     process.stderr.write(formatStartupError(error));
@@ -81,4 +117,4 @@ function main(): void {
   }
 }
 
-main();
+void main();

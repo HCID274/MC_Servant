@@ -1,14 +1,36 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { EventEmitter } from "node:events";
+import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 
 import {
   createAppBootstrapContract,
+  createAppExternalAuthSecretFromEnvironment,
   createAppStartupSummary,
   renderAppStartupSummary,
   runAppEntrypoint,
+  startAppOnlineRuntime,
 } from "../app/index.js";
+import type { MineflayerBotHandle } from "../runtime/transport.js";
+
+class FakeEntrypointMineflayerBot extends EventEmitter implements MineflayerBotHandle {
+  readonly username = "bot-online";
+
+  constructor(private readonly events: string[]) {
+    super();
+  }
+
+  chat(text: string): void {
+    this.events.push(`chat:${text}`);
+  }
+
+  quit(): void {
+    this.events.push("mineflayer.quit");
+    this.emit("end");
+  }
+}
 
 describe("app entrypoint（应用启动入口） 骨架", () => {
   it("应把纯装配结果转换为可读的启动摘要", () => {
@@ -106,5 +128,122 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(rootIndex).not.toContain("./main");
     expect(rootIndex).not.toContain("console.");
     expect(rootIndex).not.toContain("process.");
+  });
+
+  it("应按真实在线入口顺序启动 HTTP（超文本传输协议） 、Mineflayer（Minecraft 协议客户端） 与 ConversationWorker（对话工作线程） 并逆序关闭", async () => {
+    const events: string[] = [];
+    const env = {
+      MC_EXTERNAL_AUTH_REQUIRED: "true",
+      MC_EXTERNAL_AUTH_SECRET: "hunter2",
+    };
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-online",
+      now: "2026-04-15T00:00:00.000Z",
+      env,
+    });
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => {
+                events.push("postgres.close");
+              },
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => {
+              events.push("postgres.ready");
+            },
+          },
+          redis: {
+            createClient: () => ({}),
+            connectClient: async () => {
+              events.push("redis.ready");
+            },
+            closeClient: async () => {
+              events.push("redis.close");
+            },
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async () => ({ id: "job-online" }),
+              close: async () => {
+                events.push(`queue.close:${name}`);
+              },
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => {
+                events.push("http.listen");
+
+                return "http://127.0.0.1:0";
+              };
+              server.close = async () => {
+                events.push("http.close");
+
+                return originalClose();
+              };
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          externalAuthSecret: createAppExternalAuthSecretFromEnvironment({ env }),
+          transport: {
+            createBot: () => {
+              events.push("mineflayer.create");
+              const bot = new FakeEntrypointMineflayerBot(events);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        conversationWorker: {
+          createWorker: () => {
+            events.push("conversation.worker.start");
+
+            return {
+              close: async () => {
+                events.push("conversation.worker.close");
+              },
+            };
+          },
+        },
+      },
+    });
+
+    expect(runtime.listen_address).toBe("http://127.0.0.1:0");
+    expect(events).toEqual([
+      "postgres.ready",
+      "redis.ready",
+      "http.listen",
+      "mineflayer.create",
+      "chat:/login hunter2",
+      "conversation.worker.start",
+    ]);
+
+    await runtime.close();
+
+    expect(events.slice(6)).toEqual([
+      "mineflayer.quit",
+      "conversation.worker.close",
+      "http.close",
+      "queue.close:brain",
+      "queue.close:bot:bot-online:exec",
+      "queue.close:msg:bot-online",
+      "redis.close",
+      "postgres.close",
+    ]);
   });
 });

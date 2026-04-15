@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { createWorkerBullmqRuntime } from "../workers/index.js";
+import { createBullmqPhysicalQueueName, createWorkerBullmqRuntime } from "../workers/index.js";
 
 describe("workers BullMQ（任务队列） 运行时", () => {
+  it("应把含冒号的契约队列名转换为 BullMQ（任务队列） 可接受的物理队列名", () => {
+    expect(createBullmqPhysicalQueueName("msg:bot-bullmq")).toBe("msg__bot-bullmq");
+    expect(createBullmqPhysicalQueueName("bot:bot-bullmq:exec")).toBe("bot__bot-bullmq__exec");
+    expect(createBullmqPhysicalQueueName("brain")).toBe("brain");
+  });
+
   it("应基于共享 Redis（缓存） 连接创建三组真实队列并按约定顺序关闭", async () => {
     const createdQueueNames: string[] = [];
     const closedQueueNames: string[] = [];

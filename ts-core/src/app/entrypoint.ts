@@ -8,7 +8,22 @@
  * 4. 入口点触发：提供最小化的应用启动入口，支持注入不同的输出端。
  */
 
-import type { AppBootstrapContract, AppExternalAuthContract } from "./bootstrap.js";
+import {
+  type ConversationWorkerRuntime,
+  type ConversationWorkerRuntimeDependencies,
+  createConversationWorkerRuntime,
+} from "../workers/index.js";
+import {
+  type AppBootstrapContract,
+  type AppExternalAuthContract,
+  type AppProcessRuntimeDependencies,
+  type AppRuntimeCoreResources,
+  type AppRuntimeResources,
+  type AppRuntimeServices,
+  createAppRuntimeCoreResources,
+  createAppRuntimeResources,
+  createAppRuntimeServices,
+} from "./bootstrap.js";
 import type {
   AppLifecycleStepName,
   AppReadinessDescriptor,
@@ -74,6 +89,30 @@ export interface AppStartupSummary<TBotId extends string = string> {
   readonly shutdown_plan: readonly AppEntrypointStepSummary[];
   /** 当前入口的 IO 边界说明。 */
   readonly io_boundary: AppEntrypointIoBoundarySummary;
+}
+
+/** 真实在线启动入口依赖注入集合。 */
+export interface AppOnlineEntrypointDependencies extends AppProcessRuntimeDependencies {
+  /** ConversationWorker（对话工作线程） 依赖注入。 */
+  readonly conversationWorker?: Omit<ConversationWorkerRuntimeDependencies, "broadcastReplySink">;
+}
+
+/** 真实在线启动入口运行中资源。 */
+export interface AppOnlineRuntime<TBotId extends string = string> {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: TBotId;
+  /** HTTP（超文本传输协议） 监听地址。 */
+  readonly listen_address: string;
+  /** 基础设施资源。 */
+  readonly infrastructure: AppRuntimeResources<TBotId>;
+  /** 服务层资源。 */
+  readonly services: AppRuntimeServices<TBotId>;
+  /** 运行时核心资源。 */
+  readonly runtime: AppRuntimeCoreResources<TBotId>;
+  /** ConversationWorker（对话工作线程） 运行时。 */
+  readonly conversation_worker: ConversationWorkerRuntime;
+  /** 按真实在线关闭顺序回收资源。 */
+  close(): Promise<void>;
 }
 
 function createReadinessIndex(
@@ -213,4 +252,119 @@ export function runAppEntrypoint<TBotId extends string>(input: {
   input.write?.(renderAppStartupSummary(summary));
 
   return summary;
+}
+
+/**
+ * 启动真实在线单进程运行时。
+ *
+ * 启动顺序刻意保持为：PostgreSQL（关系型数据库）/ Redis（缓存） → BullMQ（任务队列）
+ * → Fastify（接口网关） listen（监听） → Mineflayer（Minecraft 协议客户端）
+ * → EasyAuth（离线服认证模组） 登录命令 → ConversationWorker（对话工作线程）。
+ */
+export async function startAppOnlineRuntime<TBotId extends string>(input: {
+  /** 应用装配契约。 */
+  readonly bootstrap: AppBootstrapContract<TBotId>;
+  /** 可注入依赖。 */
+  readonly dependencies?: AppOnlineEntrypointDependencies;
+  /** 日志写入端。 */
+  readonly write?: (message: string) => void;
+}): Promise<AppOnlineRuntime<TBotId>> {
+  let infrastructure: AppRuntimeResources<TBotId> | undefined;
+  let services: AppRuntimeServices<TBotId> | undefined;
+  let runtime: AppRuntimeCoreResources<TBotId> | undefined;
+  let conversationWorker: ConversationWorkerRuntime | undefined;
+
+  try {
+    infrastructure = await createAppRuntimeResources(
+      input.bootstrap,
+      input.dependencies?.infrastructure,
+    );
+    input.write?.("TS Core infrastructure ready");
+
+    services = await createAppRuntimeServices(
+      input.bootstrap,
+      infrastructure,
+      input.dependencies?.services,
+    );
+    const listenAddress = await services.http.listen();
+    input.write?.(`TS Core HTTP ready: ${listenAddress}`);
+
+    runtime = await createAppRuntimeCoreResources(input.bootstrap, input.dependencies?.runtime);
+    input.write?.(`TS Core Mineflayer ready: ${runtime.actor.getSnapshot().transport.username}`);
+
+    conversationWorker = createConversationWorkerRuntime({
+      queue: {
+        name: services.workers.conversation.name,
+        connection: infrastructure.redis.client,
+      },
+      dependencies: {
+        ...(input.dependencies?.conversationWorker ?? {}),
+        broadcastReplySink: async (reply) => {
+          if (runtime === undefined) {
+            throw new Error("runtime core is not ready");
+          }
+
+          await runtime.actor.broadcastReply(reply);
+        },
+      },
+    });
+    await conversationWorker.start();
+    input.write?.(`TS Core ConversationWorker ready: ${conversationWorker.queue_name}`);
+
+    const createdInfrastructure = infrastructure;
+    const createdServices = services;
+    const createdRuntime = runtime;
+    const createdConversationWorker = conversationWorker;
+
+    return Object.freeze({
+      bot_id: input.bootstrap.bot_id,
+      listen_address: listenAddress,
+      infrastructure: createdInfrastructure,
+      services: createdServices,
+      runtime: createdRuntime,
+      conversation_worker: createdConversationWorker,
+      async close(): Promise<void> {
+        await closeOnlineRuntimeInOrder({
+          runtime: createdRuntime,
+          conversationWorker: createdConversationWorker,
+          services: createdServices,
+          infrastructure: createdInfrastructure,
+        });
+      },
+    });
+  } catch (error) {
+    await closeOnlineRuntimeInOrder({
+      runtime,
+      conversationWorker,
+      services,
+      infrastructure,
+    }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function closeOnlineRuntimeInOrder(input: {
+  runtime: AppRuntimeCoreResources | undefined;
+  conversationWorker: ConversationWorkerRuntime | undefined;
+  services: AppRuntimeServices | undefined;
+  infrastructure: AppRuntimeResources | undefined;
+}): Promise<void> {
+  const closeErrors: unknown[] = [];
+
+  for (const close of [
+    () => input.runtime?.close(),
+    () => input.conversationWorker?.close(),
+    () => input.services?.close(),
+    () => input.infrastructure?.close(),
+  ]) {
+    try {
+      await close();
+    } catch (error) {
+      closeErrors.push(error);
+    }
+  }
+
+  if (closeErrors.length > 0) {
+    throw closeErrors[0];
+  }
 }

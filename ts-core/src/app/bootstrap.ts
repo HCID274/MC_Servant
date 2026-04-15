@@ -37,6 +37,7 @@ import {
   createHealthResponse,
   createInterfaceBotStatusSnapshot,
   createInterfaceServerRuntime,
+  createMessageAcceptedResponse,
 } from "../interfaces/index.js";
 import {
   type ObservationRuntimeCache,
@@ -75,6 +76,7 @@ import {
   type WorkerBullmqDependencies,
   type WorkerBullmqRuntime,
   type WorkerQueueCatalog,
+  createConversationWorkerTask,
   createWorkerBullmqRuntime,
   createWorkerQueueCatalog,
 } from "../workers/index.js";
@@ -451,6 +453,14 @@ export function createAppExternalAuthContract(
   return createAppExternalAuthContractFromRuntimeState(runtimeState);
 }
 
+/** 从应用环境中解析一次性外部认证明文密钥绑定，结果仅供运行时启动动作使用。 */
+export function createAppExternalAuthSecretFromEnvironment(input: {
+  env?: DataConfigEnvironment;
+  botConfig?: unknown;
+}): ExternalAuthSecretBinding | undefined {
+  return resolveAppExternalAuthResolution(input).secret;
+}
+
 /**
  * 创建应用装配结果，用于把现有公开契约收口为单进程组合根。
  *
@@ -531,6 +541,7 @@ export function createAppBootstrapContract<TBotId extends string>(
     runtime_resources: createAppRuntimeCoreDirectory({
       botId: input.botId,
       runtimeScaffold,
+      env: input.env ?? {},
     }),
     services: createAppServiceDirectory({
       workers: workersCatalog,
@@ -779,6 +790,34 @@ export async function createAppRuntimeServices<TBotId extends string>(
         health: bootstrap.interfaces.health,
         default_status: createAppDefaultInterfaceStatusSnapshot(bootstrap, runtimeCore),
         listen: bootstrap.services.http.listen,
+        handlers: {
+          message: async (request) => {
+            if (typeof created.workers?.conversation.queue.add !== "function") {
+              throw new Error("conversation queue does not support add");
+            }
+
+            const task = createConversationWorkerTask({
+              bot_id: bootstrap.bot_id,
+              message: {
+                bot_id: request.bot_id,
+                message_id: request.message_id,
+                content: request.content,
+                intent_epoch: 0,
+                snapshot_ts: Date.parse(bootstrap.interfaces.health.timestamp),
+              },
+            });
+            const job = await created.workers.conversation.queue.add("conversation", task, {
+              jobId: request.message_id,
+            });
+
+            return createMessageAcceptedResponse({
+              botId: request.bot_id,
+              jobId: String(job.id ?? request.message_id),
+              messageId: request.message_id,
+              queuedAt: bootstrap.interfaces.health.timestamp,
+            });
+          },
+        },
       },
       dependencies.http,
     );
@@ -1070,6 +1109,7 @@ function createAppResourceDirectory<TBotId extends string>(input: {
 function createAppRuntimeCoreDirectory<TBotId extends string>(input: {
   botId: TBotId;
   runtimeScaffold: RuntimeScaffold;
+  env: DataConfigEnvironment;
 }): AppRuntimeCoreDirectory<TBotId> {
   return Object.freeze({
     create_order: Object.freeze(["observation", "mineflayer_transport", "bot_actor"] as const),
@@ -1086,6 +1126,11 @@ function createAppRuntimeCoreDirectory<TBotId extends string>(input: {
     mineflayer_transport: Object.freeze({
       descriptor: createMineflayerTransportDescriptor({
         botId: input.botId,
+        username: readOptionalString(input.env, "MC_USERNAME") ?? input.botId,
+        host: readOptionalString(input.env, "MC_HOST") ?? "localhost",
+        port: readOptionalInteger(input.env, "MC_PORT") ?? 25565,
+        version: readOptionalString(input.env, "MC_VERSION") ?? null,
+        auth: readOptionalString(input.env, "MC_AUTH") ?? null,
       }),
     }),
     bot_actor: Object.freeze({
@@ -1338,9 +1383,29 @@ function readOptionalString(env: DataConfigEnvironment, fieldName: string): stri
     return undefined;
   }
 
-  assertNonEmptyString(value, fieldName);
+  const normalizedValue = value.trim();
 
-  return value.trim();
+  if (normalizedValue.length === 0) {
+    return undefined;
+  }
+
+  return normalizedValue;
+}
+
+function readOptionalInteger(env: DataConfigEnvironment, fieldName: string): number | undefined {
+  const value = readOptionalString(env, fieldName);
+
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const integerValue = Number.parseInt(value, 10);
+
+  if (!Number.isInteger(integerValue)) {
+    throw new Error(`${fieldName} must be an integer string`);
+  }
+
+  return integerValue;
 }
 
 function readOptionalStringField(value: unknown, fieldName: string): string | undefined {

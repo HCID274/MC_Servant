@@ -2,7 +2,7 @@
 
 TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
-当前仓库已经提供一个最小本地启动骨架：`src/main.ts`（可执行入口） 只消费纯 `app`（应用装配） 结果，输出可读的启动摘要，不自动连接真实 Redis（缓存） / PostgreSQL（关系型数据库） / BullMQ（任务队列） / Fastify（接口网关） / Socket.io（实时推送） / Mineflayer（Minecraft 协议客户端）。
+当前仓库已经提供一个最小本地在线入口：`src/main.ts`（可执行入口） 会启动真实 Redis（缓存） / PostgreSQL（关系型数据库） / BullMQ（任务队列） / Fastify（接口网关） / Mineflayer（Minecraft 协议客户端），并通过 ConversationWorker（对话工作线程） 把 `POST /api/message`（消息提交接口） 的文本回复写入 Minecraft（我的世界） 聊天频道。
 
 同时，仓库现在已经提供可被后续消息链路复用的真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源工厂、BullMQ（任务队列） 三队列运行时工厂、Fastify（接口网关） 服务器骨架，以及 Drizzle（数据库工具） migration（迁移） 执行入口；默认启动摘要仍不会主动连接这些外部资源。
 
@@ -22,9 +22,9 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
 ## 当前范围
 
-- 提供单进程、单容器的最小启动骨架与纯装配摘要。
+- 提供单进程、单容器的最小在线启动入口与纯装配摘要。
 - 已包含 PostgreSQL（关系型数据库） / Redis（缓存） 真实资源工厂、统一关闭边界和 Drizzle（数据库工具） migration（迁移） 入口。
-- 默认入口仍不自动启动 HTTP（超文本传输协议） / BullMQ（任务队列） / Mineflayer（Minecraft 协议客户端）；这些真实运行时句柄需通过 `app`（应用装配） 层的组合工厂显式创建。
+- 默认入口会自动启动 HTTP（超文本传输协议） / BullMQ（任务队列） / Mineflayer（Minecraft 协议客户端） 最窄链路；真实 LLM（大语言模型） 与 BotWorker（机器人工作线程） 执行链仍留给后续任务。
 
 ## 最小本地启动
 
@@ -35,12 +35,20 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
 启动后会打印：
 
-- `INITIALIZING`（初始化） 初始状态
-- `external_auth`（外部认证） 装配结果
-- 启动 / 关闭阶段顺序
-- 当前仍处于 `bootstrap_only`（仅装配摘要） 边界，未连接真实 IO（输入输出）
+- PostgreSQL（关系型数据库） / Redis（缓存） 基础设施就绪日志
+- Fastify（接口网关） 监听地址
+- Mineflayer（Minecraft 协议客户端） 上线用户名
+- ConversationWorker（对话工作线程） 消费的 `msg:{botId}` 队列
 
 默认会读取 `TS_CORE_BOT_ID`（机器人标识），未设置时回退到 `local-bot`。
+
+## Minecraft 连接环境变量
+
+- `MC_HOST`：Minecraft（我的世界） 服务器地址，默认 `localhost`
+- `MC_PORT`：Minecraft（我的世界） 服务器端口，默认 `25565`
+- `MC_USERNAME`：Mineflayer（Minecraft 协议客户端） 登录用户名，默认使用 `TS_CORE_BOT_ID`
+- `MC_VERSION`：可选协议版本，留空由 Mineflayer（Minecraft 协议客户端） 自动处理
+- `MC_AUTH`：可选认证模式，留空由 Mineflayer（Minecraft 协议客户端） 默认处理
 
 ## 外部认证环境变量
 
@@ -57,7 +65,7 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 - 构建镜像：`docker build -t ts-core-local .`
 - 运行镜像：`docker run --rm --env-file .env.example ts-core-local`
 
-当前容器启动后同样只输出启动摘要，不开放真实 HTTP（超文本传输协议） / Socket.io（实时推送） 端口。
+当前容器启动后会尝试连接 `.env`（环境变量文件） 指定的 PostgreSQL（关系型数据库） / Redis（缓存） / Minecraft（我的世界） 服务器，并开放 HTTP（超文本传输协议） 端口。
 
 ## 数据库迁移
 

@@ -139,6 +139,27 @@ describe("app（应用装配） 骨架", () => {
     );
   });
 
+  it("应把空白可选 MC 环境变量视为未设置", () => {
+    const assembly = createAppBootstrapContract({
+      botId: "bot-empty-mc-options",
+      now: "2026-04-14T00:00:00.000Z",
+      env: {
+        MC_HOST: "mc.example.internal",
+        MC_PORT: "25565",
+        MC_USERNAME: "maid-bot",
+        MC_VERSION: "",
+        MC_AUTH: "",
+      },
+    });
+
+    expect(assembly.runtime_resources.mineflayer_transport.descriptor.host).toBe(
+      "mc.example.internal",
+    );
+    expect(assembly.runtime_resources.mineflayer_transport.descriptor.username).toBe("maid-bot");
+    expect(assembly.runtime_resources.mineflayer_transport.descriptor.version).toBeNull();
+    expect(assembly.runtime_resources.mineflayer_transport.descriptor.auth).toBeNull();
+  });
+
   it("应暴露需要认证但缺少注入密钥的失败路径，以及已注入密钥的待认证路径", () => {
     const missingSecretAssembly = createAppBootstrapContract({
       botId: "bot-auth-missing",
