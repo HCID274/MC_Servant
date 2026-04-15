@@ -39,17 +39,30 @@ import {
   createInterfaceServerRuntime,
 } from "../interfaces/index.js";
 import {
+  type ObservationRuntimeCache,
+  createObservationRuntimeCache,
+} from "../observation/index.js";
+import {
+  type BotActorRuntime,
   BotStatus,
   type ExternalAuthActionSummary,
   type ExternalAuthEntrypoint,
+  type ExternalAuthExecutionPlan,
   type ExternalAuthPublicState,
   type ExternalAuthSecretBinding,
   type ExternalAuthState,
+  type MineflayerRuntimeTransport,
+  type MineflayerRuntimeTransportDependencies,
+  type MineflayerTransportDescriptor,
   type RuntimeReadyGate,
   type RuntimeScaffold,
+  createBotActorRuntime,
+  createExternalAuthExecutionPlan,
   createExternalAuthPublicState,
   createExternalAuthSecretBinding,
   createExternalAuthState,
+  createMineflayerRuntimeTransport,
+  createMineflayerTransportDescriptor,
   createRuntimeScaffold,
 } from "../runtime/index.js";
 import {
@@ -227,6 +240,71 @@ export interface AppRuntimeResources<TBotId extends string = string> {
   close(): Promise<void>;
 }
 
+/** 运行时核心真实资源名称清单。 */
+export const APP_RUNTIME_CORE_RESOURCE_NAMES = [
+  "observation",
+  "mineflayer_transport",
+  "bot_actor",
+] as const;
+
+/** 运行时核心真实资源名称联合类型。 */
+export type AppRuntimeCoreResourceName = (typeof APP_RUNTIME_CORE_RESOURCE_NAMES)[number];
+
+/** 应用装配层暴露的运行时核心资源目录。 */
+export interface AppRuntimeCoreDirectory<TBotId extends string = string> {
+  /** 创建顺序。 */
+  readonly create_order: readonly AppRuntimeCoreResourceName[];
+  /** 关闭顺序。 */
+  readonly close_order: readonly AppRuntimeCoreResourceName[];
+  /** 失败回滚顺序。 */
+  readonly cleanup_on_failure: readonly AppRuntimeCoreResourceName[];
+  /** observation（观测） 事件驱动缓存目录。 */
+  readonly observation: {
+    /** 缓存策略。 */
+    readonly mode: "event_driven_cache";
+    /** 上游数据源。 */
+    readonly source: "mineflayer_events";
+  };
+  /** Mineflayer（Minecraft 协议客户端） 运行时传输目录。 */
+  readonly mineflayer_transport: {
+    /** 连接描述符。 */
+    readonly descriptor: MineflayerTransportDescriptor<TBotId>;
+  };
+  /** BotActor（机器人执行代理） 运行时目录。 */
+  readonly bot_actor: {
+    /** 初始状态。 */
+    readonly initial_status: BotStatus;
+    /** 初始 ready（就绪） 门控。 */
+    readonly ready_gate: RuntimeReadyGate;
+  };
+}
+
+/** 运行时核心真实资源工厂依赖。 */
+export interface AppRuntimeCoreResourceDependencies {
+  /** Mineflayer（Minecraft 协议客户端） 运行时传输依赖注入。 */
+  readonly transport?: MineflayerRuntimeTransportDependencies;
+  /** pending（待执行） 外部认证需要的一次性明文密钥绑定。 */
+  readonly externalAuthSecret?: ExternalAuthSecretBinding;
+  /** 可选的外部认证执行计划覆盖。 */
+  readonly externalAuthPlan?: ExternalAuthExecutionPlan;
+}
+
+/** 应用装配层创建出的运行时核心资源句柄。 */
+export interface AppRuntimeCoreResources<TBotId extends string = string> {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: TBotId;
+  /** 运行时核心资源目录。 */
+  readonly directory: AppRuntimeCoreDirectory<TBotId>;
+  /** observation（观测） 事件驱动缓存。 */
+  readonly observation: ObservationRuntimeCache;
+  /** Mineflayer（Minecraft 协议客户端） 运行时传输。 */
+  readonly transport: MineflayerRuntimeTransport<TBotId>;
+  /** BotActor（机器人执行代理） 最小运行时。 */
+  readonly actor: BotActorRuntime<TBotId>;
+  /** 按约定顺序关闭运行时核心资源。 */
+  close(): Promise<void>;
+}
+
 /** 真实资源工厂的可注入依赖。 */
 export interface AppRuntimeResourceDependencies {
   /** PostgreSQL（关系型数据库） 工厂注入。 */
@@ -295,6 +373,8 @@ export interface AppProcessRuntime<TBotId extends string = string> {
   readonly bot_id: TBotId;
   /** 基础设施资源句柄。 */
   readonly infrastructure: AppRuntimeResources<TBotId>;
+  /** 运行时核心资源句柄。 */
+  readonly runtime: AppRuntimeCoreResources<TBotId>;
   /** 服务层资源句柄。 */
   readonly services: AppRuntimeServices<TBotId>;
   /** 关闭完整进程资源。 */
@@ -305,6 +385,8 @@ export interface AppProcessRuntime<TBotId extends string = string> {
 export interface AppProcessRuntimeDependencies {
   /** 基础设施资源依赖。 */
   readonly infrastructure?: AppRuntimeResourceDependencies;
+  /** 运行时核心资源依赖。 */
+  readonly runtime?: AppRuntimeCoreResourceDependencies;
   /** 服务层资源依赖。 */
   readonly services?: AppRuntimeServiceDependencies;
 }
@@ -347,6 +429,8 @@ export interface AppBootstrapContract<TBotId extends string = string> {
   readonly migrations: DrizzleMigrationMetadata;
   /** 真实资源目录。 */
   readonly resources: AppResourceDirectory<TBotId>;
+  /** 运行时核心资源目录。 */
+  readonly runtime_resources: AppRuntimeCoreDirectory<TBotId>;
   /** 服务层资源目录。 */
   readonly services: AppServiceDirectory<TBotId>;
   /** 启动 / 关闭生命周期计划。 */
@@ -443,6 +527,10 @@ export function createAppBootstrapContract<TBotId extends string>(
       migrations,
       redisKeys,
       redisConnection,
+    }),
+    runtime_resources: createAppRuntimeCoreDirectory({
+      botId: input.botId,
+      runtimeScaffold,
     }),
     services: createAppServiceDirectory({
       workers: workersCatalog,
@@ -552,17 +640,125 @@ export async function closeAppRuntimeResources<TBotId extends string>(input: {
 }
 
 /**
+ * 创建运行时核心资源：observation（观测） 缓存、Mineflayer（Minecraft 协议客户端） 传输与 BotActor（机器人执行代理）。
+ *
+ * @param bootstrap 引导契约
+ * @param dependencies 可注入的运行时核心依赖
+ * @returns 已完成最小启动闭环的运行时核心资源
+ */
+export async function createAppRuntimeCoreResources<TBotId extends string>(
+  bootstrap: AppBootstrapContract<TBotId>,
+  dependencies: AppRuntimeCoreResourceDependencies = {},
+): Promise<AppRuntimeCoreResources<TBotId>> {
+  const created: Partial<{
+    observation: ObservationRuntimeCache;
+    transport: MineflayerRuntimeTransport<TBotId>;
+    actor: BotActorRuntime<TBotId>;
+  }> = {};
+
+  try {
+    created.observation = createObservationRuntimeCache();
+    created.transport = createMineflayerRuntimeTransport(
+      bootstrap.runtime_resources.mineflayer_transport.descriptor,
+      dependencies.transport,
+    );
+    const externalAuth = createAppRuntimeCoreExternalAuth(bootstrap, dependencies);
+    const externalAuthPlan =
+      dependencies.externalAuthPlan ??
+      createExternalAuthExecutionPlan(externalAuth, dependencies.externalAuthSecret);
+    created.actor = createBotActorRuntime({
+      botId: bootstrap.bot_id,
+      transport: created.transport,
+      observation: created.observation,
+      externalAuth,
+      externalAuthPlan,
+    });
+    await created.actor.start();
+
+    const observation = created.observation;
+    const transport = created.transport;
+    const actor = created.actor;
+
+    if (observation === undefined || transport === undefined || actor === undefined) {
+      throw new Error("app runtime core resources require observation, transport and actor");
+    }
+
+    return Object.freeze({
+      bot_id: bootstrap.bot_id,
+      directory: bootstrap.runtime_resources,
+      observation,
+      transport,
+      actor,
+      async close(): Promise<void> {
+        await closeAppRuntimeCoreResources({
+          directory: bootstrap.runtime_resources,
+          observation,
+          transport,
+          actor,
+        });
+      },
+    });
+  } catch (error) {
+    await closeAppRuntimeCoreResources({
+      directory: bootstrap.runtime_resources,
+      ...(created.observation === undefined ? {} : { observation: created.observation }),
+      ...(created.transport === undefined ? {} : { transport: created.transport }),
+      ...(created.actor === undefined ? {} : { actor: created.actor }),
+    }).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * 按应用约定关闭运行时核心资源。
+ *
+ * @param input 运行时核心资源与目录信息
+ */
+export async function closeAppRuntimeCoreResources<TBotId extends string>(input: {
+  directory: AppRuntimeCoreDirectory<TBotId>;
+  observation?: ObservationRuntimeCache;
+  transport?: MineflayerRuntimeTransport<TBotId>;
+  actor?: BotActorRuntime<TBotId>;
+}): Promise<void> {
+  const closeErrors: unknown[] = [];
+
+  for (const resourceName of input.directory.close_order) {
+    try {
+      if (resourceName === "bot_actor" && input.actor !== undefined) {
+        await input.actor.shutdown();
+      }
+
+      if (resourceName === "mineflayer_transport" && input.transport !== undefined) {
+        await input.transport.disconnect();
+      }
+
+      if (resourceName === "observation") {
+        void input.observation;
+      }
+    } catch (error) {
+      closeErrors.push(error);
+    }
+  }
+
+  if (closeErrors.length > 0) {
+    throw closeErrors[0];
+  }
+}
+
+/**
  * 创建服务层运行时资源。
  *
  * @param bootstrap 引导契约
  * @param infrastructure 已创建的基础设施资源
  * @param dependencies 可注入的服务层依赖
+ * @param runtimeCore 可选运行时核心资源，用于投影当前 BotActor（机器人执行代理） 状态
  * @returns BullMQ（任务队列） 与 Fastify（接口网关） 组合运行时
  */
 export async function createAppRuntimeServices<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
   infrastructure: AppRuntimeResources<TBotId>,
   dependencies: AppRuntimeServiceDependencies = {},
+  runtimeCore?: AppRuntimeCoreResources<TBotId>,
 ): Promise<AppRuntimeServices<TBotId>> {
   const created: Partial<{
     workers: WorkerBullmqRuntime<TBotId>;
@@ -581,7 +777,7 @@ export async function createAppRuntimeServices<TBotId extends string>(
       {
         bot_id: bootstrap.bot_id,
         health: bootstrap.interfaces.health,
-        default_status: createAppDefaultInterfaceStatusSnapshot(bootstrap),
+        default_status: createAppDefaultInterfaceStatusSnapshot(bootstrap, runtimeCore),
         listen: bootstrap.services.http.listen,
       },
       dependencies.http,
@@ -660,23 +856,38 @@ export async function createAppProcessRuntime<TBotId extends string>(
   dependencies: AppProcessRuntimeDependencies = {},
 ): Promise<AppProcessRuntime<TBotId>> {
   let infrastructure: AppRuntimeResources<TBotId> | undefined;
+  let runtime: AppRuntimeCoreResources<TBotId> | undefined;
   let services: AppRuntimeServices<TBotId> | undefined;
 
   try {
     infrastructure = await createAppRuntimeResources(bootstrap, dependencies.infrastructure);
-    services = await createAppRuntimeServices(bootstrap, infrastructure, dependencies.services);
+    runtime = await createAppRuntimeCoreResources(bootstrap, dependencies.runtime);
+    services = await createAppRuntimeServices(
+      bootstrap,
+      infrastructure,
+      dependencies.services,
+      runtime,
+    );
     const createdInfrastructure = infrastructure;
+    const createdRuntime = runtime;
     const createdServices = services;
 
     return Object.freeze({
       bot_id: bootstrap.bot_id,
       infrastructure: createdInfrastructure,
+      runtime: createdRuntime,
       services: createdServices,
       async close(): Promise<void> {
         const closeErrors: unknown[] = [];
 
         try {
           await createdServices.close();
+        } catch (error) {
+          closeErrors.push(error);
+        }
+
+        try {
+          await createdRuntime.close();
         } catch (error) {
           closeErrors.push(error);
         }
@@ -695,6 +906,10 @@ export async function createAppProcessRuntime<TBotId extends string>(
   } catch (error) {
     if (services !== undefined) {
       await services.close().catch(() => undefined);
+    }
+
+    if (runtime !== undefined) {
+      await runtime.close().catch(() => undefined);
     }
 
     if (infrastructure !== undefined) {
@@ -773,6 +988,43 @@ function createAppExternalAuthContractFromRuntimeState(
   });
 }
 
+function createAppRuntimeCoreExternalAuth(
+  bootstrap: AppBootstrapContract,
+  dependencies: AppRuntimeCoreResourceDependencies,
+): ExternalAuthState {
+  switch (bootstrap.runtime.external_auth.status) {
+    case "not_required":
+      return createExternalAuthState({ status: "not_required" });
+    case "pending":
+      if (dependencies.externalAuthSecret === undefined) {
+        throw new Error("pending runtime core external auth requires injected secret binding");
+      }
+
+      return createExternalAuthState({
+        status: "pending",
+        secret: dependencies.externalAuthSecret,
+      });
+    case "authenticated":
+      if (dependencies.externalAuthSecret === undefined) {
+        throw new Error(
+          "authenticated runtime core external auth requires injected secret binding",
+        );
+      }
+
+      return createExternalAuthState({
+        status: "authenticated",
+        secret: dependencies.externalAuthSecret,
+      });
+    case "failed":
+      return createExternalAuthState({
+        status: "failed",
+        failureReason: bootstrap.runtime.external_auth.failure_reason,
+        secretSource: bootstrap.runtime.external_auth.secret_source,
+        secretReference: bootstrap.runtime.external_auth.secret_reference,
+      });
+  }
+}
+
 function createAppRuntimeScaffoldContract(scaffold: RuntimeScaffold): AppRuntimeScaffoldContract {
   return Object.freeze({
     defaultStatus: scaffold.defaultStatus,
@@ -815,6 +1067,34 @@ function createAppResourceDirectory<TBotId extends string>(input: {
   });
 }
 
+function createAppRuntimeCoreDirectory<TBotId extends string>(input: {
+  botId: TBotId;
+  runtimeScaffold: RuntimeScaffold;
+}): AppRuntimeCoreDirectory<TBotId> {
+  return Object.freeze({
+    create_order: Object.freeze(["observation", "mineflayer_transport", "bot_actor"] as const),
+    close_order: Object.freeze(["bot_actor", "mineflayer_transport", "observation"] as const),
+    cleanup_on_failure: Object.freeze([
+      "bot_actor",
+      "mineflayer_transport",
+      "observation",
+    ] as const),
+    observation: Object.freeze({
+      mode: "event_driven_cache",
+      source: "mineflayer_events",
+    }),
+    mineflayer_transport: Object.freeze({
+      descriptor: createMineflayerTransportDescriptor({
+        botId: input.botId,
+      }),
+    }),
+    bot_actor: Object.freeze({
+      initial_status: input.runtimeScaffold.defaultStatus,
+      ready_gate: input.runtimeScaffold.readyGate,
+    }),
+  });
+}
+
 function createAppHttpListenOptions(): InterfaceServerListenOptions {
   return Object.freeze({
     host: "0.0.0.0",
@@ -843,10 +1123,13 @@ function createAppServiceDirectory<TBotId extends string>(input: {
 
 function createAppDefaultInterfaceStatusSnapshot<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
+  runtimeCore?: AppRuntimeCoreResources<TBotId>,
 ): InterfaceBotStatusSnapshot {
+  const actorSnapshot = runtimeCore?.actor.getSnapshot();
+
   return createInterfaceBotStatusSnapshot({
     bot_id: bootstrap.bot_id,
-    status: bootstrap.runtime.initial_status,
+    status: actorSnapshot?.status ?? bootstrap.runtime.initial_status,
     intent_epoch: 0,
     last_event_seq: 0,
     updated_at: bootstrap.interfaces.health.timestamp,

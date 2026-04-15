@@ -31,6 +31,8 @@ export interface AppSmokeAssembly<TBotId extends string = string> {
   readonly runtime: AppBootstrapContract<TBotId>["runtime"];
   /** 真实资源目录。 */
   readonly resources: AppBootstrapContract<TBotId>["resources"];
+  /** 运行时核心资源目录。 */
+  readonly runtime_resources: AppBootstrapContract<TBotId>["runtime_resources"];
   /** 服务层资源目录。 */
   readonly services: AppBootstrapContract<TBotId>["services"];
   /** 健康检查输出基线。 */
@@ -64,6 +66,7 @@ export function createAppSmokeAssembly<TBotId extends string>(
     workers: assembly.workers,
     runtime: assembly.runtime,
     resources: assembly.resources,
+    runtime_resources: assembly.runtime_resources,
     services: assembly.services,
     health: assembly.interfaces.health,
     readiness: assembly.readiness,

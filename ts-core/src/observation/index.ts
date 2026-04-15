@@ -18,8 +18,10 @@ export const observationModuleBoundary = {
     "createObservationReadBoundary",
     "createEnvironmentSnapshot",
     "assessThreat",
+    "createObservationRuntimeCache",
   ],
 } satisfies ModuleBoundary;
 
 export * from "./contracts.js";
 export * from "./snapshot.js";
+export * from "./runtime.js";

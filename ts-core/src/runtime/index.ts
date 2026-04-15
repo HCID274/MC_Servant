@@ -40,6 +40,9 @@ export const runtimeModuleBoundary = {
     "resolveTransition",
     "RuntimeTaskEnvelope",
     "createRuntimeScaffold",
+    "createMineflayerRuntimeTransport",
+    "createMineflayerTransportDescriptor",
+    "createBotActorRuntime",
   ],
 } satisfies ModuleBoundary;
 
@@ -47,3 +50,5 @@ export * from "./contracts.js";
 export * from "./tasking.js";
 export * from "./events.js";
 export * from "./state-machine.js";
+export * from "./transport.js";
+export * from "./actor.js";

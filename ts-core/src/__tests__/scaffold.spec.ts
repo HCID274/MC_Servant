@@ -31,6 +31,9 @@ import {
   createInterfaceServerRuntime,
   createMessageQueueName,
   createMessageTriage,
+  createMineflayerRuntimeTransport,
+  createMineflayerTransportDescriptor,
+  createObservationRuntimeCache,
   createPostgresConnectionDescriptor,
   createPostgresRuntimePoolConfig,
   createRedisConnectionDescriptor,
@@ -231,6 +234,11 @@ describe("TS Core 工程骨架", () => {
     expect(bootstrap.auth.state.status).toBe("not_required");
     expect(smoke.runtime.initial_status).toBe(BotStatus.INITIALIZING);
     expect(smoke.resources.close_order).toEqual(["redis", "postgres"]);
+    expect(smoke.runtime_resources.close_order).toEqual([
+      "bot_actor",
+      "mineflayer_transport",
+      "observation",
+    ]);
     expect(smoke.services.close_order).toEqual(["http", "workers"]);
     expect(smoke.health.status).toBe("ok");
     expect(createAppStartupSummary(bootstrap).io_boundary.connects_real_io).toBe(false);
@@ -238,6 +246,9 @@ describe("TS Core 工程骨架", () => {
     expect(typeof createAppRuntimeServices).toBe("function");
     expect(typeof createAppProcessRuntime).toBe("function");
     expect(typeof createInterfaceServerRuntime).toBe("function");
+    expect(typeof createMineflayerRuntimeTransport).toBe("function");
+    expect(typeof createObservationRuntimeCache).toBe("function");
+    expect(createMineflayerTransportDescriptor({ botId: "bot-root" }).host).toBe("localhost");
   });
 
   it("应从根入口导出外部认证执行计划、脱敏状态与就绪门控", () => {

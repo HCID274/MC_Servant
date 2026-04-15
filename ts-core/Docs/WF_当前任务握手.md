@@ -1,78 +1,86 @@
 # 当前任务握手区
 
-【任务序号】: T-020
+【任务序号】: T-021
 【当前状态】: 进行中
 
 ---
 
 ## Manager 任务指令
 
-**任务目标**: 在 `runtime`（运行时） + `observation`（观测） + `app`（应用装配） 这一组紧邻模块内，接入真实 Mineflayer（Minecraft 协议客户端） 连接工厂、事件驱动的 observation（观测） 缓存，以及 `INITIALIZING → IDLE`（初始化到空闲） 的最小 BotActor（机器人执行代理） 生命周期闭环；本任务不实现任务执行、不会接入 `sandbox`（沙箱） 或 ConversationWorker（对话工作线程） 真实链路。
+**任务目标**: 在 `conversation`（对话） + `workers`（工作线程） + `interfaces`（接口边界） + `app`（应用装配） 这一组相邻模块内，打通最小真实消息链路：`POST /api/message`（消息提交接口） 将消息写入 BullMQ（任务队列） 的 `msg:{botId}` 队列，ConversationWorker（对话工作线程） 可消费该消息并按分诊结果产出模板回复、中断请求或执行任务入队动作。本任务不实现真实 LLM（大语言模型） 调用、Socket.io（实时推送） 广播、BotWorker（机器人工作线程） 执行或 sandbox（沙箱） 代码运行。
 
 **上下文说明**:
-1. `T-018`（任务十八） 已完成 PostgreSQL（关系型数据库） / Redis（缓存） 真实资源工厂；`T-019`（任务十九） 已完成 BullMQ（任务队列） / Fastify（接口网关） 真实启动骨架。现在主干缺的是真实 Minecraft（游戏） 侧运行时传输。
-2. `runtime/contracts.ts`（运行时契约） 与 `runtime/state-machine.ts`（运行时状态机） 已经锁定 Bot 状态从 `INITIALIZING`（初始化） 到 `IDLE`（空闲） 的语义，以及外部认证 `ready_gate`（就绪门控） 规则；本任务不能绕过这些既有约束伪造 `bot.ready`（机器人就绪）。
-3. `observation/snapshot.ts`（观测快照） 已经具备纯函数 `createEnvironmentSnapshot()`（环境快照构造） / `createObservationReadBoundary()`（只读观测边界） / `assessThreat()`（威胁评估） 能力，但还没有真实的事件驱动缓存容器把 Mineflayer（Minecraft 协议客户端） 事件收口成“当前快照”。
-4. `app/contracts.ts`（应用生命周期契约） 已预留 `disconnect_runtime_transport`（断开运行时传输） 关闭步骤，`app/bootstrap.ts`（应用装配） 也已经形成基础设施层 + 服务层的组合运行时；本任务需要把 Mineflayer（Minecraft 协议客户端） / observation（观测） 运行时句柄接入这条生命周期，而不是旁路独立存在。
-5. 当前默认外部认证真理源是 EasyAuth（离线服认证模组） + SQLite（嵌入式数据库），TS Core（TypeScript 单核心） 不接管认证库。因而本任务只允许“连接成功但认证未完成时保持 `INITIALIZING`（初始化）”或“认证已满足后进入 `IDLE`（空闲）”，不允许偷改为自动视作已登录。
-6. `README.md`（项目说明） 已明确当前入口不会自动连接真实 Mineflayer（Minecraft 协议客户端）；本任务仍保持这一原则。真实连接只能通过 `app`（应用装配） 层组合工厂显式创建，且必须支持依赖注入，保证测试不依赖真实 MC（Minecraft） 服务器。
+1. `T-018`（任务十八） 已完成 PostgreSQL（关系型数据库） / Redis（缓存） 真实资源工厂；`T-019`（任务十九） 已完成 BullMQ（任务队列） / Fastify（接口网关） 真实启动骨架；`T-020`（任务二十） 已完成 Mineflayer（Minecraft 协议客户端） / observation（观测） / BotActor（机器人执行代理） 最小运行时核心。
+2. 当前 `/api/message`（消息提交接口） 仍主要返回默认 accepted（已接受） 响应，还没有把消息真正写入 `msg:{botId}` 队列；这是本任务首先要补齐的入口侧链路。
+3. `conversation`（对话） 模块已有分诊稳压、路由决策、回复尾缀、规划草案与 `ExecJob`（执行任务） 构造纯函数；`workers/contracts.ts`（工作线程契约） 已能把路由结果转换为广播回复、中断和执行入队动作。本任务应复用这些纯函数，不重造平行协议。
+4. 本任务只做 ConversationWorker（对话工作线程） 的最小真实处理器与队列衔接。真实 LLM（大语言模型） 可通过依赖注入替代；默认实现必须安全、可测试，不得在没有注入时伪造复杂任务规划。
+5. 输出到客户端的回复本轮只能形成可测试的 `broadcast_reply`（广播回复）动作或注入式 sink（输出端）；不能直接接入 Socket.io（实时推送） 真实广播，避免越过后续实时层任务。
+6. 任务入队到 `bot:{botId}:exec` 后即止步；不得实现 BotWorker（机器人工作线程） 对 exec（执行） 队列的消费，也不得调用 BotActor（机器人执行代理） 执行动作。
 
 **输入文件白名单（Coder 仅限读取以下文件）**:
-1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 2 节《七层技术架构》（执行核心 / observation 段）；第 5 节《中断协议与反射优先级》；第 6 节《执行核心：BotActor 状态机》
-2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 1 节《BotActor 核心定位》；第 2 节《状态机完整定义》；第 6 节《启动与关闭流程》；第 8 节《observation 与 BotActor 的交互契约》；第 9 节《事件日志与错误分级》
-3. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》
-4. `ts-core/scripts/pre_review.sh` — 全文件
-5. `ts-core/package.json` — 全文件
-6. `ts-core/pnpm-lock.yaml` — 全文件
-7. `ts-core/README.md` — 全文件
-8. `ts-core/src/runtime/contracts.ts` — 全文件
-9. `ts-core/src/runtime/state-machine.ts` — 全文件
-10. `ts-core/src/runtime/events.ts` — 全文件
-11. `ts-core/src/runtime/index.ts` — 全文件
-12. `ts-core/src/runtime/transport.ts` — 全文件（可新建）
-13. `ts-core/src/runtime/actor.ts` — 全文件（可新建）
-14. `ts-core/src/observation/contracts.ts` — 全文件
-15. `ts-core/src/observation/snapshot.ts` — 全文件
-16. `ts-core/src/observation/index.ts` — 全文件
-17. `ts-core/src/observation/runtime.ts` — 全文件（可新建）
-18. `ts-core/src/app/contracts.ts` — 全文件
-19. `ts-core/src/app/bootstrap.ts` — 全文件
-20. `ts-core/src/app/smoke.ts` — 全文件
-21. `ts-core/src/app/index.ts` — 全文件
-22. `ts-core/src/app/entrypoint.ts` — 全文件
-23. `ts-core/src/interfaces/contracts.ts` — 全文件（只读参考，获取对外状态快照结构）
-24. `ts-core/src/__tests__/runtime-model.spec.ts` — 全文件
-25. `ts-core/src/__tests__/observation-world-model.spec.ts` — 全文件
-26. `ts-core/src/__tests__/app-smoke-model.spec.ts` — 全文件
-27. `ts-core/src/__tests__/scaffold.spec.ts` — 全文件
-28. `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts` — 全文件（可新建）
-29. `ts-core/src/__tests__/observation-runtime-model.spec.ts` — 全文件（可新建）
+1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 3 节《三队列模型》；第 4 节《消息流》；第 5 节《中断协议与反射优先级》
+2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 3 节《中断决策》；第 9 节《事件日志与错误分级》
+3. `ts-core/Docs/04_CONVERSATION_SPEC.md` — 第 1 节《ConversationWorker 核心定位》；第 2 节《两阶段 LLM 调用模型》；第 3.4 节《Triage 容错》；第 4.3 节《回复输出处理》；第 5.1 节《skill_call 优先》
+4. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》
+5. `ts-core/scripts/pre_review.sh` — 全文件
+6. `ts-core/package.json` — 全文件
+7. `ts-core/pnpm-lock.yaml` — 全文件
+8. `ts-core/README.md` — 全文件
+9. `ts-core/src/domain/contracts.ts` — 全文件（只读参考）
+10. `ts-core/src/runtime/contracts.ts` — 全文件（只读参考）
+11. `ts-core/src/runtime/tasking.ts` — 全文件
+12. `ts-core/src/runtime/events.ts` — 全文件
+13. `ts-core/src/conversation/contracts.ts` — 全文件
+14. `ts-core/src/conversation/triage.ts` — 全文件
+15. `ts-core/src/conversation/chat.ts` — 全文件
+16. `ts-core/src/conversation/planning.ts` — 全文件
+17. `ts-core/src/conversation/index.ts` — 全文件
+18. `ts-core/src/workers/queues.ts` — 全文件
+19. `ts-core/src/workers/contracts.ts` — 全文件
+20. `ts-core/src/workers/bullmq.ts` — 全文件
+21. `ts-core/src/workers/conversation-worker.ts` — 全文件（可新建）
+22. `ts-core/src/workers/index.ts` — 全文件
+23. `ts-core/src/interfaces/contracts.ts` — 全文件
+24. `ts-core/src/interfaces/api.ts` — 全文件
+25. `ts-core/src/interfaces/realtime.ts` — 全文件（只读参考）
+26. `ts-core/src/interfaces/server.ts` — 全文件
+27. `ts-core/src/interfaces/index.ts` — 全文件
+28. `ts-core/src/app/contracts.ts` — 全文件
+29. `ts-core/src/app/bootstrap.ts` — 全文件
+30. `ts-core/src/app/smoke.ts` — 全文件
+31. `ts-core/src/app/index.ts` — 全文件
+32. `ts-core/src/__tests__/conversation-workers-model.spec.ts` — 全文件
+33. `ts-core/src/__tests__/workers-bullmq-model.spec.ts` — 全文件
+34. `ts-core/src/__tests__/interfaces-server-model.spec.ts` — 全文件
+35. `ts-core/src/__tests__/app-smoke-model.spec.ts` — 全文件
+36. `ts-core/src/__tests__/scaffold.spec.ts` — 全文件
+37. `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts` — 全文件（可新建）
+38. `ts-core/src/__tests__/interfaces-message-queue-model.spec.ts` — 全文件（可新建）
 
 **核心逻辑要求**:
-1. 必须新增**真实 Mineflayer（Minecraft 协议客户端） 运行时传输工厂**，通过依赖注入支持替换 `createBot()`（创建客户端实例） 与事件源；产物至少暴露 `connect()`（连接）、`disconnect()`（断开）、连接描述快照和当前连接状态。测试必须能在无真实 MC（Minecraft） 服务器下通过假 bot（机器人实例） / 假事件发射器完成。
-2. 必须新增**事件驱动的 observation（观测） 运行时缓存**：可接收 Mineflayer（Minecraft 协议客户端） 一侧的最新只读输入，基于现有 `createEnvironmentSnapshot()`（环境快照构造） 构建和替换当前快照，并对外暴露 `getSnapshot()`（获取快照副本） / `readBoundary`（只读边界） / `assessThreat()`（威胁评估） 的统一入口。该缓存只能读 Mineflayer（Minecraft 协议客户端） 事件和写内部快照，**不得**直接调用任何 Bot 写方法。
-3. 必须把 BotActor（机器人执行代理） 的最小运行时闭环收口为可测试边界：启动时状态固定为 `INITIALIZING`（初始化）；只有当 Mineflayer（Minecraft 协议客户端） 已连接且外部认证 `ready_gate`（就绪门控） 允许时，才可转入 `IDLE`（空闲） 并产出 `bot.ready`（机器人就绪） 语义。若外部认证仍是 `pending`（待执行），即使 Mineflayer 已连接，也必须停留在 `INITIALIZING`（初始化），只暴露待执行登录计划，不得伪造 `IDLE`（空闲）。
-4. 必须把 Mineflayer（Minecraft 协议客户端） / observation（观测） 运行时句柄纳入 `app/bootstrap.ts`（应用装配） 的真实运行时资源体系，明确创建顺序、关闭顺序和失败回滚策略；关闭时必须先断开 HTTP（超文本传输协议） / workers（工作线程） 等上层入口，再断开运行时传输，最后才释放 Redis（缓存） / PostgreSQL（关系型数据库）。
-5. 本任务**不允许**：实现 BullMQ Worker（任务队列消费者） 真消费、实现技能执行 / 沙箱执行、实现 Socket.io（实时推送） 真实广播、实现 EasyAuth（离线服认证模组） 数据库读写同步、实现网页消息到 Bot（机器人） 执行的完整链路。
+1. 必须让 `POST /api/message`（消息提交接口） 在默认 `app`（应用装配） 服务组合中真正写入 BullMQ（任务队列） 的 conversation（对话） 队列；入队 payload（载荷） 必须是现有 `createConversationWorkerTask()`（创建对话工作线程任务） 产物或与其完全一致的强类型结构，不允许另造松散 JSON（结构化数据） 协议。
+2. 必须新增 ConversationWorker（对话工作线程） 最小运行时处理器：接收 `ConversationWorkerTask`（对话工作线程任务），通过可注入 triage（分诊） / chat reply（闲聊回复） / planner（规划器） 依赖形成 `ConversationWorkerAction`（对话工作线程动作） 列表，并把动作落到注入式 sink（输出端）：`broadcast_reply`（广播回复）、`interrupt_runtime`（中断运行时）、`enqueue_exec`（执行入队）、`emit_task_lifecycle`（任务生命周期事件）。
+3. `chat`（闲聊） 路径必须能无真实 LLM（大语言模型） 运行：可用注入式回复生成器或安全模板回复，且继续执行 `ensureReplyEndsWithMeow()`（喵后缀兜底）。`cancel`（取消） 路径必须直接生成中断动作和模板回复，不得走规划器。
+4. `task`（任务） / `modify`（修改） 路径必须通过注入式 planner（规划器） 产出 `skill_call`（技能调用） 或 `sandbox_code`（沙箱代码） 草案，再复用 `createExecJobFromPlan()`（从规划创建执行任务） 与 `createConversationWorkerActions()`（创建对话工作线程动作） 入 `bot:{botId}:exec` 队列；没有注入 planner（规划器） 时不得伪造可执行任务。
+5. 必须保留 `T-019`（任务十九） 的跨 Bot（跨机器人） 请求拒绝和空白输入 `400`（请求错误） 语义；HTTP（超文本传输协议） 层不能接受非当前单 Bot（单机器人） 的消息。
+6. 本任务不允许：真实 LLM（大语言模型） API（接口） 调用、Socket.io（实时推送） 真实广播、BotWorker（机器人工作线程） 消费 exec（执行） 队列、sandbox（沙箱） 执行、Mineflayer（Minecraft 协议客户端） 写操作、EasyAuth（离线服认证模组） 数据库读写。
 
 **验收标准**:
-1. 已存在可注入依赖的 Mineflayer（Minecraft 协议客户端） 运行时传输工厂，具备 `connect()`（连接） / `disconnect()`（断开） 生命周期边界，且测试不依赖真实 MC（Minecraft） 服务器。
-2. 已存在 observation（观测） 运行时缓存，可基于 Mineflayer（Minecraft 协议客户端） 输入刷新当前快照，并继续满足只读副本、实时 `owner.position`（主人位置） 与威胁评估边界。
-3. 已存在 `INITIALIZING → IDLE`（初始化到空闲） 的最小 BotActor（机器人执行代理） 生命周期闭环；外部认证未就绪时不会错误进入 `IDLE`（空闲）。
-4. Mineflayer（Minecraft 协议客户端） / observation（观测） 运行时句柄已纳入 `app`（应用装配） 层组合资源，启动 / 关闭顺序与失败清理策略有测试覆盖。
-5. 执行 `bash ts-core/scripts/pre_review.sh` 后仍能通过。
+1. `POST /api/message`（消息提交接口） 在应用装配默认路径下会向 `msg:{botId}` BullMQ（任务队列） 写入一条 ConversationWorker（对话工作线程） 任务，响应仍为 `202`（已接受） 且 `job_id`（任务标识） 与消息可追踪。
+2. ConversationWorker（对话工作线程） 最小处理器可在无真实 Redis（缓存） / 无真实 LLM（大语言模型） 的测试中处理 `chat`（闲聊）、`cancel`（取消）、`task`（任务） 至少三类路径，并产出正确动作。
+3. `task`（任务） 路径会把注入 planner（规划器） 的规划草案转换成 `ExecJob`（执行任务） 并入 `bot:{botId}:exec` 队列，同时发出 accepted（已接受） 生命周期动作；`cancel`（取消） 路径只中断和回复，不入 exec（执行） 队列。
+4. 既有跨 Bot（跨机器人） 请求拒绝、空白输入 `400`（请求错误）、服务关闭顺序与资源失败清理测试仍保持有效。
+5. 执行 `bash ts-core/scripts/pre_review.sh` 全部通过。
 
 ---
 
 ## Coder 自检清单
-- [ ] 任务序号核对为 `T-020`
+- [ ] 任务序号核对为 `T-021`
 - [ ] 仅读取并修改白名单内文件
-- [ ] Mineflayer（Minecraft 协议客户端） 运行时传输已具备 `connect()` / `disconnect()` 与依赖注入
-- [ ] observation（观测） 运行时缓存已基于现有快照纯函数收口，且保持只读边界
-- [ ] `INITIALIZING`（初始化） 到 `IDLE`（空闲） 的就绪门控未绕过外部认证语义
-- [ ] 已把 Mineflayer（Minecraft 协议客户端） / observation（观测） 运行时接入应用装配生命周期
-- [ ] 未实现 Worker（工作线程） 真消费、未接入 Socket.io（实时推送） 真广播、未实现技能 / 沙箱执行
-- [ ] 已新增测试覆盖连接 / 断开、快照刷新、就绪门控与失败清理，且不依赖真实 MC（Minecraft） 服务器
+- [ ] `POST /api/message`（消息提交接口） 已真实写入 conversation（对话） 队列，且未破坏 `T-019`（任务十九） 输入校验
+- [ ] ConversationWorker（对话工作线程） 最小运行时处理器已通过依赖注入覆盖 triage（分诊） / reply（回复） / planner（规划器） / sink（输出端）
+- [ ] `chat`（闲聊）、`cancel`（取消）、`task`（任务） 三类路径均有无外部服务测试覆盖
+- [ ] 未实现真实 LLM（大语言模型） 调用、Socket.io（实时推送） 广播、BotWorker（机器人工作线程） 消费、sandbox（沙箱） 执行或 Mineflayer（Minecraft 协议客户端） 写操作
 - [ ] 执行 bash ts-core/scripts/pre_review.sh 全部通过
 
 ---
@@ -85,15 +93,11 @@
 
 ## Coder 执行反馈（仅 Coder 填写）
 
-- 回填任务序号：`T-020`
-- 修改文件：
-- 执行摘要：
-- 预检输出摘要：
-- 遗留疑问：
+（待 Coder 填写）
 
 ---
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
-- T-021: 在 `conversation`（对话） + `workers`（工作线程） + `interfaces`（接口边界） 内打通最小真实消息链路：HTTP（超文本传输协议） 入队、分诊、模板回复或执行任务分流。
 - T-022: 在 `sandbox`（沙箱） + `skills`（技能） + `runtime`（运行时） 内接入 BotWorker（机器人工作线程） 最小真实执行链：`exec`（执行） 队列消费、技能快路径、沙箱调用 BotActor（机器人执行代理）。
-- T-023: 端到端联调与最小 demo（演示） — 从网页消息入口到 BullMQ（任务队列） 到 BotActor（机器人执行代理） 到游戏内动作 / 回执广播的可观测闭环。
+- T-023: 端到端联调与最小 demo（演示） — 从网页消息入口到 BullMQ（任务队列） 到 BotActor（机器人执行代理） 到游戏内动作 / 回执动作的可观测闭环。
+- T-024: 在 `interfaces`（接口层） + `realtime`（实时推送） + `diagnostics`（诊断） 内补齐 Socket.io（实时推送） 广播与 replay（补拉） 真实事件出口。

@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 
@@ -7,6 +8,24 @@ import {
   createAppProcessRuntime,
   createAppSmokeAssembly,
 } from "../app/index.js";
+import type { MineflayerBotHandle } from "../runtime/transport.js";
+
+class FakeAppMineflayerBot extends EventEmitter implements MineflayerBotHandle {
+  readonly username: string;
+
+  constructor(
+    username: string,
+    private readonly onQuit: () => void = () => undefined,
+  ) {
+    super();
+    this.username = username;
+  }
+
+  quit(): void {
+    this.onQuit();
+    this.emit("end");
+  }
+}
 
 describe("app（应用装配） 骨架", () => {
   it("应生成对齐启动 / 关闭顺序的组合根", () => {
@@ -31,6 +50,18 @@ describe("app（应用装配） 骨架", () => {
     expect(assembly.resources.postgres.descriptor).toBe(assembly.postgres);
     expect(assembly.resources.redis.keys).toBe(assembly.redis);
     expect(assembly.resources.redis.descriptor.url).toBe("redis://cache.internal:6380");
+    expect(assembly.runtime_resources.create_order).toEqual([
+      "observation",
+      "mineflayer_transport",
+      "bot_actor",
+    ]);
+    expect(assembly.runtime_resources.close_order).toEqual([
+      "bot_actor",
+      "mineflayer_transport",
+      "observation",
+    ]);
+    expect(assembly.runtime_resources.mineflayer_transport.descriptor.bot_id).toBe("bot-app");
+    expect(assembly.runtime_resources.bot_actor.initial_status).toBe("initializing");
     expect(assembly.services.create_order).toEqual(["workers", "http"]);
     expect(assembly.services.close_order).toEqual(["http", "workers"]);
     expect(assembly.services.workers.catalog).toBe(assembly.workers);
@@ -92,6 +123,8 @@ describe("app（应用装配） 骨架", () => {
     expect(smoke.postgres.pool.max).toBe(9);
     expect(smoke.redis.queues.exec).toBe("bull:bot:bot-smoke:exec:*");
     expect(smoke.resources.redis.reuse_for).toBe("bullmq_shared_connection");
+    expect(smoke.runtime_resources.observation.mode).toBe("event_driven_cache");
+    expect(smoke.runtime_resources.mineflayer_transport.descriptor.host).toBe("localhost");
     expect(smoke.services.http.listen).toEqual({
       host: "0.0.0.0",
       port: 3000,
@@ -216,6 +249,19 @@ describe("app（应用装配） 骨架", () => {
           },
         },
       },
+      runtime: {
+        transport: {
+          createBot: () => {
+            const bot = new FakeAppMineflayerBot("bot-process", () => {
+              closeOrder.push("runtime_transport");
+            });
+
+            setTimeout(() => bot.emit("spawn"), 0);
+
+            return bot;
+          },
+        },
+      },
       services: {
         workers: {
           createQueue: ({ name }) => ({
@@ -241,6 +287,8 @@ describe("app（应用装配） 骨架", () => {
       },
     });
 
+    expect(runtime.runtime.actor.getSnapshot().status).toBe("idle");
+
     await runtime.close();
 
     expect(closeOrder).toEqual([
@@ -248,8 +296,62 @@ describe("app（应用装配） 骨架", () => {
       "brain",
       "bot:bot-process:exec",
       "msg:bot-process",
+      "runtime_transport",
       "redis",
       "postgres",
     ]);
+  });
+
+  it("服务层创建失败时应清理 Mineflayer（Minecraft 协议客户端） 与基础设施资源", async () => {
+    const closeOrder: string[] = [];
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-process-failure",
+      now: "2026-04-15T00:00:00.000Z",
+    });
+
+    await expect(
+      createAppProcessRuntime(bootstrap, {
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => {
+                closeOrder.push("postgres");
+              },
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => ({}),
+            connectClient: async () => undefined,
+            closeClient: async () => {
+              closeOrder.push("redis");
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeAppMineflayerBot("bot-process-failure", () => {
+                closeOrder.push("runtime_transport");
+              });
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        services: {
+          workers: {
+            createQueue: () => {
+              throw new Error("worker queue failure");
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("worker queue failure");
+
+    expect(closeOrder).toEqual(["runtime_transport", "redis", "postgres"]);
   });
 });
