@@ -1,3 +1,13 @@
+/**
+ * 运行时核心契约与外部认证逻辑。
+ * 
+ * 架构职责：
+ * 1. 状态定义：定义 BotActor 的核心执行状态（BotStatus）和中断机制（InterruptSignal）。
+ * 2. 外部认证流水线：管理与 Minecraft 服务器连接所需的登录认证状态（Pending, Authenticated, Failed）及执行计划。
+ * 3. 就绪门控（Ready Gate）：实现复杂的就绪判定逻辑，综合 Bot 状态与认证状态决定系统是否可对外提供服务。
+ * 4. 骨架装配：提供 RuntimeScaffold 用于初始化运行时的基本参数、支持的任务类型及中断模板。
+ */
+
 import { type ExecutionTaskEnvelope, ExecutionTaskKind } from "../domain/contracts.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import type { ReflexInterruptSource, ThreatAssessment } from "../observation/contracts.js";
@@ -349,7 +359,16 @@ export interface RuntimeScaffold {
   interruptTemplate: InterruptSignal;
 }
 
-/** 创建外部认证明文密钥注入描述。 */
+/**
+ * 创建外部认证密钥绑定。
+ * 
+ * 架构意图：
+ * 将来自环境变量或配置的明文密钥及其来源元数据（Source, Reference）进行强类型封装，
+ * 为后续的登录命令生成（如 /login <secret>）提供安全、确定的输入。
+ * 
+ * @param input 包含来源、引用和密钥明文的输入
+ * @returns 不可变的密钥绑定对象
+ */
 export function createExternalAuthSecretBinding(input: {
   source: ExternalAuthSecretSource;
   reference: string;
@@ -378,7 +397,18 @@ export function createExternalAuthCommandAction(
   });
 }
 
-/** 根据内部认证状态构造最小执行计划。 */
+/**
+ * 创建外部认证执行计划。
+ * 
+ * 架构设计：
+ * 根据当前的 ExternalAuthState，决定下一步需要执行的认证动作。
+ * 特别是在 pending 状态下，它会利用绑定的密钥生成真实的 ExternalAuthCommandAction，
+ * 并同步提供脱敏后的 action_summary 供外部查询。
+ * 
+ * @param state 内部认证状态
+ * @param secret 可选的注入密钥绑定
+ * @returns 完整的执行计划
+ */
 export function createExternalAuthExecutionPlan(
   state: ExternalAuthState,
   secret?: ExternalAuthSecretBinding,
@@ -433,7 +463,17 @@ export function createExternalAuthExecutionPlan(
   }
 }
 
-/** 创建对外可见的外部认证脱敏状态。 */
+/**
+ * 创建对外可见的外部认证脱敏状态。
+ * 
+ * 架构意图：
+ * 作为一个“脱敏器”，它将内部包含敏感密钥引用的认证状态
+ * 转换为安全的、适合暴露给客户端的 PublicState。它移除了具体的密钥细节，
+ * 仅保留状态机指示和脱敏后的动作摘要。
+ * 
+ * @param state 内部认证状态
+ * @returns 脱敏后的公开状态
+ */
 export function createExternalAuthPublicState(state: ExternalAuthState): ExternalAuthPublicState {
   switch (state.status) {
     case "not_required":
@@ -471,7 +511,17 @@ export function createExternalAuthPublicState(state: ExternalAuthState): Externa
   }
 }
 
-/** 根据运行时状态与外部认证状态构造 ready（就绪） 门控结果。 */
+/**
+ * 创建运行时就绪门控结果。
+ * 
+ * 架构意图：
+ * 实现核心的“就绪判定”策略。门控综合考虑了运行时状态（忙碌、初始化、已停机）
+ * 和外部认证状态（待认证、认证失败）。它产出一个综合的 ready 标志，
+ * 并列出具体的阻断原因（blocked_by），支撑系统按需开放 HTTP 和实时推送能力。
+ * 
+ * @param input 包含 Bot 状态和外部认证状态的输入
+ * @returns 门控判定结果
+ */
 export function createRuntimeReadyGate(input: {
   status: BotStatus;
   externalAuth: ExternalAuthState;
@@ -518,7 +568,16 @@ export function createRuntimeReadyGate(input: {
   });
 }
 
-/** 创建统一的外部认证运行时状态。 */
+/**
+ * 创建外部认证运行时状态。
+ * 
+ * 架构意图：
+ * 作为一个工厂函数，它将认证结果（成功、失败、待定）统一收口为标准的 ExternalAuthState。
+ * 它负责从密钥绑定中提取来源和引用元数据，并确保状态对象的结构一致性。
+ * 
+ * @param input 包含认证状态及相关元数据的判别联合输入
+ * @returns 统一的认证状态对象
+ */
 export function createExternalAuthState(
   input:
     | {
@@ -563,7 +622,17 @@ export function createExternalAuthState(
   }
 }
 
-/** 创建运行时骨架占位对象。 */
+/**
+ * 创建运行时骨架占位对象。
+ * 
+ * 架构意图：
+ * 它是运行时初始化的“蓝图”。它聚合了初始状态、认证状态、初始执行计划以及门控结果，
+ * 为 BotActor 提供了一个完整的启动上下文。它还定义了运行时支持的任务类型（Skill, Sandbox）
+ * 和标准的中断信号模板。
+ * 
+ * @param input 可选的认证状态和密钥注入
+ * @returns 完整的运行时骨架
+ */
 export function createRuntimeScaffold(
   input: {
     externalAuth?: ExternalAuthState;

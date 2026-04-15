@@ -1,3 +1,13 @@
+/**
+ * 游戏内聊天入口契约与过滤逻辑。
+ * 
+ * 架构职责：
+ * 1. 命令过滤：通过 `createGameChatIngressDecision` 实现对 Minecraft 游戏内原始聊天的过滤，仅处理以 `/svs` 为前缀的主人命令。
+ * 2. 身份校验：根据主人绑定解析状态（Owner Resolution），区分“主人命令”、“普通玩家闲聊”和“缺失绑定的非法操作”。
+ * 3. 状态分发：返回 accepted, ignored, 或 rejected 状态，引导上层应用决定是否将消息推入核心主线。
+ * 4. 入口标准化：将合法的游戏命令转换为标准的 InterfaceMessageEnvelope 格式。
+ */
+
 import { MessageSource } from "../../domain/contracts.js";
 import { assertNonEmptyString } from "../../domain/invariants.js";
 import { type InterfaceMessageEnvelope, createInterfaceMessageEnvelope } from "../contracts.js";
@@ -142,7 +152,20 @@ function normalizeGameChatCommandContent(content: string): string | null {
   return trimmedContent.slice(GAME_CHAT_COMMAND_PREFIX.length).trim();
 }
 
-/** 创建游戏聊天入口判定结果，用于区分主人命令与应忽略的普通聊天。 */
+/**
+ * 创建游戏聊天入口判定结果。
+ * 
+ * 架构意图：
+ * 它是游戏入口的“安检员”。它接收原始聊天输入，并根据以下策略做出判定：
+ * 1. 绑定缺失 -> Rejected: 尚未建立主人绑定。
+ * 2. 非主人发送 -> Ignored: 忽略其他玩家的消息。
+ * 3. 缺少前缀 -> Ignored: 忽略非命令性质的普通聊天。
+ * 4. 空命令 -> Rejected: 命令前缀后无有效内容。
+ * 5. 合法命令 -> Accepted: 移除前缀并包装为标准消息信封。
+ * 
+ * @param input 包含 Bot ID, 主人绑定状态, 发送者 ID, 消息内容及时间戳的输入
+ * @returns 判定结果（Accepted / Ignored / Rejected）
+ */
 export function createGameChatIngressDecision(input: {
   bot_id: string;
   owner_id: string | null;

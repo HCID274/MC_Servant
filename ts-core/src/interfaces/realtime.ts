@@ -1,3 +1,12 @@
+/**
+ * 实时推送事件模型与转换。
+ * 
+ * 架构职责：
+ * 1. 事件包装：定义 RealtimeEventEnvelope，将运行时的原子事件包装为适合 Socket.io 推送和补拉（Replay）的统一格式。
+ * 2. 深度克隆：提供 cloneRealtimeValue，确保推送的载荷是完全解耦且不可变的，防止并发修改。
+ * 3. 契约复用：复用 runtime/events.ts 中的事件类型定义，保证内部逻辑与外部接口的一致性。
+ */
+
 import type { RuntimeEventLogEntry, RuntimeEventType } from "../runtime/events.js";
 
 /** 实时推送事件结构，用于统一 Socket.io（实时推送） 与 replay（补拉） 的事件载荷。 */
@@ -43,7 +52,16 @@ function cloneRealtimeValue<TValue>(value: TValue): TValue {
   return value;
 }
 
-/** 创建实时推送事件，用于复用 runtime/events.ts（运行时事件） 的同名类型集合。 */
+/**
+ * 创建实时推送事件信封。
+ * 
+ * 架构意图：
+ * 作为一个工厂函数，它将运行时的原始事件数据（序号、类型、时间戳、载荷）
+ * 包装成结构化的 RealtimeEventEnvelope。它强制执行载荷的深克隆，确保数据的不可变性。
+ * 
+ * @param input 包含序号、Bot ID、类型、时间戳、会话 ID 和可选载荷的输入
+ * @returns 包装后的只读事件信封
+ */
 export function createRealtimeEventEnvelope<TType extends RuntimeEventType>(input: {
   seq: number;
   botId: string;
@@ -62,7 +80,16 @@ export function createRealtimeEventEnvelope<TType extends RuntimeEventType>(inpu
   });
 }
 
-/** 克隆实时推送事件，用于在 replay（补拉） 等接口边界内切断调用方对象引用。 */
+/**
+ * 克隆实时推送事件。
+ * 
+ * 架构意图：
+ * 用于在 replay（补拉）等接口边界处切断调用方对原始对象的引用，
+ * 确保输出的数据是完全独立的副本。
+ * 
+ * @param input 原始事件信封
+ * @returns 克隆后的新信封
+ */
 export function cloneRealtimeEventEnvelope<TType extends RuntimeEventType>(
   input: RealtimeEventEnvelope<TType>,
 ): RealtimeEventEnvelope<TType> {

@@ -1,3 +1,13 @@
+/**
+ * 接口层契约与基础转换。
+ * 
+ * 架构职责：
+ * 1. 鉴权契约：定义 Session、Token 校验逻辑及登录响应结构。
+ * 2. 入口（Ingress）适配：提供标准化的 Envelope 工厂，将不同来源（Web, Game, Bridge）的消息和事件统一收口。
+ * 3. 状态投影：定义 Bot 状态、外部认证状态和健康检查的对外公开快照结构。
+ * 4. 安全校验：实现 Session 与 Bot ID 的绑定校验，防止跨 Bot 的非法操作。
+ */
+
 import { MessageSource } from "../domain/contracts.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import {
@@ -246,7 +256,16 @@ export function createSessionRecord(input: SessionRecord): SessionRecord {
   return Object.freeze(cloneSessionRecord(input));
 }
 
-/** 创建统一消息包，用于收口网页端与游戏聊天入口的关键字段。 */
+/**
+ * 创建接口层统一消息包。
+ * 
+ * 架构意图：
+ * 作为一个“收口点”，它将不同接入方式（如 Web 登录、游戏内直接触发）的元数据
+ * 转化为系统内部一致的消息信封结构。它强制要求 bot_id, message_id 等核心字段的非空校验。
+ * 
+ * @param input 消息包核心字段输入
+ * @returns 经过校验和克隆的只读消息信封
+ */
 export function createInterfaceMessageEnvelope<
   TSource extends MessageSource,
   TChannel extends InterfaceIngressChannel,
@@ -279,7 +298,16 @@ export function createInterfaceMessageEnvelope<
   });
 }
 
-/** 创建统一事件包，用于收口服务端桥接等非文本入口的关键字段。 */
+/**
+ * 创建接口层统一事件包。
+ * 
+ * 架构意图：
+ * 专门用于承载服务端桥接（Server Bridge）等非文本输入的事件，
+ * 与 createInterfaceMessageEnvelope 共享相似的元数据校验逻辑。
+ * 
+ * @param input 事件包核心字段输入
+ * @returns 经过校验和克隆的只读事件信封
+ */
 export function createInterfaceEventEnvelope<
   TSource extends MessageSource,
   TChannel extends InterfaceIngressChannel,
@@ -342,7 +370,19 @@ export function isSessionExpired(input: { expiresAt: string; now: string }): boo
   return Date.parse(input.expiresAt) <= Date.parse(input.now);
 }
 
-/** 校验会话鉴权输入，用于输出纯函数化的 token（令牌） 判定结果。 */
+/**
+ * 校验会话鉴权输入。
+ * 
+ * 架构意图：
+ * 实现核心的鉴权逻辑判定：
+ * 1. 完整性：必须同时提供 Authorization 和 Session 记录。
+ * 2. 匹配性：Token 和 Bot ID 必须与 Session 记录严格对齐。
+ * 3. 时效性：校验 Session 是否已过期。
+ * 它是一个纯函数，返回结构化的 SessionValidationResult。
+ * 
+ * @param input 包含鉴权输入、Session 记录及上下文信息的输入
+ * @returns 判定结果
+ */
 export function validateSessionAuthorization(input: {
   authorization: SessionAuthorization | null;
   session: SessionRecord | null;
@@ -371,7 +411,16 @@ export function validateSessionAuthorization(input: {
   });
 }
 
-/** 创建网页端标准化消息，用于坚持聊天驱动的唯一消息入口。 */
+/**
+ * 创建网页端标准化消息。
+ * 
+ * 架构意图：
+ * 封装 Web 提交逻辑。在创建信封前，它会额外执行 assertSessionBotBinding 校验，
+ * 确保提交请求中的 bot_id 与当前会话绑定的 bot_id 严格一致。
+ * 
+ * @param input 包含请求内容、Session 和创建时间戳的输入
+ * @returns 格式化后的网页端消息信封
+ */
 export function createWebMessageEnvelope(input: {
   request: MessageSubmissionRequest;
   session: SessionRecord;
@@ -424,7 +473,16 @@ export function createInterfaceBotStatusSnapshot(
   });
 }
 
-/** 创建接口层外部认证快照，用于坚持脱敏输出与 ready（就绪） 门控对齐。 */
+/**
+ * 创建接口层外部认证快照。
+ * 
+ * 架构意图：
+ * 它是对外暴露认证状态的聚合工厂。它不仅包含脱敏后的 PublicState，
+ * 还集成了 ready_gate 判定逻辑，用于告知外部客户端当前 Bot 是否已满足进入服务态的前提。
+ * 
+ * @param input 包含 Bot 运行时状态和认证状态的输入
+ * @returns 对外公开的认证与就绪快照
+ */
 export function createInterfaceExternalAuthSnapshot(input: {
   status: BotStatus;
   external_auth: ExternalAuthState;

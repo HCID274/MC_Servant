@@ -1,3 +1,13 @@
+/**
+ * 运行时事件定义与工厂。
+ * 
+ * 架构职责：
+ * 1. 事件字典：维护系统所有运行时事件类型（bot.*, task.*, state.*, reflex.* 等）。
+ * 2. 生命周期建模：定义任务在不同阶段（Accepted, Started, Discarded, Terminal）的详细事件载荷。
+ * 3. 稳压适配：提供核心工厂函数，将运行时的 ExecJob 及其执行结果转换为标准化、不可变的 TaskLifecycleEvent。
+ * 4. 统一入口：实现事件到 EventLogEntry 的包装逻辑，支撑系统的审计、追踪和实时推送功能。
+ */
+
 import { type EventLogEntry, EventLogLevel, type MessageSource } from "../domain/contracts.js";
 import type { ThreatLevel, ThreatRuleId } from "../observation/contracts.js";
 import type { BotStatus, InterruptSource } from "./contracts.js";
@@ -236,7 +246,16 @@ export function isRuntimeEventType(value: string): value is RuntimeEventType {
   return RUNTIME_EVENT_TYPES.includes(value as RuntimeEventType);
 }
 
-/** 创建最小运行时事件日志。 */
+/**
+ * 创建最小运行时事件日志。
+ * 
+ * 架构意图：
+ * 它是系统事件总线的“入站包装器”，负责将各种原子事件统一收口为符合领域模型的 RuntimeEventLogEntry。
+ * 默认使用 Info 级别，支持可选的任务 ID、Bot ID 和自定义载荷。
+ * 
+ * @param input 包含事件 ID, 类型, 来源, 时间戳及可选属性的输入
+ * @returns 标准化的运行时事件日志条目
+ */
 export function createRuntimeEventLogEntry(input: {
   eventId: string;
   type: RuntimeEventType;
@@ -258,7 +277,16 @@ export function createRuntimeEventLogEntry(input: {
   };
 }
 
-/** 创建任务 accepted（已接受） 生命周期事件。 */
+/**
+ * 创建任务已接受（Accepted）生命周期事件。
+ * 
+ * 架构意图：
+ * 当一个任务成功进入执行队列时触发。除了包含通用的任务元数据外，
+ * 它还专门记录了任务的执行优先级和规划时的快照时间戳，用于后续的审计和分析。
+ * 
+ * @param job 待执行的任务对象
+ * @returns 初始化的生命周期事件
+ */
 export function createTaskAcceptedLifecycleEvent(
   job: ExecJob,
 ): TaskLifecycleEvent<TaskHistoryStatus.Accepted> {
@@ -273,7 +301,16 @@ export function createTaskAcceptedLifecycleEvent(
   }) as TaskLifecycleEvent<TaskHistoryStatus.Accepted>;
 }
 
-/** 创建任务 started（已开始） 生命周期事件。 */
+/**
+ * 创建任务已开始（Started）生命周期事件。
+ * 
+ * 架构意图：
+ * 当任务开始被 BotActor 真实执行时触发。主要载荷为基础的任务元数据，
+ * 标志着任务从“待处理”转为“运行中”。
+ * 
+ * @param job 正在执行的任务对象
+ * @returns 状态更新后的生命周期事件
+ */
 export function createTaskStartedLifecycleEvent(
   job: ExecJob,
 ): TaskLifecycleEvent<TaskHistoryStatus.Started> {
@@ -284,7 +321,17 @@ export function createTaskStartedLifecycleEvent(
   }) as TaskLifecycleEvent<TaskHistoryStatus.Started>;
 }
 
-/** 创建任务 discarded（已丢弃） 生命周期事件。 */
+/**
+ * 创建任务已丢弃（Discarded）生命周期事件。
+ * 
+ * 架构意图：
+ * 当任务因为过期（意图纪元旧）或快照失效而被系统拒绝执行时触发。
+ * 它必须包含具体的丢弃原因（discard_reason），并在因为纪元过期被丢弃时，
+ * 可选记录当前的最新纪元，以便客户端理解状态不一致的原因。
+ * 
+ * @param input 包含任务、丢弃原因和当前纪元的输入
+ * @returns 经过归类的生命周期事件
+ */
 export function createTaskDiscardedLifecycleEvent(input: {
   job: ExecJob;
   discard_reason: TaskDiscardReason;
@@ -305,7 +352,17 @@ export function createTaskDiscardedLifecycleEvent(input: {
   }) as TaskLifecycleEvent<TaskHistoryStatus.Discarded>;
 }
 
-/** 创建任务终态生命周期事件。 */
+/**
+ * 创建任务终态（Terminal）生命周期事件。
+ * 
+ * 架构意图：
+ * 统一处理任务进入 Completed, Failed 或 Interrupted 终态时的事件生成。
+ * 它强制要求所有终态事件包含总步数（total_steps）和执行耗时（duration_ms）。
+ * 针对不同终态，它会额外执行稳压克隆（freezeTaskValue）以保护错误对象或中断来源数据。
+ * 
+ * @param input 包含任务、终态、步数、耗时及状态特定信息的判别联合输入
+ * @returns 终态生命周期事件
+ */
 export function createTaskTerminalLifecycleEvent(
   input:
     | {
@@ -373,7 +430,17 @@ export function createTaskTerminalLifecycleEvent(
   throw new Error("Unhandled terminal task status");
 }
 
-/** 将任务生命周期事件包裹为 event_log（事件日志） 条目。 */
+/**
+ * 将任务生命周期事件包裹为运行时事件日志。
+ * 
+ * 架构意图：
+ * 它是生命周期事件到系统通用日志条目的“桥接器”。
+ * 它负责将 lifecycle 对象中的 payload 解构并投影到 EventLogEntry 中，
+ * 同时建立起日志条目与 taskId 的显式关联，方便系统进行全链路追踪。
+ * 
+ * @param input 包含事件 ID, 生命周期对象, 来源, 时间戳及 Bot ID 的输入
+ * @returns 包装后的运行时事件日志
+ */
 export function createTaskLifecycleEventLogEntry<TStatus extends TaskHistoryStatus>(input: {
   eventId: string;
   lifecycle: TaskLifecycleEvent<TStatus>;

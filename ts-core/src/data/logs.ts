@@ -1,3 +1,12 @@
+/**
+ * 日志路径与保留策略管理。
+ * 
+ * 架构职责：
+ * 1. 路径规范：定义 JSONL 日志在物理存储（如文件系统）与数据库引用（log_ref/code_ref）之间的映射规则。
+ * 2. 安全校验：强制要求存储引用必须是相对路径，防止路径穿越（Path Traversal）等安全风险。
+ * 3. 策略分发：维护不同业务目录（tasks, sandbox, llm）的日志保留期限（Retention Policy）。
+ */
+
 import { posix as pathPosix } from "node:path";
 
 /** JSONL 日志根目录默认值。 */
@@ -57,7 +66,19 @@ export const JSONL_DIRECTORY_POLICIES = {
   },
 } as const satisfies Record<JsonlLogDirectory, JsonlDirectoryPolicy>;
 
-/** 判断数据库中的日志引用是否为安全的相对路径。 */
+/**
+ * 判断数据库中的日志引用是否为安全的相对路径。
+ * 
+ * 架构意图：
+ * 采用严格的白名单策略校验路径合法性：
+ * 1. 禁止绝对路径。
+ * 2. 禁止 Windows 风格反斜杠。
+ * 3. 禁止包含 '..' 或 '.' 等特殊段，防止目录向上穿越。
+ * 4. 确保路径已标准化，无冗余分段。
+ * 
+ * @param value 待校验的路径引用字符串
+ * @returns 是否安全合法
+ */
 export function isValidStorageRef(value: string): boolean {
   if (value.length === 0 || value.includes("\\")) {
     return false;
@@ -94,7 +115,15 @@ function isValidStorageRefSegment(value: string): boolean {
     .every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
-/** 创建符合目录规则的日期分桶日志引用。 */
+/**
+ * 创建符合目录规则的日期分桶日志引用。
+ * 
+ * 架构意图：
+ * 按照 `directory/date/fileName` 的三级结构生成路径，便于按日期进行日志归档与清理。
+ * 
+ * @param input 包含目录名、日期段和文件名的输入
+ * @returns 组合后的安全存储引用
+ */
 export function createDatedStorageRef(input: {
   directory: JsonlLogDirectory;
   date: string;

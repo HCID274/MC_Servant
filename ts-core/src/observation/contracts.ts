@@ -1,3 +1,13 @@
+/**
+ * 观测模块契约与数据结构。
+ * 
+ * 架构职责：
+ * 1. 统一环境表示：定义 EnvironmentSnapshot，作为系统内唯一的可信环境副本，解耦了底层的 Mineflayer 或 Bridge 细节。
+ * 2. 观测模型：涵盖位置（Position）、物品（Inventory）、装备（Equipment）、实体（Entity）和方块（Block）的标准化摘要结构。
+ * 3. 威胁模型：定义威胁等级（ThreatLevel）、评估规则（ThreatRuleId）及其产生的结果（ThreatAssessment），支持反射式（Reflex）决策。
+ * 4. 读边界定义：提供 ObservationReadBoundary 接口，规定了上层应用如何以只读方式查询世界状态和主人状态。
+ */
+
 /** 三维坐标快照，用于表达 observation 与 world-model 的只读位置。 */
 export interface SnapshotPosition {
   /** X 坐标。 */

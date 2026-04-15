@@ -1,3 +1,13 @@
+/**
+ * 沙箱契约与 API 规范。
+ * 
+ * 架构职责：
+ * 1. Facade 建模：定义沙箱门面（Facade API）的顶层分区（sections）和各分区下的方法/只读字段契约。
+ * 2. 安全隔离规则：规定沙箱内可用的能力范围（如 bot 写动作、world 读操作等）。
+ * 3. 错误分级：定义标准化的沙箱执行错误分类（StaticCheck, Transpile, Timeout, OOM, FacadeCall 等）。
+ * 4. IO 契约：定义沙箱执行请求（ExecutionRequest）和聚合执行结果（ExecutionResult）的完整数据结构。
+ */
+
 import type { SandboxJsonlLine, TaskLogStepStatus } from "../diagnostics/contracts.js";
 import type { ExecutionTaskKind } from "../domain/contracts.js";
 import type { TaskHistoryStatus } from "../runtime/tasking.js";

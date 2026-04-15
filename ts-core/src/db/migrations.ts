@@ -1,3 +1,13 @@
+/**
+ * Drizzle 数据库迁移逻辑。
+ * 
+ * 架构职责：
+ * 1. 元数据管理：定义迁移文件路径、Schema 位置及 Drizzle Kit 配置文件。
+ * 2. 环境适配：基于基础设施配置生成 Drizzle Kit 可复用的配置快照。
+ * 3. 自动化流水线：实现“建立连接 -> 安装扩展（Extension） -> 执行迁移（Migrate） -> 关闭连接”的完整生命周期。
+ * 4. 扩展安装：确保 pgvector 等必要的数据库扩展在迁移前已正确安装。
+ */
+
 import { migrate as drizzleMigrate } from "drizzle-orm/node-postgres/migrator";
 
 import type { DataConfigEnvironment } from "../data/contracts.js";
@@ -98,7 +108,15 @@ export interface DrizzleMigrationExecutionDependencies {
   ) => Promise<void>;
 }
 
-/** 创建 Drizzle（数据库工具） migration（迁移） 元信息快照。 */
+/**
+ * 创建 Drizzle 迁移元信息快照。
+ * 
+ * 架构意图：
+ * 封装所有与迁移相关的路径和命令，确保在不同环境（本地开发、CI/CD、生产环境）下迁移逻辑的一致性。
+ * 
+ * @param input 包含可选连接描述符和环境变量的输入
+ * @returns 不可变的迁移元信息
+ */
 export function createDrizzleMigrationMetadata(
   input: {
     postgres?: PostgresConnectionDescriptor;
@@ -152,7 +170,18 @@ export function createDrizzleKitConfigSnapshot(
   });
 }
 
-/** 运行 Drizzle（数据库工具） migration（迁移），并在结束后主动关闭连接池。 */
+/**
+ * 运行 Drizzle 迁移流水线。
+ * 
+ * 架构流水线：
+ * 1. 资源初始化：基于元数据创建临时数据库连接池。
+ * 2. 扩展检查：确保 vector 和 pg_trgm 扩展已在目标库就位。
+ * 3. 核心迁移：执行 Drizzle 迁移 SQL。
+ * 4. 资源释放：无论迁移成功还是失败，均主动关闭连接池，防止连接泄露。
+ * 
+ * @param input 包含元数据、环境和注入依赖的输入
+ * @returns 迁移执行结果摘要
+ */
 export async function runDrizzleMigrations(
   input: {
     metadata?: DrizzleMigrationMetadata;

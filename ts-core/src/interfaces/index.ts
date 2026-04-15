@@ -1,3 +1,13 @@
+/**
+ * 外部接入与接口契约模块。
+ * 
+ * 架构职责：
+ * 1. 通讯协议定义：定义 HTTP API 路由、实时推送（Realtime）和 Server Bridge 的消息包结构。
+ * 2. 入口（Ingress）标准化：统一 Web 端、Minecraft 游戏内聊天和跨服桥接的输入边界。
+ * 3. 状态投影：将系统内部的运行时状态或执行结果投影为外部可直接消费的响应格式（如 Health, Status）。
+ * 4. 鉴权与会话：管理面向接口层的 Session 与令牌，维护外部接入的安全边界。
+ */
+
 import type { ModuleBoundary } from "../domain/contracts.js";
 
 /** interfaces（接口层） 模块边界声明。 */
