@@ -172,9 +172,9 @@ export interface AppRuntimeScaffoldContract {
   readonly interruptTemplate: RuntimeScaffold["interruptTemplate"];
 }
 
-/** 应用装配层暴露的外部认证结果。 */
-export interface AppExternalAuthContract {
-  /** 对外暴露的脱敏认证状态。 */
+/** 应用装配层暴露的外部认证初始配置；运行期真实状态必须从 BotActor（机器人执行代理） 快照读取。 */
+export interface AppExternalAuthInitialConfig {
+  /** 对外暴露的脱敏初始认证状态。 */
   readonly state: ExternalAuthPublicState;
   /** 当前受控入口。 */
   readonly entrypoint: ExternalAuthEntrypoint;
@@ -411,8 +411,8 @@ export interface AppBootstrapContract<TBotId extends string = string> {
   readonly bot_id: TBotId;
   /** 数据与基础设施配置。 */
   readonly config: DataConfig;
-  /** 外部认证装配结果。 */
-  readonly auth: AppExternalAuthContract;
+  /** 外部认证初始配置；不代表运行期当前认证状态。 */
+  readonly auth: AppExternalAuthInitialConfig;
   /** PostgreSQL（关系型数据库） 连接描述。 */
   readonly postgres: PostgresConnectionDescriptor;
   /** Redis（缓存） 键目录。 */
@@ -441,16 +441,16 @@ export interface AppBootstrapContract<TBotId extends string = string> {
   readonly readiness: readonly AppReadinessDescriptor[];
 }
 
-/** 创建应用装配层的外部认证结果。 */
-export function createAppExternalAuthContract(
+/** 创建应用装配层的外部认证初始配置。 */
+export function createAppExternalAuthInitialConfig(
   input: {
     env?: DataConfigEnvironment;
     botConfig?: unknown;
   } = {},
-): AppExternalAuthContract {
+): AppExternalAuthInitialConfig {
   const runtimeState = resolveAppExternalAuthResolution(input).state;
 
-  return createAppExternalAuthContractFromRuntimeState(runtimeState);
+  return createAppExternalAuthInitialConfigFromRuntimeState(runtimeState);
 }
 
 /** 从应用环境中解析一次性外部认证明文密钥绑定，结果仅供运行时启动动作使用。 */
@@ -483,7 +483,7 @@ export function createAppBootstrapContract<TBotId extends string>(
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.botConfig === undefined ? {} : { botConfig: input.botConfig }),
   });
-  const externalAuth = createAppExternalAuthContractFromRuntimeState(
+  const externalAuth = createAppExternalAuthInitialConfigFromRuntimeState(
     runtimeExternalAuthResolution.state,
   );
   const config = createDataConfig({
@@ -1017,9 +1017,9 @@ function resolveAppExternalAuthResolution(
   });
 }
 
-function createAppExternalAuthContractFromRuntimeState(
+function createAppExternalAuthInitialConfigFromRuntimeState(
   runtimeState: ExternalAuthState,
-): AppExternalAuthContract {
+): AppExternalAuthInitialConfig {
   return Object.freeze({
     state: createExternalAuthPublicState(runtimeState),
     entrypoint: runtimeState.entrypoint,
@@ -1128,7 +1128,7 @@ function createAppRuntimeCoreDirectory<TBotId extends string>(input: {
         botId: input.botId,
         username: readOptionalString(input.env, "MC_USERNAME") ?? input.botId,
         host: readOptionalString(input.env, "MC_HOST") ?? "localhost",
-        port: readOptionalInteger(input.env, "MC_PORT") ?? 25565,
+        port: readOptionalInteger(input.env, "MC_PORT", { min: 1, max: 65_535 }) ?? 25565,
         version: readOptionalString(input.env, "MC_VERSION") ?? null,
         auth: readOptionalString(input.env, "MC_AUTH") ?? null,
       }),
@@ -1376,33 +1376,56 @@ function readOptionalBooleanField(value: unknown, fieldName: string): boolean | 
   return value;
 }
 
-function readOptionalString(env: DataConfigEnvironment, fieldName: string): string | undefined {
+function readOptionalEnvValue(env: DataConfigEnvironment, fieldName: string): string | undefined {
   const value = env[fieldName];
 
-  if (value === undefined) {
+  if (value === undefined || value === "") {
     return undefined;
   }
 
   const normalizedValue = value.trim();
 
   if (normalizedValue.length === 0) {
-    return undefined;
+    throw new Error(`${fieldName} must not be blank`);
   }
 
   return normalizedValue;
 }
 
-function readOptionalInteger(env: DataConfigEnvironment, fieldName: string): number | undefined {
-  const value = readOptionalString(env, fieldName);
+function readOptionalString(env: DataConfigEnvironment, fieldName: string): string | undefined {
+  return readOptionalEnvValue(env, fieldName);
+}
+
+function readOptionalInteger(
+  env: DataConfigEnvironment,
+  fieldName: string,
+  bounds?: {
+    min?: number;
+    max?: number;
+  },
+): number | undefined {
+  const value = readOptionalEnvValue(env, fieldName);
 
   if (value === undefined) {
     return undefined;
   }
 
-  const integerValue = Number.parseInt(value, 10);
-
-  if (!Number.isInteger(integerValue)) {
+  if (!/^-?\d+$/.test(value)) {
     throw new Error(`${fieldName} must be an integer string`);
+  }
+
+  const integerValue = Number(value);
+
+  if (!Number.isSafeInteger(integerValue)) {
+    throw new Error(`${fieldName} must be an integer string`);
+  }
+
+  if (bounds?.min !== undefined && integerValue < bounds.min) {
+    throw new Error(`${fieldName} must be at least ${bounds.min}`);
+  }
+
+  if (bounds?.max !== undefined && integerValue > bounds.max) {
+    throw new Error(`${fieldName} must be at most ${bounds.max}`);
   }
 
   return integerValue;

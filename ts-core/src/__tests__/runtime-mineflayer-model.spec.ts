@@ -15,7 +15,12 @@ import type { MineflayerBotHandle } from "../runtime/transport.js";
 
 class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-mc";
+  readonly chatWrites: string[] = [];
   closed = false;
+
+  chat(text: string): void {
+    this.chatWrites.push(text);
+  }
 
   quit(): void {
     this.closed = true;
@@ -193,14 +198,12 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     const pendingSnapshot = await pendingPromise;
 
-    expect(pendingSnapshot.status).toBe(BotStatus.INITIALIZING);
-    expect(pendingSnapshot.ready_gate.blocked_by).toContain("runtime_initializing");
-    expect(pendingSnapshot.ready_gate.blocked_by).toContain("external_auth_pending");
-    expect(pendingSnapshot.external_auth_plan.status).toBe("pending");
-    if (pendingSnapshot.external_auth_plan.status !== "pending") {
-      throw new Error("expected pending external auth plan");
-    }
-    expect(pendingSnapshot.external_auth_plan.next_action.command).toBe("/login hunter2");
-    expect(pendingSnapshot.emitted_events).not.toContain("bot.ready");
+    expect(pendingBot.chatWrites).toEqual(["/login hunter2"]);
+    expect(pendingSnapshot.status).toBe(BotStatus.IDLE);
+    expect(pendingSnapshot.ready_gate.ready).toBe(true);
+    expect(pendingSnapshot.external_auth.status).toBe("authenticated");
+    expect(pendingSnapshot.external_auth_plan.status).toBe("authenticated");
+    expect(pendingSnapshot.external_auth_plan.next_action).toBeNull();
+    expect(pendingSnapshot.emitted_events).toContain("bot.ready");
   });
 });

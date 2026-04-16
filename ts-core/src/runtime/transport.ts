@@ -324,6 +324,8 @@ function attachRuntimeStateListeners(
   };
 }
 
+// T-021（任务二十一） 为打通最小聊天闭环，将 login（协议登录） 临时视为 ready（就绪）；
+// 后续引入 goTo / mine（移动 / 挖掘） 等世界交互技能时，必须改为 spawn（生成） ready，或拆两级 ready 标志。
 function waitForMineflayerSpawn(bot: MineflayerBotHandle, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -350,6 +352,7 @@ function waitForMineflayerSpawn(bot: MineflayerBotHandle, timeoutMs: number): Pr
     removeListeners.push(
       // EasyAuth（离线服认证模组） 可能在 spawn（生成） 前先要求聊天注册/登录；
       // 对最小聊天闭环而言 login（协议登录） 后已经具备 chat（聊天） 写能力。
+      // 这不是世界交互 ready（就绪），只能服务本任务的聊天与认证命令写入。
       addOnceListener(bot, "login", () => settle(resolve)),
       addOnceListener(bot, "spawn", () => settle(resolve)),
       addOnceListener(bot, "end", () =>

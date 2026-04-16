@@ -79,6 +79,7 @@ describe("BotActor（机器人执行代理） 单写聊天入口", () => {
     expect(written).toEqual(["主人你好喵~"]);
     expect(snapshot.status).toBe(BotStatus.IDLE);
     expect(snapshot.ready_gate.ready).toBe(true);
+    expect(snapshot.external_auth.status).toBe("not_required");
     expect(snapshot.emitted_events).toContain("chat.reply");
   });
 
@@ -171,7 +172,34 @@ describe("BotActor（机器人执行代理） 单写聊天入口", () => {
     expect(written).toEqual(["/login hunter2"]);
     expect(snapshot.status).toBe(BotStatus.IDLE);
     expect(snapshot.ready_gate.ready).toBe(true);
+    expect(snapshot.external_auth.status).toBe("authenticated");
     expect(snapshot.external_auth_plan.status).toBe("authenticated");
     expect(snapshot.external_auth_plan).not.toHaveProperty("next_action.command");
+  });
+
+  it("应在 external_auth_login（外部认证登录） 写入失败时透出 transport（传输） 错误", async () => {
+    const secret = createExternalAuthSecretBinding({
+      source: "env",
+      reference: "MC_EXTERNAL_AUTH_SECRET",
+      secret: "hunter2",
+    });
+    const externalAuth = createExternalAuthState({
+      status: "pending",
+      secret,
+    });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        chat: () => {
+          throw new Error("Mineflayer bot handle does not expose chat");
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth, secret),
+    });
+
+    await expect(actor.start()).rejects.toThrow("Mineflayer bot handle does not expose chat");
+    expect(actor.getSnapshot().external_auth.status).toBe("pending");
   });
 });

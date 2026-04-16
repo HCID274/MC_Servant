@@ -87,30 +87,20 @@ async function main(): Promise<void> {
       },
     });
 
-    const shutdown = async () => {
-      await runtime.close();
+    const handleSignal = () => {
+      runtime
+        .close()
+        .then(() => {
+          process.exitCode = 0;
+        })
+        .catch((error) => {
+          process.stderr.write(formatStartupError(error));
+          process.exitCode = 1;
+        });
     };
 
-    process.once("SIGINT", () => {
-      shutdown()
-        .then(() => {
-          process.exitCode = 0;
-        })
-        .catch((error) => {
-          process.stderr.write(formatStartupError(error));
-          process.exitCode = 1;
-        });
-    });
-    process.once("SIGTERM", () => {
-      shutdown()
-        .then(() => {
-          process.exitCode = 0;
-        })
-        .catch((error) => {
-          process.stderr.write(formatStartupError(error));
-          process.exitCode = 1;
-        });
-    });
+    process.once("SIGINT", handleSignal);
+    process.once("SIGTERM", handleSignal);
   } catch (error) {
     process.stderr.write(formatStartupError(error));
     process.exitCode = 1;

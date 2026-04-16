@@ -21,6 +21,8 @@ export interface BotActorRuntimeSnapshot<TBotId extends string = string> {
   readonly transport: MineflayerTransportSnapshot<TBotId>;
   /** 当前 ready（就绪） 门控。 */
   readonly ready_gate: RuntimeReadyGate;
+  /** 当前外部认证真实状态；运行期查询以 BotActor（机器人执行代理） 快照为准。 */
+  readonly external_auth: ExternalAuthState;
   /** 外部认证执行计划。 */
   readonly external_auth_plan: ExternalAuthExecutionPlan;
   /** 本轮生命周期已产出的运行时事件类型。 */
@@ -88,6 +90,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         status,
         externalAuth,
       }),
+      external_auth: externalAuth,
       external_auth_plan: externalAuthPlan,
       emitted_events: Object.freeze([...emittedEvents]),
       chat_writes: Object.freeze([...chatWrites]),
@@ -170,23 +173,15 @@ export function createBotActorRuntime<TBotId extends string>(input: {
 
     const nextAction = externalAuthPlan.next_action;
 
-    try {
-      await runSerializedChatWrite(async () => {
-        await input.transport.chat(nextAction.command);
-        emittedEvents.push("chat.reply");
-        chatWrites.push(
-          Object.freeze({
-            kind: "external_auth_login",
-          }),
-        );
-      });
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("does not expose chat")) {
-        return;
-      }
-
-      throw error;
-    }
+    await runSerializedChatWrite(async () => {
+      await input.transport.chat(nextAction.command);
+      emittedEvents.push("chat.reply");
+      chatWrites.push(
+        Object.freeze({
+          kind: "external_auth_login",
+        }),
+      );
+    });
 
     externalAuth = Object.freeze({
       status: "authenticated" as const,

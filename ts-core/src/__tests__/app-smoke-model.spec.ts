@@ -139,7 +139,7 @@ describe("app（应用装配） 骨架", () => {
     );
   });
 
-  it("应把空白可选 MC 环境变量视为未设置", () => {
+  it("应把空字符串可选 MC 环境变量视为未设置", () => {
     const assembly = createAppBootstrapContract({
       botId: "bot-empty-mc-options",
       now: "2026-04-14T00:00:00.000Z",
@@ -158,6 +158,38 @@ describe("app（应用装配） 骨架", () => {
     expect(assembly.runtime_resources.mineflayer_transport.descriptor.username).toBe("maid-bot");
     expect(assembly.runtime_resources.mineflayer_transport.descriptor.version).toBeNull();
     expect(assembly.runtime_resources.mineflayer_transport.descriptor.auth).toBeNull();
+  });
+
+  it("应拒绝已设置但非法的 MC 环境变量", () => {
+    expect(() =>
+      createAppBootstrapContract({
+        botId: "bot-blank-host",
+        now: "2026-04-14T00:00:00.000Z",
+        env: {
+          MC_HOST: "   ",
+        },
+      }),
+    ).toThrow("MC_HOST must not be blank");
+
+    expect(() =>
+      createAppBootstrapContract({
+        botId: "bot-invalid-port",
+        now: "2026-04-14T00:00:00.000Z",
+        env: {
+          MC_PORT: "25565x",
+        },
+      }),
+    ).toThrow("MC_PORT must be an integer string");
+
+    expect(() =>
+      createAppBootstrapContract({
+        botId: "bot-out-of-range-port",
+        now: "2026-04-14T00:00:00.000Z",
+        env: {
+          MC_PORT: "70000",
+        },
+      }),
+    ).toThrow("MC_PORT must be at most 65535");
   });
 
   it("应暴露需要认证但缺少注入密钥的失败路径，以及已注入密钥的待认证路径", () => {

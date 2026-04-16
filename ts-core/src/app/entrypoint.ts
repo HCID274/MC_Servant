@@ -15,7 +15,7 @@ import {
 } from "../workers/index.js";
 import {
   type AppBootstrapContract,
-  type AppExternalAuthContract,
+  type AppExternalAuthInitialConfig,
   type AppProcessRuntimeDependencies,
   type AppRuntimeCoreResources,
   type AppRuntimeResources,
@@ -79,8 +79,8 @@ export interface AppStartupSummary<TBotId extends string = string> {
   readonly bot_id: TBotId;
   /** 运行时初始状态。 */
   readonly initial_status: AppBootstrapContract<TBotId>["runtime"]["initial_status"];
-  /** 外部认证装配结果。 */
-  readonly external_auth: AppExternalAuthContract;
+  /** 外部认证初始配置；运行期真实状态从 BotActor（机器人执行代理） 快照读取。 */
+  readonly external_auth_initial_config: AppExternalAuthInitialConfig;
   /** 当前 ready（就绪） 门控结果。 */
   readonly ready_gate: AppBootstrapContract<TBotId>["runtime"]["ready_gate"];
   /** 启动序列摘要。 */
@@ -159,7 +159,7 @@ export function createAppStartupSummary<TBotId extends string>(
   return Object.freeze({
     bot_id: bootstrap.bot_id,
     initial_status: bootstrap.runtime.initial_status,
-    external_auth: bootstrap.auth,
+    external_auth_initial_config: bootstrap.auth,
     ready_gate: bootstrap.runtime.ready_gate,
     startup_plan: Object.freeze(
       bootstrap.lifecycle.startup.map((step, index) =>
@@ -200,12 +200,12 @@ export function renderAppStartupSummary<TBotId extends string>(
     "TS Core bootstrap summary",
     `bot_id: ${summary.bot_id}`,
     `initial_status: ${summary.initial_status}`,
-    `external_auth.status: ${summary.external_auth.state.status}`,
-    `external_auth.entrypoint: ${summary.external_auth.entrypoint}`,
-    `external_auth.secret_injected: ${String(summary.external_auth.secret_injected)}`,
-    ...(summary.external_auth.state.action_summary
+    `external_auth_initial_config.status: ${summary.external_auth_initial_config.state.status}`,
+    `external_auth_initial_config.entrypoint: ${summary.external_auth_initial_config.entrypoint}`,
+    `external_auth_initial_config.secret_injected: ${String(summary.external_auth_initial_config.secret_injected)}`,
+    ...(summary.external_auth_initial_config.state.action_summary
       ? [
-          `external_auth.command_preview: ${summary.external_auth.state.action_summary.command_preview}`,
+          `external_auth_initial_config.command_preview: ${summary.external_auth_initial_config.state.action_summary.command_preview}`,
         ]
       : []),
     `ready_gate.status: ${summary.ready_gate.status}`,
@@ -291,6 +291,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
 
     runtime = await createAppRuntimeCoreResources(input.bootstrap, input.dependencies?.runtime);
     input.write?.(`TS Core Mineflayer ready: ${runtime.actor.getSnapshot().transport.username}`);
+    const createdRuntime = runtime;
 
     conversationWorker = createConversationWorkerRuntime({
       queue: {
@@ -300,11 +301,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       dependencies: {
         ...(input.dependencies?.conversationWorker ?? {}),
         broadcastReplySink: async (reply) => {
-          if (runtime === undefined) {
-            throw new Error("runtime core is not ready");
-          }
-
-          await runtime.actor.broadcastReply(reply);
+          await createdRuntime.actor.broadcastReply(reply);
         },
       },
     });
@@ -313,7 +310,6 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
 
     const createdInfrastructure = infrastructure;
     const createdServices = services;
-    const createdRuntime = runtime;
     const createdConversationWorker = conversationWorker;
 
     return Object.freeze({

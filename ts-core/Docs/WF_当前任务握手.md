@@ -172,14 +172,20 @@
 - 新增 `startAppOnlineRuntime()`（真实在线启动入口）：PostgreSQL（关系型数据库） / Redis（缓存） → BullMQ（任务队列） / Fastify（接口网关） listen（监听） → Mineflayer（Minecraft 协议客户端） connect（连接） → EasyAuth（离线服认证模组） 登录命令 → ConversationWorker（对话工作线程）；关闭顺序优先 quit（退出） Mineflayer，再关 Worker（工作线程）、HTTP（超文本传输协议）、队列和基础设施。
 - `main.ts`（主入口） 已切到真实在线启动路径；`.env.example` 与 README（说明文档） 已补 MC（Minecraft，我的世界） 连接变量说明。
 - 真实联调补丁：空白可选环境变量（如 `MC_AUTH=`） 现在按未设置处理；BullMQ（任务队列） 物理队列名将契约中的 `:` 转为 `__`，避免真实 BullMQ 拒绝队列名；Mineflayer（Minecraft 协议客户端） 连接就绪条件允许 `login`（协议登录） 或 `spawn`（生成） 任一先到，以兼容 EasyAuth（离线服认证模组） 先要求聊天认证的服务器。
+- 补充修复：删除 `sendExternalAuthLoginIfNeeded()`（发送外部认证登录命令） 中按错误消息字符串吞掉 `chat`（聊天） 能力缺失的生产后门；缺少 `chat` 时错误会正常抛出。
+- 补充修复：BotActor（机器人执行代理） snapshot（快照） 新增 `external_auth`（外部认证） 当前真实状态；`AppExternalAuthInitialConfig`（应用外部认证初始配置） 只表示装配期意图，不再命名为运行期契约。
+- 补充修复：`main.ts`（主入口） 合并 `SIGINT` / `SIGTERM` 两条重复 shutdown（关闭） 逻辑。
+- 补充修复：可选 MC（Minecraft，我的世界） 环境变量现在区分未设置与非法值：未设置或空字符串走默认值，空白串、非整数端口、端口越界会按具体 env key（环境变量名） 抛错。
+- 补充修复：ConversationWorker（对话工作线程） 的 `broadcastReplySink`（广播回复汇点） 闭包改为引用已创建的 `const runtime`（运行时），删除当前启动顺序下不可能触发的 undefined（未定义） 分支。
+- 补充修复：`waitForMineflayerSpawn()`（等待 Mineflayer 生成） 已标注 `login`（协议登录） 即 ready（就绪） 只是 T-021 最小聊天闭环妥协，后续世界交互技能必须改为 spawn（生成） ready 或拆两级 ready。
 
 【自动化覆盖】:
-- `runtime-actor-model.spec.ts` 覆盖 ready（就绪） 写入、not-ready（未就绪） 拒绝、并发写拒绝、EasyAuth（离线服认证模组） 登录命令与明文计划清除。
+- `runtime-actor-model.spec.ts` 覆盖 ready（就绪） 写入、not-ready（未就绪） 拒绝、并发写拒绝、EasyAuth（离线服认证模组） 登录命令与明文计划清除，并锁死缺少 `chat`（聊天） 能力时错误不被吞掉。
 - `conversation-worker-runtime-model.spec.ts` 覆盖 chat（闲聊） / cancel（取消） / task（任务） 三类路径。
 - `interfaces-message-queue-model.spec.ts` 覆盖 `POST /api/message`（消息提交接口） 默认入队与真实 `job.id` 返回。
-- `app-entrypoint-model.spec.ts` 覆盖真实在线启动序列与逆序关闭。
-- `app-smoke-model.spec.ts` 覆盖空白可选 MC（Minecraft，我的世界） 环境变量不会导致装配失败。
-- `runtime-mineflayer-model.spec.ts` 覆盖 `login`（协议登录） 后进入最小聊天连接态。
+- `app-entrypoint-model.spec.ts` 覆盖真实在线启动序列与逆序关闭，并验证装配初始认证配置仍为 pending（待认证） 时，运行期 actor snapshot（执行代理快照） 已推进为 authenticated（已认证）。
+- `app-smoke-model.spec.ts` 覆盖空字符串可选 MC（Minecraft，我的世界） 环境变量不会导致装配失败，并覆盖空白 host（服务器地址）、非整数端口、端口越界的失败模式。
+- `runtime-mineflayer-model.spec.ts` 覆盖 `login`（协议登录） 后进入最小聊天连接态，并让假 Bot（机器人） 提供 `chat(text)`（聊天写入） 以验证 EasyAuth（离线服认证模组） 命令真实写出。
 - `workers-bullmq-model.spec.ts` 覆盖 BullMQ（任务队列） 物理队列名转换规则。
 
 【真实 MC 手测】:
@@ -195,7 +201,7 @@
 - `bash ts-core/scripts/pre_review.sh`
 - TypeScript（类型检查） 通过。
 - Biome（代码检查） 通过：Checked 92 files。
-- Vitest（测试） 通过：24 test files passed，112 tests passed。
+- Vitest（测试） 通过：24 test files passed，114 tests passed。
 - 末尾输出：`===== 预检全部通过 =====`
 
 【遗留疑问】:

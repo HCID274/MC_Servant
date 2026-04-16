@@ -46,10 +46,12 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
 
     expect(summary.bot_id).toBe("bot-entrypoint");
     expect(summary.initial_status).toBe("initializing");
-    expect(summary.external_auth.state.status).toBe("pending");
-    expect(summary.external_auth.entrypoint).toBe("game_chat_command");
-    expect(summary.external_auth.state.action_summary?.command_preview).toBe("/login <redacted>");
-    expect(summary.external_auth.state).not.toHaveProperty("secret");
+    expect(summary.external_auth_initial_config.state.status).toBe("pending");
+    expect(summary.external_auth_initial_config.entrypoint).toBe("game_chat_command");
+    expect(summary.external_auth_initial_config.state.action_summary?.command_preview).toBe(
+      "/login <redacted>",
+    );
+    expect(summary.external_auth_initial_config.state).not.toHaveProperty("secret");
     expect(summary.ready_gate.ready).toBe(false);
     expect(summary.ready_gate.can_emit_bot_ready).toBe(false);
     expect(summary.ready_gate.blocked_by).toEqual([
@@ -90,7 +92,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(messages).toEqual([rendered]);
     expect(rendered).toContain("TS Core bootstrap summary");
     expect(rendered).toContain("initial_status: initializing");
-    expect(rendered).toContain("external_auth.status: not_required");
+    expect(rendered).toContain("external_auth_initial_config.status: not_required");
     expect(rendered).toContain("ready_gate.status: blocked");
     expect(rendered).toContain("ready_gate.can_emit_bot_ready: false");
     expect(rendered).toContain("io_boundary.mode: bootstrap_only");
@@ -232,6 +234,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       "chat:/login hunter2",
       "conversation.worker.start",
     ]);
+    expect(bootstrap.auth.state.status).toBe("pending");
+    expect(runtime.runtime.actor.getSnapshot().external_auth.status).toBe("authenticated");
 
     await runtime.close();
 
