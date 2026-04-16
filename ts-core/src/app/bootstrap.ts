@@ -351,6 +351,8 @@ export interface AppRuntimeServiceDependencies {
   readonly workers?: WorkerBullmqDependencies;
   /** Fastify（接口网关） 依赖注入。 */
   readonly http?: InterfaceServerDependencies;
+  /** 每条消息入队时使用的时钟；默认读取当前系统时间。 */
+  readonly now?: () => string;
 }
 
 /** 应用装配层创建出的服务运行时句柄。 */
@@ -796,6 +798,7 @@ export async function createAppRuntimeServices<TBotId extends string>(
               throw new Error("conversation queue does not support add");
             }
 
+            const queuedAt = dependencies.now?.() ?? new Date().toISOString();
             const task = createConversationWorkerTask({
               bot_id: bootstrap.bot_id,
               message: {
@@ -803,7 +806,7 @@ export async function createAppRuntimeServices<TBotId extends string>(
                 message_id: request.message_id,
                 content: request.content,
                 intent_epoch: 0,
-                snapshot_ts: Date.parse(bootstrap.interfaces.health.timestamp),
+                snapshot_ts: Date.parse(queuedAt),
               },
             });
             const job = await created.workers.conversation.queue.add("conversation", task, {
@@ -814,7 +817,7 @@ export async function createAppRuntimeServices<TBotId extends string>(
               botId: request.bot_id,
               jobId: String(job.id ?? request.message_id),
               messageId: request.message_id,
-              queuedAt: bootstrap.interfaces.health.timestamp,
+              queuedAt,
             });
           },
         },

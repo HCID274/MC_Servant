@@ -14,6 +14,7 @@ describe("interfaces（接口边界） 消息入队链路", () => {
       data: unknown;
       jobId?: string;
     }> = [];
+    const messageTimes = ["2026-04-15T00:00:05.000Z", "2026-04-15T00:00:06.000Z"];
     const bootstrap = createAppBootstrapContract({
       botId: "bot-msg",
       now: "2026-04-15T00:00:00.000Z",
@@ -41,9 +42,10 @@ describe("interfaces（接口边界） 消息入队链路", () => {
           close: async () => undefined,
         }),
       },
+      now: () => messageTimes.shift() ?? "2026-04-15T00:00:07.000Z",
     });
 
-    const response = await services.http.server.inject({
+    const firstResponse = await services.http.server.inject({
       method: "POST",
       url: "/api/message",
       payload: {
@@ -52,16 +54,33 @@ describe("interfaces（接口边界） 消息入队链路", () => {
         content: "你好",
       },
     });
+    const secondResponse = await services.http.server.inject({
+      method: "POST",
+      url: "/api/message",
+      payload: {
+        bot_id: "bot-msg",
+        message_id: "msg-http-queue-2",
+        content: "第二条",
+      },
+    });
 
-    expect(response.statusCode).toBe(202);
-    expect(response.json()).toEqual({
+    expect(firstResponse.statusCode).toBe(202);
+    expect(firstResponse.json()).toEqual({
       accepted: true,
       bot_id: "bot-msg",
       job_id: "bull-msg-http-queue",
       message_id: "msg-http-queue",
-      queued_at: "2026-04-15T00:00:00.000Z",
+      queued_at: "2026-04-15T00:00:05.000Z",
     });
-    expect(addedJobs).toHaveLength(1);
+    expect(secondResponse.statusCode).toBe(202);
+    expect(secondResponse.json()).toEqual({
+      accepted: true,
+      bot_id: "bot-msg",
+      job_id: "bull-msg-http-queue-2",
+      message_id: "msg-http-queue-2",
+      queued_at: "2026-04-15T00:00:06.000Z",
+    });
+    expect(addedJobs).toHaveLength(2);
     expect(addedJobs[0]?.queue).toBe("msg:bot-msg");
     expect(addedJobs[0]?.name).toBe("conversation");
     expect(addedJobs[0]?.jobId).toBe("msg-http-queue");
@@ -73,6 +92,18 @@ describe("interfaces（接口边界） 消息入队链路", () => {
         bot_id: "bot-msg",
         message_id: "msg-http-queue",
         content: "你好",
+      },
+    });
+    expect(addedJobs[0]?.data).toMatchObject({
+      message: {
+        snapshot_ts: Date.parse("2026-04-15T00:00:05.000Z"),
+      },
+    });
+    expect(addedJobs[1]?.jobId).toBe("msg-http-queue-2");
+    expect(addedJobs[1]?.data).toMatchObject({
+      message: {
+        message_id: "msg-http-queue-2",
+        snapshot_ts: Date.parse("2026-04-15T00:00:06.000Z"),
       },
     });
 

@@ -1,136 +1,133 @@
 # 当前任务握手区
 
-【任务序号】: T-021
-【当前状态】: 待审查
+【任务序号】: T-022
+【当前状态】: 进行中
 
 ---
 
 ## Manager 任务指令
 
 **任务目标**:
-在 `runtime`（运行时） + `workers`（工作线程） + `interfaces`（接口边界） + `app`（应用装配） 这一组相邻模块内，**一次性打通"HTTP 消息 → BullMQ → ConversationWorker → BotActor 单写者 chat 写 → 真实 Minecraft 服务器内可见女仆回复"的最窄端到端链路**，并完成真实连服与 EasyAuth（离线服认证模组） 登录命令注入。本任务是 MVP（最小可运行闭环） 的硬门槛任务，验收时必须能在真实本地 MC（Minecraft，我的世界） 服务器中亲眼看到女仆上线并对一条 HTTP 消息作出聊天回复。
+在 `workers`（工作线程） + `runtime`（运行时） + `skills`（技能） + `app`（应用装配） 这一组主干模块内，打通 **HTTP（超文本传输协议）消息 → ConversationWorker（对话工作线程）最小确定性规划 → BullMQ（任务队列）执行队列 → BotWorker（机器人工作线程） → BotActor（机器人执行代理）单写者技能入口 → Minecraft（我的世界）内可见 goTo（前往坐标）动作** 的最小真实执行链。
+
+本任务不是纯契约任务。验收门槛是：在 T-021（任务二十一） 已完成女仆上线与聊天回复的基础上，操作者发送一条可解析的“去坐标”消息后，女仆在真实 MC（Minecraft，我的世界） 服务器中开始向指定的近距离可达坐标移动，或在无法到达时产出明确失败事件，不允许静默成功。
 
 **上下文说明**:
-1. `T-018`（任务十八） 已完成 PostgreSQL（关系型数据库） / Redis（缓存） 真实资源工厂；`T-019`（任务十九） 已完成 BullMQ（任务队列） / Fastify（接口网关） 真实启动骨架；`T-020`（任务二十） 已完成 Mineflayer（Minecraft 协议客户端） 传输、`observation`（观测） 缓存与 BotActor（机器人执行代理） 最小生命周期。
-2. `BotActor` 当前只有 `start()` / `shutdown()` / `getSnapshot()`，缺一个**唯一的单写者写入口**：把外部请求的"说一句话"动作经由 Mineflayer 真实写到游戏聊天频道。这是本任务必须补齐的最小动作能力。
-3. `POST /api/message`（消息提交接口） 当前仍走默认 stub 响应，没有真正写进 `msg:{botId}` BullMQ（任务队列）；ConversationWorker（对话工作线程） 也没有真实消费端实现。本任务必须把这两段一起补齐。
-4. 真实运行入口（`src/main.ts`） 当前只打印装配摘要，**不连服**。本任务必须让 `pnpm start`（或等价命令） 在本地配置下真实连接 MC 服务器并完成 EasyAuth（离线服认证模组） 登录命令发送（`/login <secret>`） 后停留在线，可被 HTTP 消息驱动。
-5. 本任务允许且必须打破之前 T-021 的以下"禁止"：允许 Mineflayer（Minecraft 协议客户端） chat（聊天） 写、允许执行 EasyAuth（离线服认证模组） 登录命令（仅按 `T-016` 的一次性 `ExternalAuthExecutionPlan`（外部认证执行计划） 注入路径，不读写 EasyAuth SQLite）、允许在 `app`（应用装配） 真实启动序列里串联以上链路。
-6. 本任务**仍然不做**：真实 LLM（大语言模型） 调用、Socket.io（实时推送） 真实广播、BotWorker（机器人工作线程） 消费 exec（执行） 队列、`sandbox_code`（沙箱代码） 执行、`task` / `modify` 路径的真实规划落地、复杂技能（goTo / mine / cutTree / collect / equip）；这些留给 T-022 起的后续任务。
+1. `T-021`（任务二十一） 已完成真实在线聊天闭环：`POST /api/message`（消息提交接口） 可进入 `msg:{botId}` BullMQ（任务队列），ConversationWorker（对话工作线程） 可消费并通过 BotActor（机器人执行代理） 在 MC（Minecraft，我的世界） 聊天频道回复。
+2. 当前 `task`（任务） / `modify`（修改） 路径仍因缺少 planner（规划器） 被丢弃；本任务只补一个**最小确定性 goTo（前往坐标）规划器**，不接入真实 LLM（大语言模型）。
+3. 当前没有 BotWorker（机器人工作线程） 真实消费 `bot:{botId}:exec`（执行队列）；本任务必须补齐，并让它只通过 BotActor（机器人执行代理） 调用技能，不得绕过单写者。
+4. 当前 `skills`（技能） 模块只有目录、参数校验与注册表；本任务只落地 `goTo`（前往坐标） 的最小真实执行适配，不实现 mine（挖掘） / cutTree（砍树） / collect（捡拾） / equip（装备）。
+5. Minecraft（我的世界） 事实数据仍不得写死。`goTo`（前往坐标） 只使用调用方给出的坐标与 Mineflayer（Minecraft 协议客户端） / pathfinder（寻路器） 运行时能力，不引入配方、掉落、工具等级或方块事实表。
 
 **输入文件白名单（Coder 仅限读取以下文件）**:
-1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏约束》；第 2 节《七层架构》；第 3 节《三队列模型》；第 4 节《消息流》
+1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏约束》；第 3 节《三队列模型》；第 4 节《消息流》
 2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 2 节《BotActor 状态机》；第 5 节《单写者执行模型》
-3. `ts-core/Docs/04_CONVERSATION_SPEC.md` — 第 1 节《ConversationWorker 核心定位》；第 3.4 节《Triage 容错》；第 4.3 节《回复输出处理》
-4. `ts-core/Docs/06_INTERFACE_SPEC.md` — 全文件（如已存在）；不存在则跳过
-5. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》
-6. `ts-core/scripts/pre_review.sh` — 全文件
-7. `ts-core/package.json` — 全文件
-8. `ts-core/.env.example` — 全文件
-9. `ts-core/README.md` — 全文件
+3. `ts-core/Docs/04_CONVERSATION_SPEC.md` — 第 1 节《ConversationWorker 核心定位》；第 3 节《意图分类》；第 4 节《输出处理》
+4. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》
+5. `ts-core/scripts/pre_review.sh` — 全文件
+6. `ts-core/package.json` — 全文件（如引入 `mineflayer-pathfinder`（Mineflayer 寻路插件） 依赖，必须同步更新）
+7. `ts-core/pnpm-lock.yaml` — 全文件（仅依赖变更时允许更新）
+8. `ts-core/.env.example` — 全文件（仅需补充 goTo（前往坐标） 手测说明变量时允许更新）
+9. `ts-core/README.md` — 全文件（仅补充最小手测命令时允许更新）
 10. `ts-core/src/domain/contracts.ts` — 全文件（只读参考）
 11. `ts-core/src/domain/invariants.ts` — 全文件（只读参考）
 12. `ts-core/src/runtime/contracts.ts` — 全文件
-13. `ts-core/src/runtime/state-machine.ts` — 全文件（只读参考）
-14. `ts-core/src/runtime/tasking.ts` — 全文件（只读参考）
-15. `ts-core/src/runtime/events.ts` — 全文件（只读参考）
+13. `ts-core/src/runtime/state-machine.ts` — 全文件
+14. `ts-core/src/runtime/tasking.ts` — 全文件
+15. `ts-core/src/runtime/events.ts` — 全文件
 16. `ts-core/src/runtime/transport.ts` — 全文件
 17. `ts-core/src/runtime/actor.ts` — 全文件
 18. `ts-core/src/runtime/index.ts` — 全文件
-19. `ts-core/src/conversation/contracts.ts` — 全文件（只读参考）
-20. `ts-core/src/conversation/triage.ts` — 全文件（只读参考）
-21. `ts-core/src/conversation/chat.ts` — 全文件（只读参考）
-22. `ts-core/src/conversation/index.ts` — 全文件（只读参考）
-23. `ts-core/src/workers/queues.ts` — 全文件（只读参考）
+19. `ts-core/src/skills/contracts.ts` — 全文件
+20. `ts-core/src/skills/registry.ts` — 全文件
+21. `ts-core/src/skills/index.ts` — 全文件
+22. `ts-core/src/skills/execution.ts` — 全文件（可新建）
+23. `ts-core/src/workers/queues.ts` — 全文件
 24. `ts-core/src/workers/contracts.ts` — 全文件
 25. `ts-core/src/workers/bullmq.ts` — 全文件
-26. `ts-core/src/workers/conversation-worker.ts` — 全文件（可新建）
-27. `ts-core/src/workers/index.ts` — 全文件
-28. `ts-core/src/interfaces/contracts.ts` — 全文件（只读参考）
-29. `ts-core/src/interfaces/api.ts` — 全文件（只读参考）
-30. `ts-core/src/interfaces/server.ts` — 全文件
-31. `ts-core/src/interfaces/index.ts` — 全文件
-32. `ts-core/src/app/contracts.ts` — 全文件
-33. `ts-core/src/app/bootstrap.ts` — 全文件
-34. `ts-core/src/app/smoke.ts` — 全文件
-35. `ts-core/src/app/entrypoint.ts` — 全文件
-36. `ts-core/src/app/index.ts` — 全文件
-37. `ts-core/src/main.ts` — 全文件
-38. `ts-core/src/__tests__/scaffold.spec.ts` — 全文件
-39. `ts-core/src/__tests__/conversation-workers-model.spec.ts` — 全文件
-40. `ts-core/src/__tests__/workers-bullmq-model.spec.ts` — 全文件
-41. `ts-core/src/__tests__/interfaces-server-model.spec.ts` — 全文件
-42. `ts-core/src/__tests__/app-smoke-model.spec.ts` — 全文件
-43. `ts-core/src/__tests__/app-entrypoint-model.spec.ts` — 全文件
-44. `ts-core/src/__tests__/runtime-actor-model.spec.ts` — 全文件（如已存在）
-45. `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts` — 全文件（可新建）
-46. `ts-core/src/__tests__/interfaces-message-queue-model.spec.ts` — 全文件（可新建）
-47. `ts-core/src/__tests__/runtime-broadcast-reply-model.spec.ts` — 全文件（可新建）
-48. `ts-core/src/__tests__/main-entrypoint-online-model.spec.ts` — 全文件（可新建）
+26. `ts-core/src/workers/conversation-worker.ts` — 全文件
+27. `ts-core/src/workers/bot-worker.ts` — 全文件（可新建）
+28. `ts-core/src/workers/index.ts` — 全文件
+29. `ts-core/src/app/bootstrap.ts` — 全文件
+30. `ts-core/src/app/entrypoint.ts` — 全文件
+31. `ts-core/src/app/index.ts` — 全文件
+32. `ts-core/src/__tests__/skills-model.spec.ts` — 全文件
+33. `ts-core/src/__tests__/runtime-actor-model.spec.ts` — 全文件
+34. `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts` — 全文件
+35. `ts-core/src/__tests__/workers-bullmq-model.spec.ts` — 全文件
+36. `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts` — 全文件
+37. `ts-core/src/__tests__/app-entrypoint-model.spec.ts` — 全文件
+38. `ts-core/src/__tests__/bot-worker-runtime-model.spec.ts` — 全文件（可新建）
+39. `ts-core/src/__tests__/runtime-skill-execution-model.spec.ts` — 全文件（可新建）
+40. `ts-core/src/__tests__/app-online-goto-model.spec.ts` — 全文件（可新建）
 
 **核心逻辑要求**:
 
-1. **BotActor 单写者写入口（runtime/actor.ts）**：
-   - 新增 `broadcastReply({ message_id, content })` 异步方法，只接受非空字符串 content。
-   - 调用方必须先满足 `ready_gate.is_ready === true`（已 `IDLE` 且外部认证已 `authenticated` 或 `not_required`）；否则抛错且不调用 transport。
-   - 通过 `MineflayerBotHandle` 暴露的 chat 能力把 content 发送到游戏聊天频道（在 `transport.ts` 中扩展最小 `chat(text)` 适配器，允许测试通过依赖注入替换；真实路径调用 mineflayer `bot.chat(text)`）。
-   - 调用过程必须串行化（不允许并发两次写），并把每次写产生的 `broadcast_reply` 事件追加到 `emitted_events` 或新增的对外可观测列表。
-   - 严守"单写者"：除 BotActor 之外的任何模块都不得直接调用 mineflayer 的 chat 写 API；ConversationWorker / Fastify handler 一律通过 `BotActor.broadcastReply()` 间接写。
+1. **BotActor（机器人执行代理）单写者技能入口**:
+   - 新增 `executeSkill()` 或等价命名的异步入口，只接受 `SkillCallJob`（技能调用执行任务），本任务仅允许真实执行 `goTo`（前往坐标）。
+   - 调用前必须满足 ready（就绪） 门控；未就绪时拒绝且不得触碰 Mineflayer（Minecraft 协议客户端）。
+   - 执行期间状态必须从 `IDLE`（空闲） 转为 `EXECUTING`（执行中），完成 / 失败后回到 `IDLE`（空闲）；失败必须抛出或返回可观测失败结果，不能假成功。
+   - 严守单写者：除 BotActor（机器人执行代理） 内部及其受控 transport（传输） / skills executor（技能执行器） 外，其他模块不得直接调用 Mineflayer（Minecraft 协议客户端） 移动、pathfinder（寻路器） 或原始 Bot（机器人） 句柄。
 
-2. **ConversationWorker 真实最小处理器（workers/conversation-worker.ts）**：
-   - 新建文件，导出 `createConversationWorkerRuntime({ queue, dependencies })`，内部基于 BullMQ Worker 消费 `msg:{botId}` 队列。
-   - Job payload 必须是现有 `createConversationWorkerTask()`（创建对话工作线程任务） 产物，不允许另造松散 JSON。
-   - 依赖注入项至少包括：`triage`（默认安全回退 `chat` + `Normal`）、`replyGenerator`（默认模板回复，必须经 `ensureReplyEndsWithMeow()`）、`broadcastReplySink`（默认指向 `BotActor.broadcastReply`）、可选 `planner`（本任务**不**注入，留给后续任务）。
-   - 处理 `chat` 路径：生成回复 → 调用 `broadcastReplySink`；处理 `cancel` 路径：仅记录日志（不落 Mineflayer 写）；处理 `task` / `modify` 路径：在没有 planner 时拒绝并发 `task.discarded` 生命周期事件，不入 exec 队列。
-   - 必须暴露 `start()` / `close()` 生命周期，可被 `app` 装配关停。
+2. **goTo（前往坐标）真实执行适配**:
+   - 在 `skills`（技能） 模块补齐 `goTo`（前往坐标） 的最小 executor（执行器） 边界；真实路径应基于 Mineflayer（Minecraft 协议客户端） 运行时能力与 pathfinder（寻路器） 或等价注入适配器执行。
+   - 测试必须能通过注入 fake（假） movement adapter（移动适配器） 验证坐标、调用顺序、失败传播。
+   - 不允许实现或伪实现 mine（挖掘） / cutTree（砍树） / collect（捡拾） / equip（装备）；这些技能仍只能停留在参数契约和注册表层面。
 
-3. **POST /api/message 真实入队（interfaces/server.ts + app/bootstrap.ts）**：
-   - 默认 message handler 必须把请求转成 `ConversationWorkerTask` 并写入 `msg:{botId}` BullMQ 队列，返回 `202` + 真实 BullMQ `job.id`。
-   - 跨 Bot、空白输入仍按 `T-019` 规则返回 `400`。
-   - bootstrap 串联：BullMQ 队列实例 → message handler → Fastify 注册 → ConversationWorker 启动 → 共享同一 BullMQ 连接。
+3. **BotWorker（机器人工作线程）真实消费执行队列**:
+   - 新建 `createBotWorkerRuntime()`，基于 BullMQ Worker（任务队列工作器） 消费 `bot:{botId}:exec`（执行队列）。
+   - Job payload（任务载荷） 必须是 `createBotWorkerTask()`（创建机器人工作线程任务） 或等价强类型产物，不允许松散 JSON（对象文本） 直接执行。
+   - BotWorker（机器人工作线程） 必须发出 started（已开始） / completed（已完成） / failed（已失败） 或 discarded（已丢弃） 的可测试事件记录；失败原因需要可诊断。
+   - 关闭顺序必须接入 `startAppOnlineRuntime()`（真实在线启动入口），保证 BotWorker（机器人工作线程） 在 HTTP（超文本传输协议） / BullMQ（任务队列） 之前被安全关闭。
 
-4. **真实运行入口连服 + EasyAuth 登录（src/main.ts + app/entrypoint.ts）**：
-   - `pnpm start` 必须按以下序列启动：装配 → 真实 PG/Redis 连接 → 真实 BullMQ → 真实 Fastify listen → 真实 Mineflayer connect → 若 `external_auth.status === "pending"` 则在 spawn 后通过 BotActor 单写者发出 `/login <secret>` 命令（一次性，使用 `T-016` 的 `ExternalAuthExecutionPlan` 中的明文 secret，发送后立即从内存清除引用）→ ConversationWorker 启动 → 进入待消息状态。
-   - 关闭顺序逆序，确保 Mineflayer 优先 `quit("ts-core shutdown")`、BullMQ Worker close、Fastify close、Redis/PG close。
-   - main.ts 不得包含业务逻辑，所有装配仍在 `app/bootstrap.ts` / `app/entrypoint.ts`。
+4. **ConversationWorker（对话工作线程）最小确定性 goTo（前往坐标）规划**:
+   - 在不接入真实 LLM（大语言模型） 的前提下，支持一个窄格式命令，例如 `去 10 64 -5` 或 `去 (10,64,-5)`，解析为 `SkillCallJob`（技能调用执行任务） 中的 `goTo`（前往坐标）。
+   - 只有成功解析该窄格式时才入 `bot:{botId}:exec`（执行队列）；其他 task（任务） / modify（修改） 仍按 T-021（任务二十一） 的 `planner_unavailable`（规划器不可用） 丢弃逻辑处理。
+   - 入执行队列时必须保留原始 `message_id`（消息标识）、`intent_epoch`（意图纪元）、`snapshot_ts`（快照时间戳） 与 priority（优先级）。
 
-5. **不允许的事项**：
-   - 真实 LLM API 调用、Socket.io 真实广播、BotWorker 消费 exec 队列、sandbox 执行、Mineflayer 移动 / 挖掘 / 装备 / 拾取等任何非 chat 写、EasyAuth SQLite 直接读写、新增对话路由优先级或中断语义。
-   - 不得绕过 BotActor 直接调用 mineflayer chat。
-   - 不得在 ready_gate 未就绪时发任何聊天消息（除 EasyAuth 受控登录命令外，且登录命令路径必须显式打标 `external_auth_login` 不走 broadcastReply）。
+5. **应用装配与真实 MC（Minecraft，我的世界）手测链路**:
+   - `startAppOnlineRuntime()`（真实在线启动入口） 必须同时启动 ConversationWorker（对话工作线程） 与 BotWorker（机器人工作线程），并共享同一 Redis（缓存） / BullMQ（任务队列） 连接。
+   - 手测命令应沿用现有 `POST /api/message`（消息提交接口），不新增临时调试 HTTP（超文本传输协议） 路由。
+   - 真实 MC（Minecraft，我的世界） 手测目标坐标必须由操作者选择为近距离、可达、安全位置；代码中不得写死服务器坐标。
 
 **验收标准**:
 
-1. **真实 MC 服务器手测验收（硬门槛）**:
-   - 操作员在本地 Fabric + EasyAuth 服务器启动 ts-core，设置 `.env.example` 中的 MC host / port / username / EasyAuth secret。
-   - 执行 `pnpm start`，看到日志：连接成功 → spawn → EasyAuth 登录命令已发送 → ready。
-   - 在 MC 客户端进入同一服务器，能看到女仆账号在线。
-   - 操作员对 ts-core 发送 `curl -X POST http://localhost:<port>/api/message -d '{"bot_id":"...","message_id":"...","content":"你好"}'`，**返回 202**。
-   - **MC 聊天频道里能看到女仆账号说出一条以"喵"结尾的回复**。
-   - 操作员附上 1 张 MC 客户端聊天截图 + 1 段 ts-core 日志摘录到 Coder 反馈区。
+1. **真实 MC（Minecraft，我的世界）动作验收**:
+   - 在本地真实服务器中启动 `pnpm start`（启动命令），女仆账号在线且已完成 EasyAuth（离线服认证模组） 登录。
+   - 操作者发送 `POST /api/message`（消息提交接口），内容为约定的“去坐标”窄格式命令。
+   - HTTP（超文本传输协议） 返回 `202`（已接受），`msg:{botId}`（消息队列） 与 `bot:{botId}:exec`（执行队列） 均可观测到对应任务。
+   - 女仆在 MC（Minecraft，我的世界） 中向目标近距离坐标移动；若 pathfinder（寻路器） 判定失败，必须有明确 failed（已失败） 事件与错误摘要。
 
-2. **自动化测试覆盖**:
-   - `BotActor.broadcastReply()` 在 ready / not-ready / 重复并发三种情况下行为正确（注入假 transport）。
-   - ConversationWorker 在无真实 LLM 注入下处理 chat / cancel / task 三类路径行为正确（注入假 triage / sink / queue）。
-   - `POST /api/message` 在装配默认路径下真实入队 BullMQ（注入假 BullMQ 客户端验证 add 调用）。
-   - main.ts 的启动序列与关闭序列在注入桩资源下顺序正确。
-   - 既有跨 Bot 拒绝、空白输入 400、资源失败逆序清理测试仍保持通过。
+2. **单写者与队列链路验收**:
+   - ConversationWorker（对话工作线程） 只负责解析和入执行队列，不直接调用 Mineflayer（Minecraft 协议客户端） 移动能力。
+   - BotWorker（机器人工作线程） 只通过 BotActor（机器人执行代理） 执行 `goTo`（前往坐标），不直接持有原始 Bot（机器人） 句柄。
+   - BotActor（机器人执行代理） 在 not-ready（未就绪） / busy（忙碌） / movement failure（移动失败） 场景下行为可测试且不假成功。
 
-3. **预检通过**:
+3. **自动化测试覆盖**:
+   - 覆盖窄格式“去坐标”消息解析、成功入 `bot:{botId}:exec`（执行队列）、不可解析 task（任务） 继续 discarded（已丢弃）。
+   - 覆盖 BotWorker（机器人工作线程） started（已开始） / completed（已完成） / failed（已失败） 事件。
+   - 覆盖 BotActor（机器人执行代理） `goTo`（前往坐标） ready（就绪） 成功、not-ready（未就绪） 拒绝、执行中并发拒绝或排队策略。
+   - 覆盖 app（应用装配） 启动 / 关闭顺序包含 BotWorker（机器人工作线程）。
+
+4. **范围边界验收**:
+   - 不引入真实 LLM（大语言模型）、sandbox（沙箱） 执行、Socket.io（实时推送） 广播、mine（挖掘） / cutTree（砍树） / collect（捡拾） / equip（装备） 真实执行。
+   - 不读写 EasyAuth（离线服认证模组） SQLite（嵌入式数据库），不迁移认证数据到 PostgreSQL（关系型数据库）。
+   - 不写死 Minecraft（我的世界） 领域事实数据或服务器坐标。
+
+5. **预检通过**:
    - `bash ts-core/scripts/pre_review.sh` 全部通过。
 
 ---
 
 ## Coder 自检清单
-- [x] 任务序号核对为 `T-021`
-- [x] 仅读取并修改白名单内文件
-- [x] BotActor 已新增 `broadcastReply()` 单写者入口，且 ready_gate 未就绪时拒绝
-- [x] ConversationWorker 真实消费 `msg:{botId}` 队列，chat 路径走 broadcastReply
-- [x] `POST /api/message` 默认 handler 真实写 BullMQ，返回真实 job.id
-- [x] `pnpm start` 启动序列：连服 → EasyAuth 登录命令 → ConversationWorker 启动
-- [x] 关闭序列逆序执行，无悬挂 Mineflayer 连接 / Worker / 端口
-- [x] **真实 MC 服务器手测通过**（CLI 已完成真实连服、EasyAuth 注册/登录、HTTP 消息入队与 BullMQ 完成态验证；MC 客户端截图由操作者侧留存）
-- [x] 执行 bash ts-core/scripts/pre_review.sh 全部通过
+- [ ] 任务序号核对为 `T-022`
+- [ ] 仅读取并修改白名单内文件
+- [ ] BotActor（机器人执行代理） 已新增单写者 `goTo`（前往坐标） 技能执行入口，且 ready（就绪） 门控正确
+- [ ] BotWorker（机器人工作线程） 已真实消费 `bot:{botId}:exec`（执行队列） 并只通过 BotActor（机器人执行代理） 执行
+- [ ] ConversationWorker（对话工作线程） 仅对窄格式“去坐标”命令入执行队列，其他 task（任务） 仍按无 planner（规划器） 丢弃
+- [ ] 真实 MC（Minecraft，我的世界） 手测能看到女仆移动，或在不可达时产生明确 failed（已失败） 事件
+- [ ] 未实现 mine（挖掘） / cutTree（砍树） / collect（捡拾） / equip（装备） 真实执行，未引入 LLM（大语言模型） / sandbox（沙箱） / Socket.io（实时推送）
+- [ ] 执行 bash ts-core/scripts/pre_review.sh 全部通过
 
 ---
 
@@ -142,78 +139,12 @@
 
 ## Coder 执行反馈（仅 Coder 填写）
 
-【执行任务序号】: T-021
-
-【修改文件】:
-- `ts-core/src/runtime/transport.ts`
-- `ts-core/src/runtime/actor.ts`
-- `ts-core/src/workers/bullmq.ts`
-- `ts-core/src/workers/conversation-worker.ts`
-- `ts-core/src/workers/index.ts`
-- `ts-core/src/app/bootstrap.ts`
-- `ts-core/src/app/entrypoint.ts`
-- `ts-core/src/main.ts`
-- `ts-core/src/__tests__/runtime-actor-model.spec.ts`
-- `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts`
-- `ts-core/src/__tests__/interfaces-message-queue-model.spec.ts`
-- `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
-- `ts-core/src/__tests__/app-smoke-model.spec.ts`
-- `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts`
-- `ts-core/src/__tests__/workers-bullmq-model.spec.ts`
-- `ts-core/.env.example`
-- `ts-core/README.md`
-
-【执行摘要】:
-- BotActor（机器人执行代理） 新增 `broadcastReply()` 单写者聊天入口：仅在 ready_gate（就绪门控） ready 时允许写入，空文本拒绝，并发写拒绝，写入记录标记为 `broadcast_reply`。
-- Mineflayer（Minecraft 协议客户端） transport（传输） 新增最小 `chat(text)` 适配器，但仍不暴露原始 Bot（机器人） 句柄；外部模块只能通过 BotActor（机器人执行代理） 间接写。
-- EasyAuth（离线服认证模组） pending（待认证） 时，BotActor（机器人执行代理） 在 spawn（生成） 后通过受控 `external_auth_login` 写入记录发送 `/login <secret>`，发送后将认证状态推进到 authenticated（已认证） 并清除 snapshot（快照） 内明文动作计划。
-- 新增 ConversationWorker（对话工作线程） 真实运行时：消费 `msg:{botId}` BullMQ（任务队列），chat（闲聊） 生成带“喵”的模板回复并调用 BotActor（机器人执行代理） sink（汇点）；cancel（取消） 只记录日志；task/modify（任务/修改） 在无 planner（规划器） 时记录 `task.discarded`，不入 exec（执行） 队列。
-- `POST /api/message`（消息提交接口） 默认 handler（处理器） 已写入同一 BullMQ（任务队列） `msg:{botId}` 队列并返回真实 `job.id`。
-- 新增 `startAppOnlineRuntime()`（真实在线启动入口）：PostgreSQL（关系型数据库） / Redis（缓存） → BullMQ（任务队列） / Fastify（接口网关） listen（监听） → Mineflayer（Minecraft 协议客户端） connect（连接） → EasyAuth（离线服认证模组） 登录命令 → ConversationWorker（对话工作线程）；关闭顺序优先 quit（退出） Mineflayer，再关 Worker（工作线程）、HTTP（超文本传输协议）、队列和基础设施。
-- `main.ts`（主入口） 已切到真实在线启动路径；`.env.example` 与 README（说明文档） 已补 MC（Minecraft，我的世界） 连接变量说明。
-- 真实联调补丁：空白可选环境变量（如 `MC_AUTH=`） 现在按未设置处理；BullMQ（任务队列） 物理队列名将契约中的 `:` 转为 `__`，避免真实 BullMQ 拒绝队列名；Mineflayer（Minecraft 协议客户端） 连接就绪条件允许 `login`（协议登录） 或 `spawn`（生成） 任一先到，以兼容 EasyAuth（离线服认证模组） 先要求聊天认证的服务器。
-- 补充修复：删除 `sendExternalAuthLoginIfNeeded()`（发送外部认证登录命令） 中按错误消息字符串吞掉 `chat`（聊天） 能力缺失的生产后门；缺少 `chat` 时错误会正常抛出。
-- 补充修复：BotActor（机器人执行代理） snapshot（快照） 新增 `external_auth`（外部认证） 当前真实状态；`AppExternalAuthInitialConfig`（应用外部认证初始配置） 只表示装配期意图，不再命名为运行期契约。
-- 补充修复：`main.ts`（主入口） 合并 `SIGINT` / `SIGTERM` 两条重复 shutdown（关闭） 逻辑。
-- 补充修复：可选 MC（Minecraft，我的世界） 环境变量现在区分未设置与非法值：未设置或空字符串走默认值，空白串、非整数端口、端口越界会按具体 env key（环境变量名） 抛错。
-- 补充修复：ConversationWorker（对话工作线程） 的 `broadcastReplySink`（广播回复汇点） 闭包改为引用已创建的 `const runtime`（运行时），删除当前启动顺序下不可能触发的 undefined（未定义） 分支。
-- 补充修复：`waitForMineflayerSpawn()`（等待 Mineflayer 生成） 已标注 `login`（协议登录） 即 ready（就绪） 只是 T-021 最小聊天闭环妥协，后续世界交互技能必须改为 spawn（生成） ready 或拆两级 ready。
-
-【自动化覆盖】:
-- `runtime-actor-model.spec.ts` 覆盖 ready（就绪） 写入、not-ready（未就绪） 拒绝、并发写拒绝、EasyAuth（离线服认证模组） 登录命令与明文计划清除，并锁死缺少 `chat`（聊天） 能力时错误不被吞掉。
-- `conversation-worker-runtime-model.spec.ts` 覆盖 chat（闲聊） / cancel（取消） / task（任务） 三类路径。
-- `interfaces-message-queue-model.spec.ts` 覆盖 `POST /api/message`（消息提交接口） 默认入队与真实 `job.id` 返回。
-- `app-entrypoint-model.spec.ts` 覆盖真实在线启动序列与逆序关闭，并验证装配初始认证配置仍为 pending（待认证） 时，运行期 actor snapshot（执行代理快照） 已推进为 authenticated（已认证）。
-- `app-smoke-model.spec.ts` 覆盖空字符串可选 MC（Minecraft，我的世界） 环境变量不会导致装配失败，并覆盖空白 host（服务器地址）、非整数端口、端口越界的失败模式。
-- `runtime-mineflayer-model.spec.ts` 覆盖 `login`（协议登录） 后进入最小聊天连接态，并让假 Bot（机器人） 提供 `chat(text)`（聊天写入） 以验证 EasyAuth（离线服认证模组） 命令真实写出。
-- `workers-bullmq-model.spec.ts` 覆盖 BullMQ（任务队列） 物理队列名转换规则。
-
-【真实 MC 手测】:
-- Docker（容器工具） 侧已按 `.env`（环境变量文件） 启动 `ts-core-postgres` 与 `ts-core-redis`；`pg_isready`（PostgreSQL 就绪检查） 返回 accepting connections，`redis-cli ping` 返回 `PONG`。
-- 真实 MC（Minecraft，我的世界） 服务器连接参数来自本地 `.env`（环境变量文件）：`MC_HOST=64.176.40.67`、`MC_PORT=25565`、`MC_USERNAME=test_bot01`、`MC_VERSION=1.20.4`、`MC_AUTH=offline`；未记录任何密钥明文。
-- 首次 EasyAuth（离线服认证模组） 诊断注册已完成：Mineflayer（Minecraft 协议客户端） 收到 `Use /register <password> <password> to claim this account.`，发送 `/register <secret> <secret>` 后服务器返回 `You are now authenticated.`，随后触发 `spawn`（生成）。
-- 正式启动日志摘录：`TS Core infrastructure ready`、`TS Core HTTP ready: http://10.255.255.254:3000`、`TS Core Mineflayer ready: test_bot01`、`TS Core ConversationWorker ready: msg:local-bot`。
-- HTTP（超文本传输协议） 手测命令返回 `202 Accepted`：`POST http://127.0.0.1:3000/api/message`，请求体 `{"bot_id":"local-bot","message_id":"manual-final-001","content":"你好，女仆"}`，响应包含 `accepted:true` 与 `job_id:"manual-final-001"`。
-- BullMQ（任务队列） 手测结果：物理队列 `msg__local-bot` 中 `manual-final-001` 状态为 `completed`，`failedReason` 为 `undefined`，队列计数 `waiting=0`、`active=0`、`completed=1`、`failed=0`。
-- MC 客户端截图路径：CLI 无法直接产出图形客户端截图；本轮已由真实服务器日志、真实 Mineflayer（Minecraft 协议客户端） 注册/登录、HTTP（超文本传输协议） 202 响应与 BullMQ（任务队列） 完成态证明链路跑通，截图需操作者侧留存。
-
-【预检输出摘要】:
-- `bash ts-core/scripts/pre_review.sh`
-- TypeScript（类型检查） 通过。
-- Biome（代码检查） 通过：Checked 92 files。
-- Vitest（测试） 通过：24 test files passed，114 tests passed。
-- 末尾输出：`===== 预检全部通过 =====`
-
-【遗留疑问】:
-- MC（Minecraft，我的世界） 图形客户端截图仍需操作者侧留存；代码侧、真实服务启动侧与消息链路侧均已验证通过。
+（待填写）
 
 ---
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
 
-- **T-022**: 在 `runtime`（运行时） + `workers`（工作线程） + `skills`（技能） 内接入 BotWorker（机器人工作线程） 最小真实执行链：消费 `bot:{botId}:exec`（执行队列） → 调用 BotActor（机器人执行代理） 单写者动作入口（新增 `executeSkill()`） → 覆盖 1 个低风险技能（建议 `goTo`，复用 mineflayer-pathfinder）。验收门槛：HTTP POST "去 (x,y,z)" → 女仆在 MC 中走过去。
-- **T-023**: 在 `interfaces`（接口层） + `realtime`（实时推送） + `diagnostics`（诊断） 内补齐 Socket.io（实时推送） 真实广播 + replay（补拉） 真实事件出口；前端能订阅 task lifecycle 事件实时看到女仆动作进度。
-- **T-024**: 在 `sandbox`（沙箱） + `runtime`（运行时） 内接入 isolated-vm 真实沙箱与 Facade API 桥接，打通 `sandbox_code` 路径；验收门槛：HTTP POST 一段沙箱代码 → 女仆按代码顺序执行多步动作。
-- **T-025**: 在 `conversation`（对话） + `workers`（工作线程） 内接入真实 LLM（大语言模型） 调用与两阶段 triage / planner，替换 T-021 的注入式 stub；验收门槛：HTTP POST 自然语言任务 → 真实 LLM 规划 → 女仆执行。
-- **T-026**: BrainWorker（摘要工作线程） 真实落地（摘要写入 task_summaries / session_summaries + pgvector 写入 + 混合检索查询接入）。
-- **T-027**: 部署文档 + Docker Compose 拓扑 + 本地 Fabric + EasyAuth 运维约束补齐。
+- **T-023**: 在 `interfaces`（接口层） + `realtime`（实时推送） + `diagnostics`（诊断） 内补齐 Socket.io（实时推送） 真实广播 + replay（补拉） 真实事件出口；验收门槛：网页或测试客户端能实时订阅 task lifecycle（任务生命周期） 事件并看到 goTo（前往坐标） 进度。
+- **T-024**: 在 `sandbox`（沙箱） + `runtime`（运行时） 内接入 isolated-vm（隔离虚拟机） 真实沙箱与 Facade API（门面接口） 桥接；验收门槛：HTTP（超文本传输协议） 提交一段受限沙箱代码后，女仆按代码顺序执行多个已允许动作。
+- **T-025**: 在 `conversation`（对话） + `workers`（工作线程） 内接入真实 LLM（大语言模型） 两阶段 triage（分诊） / planner（规划器）；验收门槛：自然语言“去我前面两格”等任务可规划为 `goTo`（前往坐标） 并执行。
