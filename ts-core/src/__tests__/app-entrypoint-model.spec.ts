@@ -211,6 +211,17 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             },
           },
         },
+        botWorker: {
+          createWorker: () => {
+            events.push("bot.worker.start");
+
+            return {
+              close: async () => {
+                events.push("bot.worker.close");
+              },
+            };
+          },
+        },
         conversationWorker: {
           createWorker: () => {
             events.push("conversation.worker.start");
@@ -232,6 +243,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       "http.listen",
       "mineflayer.create",
       "chat:/login hunter2",
+      "bot.worker.start",
       "conversation.worker.start",
     ]);
     expect(bootstrap.auth.state.status).toBe("pending");
@@ -239,9 +251,10 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
 
     await runtime.close();
 
-    expect(events.slice(6)).toEqual([
-      "mineflayer.quit",
+    expect(events.slice(7)).toEqual([
       "conversation.worker.close",
+      "bot.worker.close",
+      "mineflayer.quit",
       "http.close",
       "queue.close:brain",
       "queue.close:bot:bot-online:exec",

@@ -14,9 +14,15 @@ import type { ConversationRouteDecision } from "../conversation/contracts.js";
 import { createConversationRouteDecision, createMessageTriage } from "../conversation/triage.js";
 import type { RedisClientLike } from "../db/index.js";
 import { ConversationPriority, type MessageTriage } from "../domain/contracts.js";
-import { TaskHistoryStatus } from "../runtime/tasking.js";
+import { ExecPriority, TaskHistoryStatus, createSkillCallJob } from "../runtime/tasking.js";
+import { SKILL_DIRECTORY } from "../skills/index.js";
 import { createBullmqPhysicalQueueName } from "./bullmq.js";
-import { type ConversationWorkerTask, createConversationWorkerTask } from "./contracts.js";
+import {
+  type BotWorkerTask,
+  type ConversationWorkerTask,
+  createBotWorkerTask,
+  createConversationWorkerTask,
+} from "./contracts.js";
 import type { MessageQueueName } from "./queues.js";
 
 /** ConversationWorker（对话工作线程） 处理过程事件。 */
@@ -52,6 +58,18 @@ export type ConversationWorkerRuntimeEvent =
       readonly status: TaskHistoryStatus.Discarded;
       /** 丢弃原因。 */
       readonly reason: "planner_unavailable";
+    }
+  | {
+      /** 事件类型。 */
+      readonly type: "task.accepted";
+      /** 目标 Bot 标识。 */
+      readonly bot_id: string;
+      /** 原始消息标识。 */
+      readonly message_id: string;
+      /** 技能名。 */
+      readonly skill: "goTo";
+      /** 执行队列优先级。 */
+      readonly priority: ExecPriority;
     };
 
 /** ConversationWorker（对话工作线程） 广播回复汇点。 */
@@ -60,6 +78,14 @@ export type ConversationBroadcastReplySink = (input: {
   readonly message_id: string;
   /** 回复内容。 */
   readonly content: string;
+}) => Promise<unknown>;
+
+/** ConversationWorker（对话工作线程） 执行任务入队汇点。 */
+export type ConversationEnqueueExecTaskSink = (input: {
+  /** BotWorker（机器人工作线程） 可消费任务。 */
+  readonly task: BotWorkerTask;
+  /** BullMQ（任务队列） 数值优先级。 */
+  readonly priority: number;
 }) => Promise<unknown>;
 
 /** ConversationWorker（对话工作线程） 分诊依赖。 */
@@ -102,6 +128,8 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly replyGenerator?: ConversationWorkerReplyGenerator;
   /** 广播回复汇点，真实路径指向 BotActor.broadcastReply。 */
   readonly broadcastReplySink: ConversationBroadcastReplySink;
+  /** 执行任务入队汇点，真实路径指向 `bot:{botId}:exec`（执行队列）。 */
+  readonly enqueueExecTaskSink?: ConversationEnqueueExecTaskSink;
   /** 当前是否已有活跃任务。 */
   readonly hasActiveTask?: () => boolean;
   /** 可注入 BullMQ（任务队列） Worker 工厂。 */
@@ -146,6 +174,14 @@ function createDefaultTriage(): MessageTriage {
   });
 }
 
+function createGoToTriage(): MessageTriage {
+  return createMessageTriage({
+    intent: "task",
+    priority: ConversationPriority.Normal,
+    reason: "deterministic_goto_command",
+  });
+}
+
 function cloneWorkerTask(data: unknown): ConversationWorkerTask {
   const candidate = data as ConversationWorkerTask;
 
@@ -153,6 +189,38 @@ function cloneWorkerTask(data: unknown): ConversationWorkerTask {
     bot_id: candidate.bot_id,
     message: candidate.message,
   });
+}
+
+function parseDeterministicGoToCommand(content: string): {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+} | null {
+  const trimmed = content.trim();
+  const match = /^去\s*(?:\(\s*)?(-?\d+)(?:\s*,\s*|\s+)(-?\d+)(?:\s*,\s*|\s+)(-?\d+)\s*\)?$/u.exec(
+    trimmed,
+  );
+
+  if (match === null) {
+    return null;
+  }
+
+  return Object.freeze({
+    x: Number(match[1]),
+    y: Number(match[2]),
+    z: Number(match[3]),
+  });
+}
+
+function toBullmqPriority(priority: ExecPriority): number {
+  switch (priority) {
+    case ExecPriority.Urgent:
+      return 1;
+    case ExecPriority.Normal:
+      return 5;
+    case ExecPriority.Background:
+      return 10;
+  }
 }
 
 /** 创建 ConversationWorker（对话工作线程） 真实运行时。 */
@@ -168,7 +236,11 @@ export function createConversationWorkerRuntime(input: {
 
   const processTask = async (job: { readonly data: unknown }): Promise<void> => {
     const task = cloneWorkerTask(job.data);
-    const triage = await (input.dependencies.triage?.({ task }) ?? createDefaultTriage());
+    const goToParams = parseDeterministicGoToCommand(task.message.content);
+    const triage =
+      goToParams === null
+        ? await (input.dependencies.triage?.({ task }) ?? createDefaultTriage())
+        : createGoToTriage();
     const route = createConversationRouteDecision({
       triage,
       message: task.message.content,
@@ -211,6 +283,40 @@ export function createConversationWorkerRuntime(input: {
         break;
       case "plan_exec":
       case "modify_interrupt_then_plan":
+        if (goToParams !== null && route.kind === "plan_exec") {
+          if (input.dependencies.enqueueExecTaskSink === undefined) {
+            throw new Error("goTo deterministic plan requires enqueueExecTaskSink");
+          }
+
+          const execJob = createSkillCallJob({
+            message_id: task.message.message_id,
+            intent_epoch: task.message.intent_epoch,
+            snapshot_ts: task.message.snapshot_ts,
+            priority: ExecPriority.Normal,
+            skill: SKILL_DIRECTORY.goTo,
+            params: goToParams,
+          });
+          const botTask = createBotWorkerTask({
+            bot_id: task.bot_id,
+            exec_job: execJob,
+          });
+
+          await input.dependencies.enqueueExecTaskSink({
+            task: botTask,
+            priority: toBullmqPriority(execJob.priority),
+          });
+          events.push(
+            Object.freeze({
+              type: "task.accepted",
+              bot_id: task.bot_id,
+              message_id: task.message.message_id,
+              skill: "goTo" as const,
+              priority: execJob.priority,
+            }),
+          );
+          break;
+        }
+
         events.push(
           Object.freeze({
             type: "task.discarded",

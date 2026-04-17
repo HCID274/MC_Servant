@@ -1,4 +1,9 @@
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
+import {
+  type GoToSkillExecutionResult,
+  type GoToSkillParams,
+  createGoToSkillExecutionResult,
+} from "../skills/index.js";
 
 /** Mineflayer（Minecraft 协议客户端） 传输连接状态清单。 */
 export const MINEFLAYER_TRANSPORT_STATES = [
@@ -43,6 +48,24 @@ export interface MineflayerEventSource {
 export interface MineflayerBotHandle extends MineflayerEventSource {
   /** Mineflayer（Minecraft 协议客户端） 实际登录用户名。 */
   readonly username?: string;
+  /** Mineflayer（Minecraft 协议客户端） 当前实体快照；spawn（生成） 前可能不存在。 */
+  readonly entity?: {
+    /** 当前实体坐标。 */
+    readonly position?: {
+      /** X 坐标。 */
+      readonly x: number;
+      /** Y 坐标。 */
+      readonly y: number;
+      /** Z 坐标。 */
+      readonly z: number;
+    };
+  };
+  /** Mineflayer（Minecraft 协议客户端） 方块 / 物品注册表，pathfinder（寻路器） 构造 Movements 时使用。 */
+  readonly registry?: unknown;
+  /** Mineflayer（Minecraft 协议客户端） 插件加载入口。 */
+  loadPlugin?(plugin: unknown): void;
+  /** mineflayer-pathfinder（Mineflayer 寻路插件） 注入后的最小 API（应用程序接口）。 */
+  readonly pathfinder?: MineflayerPathfinderApi;
   /** 向 Minecraft（我的世界） 游戏聊天频道写入文本。 */
   chat?(text: string): void | Promise<void>;
   /** 断开连接的优先方法。 */
@@ -88,6 +111,8 @@ export interface MineflayerTransportSnapshot<TBotId extends string = string> {
   readonly state: MineflayerTransportState;
   /** 是否已连接。 */
   readonly connected: boolean;
+  /** 当前是否已满足世界交互 ready（就绪）；`spawn`（生成） 前必须为 false。 */
+  readonly world_ready: boolean;
   /** 传输描述。 */
   readonly descriptor: MineflayerTransportDescriptor<TBotId>;
   /** 当前 Mineflayer（Minecraft 协议客户端） 用户名。 */
@@ -100,12 +125,14 @@ export interface MineflayerTransportSnapshot<TBotId extends string = string> {
 export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   /** 传输描述。 */
   readonly descriptor: MineflayerTransportDescriptor<TBotId>;
-  /** 建立 Mineflayer（Minecraft 协议客户端） 连接，直到 spawn（生成） 事件完成。 */
+  /** 建立 Mineflayer（Minecraft 协议客户端） 连接；`login`（协议登录） 后可聊天，`spawn`（生成） 后 world_ready（世界就绪） 才打开。 */
   connect(): Promise<MineflayerTransportSnapshot<TBotId>>;
   /** 断开 Mineflayer（Minecraft 协议客户端） 连接。 */
   disconnect(reason?: string): Promise<MineflayerTransportSnapshot<TBotId>>;
   /** 通过当前 Mineflayer（Minecraft 协议客户端） 连接发送聊天文本。 */
   chat(text: string): Promise<void>;
+  /** 通过受控 Mineflayer（Minecraft 协议客户端） 移动能力执行 `goTo`（前往坐标）。 */
+  goTo(params: Readonly<GoToSkillParams>): Promise<GoToSkillExecutionResult>;
   /** 获取当前连接描述快照。 */
   getSnapshot(): MineflayerTransportSnapshot<TBotId>;
   /** 获取当前只读事件源；未连接或已回收时为 null。 */
@@ -113,6 +140,32 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
 }
 
 const DEFAULT_MINEFLAYER_CONNECT_TIMEOUT_MS = 30_000;
+
+interface MineflayerPathfinderApi {
+  /** 设置 pathfinder（寻路器） 移动配置。 */
+  setMovements?(movements: unknown): void;
+  /** 执行寻路目标。 */
+  goto(goal: unknown): Promise<void> | void;
+}
+
+interface MineflayerPathfinderModule {
+  /** Mineflayer（Minecraft 协议客户端） pathfinder（寻路器） 插件函数。 */
+  readonly pathfinder: unknown;
+  /** pathfinder（寻路器） 移动配置构造器。 */
+  readonly Movements: new (
+    bot: MineflayerBotHandle,
+    registry: unknown,
+  ) => unknown;
+  /** pathfinder（寻路器） 目标构造器集合。 */
+  readonly goals: {
+    /** 方块坐标目标。 */
+    readonly GoalBlock: new (
+      x: number,
+      y: number,
+      z: number,
+    ) => unknown;
+  };
+}
 
 /** 创建 Mineflayer（Minecraft 协议客户端） 运行时传输描述。 */
 export function createMineflayerTransportDescriptor<TBotId extends string>(input: {
@@ -167,6 +220,8 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
   let eventSource: MineflayerEventSource | null = null;
   let lastError: string | null = null;
   let removeRuntimeListeners: (() => void) | null = null;
+  let spawned = false;
+  let pathfinderLoaded = false;
   const createBot = dependencies.createBot ?? createDefaultMineflayerBot;
   const connectTimeoutMs = dependencies.connectTimeoutMs ?? DEFAULT_MINEFLAYER_CONNECT_TIMEOUT_MS;
 
@@ -175,6 +230,7 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
       bot_id: descriptor.bot_id,
       state,
       connected: state === "connected",
+      world_ready: spawned || bot?.entity?.position !== undefined,
       descriptor,
       username: bot?.username ?? descriptor.username,
       last_error: lastError,
@@ -197,6 +253,9 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
       try {
         bot = await createBot(createMineflayerCreateBotOptions(descriptor));
         removeRuntimeListeners = attachRuntimeStateListeners(bot, {
+          markSpawned() {
+            spawned = true;
+          },
           markDisconnected() {
             if (state !== "disconnecting") {
               state = "disconnected";
@@ -248,6 +307,39 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
 
       await bot.chat(text);
     },
+    async goTo(params: Readonly<GoToSkillParams>): Promise<GoToSkillExecutionResult> {
+      if (state !== "connected" || bot === null) {
+        throw new Error("Mineflayer transport must be connected before goTo");
+      }
+
+      if (!spawned && bot.entity?.position === undefined) {
+        throw new Error("Mineflayer transport must reach spawn before goTo");
+      }
+
+      const currentBot = bot;
+      const pathfinderModule = await loadMineflayerPathfinder();
+
+      if (!pathfinderLoaded) {
+        if (typeof currentBot.loadPlugin !== "function") {
+          throw new Error("Mineflayer bot handle does not expose loadPlugin for pathfinder");
+        }
+
+        currentBot.loadPlugin(pathfinderModule.pathfinder);
+        pathfinderLoaded = true;
+      }
+
+      if (currentBot.pathfinder === undefined) {
+        throw new Error("Mineflayer bot handle does not expose pathfinder after plugin load");
+      }
+
+      const movements = new pathfinderModule.Movements(currentBot, currentBot.registry);
+      currentBot.pathfinder.setMovements?.(movements);
+      await currentBot.pathfinder.goto(
+        new pathfinderModule.goals.GoalBlock(params.x, params.y, params.z),
+      );
+
+      return createGoToSkillExecutionResult(params);
+    },
     getSnapshot(): MineflayerTransportSnapshot<TBotId> {
       return createSnapshot();
     },
@@ -262,6 +354,8 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
     removeRuntimeListeners = null;
     bot = null;
     eventSource = null;
+    spawned = false;
+    pathfinderLoaded = false;
 
     try {
       currentBot?.quit?.(reason);
@@ -306,26 +400,30 @@ function createMineflayerCreateBotOptions(
 function attachRuntimeStateListeners(
   bot: MineflayerBotHandle,
   handlers: {
+    markSpawned(): void;
     markDisconnected(): void;
     markFailed(error: unknown): void;
   },
 ): () => void {
+  const onSpawn = () => handlers.markSpawned();
   const onEnd = () => handlers.markDisconnected();
   const onKicked = (reason: unknown) => handlers.markFailed(reason);
   const onError = (error: unknown) => handlers.markFailed(error);
+  const removeSpawn = addEventListener(bot, "spawn", onSpawn);
   const removeEnd = addEventListener(bot, "end", onEnd);
   const removeKicked = addEventListener(bot, "kicked", onKicked);
   const removeError = addEventListener(bot, "error", onError);
 
   return () => {
+    removeSpawn();
     removeEnd();
     removeKicked();
     removeError();
   };
 }
 
-// T-021（任务二十一） 为打通最小聊天闭环，将 login（协议登录） 临时视为 ready（就绪）；
-// 后续引入 goTo / mine（移动 / 挖掘） 等世界交互技能时，必须改为 spawn（生成） ready，或拆两级 ready 标志。
+// 连接层继续保留 login（协议登录） 后即可聊天的能力，以服务 EasyAuth（离线服认证模组） 登录命令；
+// 但 world_ready（世界交互就绪） 必须等到 spawn（生成） 事件后才打开，由上层在技能执行入口前门控。
 function waitForMineflayerSpawn(bot: MineflayerBotHandle, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -416,4 +514,8 @@ function stringifyMineflayerError(error: unknown): string {
   }
 
   return String(error);
+}
+
+async function loadMineflayerPathfinder(): Promise<MineflayerPathfinderModule> {
+  return (await import("mineflayer-pathfinder")) as unknown as MineflayerPathfinderModule;
 }

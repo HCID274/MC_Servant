@@ -1,5 +1,10 @@
 import type { ObservationRuntimeCache } from "../observation/runtime.js";
 import {
+  type SkillExecutionDependencies,
+  type SkillExecutionResult,
+  executeSkillCallJob,
+} from "../skills/index.js";
+import {
   BotStatus,
   type ExternalAuthExecutionPlan,
   type ExternalAuthState,
@@ -9,6 +14,7 @@ import {
 } from "./contracts.js";
 import type { RuntimeEventType } from "./events.js";
 import { resolveTransition } from "./state-machine.js";
+import type { SkillCallJob } from "./tasking.js";
 import type { MineflayerRuntimeTransport, MineflayerTransportSnapshot } from "./transport.js";
 
 /** BotActor（机器人执行代理） 最小运行时快照。 */
@@ -29,6 +35,8 @@ export interface BotActorRuntimeSnapshot<TBotId extends string = string> {
   readonly emitted_events: readonly RuntimeEventType[];
   /** 本轮由 BotActor（机器人执行代理） 单写者完成的聊天写入记录。 */
   readonly chat_writes: readonly BotActorChatWriteRecord[];
+  /** 本轮由 BotActor（机器人执行代理） 单写者完成的技能执行记录。 */
+  readonly skill_executions: readonly BotActorSkillExecutionRecord[];
 }
 
 /** BotActor（机器人执行代理） 聊天写入记录。 */
@@ -52,6 +60,22 @@ export interface BotActorBroadcastReplyInput {
   readonly content: string;
 }
 
+/** BotActor（机器人执行代理） 技能执行记录。 */
+export interface BotActorSkillExecutionRecord {
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 已执行技能名。 */
+  readonly skill: SkillCallJob["skill"];
+}
+
+/** BotActor（机器人执行代理） 技能执行输出。 */
+export interface BotActorSkillExecutionOutcome<TBotId extends string = string> {
+  /** 技能执行结果。 */
+  readonly result: SkillExecutionResult;
+  /** 执行后的运行时快照。 */
+  readonly snapshot: BotActorRuntimeSnapshot<TBotId>;
+}
+
 /** BotActor（机器人执行代理） 最小运行时句柄。 */
 export interface BotActorRuntime<TBotId extends string = string> {
   /** 目标 Bot 标识。 */
@@ -60,6 +84,8 @@ export interface BotActorRuntime<TBotId extends string = string> {
   start(): Promise<BotActorRuntimeSnapshot<TBotId>>;
   /** 通过 BotActor（机器人执行代理） 单写者入口向游戏聊天广播回复。 */
   broadcastReply(input: BotActorBroadcastReplyInput): Promise<BotActorRuntimeSnapshot<TBotId>>;
+  /** 通过 BotActor（机器人执行代理） 单写者入口执行技能调用任务。 */
+  executeSkill(job: SkillCallJob): Promise<BotActorSkillExecutionOutcome<TBotId>>;
   /** 将 BotActor（机器人执行代理） 切换到 SHUTDOWN（关闭） 状态。 */
   shutdown(): Promise<BotActorRuntimeSnapshot<TBotId>>;
   /** 获取当前运行时快照。 */
@@ -73,6 +99,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   observation: ObservationRuntimeCache;
   externalAuth: ExternalAuthState;
   externalAuthPlan: ExternalAuthExecutionPlan;
+  skillExecution?: SkillExecutionDependencies;
 }): BotActorRuntime<TBotId> {
   let status = BotStatus.INITIALIZING;
   let externalAuth = input.externalAuth;
@@ -80,6 +107,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   let chatWriteInFlight: Promise<void> | null = null;
   const emittedEvents: RuntimeEventType[] = [];
   const chatWrites: BotActorChatWriteRecord[] = [];
+  const skillExecutions: BotActorSkillExecutionRecord[] = [];
+  const skillExecution = input.skillExecution ?? {
+    goToMovement: input.transport,
+  };
 
   const createSnapshot = (): BotActorRuntimeSnapshot<TBotId> =>
     Object.freeze({
@@ -94,6 +125,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       external_auth_plan: externalAuthPlan,
       emitted_events: Object.freeze([...emittedEvents]),
       chat_writes: Object.freeze([...chatWrites]),
+      skill_executions: Object.freeze([...skillExecutions]),
     });
 
   return Object.freeze({
@@ -143,6 +175,72 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       });
 
       return createSnapshot();
+    },
+    async executeSkill(job: SkillCallJob): Promise<BotActorSkillExecutionOutcome<TBotId>> {
+      const transportSnapshot = input.transport.getSnapshot();
+      const readyGate = createRuntimeReadyGate({
+        status,
+        externalAuth,
+      });
+
+      if (!readyGate.ready) {
+        throw new Error("BotActor is not ready for executeSkill");
+      }
+
+      if (!transportSnapshot.world_ready) {
+        throw new Error("BotActor world interaction is not ready for executeSkill");
+      }
+
+      const startDecision = resolveTransition(status, {
+        type: "exec_job_pulled",
+        epoch_fresh: true,
+        snapshot_fresh: true,
+      });
+
+      if (!startDecision.accepted) {
+        throw new Error(`BotActor cannot execute skill while ${status}`);
+      }
+
+      status = startDecision.to;
+      emittedEvents.push(...startDecision.emittedEvents);
+
+      try {
+        const result = await executeSkillCallJob({
+          job,
+          dependencies: skillExecution,
+        });
+        const completedDecision = resolveTransition(status, {
+          type: "task_completed",
+        });
+
+        if (completedDecision.accepted) {
+          status = completedDecision.to;
+          emittedEvents.push(...completedDecision.emittedEvents);
+        }
+
+        skillExecutions.push(
+          Object.freeze({
+            message_id: job.message_id,
+            skill: job.skill,
+          }),
+        );
+
+        return Object.freeze({
+          result,
+          snapshot: createSnapshot(),
+        });
+      } catch (error) {
+        const failedDecision = resolveTransition(status, {
+          type: "task_failed",
+        });
+
+        if (failedDecision.accepted) {
+          status = failedDecision.to;
+          emittedEvents.push(...failedDecision.emittedEvents);
+        }
+
+        throw error;
+      }
     },
     async shutdown(): Promise<BotActorRuntimeSnapshot<TBotId>> {
       const shutdownDecision = resolveTransition(status, {

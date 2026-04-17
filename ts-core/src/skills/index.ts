@@ -22,8 +22,10 @@ export const skillsModuleBoundary = {
     "PHASE1_SKILL_NAMES",
     "createSkillCall",
     "createPhase1SkillRegistry",
+    "executeSkillCallJob",
   ],
 } satisfies ModuleBoundary;
 
 export * from "./contracts.js";
 export * from "./registry.js";
+export * from "./execution.js";

@@ -3,16 +3,25 @@ import { describe, expect, it } from "vitest";
 import { createObservationRuntimeCache } from "../observation/index.js";
 import {
   BotStatus,
+  ExecPriority,
   type MineflayerRuntimeTransport,
   createBotActorRuntime,
   createExternalAuthExecutionPlan,
   createExternalAuthSecretBinding,
   createExternalAuthState,
   createMineflayerTransportDescriptor,
+  createSkillCallJob,
 } from "../runtime/index.js";
+import { SKILL_DIRECTORY, createGoToSkillExecutionResult } from "../skills/index.js";
 
 function createFakeTransport(input?: {
   chat?: (text: string) => Promise<void> | void;
+  goTo?: (params: {
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+  }) => Promise<void> | void;
+  worldReady?: boolean;
 }): MineflayerRuntimeTransport<"bot-actor"> {
   let connected = false;
   const descriptor = createMineflayerTransportDescriptor({
@@ -38,11 +47,21 @@ function createFakeTransport(input?: {
 
       await input?.chat?.(text);
     },
+    async goTo(params) {
+      if (!connected) {
+        throw new Error("not connected");
+      }
+
+      await input?.goTo?.(params);
+
+      return createGoToSkillExecutionResult(params);
+    },
     getSnapshot() {
       return Object.freeze({
         bot_id: "bot-actor" as const,
         state: connected ? "connected" : "idle",
         connected,
+        world_ready: connected && (input?.worldReady ?? false),
         descriptor,
         username: "bot-actor",
         last_error: null,
@@ -201,5 +220,130 @@ describe("BotActor（机器人执行代理） 单写聊天入口", () => {
 
     await expect(actor.start()).rejects.toThrow("Mineflayer bot handle does not expose chat");
     expect(actor.getSnapshot().external_auth.status).toBe("pending");
+  });
+});
+
+describe("BotActor（机器人执行代理） 单写技能入口", () => {
+  it("应在 ready（就绪） 后执行 goTo（前往坐标） 并恢复 IDLE（空闲）", async () => {
+    const targets: Array<{ x: number; y: number; z: number }> = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        goTo: (params) => {
+          targets.push({ ...params });
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+    });
+
+    await actor.start();
+    const outcome = await actor.executeSkill(
+      createSkillCallJob({
+        message_id: "msg-goto",
+        intent_epoch: 1,
+        snapshot_ts: 100,
+        priority: ExecPriority.Normal,
+        skill: SKILL_DIRECTORY.goTo,
+        params: { x: 1, y: 64, z: -3 },
+      }),
+    );
+
+    expect(targets).toEqual([{ x: 1, y: 64, z: -3 }]);
+    expect(outcome.result).toMatchObject({
+      skill: "goTo",
+      reached: true,
+      total_steps: 1,
+    });
+    expect(outcome.snapshot.status).toBe(BotStatus.IDLE);
+    expect(outcome.snapshot.emitted_events).toContain("task.started");
+    expect(outcome.snapshot.emitted_events).toContain("task.completed");
+    expect(outcome.snapshot.skill_executions).toEqual([
+      {
+        message_id: "msg-goto",
+        skill: "goTo",
+      },
+    ]);
+  });
+
+  it("应在 world_ready（世界交互就绪） 未打开时拒绝 goTo（前往坐标） 且不触碰移动适配器", async () => {
+    const targets: Array<{ x: number; y: number; z: number }> = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        goTo: (params) => {
+          targets.push({ ...params });
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+    });
+
+    await actor.start();
+    await expect(
+      actor.executeSkill(
+        createSkillCallJob({
+          message_id: "msg-not-ready-goto",
+          intent_epoch: 1,
+          snapshot_ts: 100,
+          priority: ExecPriority.Normal,
+          skill: SKILL_DIRECTORY.goTo,
+          params: { x: 1, y: 64, z: -3 },
+        }),
+      ),
+    ).rejects.toThrow(/world interaction is not ready/);
+    expect(targets).toEqual([]);
+  });
+
+  it("应拒绝执行中并发 goTo（前往坐标） 调用", async () => {
+    let releaseMove: (() => void) | undefined;
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        goTo: async () => {
+          await new Promise<void>((resolve) => {
+            releaseMove = resolve;
+          });
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+    });
+    const job = createSkillCallJob({
+      message_id: "msg-goto-1",
+      intent_epoch: 1,
+      snapshot_ts: 100,
+      priority: ExecPriority.Normal,
+      skill: SKILL_DIRECTORY.goTo,
+      params: { x: 1, y: 64, z: -3 },
+    });
+
+    await actor.start();
+    const firstExecution = actor.executeSkill(job);
+
+    await expect(
+      actor.executeSkill(
+        createSkillCallJob({
+          message_id: "msg-goto-2",
+          intent_epoch: 1,
+          snapshot_ts: 100,
+          priority: ExecPriority.Normal,
+          skill: SKILL_DIRECTORY.goTo,
+          params: { x: 2, y: 64, z: -3 },
+        }),
+      ),
+    ).rejects.toThrow(/not ready/);
+
+    releaseMove?.();
+    await firstExecution;
+    expect(actor.getSnapshot().status).toBe(BotStatus.IDLE);
   });
 });

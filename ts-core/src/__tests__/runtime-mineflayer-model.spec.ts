@@ -76,7 +76,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(transport.getEventSource()).toBeNull();
   });
 
-  it("应允许 EasyAuth（离线服认证模组） 场景在 login（协议登录） 后进入最小聊天连接态", async () => {
+  it("应允许 EasyAuth（离线服认证模组） 场景在 login（协议登录） 后进入最小聊天连接态，但 world_ready（世界就绪） 仍保持关闭直到 spawn（生成）", async () => {
     const createdBots: FakeMineflayerBot[] = [];
     const transport = createMineflayerRuntimeTransport(
       createMineflayerTransportDescriptor({
@@ -101,8 +101,13 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     expect(connected.state).toBe("connected");
     expect(connected.connected).toBe(true);
+    expect(connected.world_ready).toBe(false);
     expect(transport.getEventSource()).not.toBeNull();
 
+    createdBots[0]?.emit("spawn");
+    await Promise.resolve();
+
+    expect(transport.getSnapshot().world_ready).toBe(true);
     await transport.disconnect("test shutdown");
   });
 

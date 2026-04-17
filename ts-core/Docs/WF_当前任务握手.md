@@ -1,6 +1,6 @@
 # 当前任务握手区
 
-【任务序号】: T-022
+【任务序号】: T-023
 【当前状态】: 进行中
 
 ---
@@ -8,125 +8,104 @@
 ## Manager 任务指令
 
 **任务目标**:
-在 `workers`（工作线程） + `runtime`（运行时） + `skills`（技能） + `app`（应用装配） 这一组主干模块内，打通 **HTTP（超文本传输协议）消息 → ConversationWorker（对话工作线程）最小确定性规划 → BullMQ（任务队列）执行队列 → BotWorker（机器人工作线程） → BotActor（机器人执行代理）单写者技能入口 → Minecraft（我的世界）内可见 goTo（前往坐标）动作** 的最小真实执行链。
+在 `interfaces`（接口边界） + `diagnostics`（诊断） + `app`（应用装配） + `workers`（工作线程） + `runtime`（运行时） + `observation`（观测） 这一组主干模块内，补齐 **真实 MC（Minecraft，我的世界） 上线测试所需的可观测入口**：启动 `pnpm start`（启动命令） 后，操作者不仅能让女仆进服、登录并执行 `goTo`（前往坐标），还必须能通过受控接口拿到 `bot.ready`（机器人就绪）、`task.accepted`（任务已接受）、`task.started`（任务已开始）、`task.completed` / `task.failed`（任务已完成 / 已失败） 等可回放、可核对的状态与事件回执。
 
-本任务不是纯契约任务。验收门槛是：在 T-021（任务二十一） 已完成女仆上线与聊天回复的基础上，操作者发送一条可解析的“去坐标”消息后，女仆在真实 MC（Minecraft，我的世界） 服务器中开始向指定的近距离可达坐标移动，或在无法到达时产出明确失败事件，不允许静默成功。
+本任务的验收口径不是“又加一层纯契约”，而是**把 T-021（任务二十一） 的在线聊天闭环与 T-022（任务二十二） 的真实 `goTo`（前往坐标） 执行链，组装成可实际操作、可实际观察、可实际复核的 MC（Minecraft，我的世界） 女仆上线测试入口**。
 
 **上下文说明**:
-1. `T-021`（任务二十一） 已完成真实在线聊天闭环：`POST /api/message`（消息提交接口） 可进入 `msg:{botId}` BullMQ（任务队列），ConversationWorker（对话工作线程） 可消费并通过 BotActor（机器人执行代理） 在 MC（Minecraft，我的世界） 聊天频道回复。
-2. 当前 `task`（任务） / `modify`（修改） 路径仍因缺少 planner（规划器） 被丢弃；本任务只补一个**最小确定性 goTo（前往坐标）规划器**，不接入真实 LLM（大语言模型）。
-3. 当前没有 BotWorker（机器人工作线程） 真实消费 `bot:{botId}:exec`（执行队列）；本任务必须补齐，并让它只通过 BotActor（机器人执行代理） 调用技能，不得绕过单写者。
-4. 当前 `skills`（技能） 模块只有目录、参数校验与注册表；本任务只落地 `goTo`（前往坐标） 的最小真实执行适配，不实现 mine（挖掘） / cutTree（砍树） / collect（捡拾） / equip（装备）。
-5. Minecraft（我的世界） 事实数据仍不得写死。`goTo`（前往坐标） 只使用调用方给出的坐标与 Mineflayer（Minecraft 协议客户端） / pathfinder（寻路器） 运行时能力，不引入配方、掉落、工具等级或方块事实表。
+1. `T-021`（任务二十一） 已完成真实在线聊天闭环，`POST /api/message`（消息提交接口） 能进入 `msg:{botId}`（消息队列） 并由 ConversationWorker（对话工作线程） 产出聊天回复。
+2. `T-022`（任务二十二） 已完成 `goTo`（前往坐标） 的最小真实执行链，ConversationWorker（对话工作线程） 可对窄格式坐标命令入 `bot:{botId}:exec`（执行队列），BotWorker（机器人工作线程） 可经 BotActor（机器人执行代理） 单写者真实执行移动。
+3. 当前仍缺一个**操作者侧可见**的验收出口：仅靠控制台日志和测试断言，不足以支撑本批次“真实 MC（Minecraft，我的世界） 上线女仆测试”的复核要求。
+4. 本任务优先补齐**状态 / 事件观测与回放**，让操作者能在不读内部日志文件的前提下确认：机器人是否已 ready（就绪）、`world_ready`（世界交互就绪） 是否已打开、任务是否被接受 / 开始 / 完成 / 失败，以及失败摘要是什么。
+5. EasyAuth（离线服认证模组） 仍是外部认证真理源；本任务不接管认证库、不迁移 SQLite（嵌入式数据库） 数据、不新增双写。
 
 **输入文件白名单（Coder 仅限读取以下文件）**:
-1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏约束》；第 3 节《三队列模型》；第 4 节《消息流》
-2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 2 节《BotActor 状态机》；第 5 节《单写者执行模型》
-3. `ts-core/Docs/04_CONVERSATION_SPEC.md` — 第 1 节《ConversationWorker 核心定位》；第 3 节《意图分类》；第 4 节《输出处理》
+1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏的约束》；第 3 节《消息流》；第 8 节《事件协议》
+2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 2 节《状态机完整定义》；第 5 节《Worker 生命周期与事件》
+3. `ts-core/Docs/05_DATA_SPEC.md` — 第 1 节《持久化分层总览》；与 `event_log`（事件日志）/ `task_history`（任务历史）/ JSONL（结构化日志） 相关章节
 4. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》
 5. `ts-core/scripts/pre_review.sh` — 全文件
-6. `ts-core/package.json` — 全文件（如引入 `mineflayer-pathfinder`（Mineflayer 寻路插件） 依赖，必须同步更新）
-7. `ts-core/pnpm-lock.yaml` — 全文件（仅依赖变更时允许更新）
-8. `ts-core/.env.example` — 全文件（仅需补充 goTo（前往坐标） 手测说明变量时允许更新）
-9. `ts-core/README.md` — 全文件（仅补充最小手测命令时允许更新）
-10. `ts-core/src/domain/contracts.ts` — 全文件（只读参考）
-11. `ts-core/src/domain/invariants.ts` — 全文件（只读参考）
-12. `ts-core/src/runtime/contracts.ts` — 全文件
-13. `ts-core/src/runtime/state-machine.ts` — 全文件
-14. `ts-core/src/runtime/tasking.ts` — 全文件
-15. `ts-core/src/runtime/events.ts` — 全文件
-16. `ts-core/src/runtime/transport.ts` — 全文件
-17. `ts-core/src/runtime/actor.ts` — 全文件
-18. `ts-core/src/runtime/index.ts` — 全文件
-19. `ts-core/src/skills/contracts.ts` — 全文件
-20. `ts-core/src/skills/registry.ts` — 全文件
-21. `ts-core/src/skills/index.ts` — 全文件
-22. `ts-core/src/skills/execution.ts` — 全文件（可新建）
-23. `ts-core/src/workers/queues.ts` — 全文件
-24. `ts-core/src/workers/contracts.ts` — 全文件
-25. `ts-core/src/workers/bullmq.ts` — 全文件
-26. `ts-core/src/workers/conversation-worker.ts` — 全文件
-27. `ts-core/src/workers/bot-worker.ts` — 全文件（可新建）
-28. `ts-core/src/workers/index.ts` — 全文件
+6. `ts-core/README.md` — 全文件（仅在需要补真实上线测试命令时允许更新）
+7. `ts-core/.env.example` — 全文件（仅在需要补真实上线测试所需环境变量说明时允许更新）
+8. `ts-core/src/runtime/contracts.ts` — 全文件
+9. `ts-core/src/runtime/events.ts` — 全文件
+10. `ts-core/src/runtime/actor.ts` — 全文件
+11. `ts-core/src/runtime/transport.ts` — 全文件
+12. `ts-core/src/runtime/index.ts` — 全文件
+13. `ts-core/src/observation/contracts.ts` — 全文件
+14. `ts-core/src/observation/runtime.ts` — 全文件
+15. `ts-core/src/observation/snapshot.ts` — 全文件
+16. `ts-core/src/observation/index.ts` — 全文件
+17. `ts-core/src/workers/contracts.ts` — 全文件
+18. `ts-core/src/workers/conversation-worker.ts` — 全文件
+19. `ts-core/src/workers/bot-worker.ts` — 全文件
+20. `ts-core/src/workers/index.ts` — 全文件
+21. `ts-core/src/diagnostics/contracts.ts` — 全文件
+22. `ts-core/src/diagnostics/logs.ts` — 全文件
+23. `ts-core/src/diagnostics/index.ts` — 全文件
+24. `ts-core/src/interfaces/contracts.ts` — 全文件
+25. `ts-core/src/interfaces/api.ts` — 全文件
+26. `ts-core/src/interfaces/realtime.ts` — 全文件
+27. `ts-core/src/interfaces/server.ts` — 全文件
+28. `ts-core/src/interfaces/index.ts` — 全文件
 29. `ts-core/src/app/bootstrap.ts` — 全文件
 30. `ts-core/src/app/entrypoint.ts` — 全文件
 31. `ts-core/src/app/index.ts` — 全文件
-32. `ts-core/src/__tests__/skills-model.spec.ts` — 全文件
-33. `ts-core/src/__tests__/runtime-actor-model.spec.ts` — 全文件
+32. `ts-core/src/main.ts` — 全文件
+33. `ts-core/src/__tests__/runtime-worker-event-model.spec.ts` — 全文件
 34. `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts` — 全文件
-35. `ts-core/src/__tests__/workers-bullmq-model.spec.ts` — 全文件
-36. `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts` — 全文件
-37. `ts-core/src/__tests__/app-entrypoint-model.spec.ts` — 全文件
-38. `ts-core/src/__tests__/bot-worker-runtime-model.spec.ts` — 全文件（可新建）
-39. `ts-core/src/__tests__/runtime-skill-execution-model.spec.ts` — 全文件（可新建）
-40. `ts-core/src/__tests__/app-online-goto-model.spec.ts` — 全文件（可新建）
+35. `ts-core/src/__tests__/observation-runtime-model.spec.ts` — 全文件
+36. `ts-core/src/__tests__/interfaces-server-model.spec.ts` — 全文件
+37. `ts-core/src/__tests__/interfaces-message-queue-model.spec.ts` — 全文件
+38. `ts-core/src/__tests__/app-entrypoint-model.spec.ts` — 全文件
+39. `ts-core/src/__tests__/persistence-replay-model.spec.ts` — 全文件
+40. `ts-core/src/__tests__/app-online-runtime-observability-model.spec.ts` — 全文件（可新建）
+41. `ts-core/src/__tests__/interfaces-realtime-replay-model.spec.ts` — 全文件（可新建）
 
 **核心逻辑要求**:
 
-1. **BotActor（机器人执行代理）单写者技能入口**:
-   - 新增 `executeSkill()` 或等价命名的异步入口，只接受 `SkillCallJob`（技能调用执行任务），本任务仅允许真实执行 `goTo`（前往坐标）。
-   - 调用前必须满足 ready（就绪） 门控；未就绪时拒绝且不得触碰 Mineflayer（Minecraft 协议客户端）。
-   - 执行期间状态必须从 `IDLE`（空闲） 转为 `EXECUTING`（执行中），完成 / 失败后回到 `IDLE`（空闲）；失败必须抛出或返回可观测失败结果，不能假成功。
-   - 严守单写者：除 BotActor（机器人执行代理） 内部及其受控 transport（传输） / skills executor（技能执行器） 外，其他模块不得直接调用 Mineflayer（Minecraft 协议客户端） 移动、pathfinder（寻路器） 或原始 Bot（机器人） 句柄。
+1. **真实上线测试的状态与事件出口**:
+   - 必须为操作者提供至少一条**受控**的状态读取路径和一条事件读取路径，用于真实 MC（Minecraft，我的世界） 上线测试时核对运行态。
+   - 状态输出至少包含：`bot_id`（机器人标识）、`status`（运行时状态）、`external_auth`（外部认证状态）、`transport.connected`（传输已连接）、`transport.world_ready`（传输世界交互就绪）。
+   - 事件输出至少覆盖：`bot.ready`（机器人就绪）、`task.accepted`（任务已接受）、`task.started`（任务已开始）、`task.completed` / `task.failed` / `task.discarded`（任务已完成 / 已失败 / 已丢弃）。
+   - 事件输出必须可 replay（补拉 / 回放） 或等价按序读取，不允许只能靠进程控制台瞬时打印观察。
 
-2. **goTo（前往坐标）真实执行适配**:
-   - 在 `skills`（技能） 模块补齐 `goTo`（前往坐标） 的最小 executor（执行器） 边界；真实路径应基于 Mineflayer（Minecraft 协议客户端） 运行时能力与 pathfinder（寻路器） 或等价注入适配器执行。
-   - 测试必须能通过注入 fake（假） movement adapter（移动适配器） 验证坐标、调用顺序、失败传播。
-   - 不允许实现或伪实现 mine（挖掘） / cutTree（砍树） / collect（捡拾） / equip（装备）；这些技能仍只能停留在参数契约和注册表层面。
+2. **事件链路必须从真实执行路径产出**:
+   - ConversationWorker（对话工作线程） 在 `goTo`（前往坐标） 成功入 `bot:{botId}:exec`（执行队列） 时，必须留下 `accepted`（已接受） 语义的可观测记录。
+   - BotWorker（机器人工作线程） 在真实消费执行队列时，必须把 `started`（已开始） / `completed`（已完成） / `failed`（已失败） / `discarded`（已丢弃） 通过统一事件 / 诊断出口向外暴露。
+   - 不允许新建一个只给测试看的“假事件流”；必须复用真实运行时 / worker（工作线程） 生命周期数据。
 
-3. **BotWorker（机器人工作线程）真实消费执行队列**:
-   - 新建 `createBotWorkerRuntime()`，基于 BullMQ Worker（任务队列工作器） 消费 `bot:{botId}:exec`（执行队列）。
-   - Job payload（任务载荷） 必须是 `createBotWorkerTask()`（创建机器人工作线程任务） 或等价强类型产物，不允许松散 JSON（对象文本） 直接执行。
-   - BotWorker（机器人工作线程） 必须发出 started（已开始） / completed（已完成） / failed（已失败） 或 discarded（已丢弃） 的可测试事件记录；失败原因需要可诊断。
-   - 关闭顺序必须接入 `startAppOnlineRuntime()`（真实在线启动入口），保证 BotWorker（机器人工作线程） 在 HTTP（超文本传输协议） / BullMQ（任务队列） 之前被安全关闭。
+3. **接口边界与回放边界**:
+   - 优先复用现有 `interfaces`（接口边界） 模块，不新增绕过架构的临时脚本入口。
+   - 若需要 replay（补拉 / 回放） 能力，应基于现有 `interfaces/realtime.ts`（实时事件模型） 与 `diagnostics`（诊断）/ `runtime/events.ts`（运行时事件） 契约落地，输出顺序、事件类型和载荷要强类型可测试。
+   - 本任务可以新增最小必要的 HTTP（超文本传输协议） 只读接口，但不得新增会改变主消息入口语义的调试写接口；消息仍只从 `POST /api/message`（消息提交接口） 进入。
 
-4. **ConversationWorker（对话工作线程）最小确定性 goTo（前往坐标）规划**:
-   - 在不接入真实 LLM（大语言模型） 的前提下，支持一个窄格式命令，例如 `去 10 64 -5` 或 `去 (10,64,-5)`，解析为 `SkillCallJob`（技能调用执行任务） 中的 `goTo`（前往坐标）。
-   - 只有成功解析该窄格式时才入 `bot:{botId}:exec`（执行队列）；其他 task（任务） / modify（修改） 仍按 T-021（任务二十一） 的 `planner_unavailable`（规划器不可用） 丢弃逻辑处理。
-   - 入执行队列时必须保留原始 `message_id`（消息标识）、`intent_epoch`（意图纪元）、`snapshot_ts`（快照时间戳） 与 priority（优先级）。
+4. **真实 MC（Minecraft，我的世界） 手测装配**:
+   - `startAppOnlineRuntime()`（真实在线启动入口） / `main.ts`（程序入口） 必须把状态与事件出口在在线运行路径中真正接起来，而不是只在测试注入里存在。
+   - 真实手测时，操作者应能完成这条链路：启动进程 → 看到 ready（就绪） / world_ready（世界交互就绪） → 发送 `去 10 64 -5`（前往坐标命令示例） → 看到 accepted / started / completed 或 failed（已接受 / 已开始 / 已完成 或 已失败） → 在 MC（Minecraft，我的世界） 内观察女仆动作或失败回执。
 
-5. **应用装配与真实 MC（Minecraft，我的世界）手测链路**:
-   - `startAppOnlineRuntime()`（真实在线启动入口） 必须同时启动 ConversationWorker（对话工作线程） 与 BotWorker（机器人工作线程），并共享同一 Redis（缓存） / BullMQ（任务队列） 连接。
-   - 手测命令应沿用现有 `POST /api/message`（消息提交接口），不新增临时调试 HTTP（超文本传输协议） 路由。
-   - 真实 MC（Minecraft，我的世界） 手测目标坐标必须由操作者选择为近距离、可达、安全位置；代码中不得写死服务器坐标。
+5. **范围边界**:
+   - 本任务不接入真实 LLM（大语言模型） 规划，不接入 isolated-vm（隔离虚拟机） 沙箱执行，不实现 BrainWorker（摘要工作线程） 摘要管线，不改 EasyAuth（离线服认证模组） 数据源。
+   - 不写死服务器地址、测试坐标、登录密码等部署事实；真实手测值只能来自本地环境变量或本地配置。
 
 **验收标准**:
 
-1. **真实 MC（Minecraft，我的世界）动作验收**:
-   - 在本地真实服务器中启动 `pnpm start`（启动命令），女仆账号在线且已完成 EasyAuth（离线服认证模组） 登录。
-   - 操作者发送 `POST /api/message`（消息提交接口），内容为约定的“去坐标”窄格式命令。
-   - HTTP（超文本传输协议） 返回 `202`（已接受），`msg:{botId}`（消息队列） 与 `bot:{botId}:exec`（执行队列） 均可观测到对应任务。
-   - 女仆在 MC（Minecraft，我的世界） 中向目标近距离坐标移动；若 pathfinder（寻路器） 判定失败，必须有明确 failed（已失败） 事件与错误摘要。
-
-2. **单写者与队列链路验收**:
-   - ConversationWorker（对话工作线程） 只负责解析和入执行队列，不直接调用 Mineflayer（Minecraft 协议客户端） 移动能力。
-   - BotWorker（机器人工作线程） 只通过 BotActor（机器人执行代理） 执行 `goTo`（前往坐标），不直接持有原始 Bot（机器人） 句柄。
-   - BotActor（机器人执行代理） 在 not-ready（未就绪） / busy（忙碌） / movement failure（移动失败） 场景下行为可测试且不假成功。
-
-3. **自动化测试覆盖**:
-   - 覆盖窄格式“去坐标”消息解析、成功入 `bot:{botId}:exec`（执行队列）、不可解析 task（任务） 继续 discarded（已丢弃）。
-   - 覆盖 BotWorker（机器人工作线程） started（已开始） / completed（已完成） / failed（已失败） 事件。
-   - 覆盖 BotActor（机器人执行代理） `goTo`（前往坐标） ready（就绪） 成功、not-ready（未就绪） 拒绝、执行中并发拒绝或排队策略。
-   - 覆盖 app（应用装配） 启动 / 关闭顺序包含 BotWorker（机器人工作线程）。
-
-4. **范围边界验收**:
-   - 不引入真实 LLM（大语言模型）、sandbox（沙箱） 执行、Socket.io（实时推送） 广播、mine（挖掘） / cutTree（砍树） / collect（捡拾） / equip（装备） 真实执行。
-   - 不读写 EasyAuth（离线服认证模组） SQLite（嵌入式数据库），不迁移认证数据到 PostgreSQL（关系型数据库）。
-   - 不写死 Minecraft（我的世界） 领域事实数据或服务器坐标。
-
-5. **预检通过**:
-   - `bash ts-core/scripts/pre_review.sh` 全部通过。
+1. `pnpm start`（启动命令） 在线运行后，操作者可通过受控接口确认 `transport.connected=true`（传输已连接） 与 `transport.world_ready=true`（传输世界交互就绪） 的时机，不再只能靠内部日志猜测。
+2. 对 `POST /api/message`（消息提交接口） 提交一条窄格式 `goTo`（前往坐标） 消息后，操作者可通过受控事件出口依次看到 `task.accepted`（任务已接受） 与 `task.started`（任务已开始），并最终看到 `task.completed` 或 `task.failed`（任务已完成或已失败）。
+3. 自动化测试覆盖状态读取、事件回放 / 顺序读取、以及在线装配时真实接线，不允许只有纯数据工厂测试。
+4. 真实 MC（Minecraft，我的世界） 手测文档或运行说明足够让操作者完成一次“女仆上线 + 登录 + 发送坐标命令 + 观察动作与事件回执”的闭环验证。
+5. `bash ts-core/scripts/pre_review.sh` 全部通过。
 
 ---
 
 ## Coder 自检清单
-- [ ] 任务序号核对为 `T-022`
+- [ ] 任务序号核对为 `T-023`
 - [ ] 仅读取并修改白名单内文件
-- [ ] BotActor（机器人执行代理） 已新增单写者 `goTo`（前往坐标） 技能执行入口，且 ready（就绪） 门控正确
-- [ ] BotWorker（机器人工作线程） 已真实消费 `bot:{botId}:exec`（执行队列） 并只通过 BotActor（机器人执行代理） 执行
-- [ ] ConversationWorker（对话工作线程） 仅对窄格式“去坐标”命令入执行队列，其他 task（任务） 仍按无 planner（规划器） 丢弃
-- [ ] 真实 MC（Minecraft，我的世界） 手测能看到女仆移动，或在不可达时产生明确 failed（已失败） 事件
-- [ ] 未实现 mine（挖掘） / cutTree（砍树） / collect（捡拾） / equip（装备） 真实执行，未引入 LLM（大语言模型） / sandbox（沙箱） / Socket.io（实时推送）
+- [ ] 在线运行路径已暴露可读状态出口，且包含 `transport.world_ready`（传输世界交互就绪）
+- [ ] `task.accepted`（任务已接受） / `task.started`（任务已开始） / `task.completed` / `task.failed`（任务已完成 / 已失败） 已能从真实路径被读取或回放
+- [ ] 未新增绕过 `POST /api/message`（消息提交接口） 的调试写入口
+- [ ] 未引入真实 LLM（大语言模型） / sandbox（沙箱） / BrainWorker（摘要工作线程） / EasyAuth（离线服认证模组） 数据迁移
+- [ ] 真实 MC（Minecraft，我的世界） 手测说明已补齐到必要位置
 - [ ] 执行 bash ts-core/scripts/pre_review.sh 全部通过
 
 ---
@@ -139,12 +118,24 @@
 
 ## Coder 执行反馈（仅 Coder 填写）
 
-（待填写）
+**回填序号**: `T-023`
+
+**修改文件**:
+- （待填写）
+
+**执行摘要**:
+- （待填写）
+
+**预检输出摘要**:
+- （待填写）
+
+**遗留疑问**:
+- （待填写）
 
 ---
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
 
-- **T-023**: 在 `interfaces`（接口层） + `realtime`（实时推送） + `diagnostics`（诊断） 内补齐 Socket.io（实时推送） 真实广播 + replay（补拉） 真实事件出口；验收门槛：网页或测试客户端能实时订阅 task lifecycle（任务生命周期） 事件并看到 goTo（前往坐标） 进度。
-- **T-024**: 在 `sandbox`（沙箱） + `runtime`（运行时） 内接入 isolated-vm（隔离虚拟机） 真实沙箱与 Facade API（门面接口） 桥接；验收门槛：HTTP（超文本传输协议） 提交一段受限沙箱代码后，女仆按代码顺序执行多个已允许动作。
-- **T-025**: 在 `conversation`（对话） + `workers`（工作线程） 内接入真实 LLM（大语言模型） 两阶段 triage（分诊） / planner（规划器）；验收门槛：自然语言“去我前面两格”等任务可规划为 `goTo`（前往坐标） 并执行。
+- **T-024**: 在 `sandbox`（沙箱） + `runtime`（运行时） 内接入 isolated-vm（隔离虚拟机） 真实执行与 Facade API（门面接口） 桥接；验收门槛：单条任务可顺序执行多个受控动作，不再只限单个 `goTo`（前往坐标）。
+- **T-025**: 在 `conversation`（对话） + `workers`（工作线程） 内接入真实 LLM（大语言模型） triage（分诊） / planner（规划器），让自然语言任务可规划为 `skill_call`（技能调用） 或 `sandbox_code`（沙箱代码）。
+- **T-026**: 在 `data`（数据） + `diagnostics`（诊断） + `workers`（工作线程） 内补齐 BrainWorker（摘要工作线程） 摘要与部署文档收口，把当前实时运行链沉淀为可长期运维的持久化闭环。

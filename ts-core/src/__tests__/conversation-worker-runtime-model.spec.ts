@@ -165,4 +165,67 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       reason: "planner_unavailable",
     });
   });
+
+  it("应把窄格式 goTo（前往坐标） 命令解析为执行队列任务", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const enqueuedTasks: unknown[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        broadcastReplySink: async () => undefined,
+        enqueueExecTaskSink: async ({ task, priority }) => {
+          enqueuedTasks.push({ task, priority });
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-goto",
+          content: "去 (10,64,-5)",
+          intent_epoch: 4,
+          snapshot_ts: 103,
+        },
+      }),
+    });
+
+    expect(enqueuedTasks).toHaveLength(1);
+    expect(enqueuedTasks[0]).toMatchObject({
+      priority: 5,
+      task: {
+        worker: "bot",
+        bot_id: "bot-cw",
+        queue: "bot:bot-cw:exec",
+        exec_job: {
+          message_id: "msg-goto",
+          intent_epoch: 4,
+          snapshot_ts: 103,
+          priority: "normal",
+          skill: "goTo",
+          params: { x: 10, y: 64, z: -5 },
+        },
+      },
+    });
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.accepted",
+      bot_id: "bot-cw",
+      message_id: "msg-goto",
+      skill: "goTo",
+      priority: "normal",
+    });
+  });
 });

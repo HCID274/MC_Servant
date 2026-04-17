@@ -11,7 +11,7 @@
 ## 当前批次
 
 - 批次范围：`T-021` ~ `T-030`
-- 当前已完成任务：`T-021`
+- 当前已完成任务：`T-021`、`T-022`
 - 当前批次摘要：从 `T-021`（任务二十一） 起按"纵向上线切片"重排，把原 T-021（消息入队 + ConversationWorker stub） / 原 T-022（BotWorker 最小执行） / 原 T-023（真实连服 + EasyAuth + 端到端） 三任务合并为新的 `T-021`（最窄端到端 demo），把 MC（Minecraft，我的世界） 上线硬门槛前移到本批次第一个任务。后续任务沿 BotWorker → 实时层 → sandbox → 真实 LLM → BrainWorker → 部署文档 的顺序逐步加深。
 - 当前批次硬约束：`T-021`（任务二十一） 验收必须包含真实 MC 服务器手测（聊天截图 + 启动日志），不再做纯契约或纯占位任务。每个后续任务都必须给出可在 MC 中亲眼验证的新行为门槛。
 
@@ -43,4 +43,34 @@
   - Coder（编码代理） 反馈已完成真实 MC（Minecraft，我的世界） 服务器 CLI（命令行） 链路验证：连服、EasyAuth（离线服认证模组） 注册 / 登录、HTTP（超文本传输协议） 202 响应、BullMQ（任务队列） completed（完成） 状态；图形客户端截图仍需操作者侧留存。
 - 验收备注：
   - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 24 个测试文件、114 条测试通过。
+  - 本次审查未重复机械预检。
+
+### T-022 — goTo 最小真实执行链
+
+- 审查状态：通过。
+- 核心文件：
+  - `ts-core/src/runtime/actor.ts`
+  - `ts-core/src/runtime/transport.ts`
+  - `ts-core/src/skills/execution.ts`
+  - `ts-core/src/skills/index.ts`
+  - `ts-core/src/workers/conversation-worker.ts`
+  - `ts-core/src/workers/bot-worker.ts`
+  - `ts-core/src/workers/index.ts`
+  - `ts-core/src/app/entrypoint.ts`
+  - `ts-core/src/__tests__/runtime-actor-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts`
+  - `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-skill-execution-model.spec.ts`
+  - `ts-core/src/__tests__/bot-worker-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
+- 变更快照：
+  - `skills`（技能） 模块新增 `execution.ts`（执行器），当前只允许 `goTo`（前往坐标） 进入真实执行边界；失败由 movement adapter（移动适配器） 直接透传，不做静默成功。
+  - `MineflayerRuntimeTransport`（Mineflayer 运行时传输） 新增受控 `goTo()`（前往坐标） 能力，并接入 `mineflayer-pathfinder`（Mineflayer 寻路插件）；同时把“聊天可写”和“世界交互可执行”拆成两层语义，新增 `world_ready`（世界交互就绪） 快照字段。
+  - `BotActor`（机器人执行代理） 新增 `executeSkill()`（执行技能） 单写者入口，执行前要求通用 ready gate（就绪门控） 与 `transport.world_ready`（传输世界交互就绪） 同时满足；打回修复后，`spawn`（生成） 前的 `goTo`（前往坐标） 会在入口直接拒绝，不再深入到传输层后才失败。
+  - `ConversationWorker`（对话工作线程） 增加窄格式 `去 10 64 -5` / `去 (10,64,-5)` 的确定性规划，成功解析后构造 `SkillCallJob`（技能调用执行任务） 与 `BotWorkerTask`（机器人工作线程任务） 推入 `bot:{botId}:exec`（执行队列）。
+  - `BotWorker`（机器人工作线程） 正式串行消费执行队列，只通过 `BotActor.executeSkill()`（机器人执行代理执行技能） 调用动作，并产出 started（已开始）/ completed（已完成）/ failed（已失败）/ discarded（已丢弃） 生命周期事件。
+  - `startAppOnlineRuntime()`（真实在线启动入口） 同时拉起 `BotWorker`（机器人工作线程） 与 `ConversationWorker`（对话工作线程），关闭顺序保持先 worker（工作线程） 后运行时 / HTTP（超文本传输协议） / BullMQ（任务队列）。
+- 验收备注：
+  - 打回点已修复：`world_ready`（世界交互就绪） 门控已前移到 `BotActor.executeSkill()`（机器人执行代理执行技能） 入口，`runtime-mineflayer-model` 与 `runtime-actor-model` 已覆盖 `spawn`（生成） 前拒绝、`spawn` 后放行。
+  - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 26 个测试文件、123 条测试通过。
   - 本次审查未重复机械预检。

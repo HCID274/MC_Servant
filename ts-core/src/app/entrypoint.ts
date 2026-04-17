@@ -9,8 +9,11 @@
  */
 
 import {
+  type BotWorkerRuntime,
+  type BotWorkerRuntimeDependencies,
   type ConversationWorkerRuntime,
   type ConversationWorkerRuntimeDependencies,
+  createBotWorkerRuntime,
   createConversationWorkerRuntime,
 } from "../workers/index.js";
 import {
@@ -95,6 +98,8 @@ export interface AppStartupSummary<TBotId extends string = string> {
 export interface AppOnlineEntrypointDependencies extends AppProcessRuntimeDependencies {
   /** ConversationWorker（对话工作线程） 依赖注入。 */
   readonly conversationWorker?: Omit<ConversationWorkerRuntimeDependencies, "broadcastReplySink">;
+  /** BotWorker（机器人工作线程） 依赖注入。 */
+  readonly botWorker?: Omit<BotWorkerRuntimeDependencies, "actor">;
 }
 
 /** 真实在线启动入口运行中资源。 */
@@ -111,6 +116,8 @@ export interface AppOnlineRuntime<TBotId extends string = string> {
   readonly runtime: AppRuntimeCoreResources<TBotId>;
   /** ConversationWorker（对话工作线程） 运行时。 */
   readonly conversation_worker: ConversationWorkerRuntime;
+  /** BotWorker（机器人工作线程） 运行时。 */
+  readonly bot_worker: BotWorkerRuntime;
   /** 按真实在线关闭顺序回收资源。 */
   close(): Promise<void>;
 }
@@ -259,7 +266,8 @@ export function runAppEntrypoint<TBotId extends string>(input: {
  *
  * 启动顺序刻意保持为：PostgreSQL（关系型数据库）/ Redis（缓存） → BullMQ（任务队列）
  * → Fastify（接口网关） listen（监听） → Mineflayer（Minecraft 协议客户端）
- * → EasyAuth（离线服认证模组） 登录命令 → ConversationWorker（对话工作线程）。
+ * → EasyAuth（离线服认证模组） 登录命令 → BotWorker（机器人工作线程）
+ * → ConversationWorker（对话工作线程）。
  */
 export async function startAppOnlineRuntime<TBotId extends string>(input: {
   /** 应用装配契约。 */
@@ -272,6 +280,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   let infrastructure: AppRuntimeResources<TBotId> | undefined;
   let services: AppRuntimeServices<TBotId> | undefined;
   let runtime: AppRuntimeCoreResources<TBotId> | undefined;
+  let botWorker: BotWorkerRuntime | undefined;
   let conversationWorker: ConversationWorkerRuntime | undefined;
 
   try {
@@ -293,6 +302,19 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     input.write?.(`TS Core Mineflayer ready: ${runtime.actor.getSnapshot().transport.username}`);
     const createdRuntime = runtime;
 
+    botWorker = createBotWorkerRuntime({
+      queue: {
+        name: services.workers.bot.name,
+        connection: infrastructure.redis.client,
+      },
+      dependencies: {
+        ...(input.dependencies?.botWorker ?? {}),
+        actor: createdRuntime.actor,
+      },
+    });
+    await botWorker.start();
+    input.write?.(`TS Core BotWorker ready: ${botWorker.queue_name}`);
+
     conversationWorker = createConversationWorkerRuntime({
       queue: {
         name: services.workers.conversation.name,
@@ -303,6 +325,16 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         broadcastReplySink: async (reply) => {
           await createdRuntime.actor.broadcastReply(reply);
         },
+        enqueueExecTaskSink: async ({ task, priority }) => {
+          if (typeof services?.workers.bot.queue.add !== "function") {
+            throw new Error("bot exec queue does not support add");
+          }
+
+          await services.workers.bot.queue.add("bot", task, {
+            jobId: task.exec_job.message_id,
+            priority,
+          });
+        },
       },
     });
     await conversationWorker.start();
@@ -310,6 +342,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
 
     const createdInfrastructure = infrastructure;
     const createdServices = services;
+    const createdBotWorker = botWorker;
     const createdConversationWorker = conversationWorker;
 
     return Object.freeze({
@@ -318,10 +351,12 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       infrastructure: createdInfrastructure,
       services: createdServices,
       runtime: createdRuntime,
+      bot_worker: createdBotWorker,
       conversation_worker: createdConversationWorker,
       async close(): Promise<void> {
         await closeOnlineRuntimeInOrder({
           runtime: createdRuntime,
+          botWorker: createdBotWorker,
           conversationWorker: createdConversationWorker,
           services: createdServices,
           infrastructure: createdInfrastructure,
@@ -331,6 +366,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   } catch (error) {
     await closeOnlineRuntimeInOrder({
       runtime,
+      botWorker,
       conversationWorker,
       services,
       infrastructure,
@@ -341,6 +377,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
 
 async function closeOnlineRuntimeInOrder(input: {
   runtime: AppRuntimeCoreResources | undefined;
+  botWorker: BotWorkerRuntime | undefined;
   conversationWorker: ConversationWorkerRuntime | undefined;
   services: AppRuntimeServices | undefined;
   infrastructure: AppRuntimeResources | undefined;
@@ -348,8 +385,9 @@ async function closeOnlineRuntimeInOrder(input: {
   const closeErrors: unknown[] = [];
 
   for (const close of [
-    () => input.runtime?.close(),
     () => input.conversationWorker?.close(),
+    () => input.botWorker?.close(),
+    () => input.runtime?.close(),
     () => input.services?.close(),
     () => input.infrastructure?.close(),
   ]) {
