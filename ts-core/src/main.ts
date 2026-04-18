@@ -7,7 +7,6 @@ import {
 /**
  * 创建当前进程的环境变量快照。
  *
- * 架构意图：
  * 1. 确保在应用运行期间环境变量是不可变的（Readonly），防止运行时意外修改。
  * 2. 隔离 Node.js process.env 的动态性，提供一个稳定的配置来源。
  *
@@ -31,7 +30,6 @@ function createProcessEnvironmentSnapshot(
 /**
  * 解析当前机器人的唯一标识符。
  *
- * 架构意图：
  * 1. 确保在多智能体（Multi-Agent）环境中，每个实例都具有明确的身份标识。
  * 2. 默认 fallback 到 "local-bot" 以支持零配置的本地开发与调试。
  *
@@ -51,7 +49,6 @@ function resolveBotId(env: NodeJS.ProcessEnv): string {
 /**
  * 将启动过程中捕获的错误格式化为可读字符串。
  *
- * 架构意图：
  * 1. 在进程边界（Shell/Process Exit）提供统一的错误呈现格式。
  * 2. 确保在没有正式日志记录器（Logger）可用的引导早期阶段，依然能输出有意义的诊断信息。
  *
@@ -68,7 +65,6 @@ function formatStartupError(error: unknown): string {
 /**
  * 应用主入口点。
  *
- * 架构职责：
  * 1. 初始化引导契约（Bootstrap Contract）：汇集环境快照、时间戳和机器人标识。
  * 2. 启动应用入口（App Entrypoint）：将引导信息注入业务逻辑，并设置标准的输出通道。
  * 3. 错误边界处理：捕获启动阶段的所有致命错误并安全退出。

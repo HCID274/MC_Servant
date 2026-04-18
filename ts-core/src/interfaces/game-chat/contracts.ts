@@ -1,7 +1,6 @@
 /**
  * 游戏内聊天入口契约与过滤逻辑。
  *
- * 架构职责：
  * 1. 命令过滤：通过 `createGameChatIngressDecision` 实现对 Minecraft 游戏内原始聊天的过滤，仅处理以 `/svs` 为前缀的主人命令。
  * 2. 身份校验：根据主人绑定解析状态（Owner Resolution），区分“主人命令”、“普通玩家闲聊”和“缺失绑定的非法操作”。
  * 3. 状态分发：返回 accepted, ignored, 或 rejected 状态，引导上层应用决定是否将消息推入核心主线。
@@ -151,8 +150,7 @@ function createGameChatIngressCandidate(input: {
 /**
  * 归一化并清洗游戏聊天命令内容。
  *
- * 架构意图：
- * 1. 命令提取：识别并移除前缀（如 /svs），将原始聊天转换为纯净的指令文本。
+ * 命令提取：识别并移除前缀（如 /svs），将原始聊天转换为纯净的指令文本。
  */
 function normalizeGameChatCommandContent(content: string): string | null {
   const trimmedContent = content.trim();
@@ -167,12 +165,9 @@ function normalizeGameChatCommandContent(content: string): string | null {
 /**
  * 创建游戏聊天入口判定结果。
  *
- * 架构职责：
  * 1. 游戏入口安检（Game Ingress Screening）：接收物理游戏内的聊天输入，执行前缀过滤、身份匹配与指令清洗。
  * 2. 入口状态分发：返回 accepted (进入主线), ignored (忽略闲聊), 或 rejected (报错提示) 状态。
- *
- * 架构意图：
- * 1. 统一适配：作为 Mineflayer 原始事件到系统核心消息信封的适配器，确保只有合法的、来自主人的命令能够触发系统任务。
+ * 3. 统一适配：作为 Mineflayer 原始事件到系统核心消息信封的适配器，确保只有合法的、来自主人的命令能够触发系统任务。
  *
  * @param input 包含 Bot ID, 主人绑定状态, 发送者 ID, 消息内容及时间戳的输入
  * @returns 判定结果（Accepted / Ignored / Rejected）

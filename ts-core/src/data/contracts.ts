@@ -1,7 +1,6 @@
 /**
  * 数据契约与持久化模型转换。
  *
- * 架构职责：
  * 1. 契约定义：定义所有可持久化到数据库的对象结构（Event Log, Task History, Config 等）。
  * 2. 状态映射：将运行时的动态对象（如 ExecJob, RuntimeEvent）映射为符合数据库 Schema 的持久化记录。
  * 3. 配置管理：提供 DataConfig 的解析、校验、以及 Bot 级配置（Overlay）的合并逻辑。
@@ -493,10 +492,8 @@ export function createTaskPersistencePlan(input: {
 /**
  * 获取任务持久化写入计划。
  *
- * 架构职责：
  * 1. 计划分发（Plan Dispatching）：根据任务的生命周期阶段，动态生成对应的数据库写入序列。
  *
- * 架构意图：
  * 1. 顺序一致性：确保全系统（Worker、Brain 等）遵循统一的写入步骤（如先写 event_log 再写 task_history），防止由于竞争导致的审计断档。
  * 2. 扩展性：通过 includeSessionAggregation 标志支持 BrainWorker 阶段的可选会话聚合。
  *
@@ -531,11 +528,9 @@ export function createTaskPersistencePlan(input: {
 /**
  * 创建持久化事件日志记录。
  *
- * 架构职责：
- * 1. 事件对象工厂（Event Object Factory）：验证并创建符合数据库 Schema 的只读事件日志对象。
+ * 事件对象工厂（Event Object Factory）：验证并创建符合数据库 Schema 的只读事件日志对象。
  *
- * 架构意图：
- * 1. 数据校验：在持久化前强制进行标识符、时间戳和序号的合法性校验，作为数据写入的第一道防线。
+ * 数据校验：在持久化前强制进行标识符、时间戳和序号的合法性校验，作为数据写入的第一道防线。
  *
  * @param input 包含 seq, bot_id, session_id, type, payload 和 created_at 的输入
  * @returns 经过验证和克隆的只读记录
@@ -572,11 +567,9 @@ export function createPersistedEventLogRecord<TType extends PersistedEventType>(
 /**
  * 从运行时生命周期事件创建持久化事件日志记录。
  *
- * 架构职责：
- * 1. 领域适配（Domain Adaptation）：将运行时的 TaskLifecycleEvent 无损转换为持久化层记录。
+ * 领域适配（Domain Adaptation）：将运行时的 TaskLifecycleEvent 无损转换为持久化层记录。
  *
- * 架构意图：
- * 1. 契约映射：确保运行时状态机的每个关键迁移事件都能在持久化流水线中找到对应的位置，支撑 Replay 与系统回溯。
+ * 契约映射：确保运行时状态机的每个关键迁移事件都能在持久化流水线中找到对应的位置，支撑 Replay 与系统回溯。
  *
  * @param input 包含 seq, bot_id, session_id, lifecycle 事件和 created_at 的输入
  * @returns 对应的生命周期持久化记录
@@ -605,11 +598,9 @@ export function createPersistedTaskLifecycleEventLogRecord<
 /**
  * 创建步骤进度（step.progress）的持久化事件记录。
  *
- * 架构职责：
- * 1. 进度追踪（Progress Tracking）：专门用于记录任务执行过程中每一个原子步骤的执行状态、参数及结果。
+ * 进度追踪（Progress Tracking）：专门用于记录任务执行过程中每一个原子步骤的执行状态、参数及结果。
  *
- * 架构意图：
- * 1. 细粒度审计：从运行时的 ExecJob 中提取核心元数据（job_id, type, message_id, epoch），结合当前步骤的动态信息生成可回溯记录。
+ * 细粒度审计：从运行时的 ExecJob 中提取核心元数据（job_id, type, message_id, epoch），结合当前步骤的动态信息生成可回溯记录。
  *
  * @param input 包含 job, step_index, action, status 等执行细节的输入
  * @returns 步骤进度持久化记录
@@ -671,12 +662,9 @@ export function createPersistedTaskProgressEventLogRecord(input: {
 /**
  * 创建任务历史已接受（Accepted）记录。
  *
- * 架构职责：
- * 1. 初始快照工厂（Initial Snapshot Factory）：在任务被接受时，创建其初始持久化快照并进行严格的分层校验。
- *
- * 架构意图：
- * 1. 存储隔离：校验 log_ref 的频道一致性，确保 sandbox 与普通任务的日志存储在物理上隔离。
- * 2. 类型分发：针对 SandboxCode 和 SkillCall 强制执行不同的字段约束。
+ * 1. 初始快照工厂（Initial Snapshot Factory）：在任务被接受时，创建其初始持久化快照并进行严格的分层校验.
+ * 2. 存储隔离：校验 log_ref 的频道一致性，确保 sandbox 与普通任务的日志存储在物理上隔离.
+ * 3. 类型分发：针对 SandboxCode 和 SkillCall 强制执行不同的字段约束.
  *
  * @param input 包含 bot_id, job, log_ref, code_ref 和 created_at 的输入
  * @returns 初始化的任务历史记录
@@ -738,8 +726,7 @@ export function createPersistedTaskHistoryAcceptedRecord(input: {
 /**
  * 创建任务历史开始执行（Started）更新补丁。
  *
- * 架构意图：
- * 1. 性能统计基准：记录任务真实的开始时间，为后续计算执行耗时提供精准基准点。
+ * 性能统计基准：记录任务真实的开始时间，为后续计算执行耗时提供精准基准点。
  *
  * @param input 任务 ID 和开始时间
  * @returns 状态更新补丁
@@ -788,11 +775,9 @@ export function createPersistedTaskHistoryTerminalPatch(input: {
 /**
  * 创建任务历史终态（Terminal）更新补丁。
  *
- * 架构职责：
- * 1. 终态补丁工厂（Terminal Patch Factory）：统一处理任务进入 Completed, Failed 或 Interrupted 终态时的持久化数据补丁。
+ * 终态补丁工厂（Terminal Patch Factory）：统一处理任务进入 Completed, Failed 或 Interrupted 终态时的持久化数据补丁。
  *
- * 架构意图：
- * 1. 完整性约束：在数据库写入前强制校验终态特有字段（如 Failed 必须有 error，Interrupted 必须有 source），确保历史数据的可回溯性。
+ * 完整性约束：在数据库写入前强制校验终态特有字段（如 Failed 必须有 error，Interrupted 必须有 source），确保历史数据的可回溯性。
  *
  * @param input 包含任务 ID, 终态类型, 完成时间, 耗时, 总步数及相关信息的输入
  * @returns 终态更新补丁
@@ -855,8 +840,7 @@ export function createPersistedTaskHistoryTerminalPatch(input: {
 /**
  * 创建崩溃恢复用的未闭合任务检测输入。
  *
- * 架构意图：
- * 1. 恢复准备：封装 Bot 标识和相关的历史事件集合，为检测崩溃后的残留任务提供数据底座。
+ * 恢复准备：封装 Bot 标识和相关的历史事件集合，为检测崩溃后的残留任务提供数据底座。
  *
  * @param input 包含 bot_id, started_events, terminal_events 等信息的输入
  * @returns 经过校验的检测输入对象
@@ -890,11 +874,9 @@ export function createUnclosedTaskDetectionInput(input: {
 /**
  * 计算未闭合任务列表。
  *
- * 架构职责：
- * 1. 崩溃恢复计算（Crash Recovery Calculation）：利用 event_log 的真理源推断哪些任务已被接受但未正常结束。
+ * 崩溃恢复计算（Crash Recovery Calculation）：利用 event_log 的真理源推断哪些任务已被接受但未正常结束。
  *
- * 架构意图：
- * 1. 纯函数恢复逻辑：通过对比 started_events 和 terminal_events，在不依赖复杂数据库查询的情况下，计算出需要恢复或标记失败的任务清单。
+ * 纯函数恢复逻辑：通过对比 started_events 和 terminal_events，在不依赖复杂数据库查询的情况下，计算出需要恢复或标记失败的任务清单。
  *
  * @param input 包含检测输入和限制的输入
  * @returns 检测出的未闭合任务结果
@@ -1242,11 +1224,9 @@ export type DataConfigEnvironment = Readonly<Record<string, string | undefined>>
 /**
  * 创建基础设施配置（DataConfig）。
  *
- * 架构职责：
- * 1. 配置组合（Configuration Composition）：作为配置加载的组合根，统一环境变量与 Bot 级覆盖。
+ * 配置组合（Configuration Composition）：作为配置加载的组合根，统一环境变量与 Bot 级覆盖。
  *
- * 架构意图：
- * 1. 声明式配置：从环境变量快照和 Bot 配置中加载配置，提供一致的 DataConfig 视图。
+ * 声明式配置：从环境变量快照和 Bot 配置中加载配置，提供一致的 DataConfig 视图。
  *
  * @param input 包含环境变量和 Bot 级覆盖配置的可选输入
  * @returns 最终生效的 DataConfig
@@ -1266,11 +1246,9 @@ export function createDataConfig(
 /**
  * 解析并校验 Bot 级覆盖配置。
  *
- * 架构职责：
- * 1. 动态配置守门员（Dynamic Config Gatekeeper）：校验非结构化输入并清洗为强类型的覆盖对象。
+ * 动态配置守门员（Dynamic Config Gatekeeper）：校验非结构化输入并清洗为强类型的覆盖对象。
  *
- * 架构意图：
- * 1. 安全边界：通过白名单机制清洗 Bot 配置，防止非法或未知的 Key 干扰系统关键路径。
+ * 安全边界：通过白名单机制清洗 Bot 配置，防止非法或未知的 Key 干扰系统关键路径。
  *
  * @param input 原始 Bot 配置对象
  * @returns 经过校验和清洗的覆盖对象
@@ -1299,12 +1277,9 @@ export function createBotConfigOverlay(input: unknown): BotConfigOverlay {
 /**
  * 将 Bot 级覆盖合并到基础配置。
  *
- * 架构职责：
  * 1. 配置合并策略（Merge Strategy）：实现“环境配置为底，Bot 配置覆盖”的级联合并。
- *
- * 架构意图：
- * 1. 运行时不可变性：确保生成的最终配置（DataConfig）是完全冻结的，防止运行时状态污染。
- * 2. 合并逻辑：例如，日志根目录（baseDir）和各目录的保留期（retention）会优先使用 Overlay 中的值。
+ * 2. 运行时不可变性：确保生成的最终配置（DataConfig）是完全冻结的，防止运行时状态污染。
+ * 3. 合并逻辑：例如，日志根目录（baseDir）和各目录的保留期（retention）会优先使用 Overlay 中的值。
  *
  * @param baseConfig 基础配置
  * @param overlay 覆盖配置
@@ -1596,5 +1571,7 @@ function assertAllowedKeys(
     if (!allowedKeys.includes(key)) {
       throw new Error(`Unsupported ${fieldName} key: ${key}`);
     }
+  }
+}
   }
 }

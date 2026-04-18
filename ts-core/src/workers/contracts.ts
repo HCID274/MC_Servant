@@ -262,7 +262,7 @@ export function createConversationWorkerTask(input: {
 /**
  * 创建机器人工作线程（BotWorker）的输入任务。
  *
- * 1. 任务封装：封装待执行的运行时任务（ExecJob），并指定其目标执行队列。
+ * 任务封装：封装待执行的运行时任务（ExecJob），并指定其目标执行队列。
  *
  * @param input 包含 Bot ID 和执行任务的输入
  * @returns 经过冻结的任务包
@@ -284,7 +284,7 @@ export function createBotWorkerTask(input: {
 /**
  * 创建摘要工作线程（BrainWorker）的输入任务。
  *
- * 1. 上下文提取：封装任务终态摘要所需的最小上下文（Bot ID, Message ID, Epoch, Status），用于触发后续的异步持久化和 RAG 索引。
+ * 上下文提取：封装任务终态摘要所需的最小上下文（Bot ID, Message ID, Epoch, Status），用于触发后续的异步持久化和 RAG 索引。
  *
  * @param input 包含 Bot ID, 消息 ID, 纪元和终态状态的输入
  * @returns 经过冻结的任务包
@@ -567,7 +567,7 @@ export function createBotWorkerActions(
 /**
  * 根据摘要工作线程的输入生成最小持久化动作。
  *
- * 1. 指令生成：生成 persist_task_summary 指令，标志着任务摘要已就绪并可进行物理持久化。
+ * 指令生成：生成 persist_task_summary 指令，标志着任务摘要已就绪并可进行物理持久化。
  *
  * @param input 包含摘要任务的输入
  * @returns 动作数组

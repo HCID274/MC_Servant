@@ -1,7 +1,6 @@
 /**
  * HTTP API 路由定义与请求响应规范。
  *
- * 架构职责：
  * 1. 路由清单：定义系统支持的 HTTP 接口（Health, Status, Message, Replay）及其元数据（方法、路径、鉴权模式）。
  * 2. 请求标准化：提供 StatusQuery, ReplayRequest 等请求对象的验证与归一化逻辑（如 Replay 条数限制）。
  * 3. 补拉（Replay）逻辑：实现基于事件序号（seq）的事件筛选与排序算法，支撑客户端的增量同步。
@@ -113,11 +112,9 @@ export const API_ROUTE_DEFINITIONS = Object.freeze([
 /**
  * 获取指定路由定义。
  *
- * 架构职责：
- * 1. 路由元数据检索（Route Metadata Retrieval）：提供强类型的接口查询 API 静态定义。
+ * 路由元数据检索（Route Metadata Retrieval）：提供强类型的接口查询 API 静态定义。
  *
- * 架构意图：
- * 1. 类型安全：确保系统其他部分（如 Fastify 插件或 API 客户端）引用的路由配置始终与中心化的 API_ROUTE_DEFINITIONS 保持同步。
+ * 类型安全：确保系统其他部分（如 Fastify 插件或 API 客户端）引用的路由配置始终与中心化的 API_ROUTE_DEFINITIONS 保持同步。
  *
  * @param name 路由名称
  * @returns 对应的路由定义
@@ -158,11 +155,9 @@ export function createStatusResponse(input: {
 /**
  * 归一化 replay 补拉条数。
  *
- * 架构职责：
- * 1. API 分页策略强制执行（Pagination Policy Enforcement）：确保补拉请求的条数在系统安全范围内。
+ * API 分页策略强制执行（Pagination Policy Enforcement）：确保补拉请求的条数在系统安全范围内。
  *
- * 架构意图：
- * 1. 流量稳压：通过硬编码 50 条上限，防止客户端恶意或无意的大规模数据补拉对数据库和网络造成冲击。
+ * 流量稳压：通过硬编码 50 条上限，防止客户端恶意或无意的大规模数据补拉对数据库和网络造成冲击。
  *
  * @param limit 输入的条数限制
  * @returns 最终生效的条数限制
@@ -182,8 +177,7 @@ export function normalizeReplayLimit(limit: number | undefined): number {
 /**
  * 创建补拉请求。
  *
- * 架构意图：
- * 1. 输入验证：验证并封装补拉请求参数。确保 afterSeq 为非负整数，并应用归一化的 limit 策略。
+ * 输入验证：验证并封装补拉请求参数。确保 afterSeq 为非负整数，并应用归一化的 limit 策略。
  *
  * @param input 包含 Bot ID, 起始序号和可选限制的输入
  * @returns 经过校验的 ReplayRequest
@@ -209,11 +203,9 @@ export function createReplayRequest(input: {
 /**
  * 选择并筛选符合补拉语义的事件批次。
  *
- * 架构职责：
- * 1. 增量同步算法实现（Delta Sync Algorithm）：根据 seq 序号筛选并排序增量事件。
+ * 增量同步算法实现（Delta Sync Algorithm）：根据 seq 序号筛选并排序增量事件。
  *
- * 架构意图：
- * 1. 状态同步一致性：确保返回给客户端的事件严格按照 seq 升序排列，支撑客户端的流水线补齐（Replay）逻辑。
+ * 状态同步一致性：确保返回给客户端的事件严格按照 seq 升序排列，支撑客户端的流水线补齐（Replay）逻辑。
  *
  * @param input 包含请求和原始事件列表的输入
  * @returns 经过筛选并冻结的事件数组
@@ -234,8 +226,7 @@ export function selectReplayEvents(input: {
 /**
  * 创建补拉响应。
  *
- * 架构意图：
- * 1. 响应聚合：聚合补拉请求、当前状态快照和筛选后的事件批次，生成最终的 ReplayResponse 对象，确保响应数据的原子性和不可变性。
+ * 响应聚合：聚合补拉请求、当前状态快照和筛选后的事件批次，生成最终的 ReplayResponse 对象，确保响应数据的原子性和不可变性。
  *
  * @param input 包含请求、当前状态和事件列表的输入
  * @returns 完整的补拉响应对象

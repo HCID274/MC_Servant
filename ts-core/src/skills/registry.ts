@@ -1,7 +1,6 @@
 /**
  * 技能注册表实现。
  *
- * 架构职责：
  * 1. 技能容器：提供 SkillRegistry 接口及其实现，用于管理 Bot 可用的技能集合。
  * 2. 纯函数演进：通过 registerSkillDefinition 以纯函数方式演进注册表，每次更新均返回新的只读快照。
  * 3. 技能发现：提供列表（list）和查询（get/has）方法，支撑运行时对技能定义和校验逻辑的检索。
@@ -48,7 +47,7 @@ export function createSkillRegistry(definitions: readonly SkillDefinition[] = []
 /**
  * 在注册表上追加或覆盖一个技能定义。
  *
- * 1. 纯函数演进：遵循不可变数据模式，通过组合旧定义与新定义产出全新的注册表实例，确保演进过程无副作用。
+ * 纯函数演进：遵循不可变数据模式，通过组合旧定义与新定义产出全新的注册表实例，确保演进过程无副作用。
  *
  * @param registry 原注册表
  * @param definition 待注册的技能定义
@@ -80,7 +79,7 @@ export function hasSkillDefinition(registry: SkillRegistry, name: SkillName): bo
 /**
  * 列出当前注册表中的所有技能定义。
  *
- * 1. 确定性顺序：强制按系统约定的固定顺序（如 Phase 1 清单顺序）输出技能，确保下游消费方看到的能力列表具有确定性。
+ * 确定性顺序：强制按系统约定的固定顺序（如 Phase 1 清单顺序）输出技能，确保下游消费方看到的能力列表具有确定性。
  *
  * @param registry 技能注册表
  * @returns 排序后的技能定义数组

@@ -1,7 +1,6 @@
 /**
  * 接口层契约与基础转换。
  *
- * 架构职责：
  * 1. 鉴权契约：定义 Session、Token 校验逻辑及登录响应结构。
  * 2. 入口（Ingress）适配：提供标准化的 Envelope 工厂，将不同来源（Web, Game, Bridge）的消息和事件统一收口。
  * 3. 状态投影：定义 Bot 状态、外部认证状态和健康检查的对外公开快照结构。
@@ -246,8 +245,7 @@ function cloneSessionRecord(input: SessionRecord): SessionRecord {
 /**
  * 校验请求的 Bot ID 是否与会话绑定的 Bot ID 一致。
  *
- * 架构意图：
- * 1. 安全守卫：防止跨 Bot 的非法越权操作。
+ * 安全守卫：防止跨 Bot 的非法越权操作。
  */
 function assertSessionBotBinding(input: {
   requestBotId: string;
@@ -263,8 +261,7 @@ function assertSessionBotBinding(input: {
 /**
  * 创建只读会话记录。
  *
- * 架构意图：
- * 1. 物理模型投影：统一从 sessions 表到接口层的只读投影结构。
+ * 物理模型投影：统一从 sessions 表到接口层的只读投影结构。
  */
 export function createSessionRecord(input: SessionRecord): SessionRecord {
   return Object.freeze(cloneSessionRecord(input));
@@ -273,11 +270,9 @@ export function createSessionRecord(input: SessionRecord): SessionRecord {
 /**
  * 创建接口层统一消息包。
  *
- * 架构职责：
- * 1. 入口收口（Ingress Convergence）：将不同接入方式（Web, Game, Bridge）的元数据转化为系统内部一致的消息信封。
+ * 入口收口（Ingress Convergence）：将不同接入方式（Web, Game, Bridge）的元数据转化为系统内部一致的消息信封。
  *
- * 架构意图：
- * 1. 标准化：确保进入后续逻辑（如分诊、规划）的消息始终持有 bot_id、message_id 等关键上下文，保障下游业务逻辑的纯粹性。
+ * 标准化：确保进入后续逻辑（如分诊、规划）的消息始终持有 bot_id、message_id 等关键上下文，保障下游业务逻辑的纯粹性。
  *
  * @param input 消息包核心字段输入
  * @returns 经过校验和克隆的只读消息信封
@@ -317,8 +312,7 @@ export function createInterfaceMessageEnvelope<
 /**
  * 创建接口层统一事件包。
  *
- * 架构意图：
- * 1. 非文本入口收口：专门用于承载服务端桥接（Server Bridge）等非文本输入的事件，确保系统内部事件流的标准化。
+ * 非文本入口收口：专门用于承载服务端桥接（Server Bridge）等非文本输入的事件，确保系统内部事件流的标准化。
  *
  * @param input 事件包核心字段输入
  * @returns 经过校验和克隆的只读事件信封
@@ -352,8 +346,7 @@ export function createInterfaceEventEnvelope<
 /**
  * 创建登录成功响应。
  *
- * 架构意图：
- * 1. 鉴权结果输出：统一登录成功的响应结构，仅暴露必要的 Session 元数据。
+ * 鉴权结果输出：统一登录成功的响应结构，仅暴露必要的 Session 元数据。
  */
 export function createSessionLoginResponse(input: SessionRecord): SessionLoginResponse {
   return Object.freeze({
@@ -375,8 +368,7 @@ export function createSessionAuthorization(token: string): SessionAuthorization 
 /**
  * 从 Authorization 请求头中提取 Bearer token。
  *
- * 架构意图：
- * 1. 协议解析：实现标准的 HTTP Bearer 鉴权协议解析逻辑。
+ * 协议解析：实现标准的 HTTP Bearer 鉴权协议解析逻辑。
  */
 export function extractBearerToken(headerValue: string | undefined): string | null {
   if (!headerValue) {
@@ -402,11 +394,9 @@ export function isSessionExpired(input: { expiresAt: string; now: string }): boo
 /**
  * 校验会话鉴权输入。
  *
- * 架构职责：
- * 1. 鉴权策略执行（Auth Policy Execution）：实现 Session 合法性、匹配性及过期时间的综合判定。
+ * 鉴权策略执行（Auth Policy Execution）：实现 Session 合法性、匹配性及过期时间的综合判定。
  *
- * 架构意图：
- * 1. 纯函数鉴权：作为一个无副作用的纯函数，它将复杂的鉴权决策逻辑与外部 IO 隔离，便于单元测试。
+ * 纯函数鉴权：作为一个无副作用的纯函数，它将复杂的鉴权决策逻辑与外部 IO 隔离，便于单元测试。
  *
  * @param input 包含鉴权输入、Session 记录及上下文信息的输入
  * @returns 判定结果
@@ -442,11 +432,9 @@ export function validateSessionAuthorization(input: {
 /**
  * 创建网页端标准化消息。
  *
- * 架构职责：
- * 1. Web 提交适配（Web Submission Adaptation）：将前端 HTTP 提交转换为系统一致的消息信封。
+ * Web 提交适配（Web Submission Adaptation）：将前端 HTTP 提交转换为系统一致的消息信封。
  *
- * 架构意图：
- * 1. 安全联锁：在创建信封前强制执行 Bot 绑定校验，确保 Web 会话的上下文安全性。
+ * 安全联锁：在创建信封前强制执行 Bot 绑定校验，确保 Web 会话的上下文安全性。
  *
  * @param input 包含请求内容、Session 和创建时间戳的输入
  * @returns 格式化后的网页端消息信封
@@ -494,8 +482,7 @@ export function createMessageAcceptedResponse(input: {
 /**
  * 创建接口层状态快照。
  *
- * 架构意图：
- * 1. 统一状态载荷：为状态查询 API 和 Replay 逻辑提供一致的 Bot 运行时视图。
+ * 统一状态载荷：为状态查询 API 和 Replay 逻辑提供一致的 Bot 运行时视图。
  */
 export function createInterfaceBotStatusSnapshot(
   input: InterfaceBotStatusSnapshot,
@@ -513,11 +500,9 @@ export function createInterfaceBotStatusSnapshot(
 /**
  * 创建接口层外部认证快照。
  *
- * 架构职责：
- * 1. 外部状态投影：集成脱敏后的认证状态与就绪门控判定。
+ * 外部状态投影：集成脱敏后的认证状态与就绪门控判定。
  *
- * 架构意图：
- * 1. 启动进度反馈：告知外部客户端当前 Bot 是否已满足进入服务态的前提（如是否已完成 Minecraft 登录）。
+ * 启动进度反馈：告知外部客户端当前 Bot 是否已满足进入服务态的前提（如是否已完成 Minecraft 登录）。
  *
  * @param input 包含 Bot 运行时状态和认证状态的输入
  * @returns 对外公开的认证与就绪快照
@@ -538,11 +523,9 @@ export function createInterfaceExternalAuthSnapshot(input: {
 /**
  * 创建健康检查响应。
  *
- * 架构职责：
- * 1. 系统可用性公示（Availability Publicizing）：返回最小化的、无副作用的系统健康状态。
+ * 系统可用性公示（Availability Publicizing）：返回最小化的、无副作用的系统健康状态。
  *
- * 架构意图：
- * 1. 监控适配：为负载均衡器或健康检查工具提供标准化的响应格式，确保外部探测能准确感知服务存活。
+ * 监控适配：为负载均衡器或健康检查工具提供标准化的响应格式，确保外部探测能准确感知服务存活。
  *
  * @param timestamp 响应生成时间戳
  * @returns 健康检查响应对象

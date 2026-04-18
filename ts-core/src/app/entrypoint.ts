@@ -1,7 +1,6 @@
 /**
  * 应用执行入口与启动摘要渲染。
  *
- * 架构职责：
  * 1. 启动摘要构建：将复杂的引导契约（Bootstrap Contract）转换为易于理解和测试的启动摘要（Startup Summary）。
  * 2. IO 边界定义：显式声明当前入口是否涉及真实 IO 连接，起到安全隔离的作用。
  * 3. 结果渲染：提供标准的文本渲染逻辑，用于在控制台或日志中输出系统的启动状态和计划。
@@ -125,8 +124,7 @@ export interface AppOnlineRuntime<TBotId extends string = string> {
 /**
  * 创建子系统就绪状态索引。
  *
- * 架构意图：
- * 1. 快速检索：将列表形式的就绪目录转换为 Map 结构，优化摘要生成过程中的查询效率。
+ * 快速检索：将列表形式的就绪目录转换为 Map 结构，优化摘要生成过程中的查询效率。
  */
 function createReadinessIndex(
   readinessCatalog: readonly AppReadinessDescriptor[],
@@ -139,7 +137,6 @@ function createReadinessIndex(
 /**
  * 创建单个生命周期步骤的摘要视图。
  *
- * 架构意图：
  * 1. 信息聚合：将静态步骤定义与运行时的子系统就绪状态合并。
  * 2. 格式化：为 UI/日志渲染提供统一的步骤模型（包含序号和依赖摘要）。
  */
@@ -277,14 +274,11 @@ export function runAppEntrypoint<TBotId extends string>(input: {
 /**
  * 启动真实在线单进程运行时。
  *
- * 架构职责：
  * 1. 级联拉起：按照 基础设施 -> 服务 -> 核心运行时 -> 工作线程 的顺序完整初始化应用。
  * 2. 工作线程装配：手动连接 Worker 与 BotActor 之间的生产者/消费者闭环。
  * 3. 结果暴露：向外部返回包含所有活跃资源句柄和 HTTP 监听地址的运行中对象。
- *
- * 架构意图：
- * 1. 作为应用在生产环境下的真实执行入口，封装复杂的异步拓扑启动逻辑。
- * 2. 启动顺序刻意保持为：关系型数据库/缓存 -> 任务队列 -> 接口网关 listen -> 协议传输层 -> 离线服认证登录 -> 执行代理 -> 工作线程。
+ * 4. 作为应用在生产环境下的真实执行入口，封装复杂的异步拓扑启动逻辑。
+ * 5. 启动顺序刻意保持为：关系型数据库/缓存 -> 任务队列 -> 接口网关 listen -> 协议传输层 -> 离线服认证登录 -> 执行代理 -> 工作线程。
  */
 export async function startAppOnlineRuntime<TBotId extends string>(input: {
   /** 应用装配契约。 */
@@ -395,7 +389,6 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
 /**
  * 按应用在线运行顺序关闭资源。
  *
- * 架构意图：
  * 1. 优雅销毁：采用与启动顺序相反的逻辑，先停上层业务线程（Worker），再断开底层物理连接（Runtime/DB）。
  * 2. 容错处理：确保即使某一个环节关闭失败，后续环节依然能尝试清理资源。
  */

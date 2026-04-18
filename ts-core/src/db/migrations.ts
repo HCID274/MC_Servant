@@ -1,7 +1,6 @@
 /**
  * Drizzle 数据库迁移逻辑。
  *
- * 架构职责：
  * 1. 元数据管理：定义迁移文件路径、Schema 位置及 Drizzle Kit 配置文件。
  * 2. 环境适配：基于基础设施配置生成 Drizzle Kit 可复用的配置快照。
  * 3. 自动化流水线：实现“建立连接 -> 安装扩展（Extension） -> 执行迁移（Migrate） -> 关闭连接”的完整生命周期。
@@ -111,11 +110,9 @@ export interface DrizzleMigrationExecutionDependencies {
 /**
  * 创建 Drizzle 迁移元信息快照。
  *
- * 架构职责：
- * 1. 元数据聚合（Metadata Aggregation）：封装所有与迁移相关的物理路径、脚本命令及必要的数据库扩展清单。
+ * 元数据聚合（Metadata Aggregation）：封装所有与迁移相关的物理路径、脚本命令及必要的数据库扩展清单。
  *
- * 架构意图：
- * 1. 环境一致性：确保在不同运行环境（开发、测试、生产）下，数据库迁移遵循统一的拓扑结构和执行契约。
+ * 环境一致性：确保在不同运行环境（开发、测试、生产）下，数据库迁移遵循统一的拓扑结构和执行契约。
  *
  * @param input 包含可选连接描述符和环境变量的输入
  * @returns 不可变的迁移元信息
@@ -153,8 +150,7 @@ export function createDrizzleMigrationMetadata(
 /**
  * 创建 Drizzle Kit 可复用的配置快照。
  *
- * 架构意图：
- * 1. 外部工具适配：将系统内部的迁移元信息转换为 Drizzle Kit 命令行工具可识别的配置格式。
+ * 外部工具适配：将系统内部的迁移元信息转换为 Drizzle Kit 命令行工具可识别的配置格式。
  *
  * @param metadata 迁移元信息
  * @returns Drizzle Kit 配置快照
@@ -184,11 +180,9 @@ export function createDrizzleKitConfigSnapshot(
 /**
  * 运行 Drizzle 迁移流水线。
  *
- * 架构职责：
- * 1. 自动化流水线驱动（Pipeline Driver）：实现“资源初始化 -> 扩展前置安装 -> 核心迁移执行 -> 资源回收”的完整闭环。
+ * 自动化流水线驱动（Pipeline Driver）：实现“资源初始化 -> 扩展前置安装 -> 核心迁移执行 -> 资源回收”的完整闭环。
  *
- * 架构意图：
- * 1. 幂等性执行：确保每次启动时，数据库都能平滑演进到最新 Schema，且处理好 vector 等特殊扩展的物理依赖。
+ * 幂等性执行：确保每次启动时，数据库都能平滑演进到最新 Schema，且处理好 vector 等特殊扩展的物理依赖。
  *
  * @param input 包含元数据、环境和注入依赖的输入
  * @returns 迁移执行结果摘要
@@ -232,8 +226,7 @@ export async function runDrizzleMigrations(
 /**
  * 确保 PostgreSQL 扩展已安装。
  *
- * 架构意图：
- * 1. 物理依赖管理：在执行任何 Drizzle 迁移前，确保底层的 vector 等业务关键扩展已经安装，避免 Drizzle 报错。
+ * 物理依赖管理：在执行任何 Drizzle 迁移前，确保底层的 vector 等业务关键扩展已经安装，避免 Drizzle 报错。
  */
 async function ensurePostgresExtensions(
   pool: PostgresPoolLike,
@@ -256,8 +249,7 @@ async function ensurePostgresExtensions(
 /**
  * 执行默认迁移器。
  *
- * 架构意图：
- * 1. 驱动适配：封装 Drizzle 官方的 migrate 函数，将其适配到系统内部的 PostgresDatabaseLike 接口。
+ * 驱动适配：封装 Drizzle 官方的 migrate 函数，将其适配到系统内部的 PostgresDatabaseLike 接口。
  */
 async function executeDefaultMigration(
   database: PostgresDatabaseLike,

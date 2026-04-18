@@ -1,7 +1,6 @@
 /**
  * 运行时核心契约与外部认证逻辑。
  *
- * 架构职责：
  * 1. 状态定义：定义 BotActor 的核心执行状态（BotStatus）和中断机制（InterruptSignal）。
  * 2. 外部认证流水线：管理与 Minecraft 服务器连接所需的登录认证状态（Pending, Authenticated, Failed）及执行计划。
  * 3. 就绪门控（Ready Gate）：实现复杂的就绪判定逻辑，综合 Bot 状态与认证状态决定系统是否可对外提供服务。

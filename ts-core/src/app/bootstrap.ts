@@ -1,7 +1,6 @@
 /**
  * 应用引导与装配层。
  *
- * 架构职责：
  * 1. 组合根（Composition Root）：将各个子系统（数据、数据库、诊断、运行时、沙箱等）的契约装配成一个完整的引导对象。
  * 2. 依赖管理：定义并管理基础设施资源（PostgreSQL, Redis）的生命周期与初始化顺序。
  * 3. 环境适配：负责从环境变量和机器人配置中解析并注入必要的认证、配置等外部依赖。
@@ -446,7 +445,6 @@ export interface AppBootstrapContract<TBotId extends string = string> {
 /**
  * 创建应用装配层的外部认证初始配置。
  *
- * 架构意图：
  * 1. 提供外部认证（如 Minecraft 账户登录）在引导阶段的静态视图。
  * 2. 预判认证入口和密钥注入状态，辅助引导层决定是否需要暂停启动流程等待人工干预。
  *
@@ -467,7 +465,6 @@ export function createAppExternalAuthInitialConfig(
 /**
  * 从应用环境中解析一次性外部认证明文密钥绑定。
  *
- * 架构意图：
  * 1. 将明文密钥（如账户 Token 或密码）的提取逻辑封装在引导层。
  * 2. 结果仅供运行时启动动作（如 Mineflayer 登录）瞬间使用，不在配置对象中长期留存。
  *
@@ -484,14 +481,11 @@ export function createAppExternalAuthSecretFromEnvironment(input: {
 /**
  * 创建应用引导契约。
  *
- * 架构职责：
  * 1. 验证基础引导参数（Bot ID, 启动时间戳）的合法性。
  * 2. 依次聚合配置、生命周期计划、数据库描述、运行时骨架和诊断目录。
  * 3. 生成一个不可变的、且包含所有子系统定义的“组合根契约（Composition Root Contract）”。
- *
- * 架构意图：
- * 1. 将“定义”与“实例创建”解耦，确保系统在没有任何真实 I/O 资源被分配前，就能完成所有静态结构的校验。
- * 2. 为测试提供一个完整的“声明式”系统快照，便于在不启动真实服务的情况下进行验证。
+ * 4. 将“定义”与“实例创建”解耦，确保系统在没有任何真实 I/O 资源被分配前，就能完成所有静态结构的校验。
+ * 5. 为测试提供一个完整的“声明式”系统快照，便于在不启动真实服务的情况下进行验证。
  *
  * @param input 应用引导输入
  * @returns 完整的引导契约对象
@@ -578,11 +572,10 @@ export function createAppBootstrapContract<TBotId extends string>(
 /**
  * 基于应用装配结果创建真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源。
  *
- * 架构设计：
- * 该函数负责物理资源的实例化，包括：
- * 1. 按照 create_order 指定的顺序（通常是 Postgres -> Redis）建立连接。
- * 2. 封装资源关闭逻辑，确保在发生故障或系统停机时能正确回收资源。
- * 3. 提供异常回滚机制，若中间某个资源创建失败，会尝试逆序清理已创建的资源。
+ * 该工厂负责物理资源的实例化及生命周期闭环：
+ * 1. 按照 create_order 指定的顺序（通常是 Postgres -> Redis）安全地建立底层连接。
+ * 2. 封装资源异常回滚机制，若中间某资源创建失败，将逆序清理已创建资源以防止泄露。
+ * 3. 提供统一的资源关闭接口，确保在系统停机时各连接被平滑释放。
  *
  * @param bootstrap 引导契约
  * @param dependencies 可注入的资源依赖（用于 Mock 或自定义连接）
@@ -676,14 +669,11 @@ export async function closeAppRuntimeResources<TBotId extends string>(input: {
 /**
  * 创建运行时核心资源：observation（观测） 缓存、Mineflayer（Minecraft 协议客户端） 传输与 BotActor（机器人执行代理）。
  *
- * 架构职责：
  * 1. 核心链路建立：初始化 Mineflayer 协议传输层和事件驱动的观测缓存。
  * 2. 状态机激活：创建并启动 BotActor，将其注入初始认证计划。
  * 3. 异步就绪：确保核心组件（特别是协议连接）在函数返回前已进入预期的就绪状态。
- *
- * 架构意图：
- * 1. 构建系统的“中枢神经系统”，连接物理协议层与逻辑执行层。
- * 2. 封装复杂的异步启动顺序，为上层提供一个原子的核心资源包。
+ * 4. 架构连接：构建系统的“中枢神经系统”，连接物理协议层与逻辑执行层。
+ * 5. 封装启动：封装复杂的异步启动顺序，为上层提供一个原子的核心资源包。
  *
  * @param bootstrap 引导契约
  * @param dependencies 可注入的运行时核心依赖
@@ -755,7 +745,6 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
 /**
  * 按应用约定关闭运行时核心资源。
  *
- * 架构意图：
  * 1. 严格遵循关闭顺序（如先停状态机，再断开协议连接），防止挂起的事件处理。
  * 2. 优雅释放 Mineflayer 占用的套接字（Socket）资源。
  *
@@ -795,12 +784,10 @@ export async function closeAppRuntimeCoreResources<TBotId extends string>(input:
 /**
  * 创建服务层运行时资源。
  *
- * 架构职责：
  * 1. 消息路由绑定：建立 HTTP 接口网关，并将入站消息转换为 BullMQ 异步任务。
  * 2. 队列初始化：初始化 Conversation 任务队列，实现请求的持久化削峰。
  * 3. 健康状态关联：将接口层的健康检查输出与底层 BotActor 的实时状态动态绑定。
  *
- * 架构意图：
  * 1. 定义应用的“对客界面（Fronting）”，统一处理入站 IO 协议映射。
  * 2. 实现生产/消费模式的解耦，确保 HTTP 请求不会因为后端 logic 处理缓慢而超时。
  *
@@ -901,7 +888,6 @@ export async function createAppRuntimeServices<TBotId extends string>(
 /**
  * 按服务层约定顺序关闭 Fastify（接口网关） 与 BullMQ（任务队列）。
  *
- * 架构意图：
  * 1. 先关闭入站流量（HTTP Server），再停止处理逻辑（Workers），确保进行中的任务有机会完成（Drain）。
  * 2. 统一错误汇总清理，防止残留的监听器导致进程无法正常退出。
  *
@@ -936,14 +922,11 @@ export async function closeAppRuntimeServices<TBotId extends string>(input: {
 /**
  * 创建完整应用进程资源。
  *
- * 架构职责：
  * 1. 级联初始化：按照 基础设施 -> 核心运行时 -> 服务层 的拓扑顺序依次拉起整个应用。
  * 2. 根级生命周期控制：管理整个单进程实例的启动与原子化销毁。
  * 3. 错误传播管理：任何环节的失败都将触发已创建资源的自动回滚清理。
- *
- * 架构意图：
- * 1. 它是真正的“一键拉起”入口，将所有底层的复杂装配隐藏在单一的 Promise 之下。
- * 2. 提供最高级别的资源隔离保障，确保进程级别的 IO 资源始终处于受控状态。
+ * 4. 作为真正的“一键拉起”入口，将所有底层的复杂装配隐藏在单一的 Promise 之下。
+ * 5. 提供最高级别的资源隔离保障，确保进程级别的 IO 资源始终处于受控状态。
  *
  * @param bootstrap 引导契约
  * @param dependencies 基础设施与服务层依赖
@@ -1021,7 +1004,6 @@ export async function createAppProcessRuntime<TBotId extends string>(
 /**
  * 解析应用外部认证决策。
  *
- * 架构意图：
  * 1. 策略分发：根据环境变量或 Bot 配置判断是否需要认证。
  * 2. 秘密绑定：尝试从环境变量或配置中解析并绑定明文密钥。
  * 3. 失败预测：若配置要求认证但未找到有效密钥，立即宣告状态为失败，避免进入后续复杂的认证流程。
@@ -1079,7 +1061,6 @@ function resolveAppExternalAuthResolution(
 /**
  * 从运行时状态创建外部认证初始配置。
  *
- * 架构意图：
  * 1. 状态投影：将复杂的 ExternalAuthState 转换为引导层专用的简化配置视图。
  * 2. 入口锁定：在引导阶段就确定认证操作的物理入口（如聊天命令）。
  */
@@ -1096,7 +1077,6 @@ function createAppExternalAuthInitialConfigFromRuntimeState(
 /**
  * 为运行时核心组件创建外部认证状态。
  *
- * 架构意图：
  * 1. 依赖解耦：将引导契约中的状态重新包装为运行时所需的领域对象。
  * 2. 运行时校验：在创建核心组件前，确保“已认证”或“待认证”状态下必须持有明文密钥。
  */
@@ -1140,8 +1120,7 @@ function createAppRuntimeCoreExternalAuth(
 /**
  * 创建应用层使用的运行时骨架契约。
  *
- * 架构意图：
- * 1. 视图脱敏：将底层的 RuntimeScaffold 投影为应用层可见的 Contract 对象，隐藏不必要的实现细节。
+ * 视图脱敏：将底层的 RuntimeScaffold 投影为应用层可见的 Contract 对象，隐藏不必要的实现细节。
  */
 function createAppRuntimeScaffoldContract(scaffold: RuntimeScaffold): AppRuntimeScaffoldContract {
   return Object.freeze({
@@ -1157,7 +1136,6 @@ function createAppRuntimeScaffoldContract(scaffold: RuntimeScaffold): AppRuntime
 /**
  * 创建应用资源目录。
  *
- * 架构意图：
  * 1. 声明式时序：显式定义资源的创建、关闭和回滚顺序。
  * 2. 映射关系：将抽象的资源名（如 'postgres'）与具体的描述符和元信息关联。
  *
@@ -1188,7 +1166,6 @@ function createAppResourceDirectory<TBotId extends string>(input: {
 /**
  * 创建运行时核心资源目录。
  *
- * 架构意图：
  * 1. 资源定义：显式配置观测模式（事件驱动缓存）和 Mineflayer 连接参数。
  * 2. 顺序管理：定义核心资源（观测、传输、代理）的生命周期拓扑顺序。
  */
@@ -1229,8 +1206,7 @@ function createAppRuntimeCoreDirectory<TBotId extends string>(input: {
 /**
  * 创建应用默认的 HTTP 监听配置。
  *
- * 架构意图：
- * 1. 边界设定：固定内网监听地址与端口，作为单进程服务的标准接入点。
+ * 边界设定：固定内网监听地址与端口，作为单进程服务的标准接入点。
  */
 function createAppHttpListenOptions(): InterfaceServerListenOptions {
   return Object.freeze({
@@ -1242,7 +1218,6 @@ function createAppHttpListenOptions(): InterfaceServerListenOptions {
 /**
  * 创建服务层资源目录。
  *
- * 架构意图：
  * 1. 服务拓扑：关联 BullMQ 队列目录与 Fastify 路由定义。
  * 2. 生命周期规划：定义服务层资源的物理拉起与销毁顺序。
  */
@@ -1268,8 +1243,7 @@ function createAppServiceDirectory<TBotId extends string>(input: {
 /**
  * 创建应用默认的接口状态快照。
  *
- * 架构意图：
- * 1. 初始投影：在 BotActor 尚未完全活跃或快照不可用时，提供一个基于引导契约的保底状态视图。
+ * 初始投影：在 BotActor 尚未完全活跃或快照不可用时，提供一个基于引导契约的保底状态视图。
  */
 function createAppDefaultInterfaceStatusSnapshot<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
@@ -1410,8 +1384,7 @@ function resolveExternalAuthSecretBinding(
 /**
  * 推断外部认证密钥的来源。
  *
- * 架构意图：
- * 1. 自动溯源：根据配置项的优先级，判定密钥是从环境变量还是 Bot 配置文件中读取。
+ * 自动溯源：根据配置项的优先级，判定密钥是从环境变量还是 Bot 配置文件中读取。
  */
 function inferSecretSource(
   authConfig: Readonly<Record<string, unknown>> | undefined,
@@ -1430,8 +1403,7 @@ function inferSecretSource(
 /**
  * 推断外部认证密钥的具体引用标识。
  *
- * 架构意图：
- * 1. 诊断支持：提供具体的文件键名或环境变量名，用于在认证失败时进行精准提示。
+ * 诊断支持：提供具体的文件键名或环境变量名，用于在认证失败时进行精准提示。
  */
 function inferSecretReference(
   authConfig: Readonly<Record<string, unknown>> | undefined,
@@ -1453,8 +1425,7 @@ function inferSecretReference(
 /**
  * 将未知输入转换为可选的普通对象。
  *
- * 架构意图：
- * 1. 类型防御：在解析外部配置时提供第一层类型校验。
+ * 类型防御：在解析外部配置时提供第一层类型校验。
  */
 function asOptionalPlainObject(
   value: unknown,
@@ -1474,8 +1445,7 @@ function asOptionalPlainObject(
 /**
  * 从环境变量读取可选布尔值。
  *
- * 架构意图：
- * 1. 宽容解析：支持 1/true/yes/on 等多种布尔表达方式。
+ * 宽容解析：支持 1/true/yes/on 等多种布尔表达方式。
  */
 function readOptionalBoolean(env: DataConfigEnvironment, fieldName: string): boolean | undefined {
   const value = env[fieldName];

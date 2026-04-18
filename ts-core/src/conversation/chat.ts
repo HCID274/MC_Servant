@@ -1,7 +1,6 @@
 /**
  * 对话回复生成与辅助逻辑。
  *
- * 架构职责：
  * 1. 回复风格统一：通过 ensureReplyEndsWithMeow 确保机器人所有对外回复均符合特定的性格（“喵”后缀）。
  * 2. 检索策略：定义并判断消息是否触发记忆检索（Memory Search）的启发式规则。
  * 3. 模板管理：管理特定场景（如取消操作）下的标准回复模板，确保响应的一致性。
@@ -38,11 +37,9 @@ export const CANCEL_REPLY_TEMPLATES = [
 /**
  * 统一回复风格。
  *
- * 架构职责：
- * 1. 性格渲染（Personality Rendering）：强制所有对外输出的文本均符合统一的 Bot 性格。
+ * 性格渲染（Personality Rendering）：强制所有对外输出的文本均符合统一的 Bot 性格。
  *
- * 架构意图：
- * 1. 风格一致性：确保无论是在 LLM 生成还是模板回复场景下，输出文本均以“喵”相关后缀结尾，塑造品牌化的人格特征。
+ * 风格一致性：确保无论是在 LLM 生成还是模板回复场景下，输出文本均以“喵”相关后缀结尾，塑造品牌化的人格特征。
  *
  * @param text 原始文本
  * @returns 补全后缀后的文本
@@ -65,11 +62,9 @@ export function ensureReplyEndsWithMeow(text: string): string {
 /**
  * 判断当前消息是否需要触发记忆检索。
  *
- * 架构职责：
- * 1. 检索启发式决策（Heuristic Search Decision）：定义判断消息是否需要关联历史记忆的逻辑规则。
+ * 检索启发式决策（Heuristic Search Decision）：定义判断消息是否需要关联历史记忆的逻辑规则。
  *
- * 架构意图：
- * 1. 性能平衡：避免对所有闲聊消息进行昂贵的向量检索，仅在用户显式提到历史（触发词）或执行复杂任务（task/modify）时开启。
+ * 性能平衡：避免对所有闲聊消息进行昂贵的向量检索，仅在用户显式提到历史（触发词）或执行复杂任务（task/modify）时开启。
  *
  * @param input 包含消息文本和分诊意图的输入
  * @returns 是否需要检索
@@ -99,11 +94,9 @@ export function createConversationReply(input: {
 /**
  * 创建对话回复对象。
  *
- * 架构职责：
- * 1. 回复工厂（Reply Factory）：负责校验、格式化并封装不可变的对话回复对象。
+ * 回复工厂（Reply Factory）：负责校验、格式化并封装不可变的对话回复对象。
  *
- * 架构意图：
- * 1. 契约保证：应用统一的性格化处理（ensureReplyEndsWithMeow），确保所有生成的回复对象均满足业务契约。
+ * 契约保证：应用统一的性格化处理（ensureReplyEndsWithMeow），确保所有生成的回复对象均满足业务契约。
  *
  * @param input 包含模式和原始回复文本的输入
  * @returns 包装后的回复对象
@@ -127,8 +120,7 @@ export function createConversationReply(input: {
 /**
  * 创建取消操作的模板回复。
  *
- * 架构意图：
- * 1. 标准化响应：在任务中断/取消场景下，快速生成一致且符合性格特征的确认回复，无需调用 LLM。
+ * 标准化响应：在任务中断/取消场景下，快速生成一致且符合性格特征的确认回复，无需调用 LLM。
  *
  * @param templateIndex 模板索引
  * @returns 模板回复对象

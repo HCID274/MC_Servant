@@ -1,7 +1,6 @@
 /**
  * 环境快照构建与威胁评估实现。
  *
- * 架构职责：
  * 1. 数据聚合：通过 createEnvironmentSnapshot 将来自不同源（Mineflayer 和 JAR Bridge）的观测片段合并为全局一致的环境快照。
  * 2. 状态稳压：实现深度的克隆与冻结逻辑，确保快照在被各个模块（Runtime, Sandbox）消费时是绝对只读的。
  * 3. 反应式评估：实现 assessThreat 逻辑，根据预设的威胁规则（Threat Rules）对环境进行实时安全判定。
@@ -256,11 +255,9 @@ function mergeOwnerSnapshot(
 /**
  * 创建环境快照。
  *
- * 架构职责：
- * 1. 观测物化聚合（Observation Materialized Aggregation）：将 Mineflayer 物理输入与 JAR Bridge 逻辑输入合并为统一快照。
+ * 观测物化聚合（Observation Materialized Aggregation）：将 Mineflayer 物理输入与 JAR Bridge 逻辑输入合并为统一快照。
  *
- * 架构意图：
- * 1. 核心感知的“合成器”：负责解决来自不同数据源的冲突，并执行深度的克隆与冻结逻辑，确保快照在系统内部传递时的绝对稳定性。
+ * 核心感知的“合成器”：负责解决来自不同数据源的冲突，并执行深度的克隆与冻结逻辑，确保快照在系统内部传递时的绝对稳定性。
  *
  * @param input 包含 Mineflayer 和 JAR Bridge 观测输入的源
  * @returns 合并并冻结后的环境快照
@@ -313,8 +310,7 @@ export function createEnvironmentSnapshot(input: {
 /**
  * 创建威胁检测输入。
  *
- * 架构意图：
- * 1. 数据裁剪：将庞大的环境快照裁剪为仅包含威胁评估所需信息的精简对象（如 hostile_entities），提高评估效率。
+ * 数据裁剪：将庞大的环境快照裁剪为仅包含威胁评估所需信息的精简对象（如 hostile_entities），提高评估效率。
  */
 export function createThreatDetectorInput(snapshot: EnvironmentSnapshot): ThreatDetectorInput {
   return Object.freeze({
@@ -392,11 +388,9 @@ function pickThreatRule(input: ThreatDetectorInput): {
 /**
  * 评估环境快照中的威胁。
  *
- * 架构职责：
- * 1. 反射式威胁评估（Reflex Threat Assessment）：基于预设的安全规则，对环境风险进行毫秒级的判定。
+ * 反射式威胁评估（Reflex Threat Assessment）：基于预设的安全规则，对环境风险进行毫秒级的判定。
  *
- * 架构意图：
- * 1. 边缘风险控制：它是 Bot 的“脊髓反射”核心，负责识别生命值过低、坠落或被围攻等紧急情况，产出 ThreatAssessment 以触发运行时的反射式中断。
+ * 边缘风险控制：它是 Bot 的“脊髓反射”核心，负责识别生命值过低、坠落或被围攻等紧急情况，产出 ThreatAssessment 以触发运行时的反射式中断。
  *
  * @param input 包含快照和敌对实体的检测输入
  * @returns 威胁评估结果或 null

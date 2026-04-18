@@ -1,7 +1,6 @@
 /**
  * Fastify（接口网关） 最小 HTTP（超文本传输协议） 服务器骨架。
  *
- * 架构职责：
  * 1. 基于纯接口契约注册最小 Phase 1 路由。
  * 2. 提供 listen（监听） / close（关闭） 生命周期边界，并支持 `fastify.inject()` 测试。
  * 3. 通过依赖注入与可替换处理器，隔离真实网络监听与后续消息处理链路。
@@ -169,13 +168,10 @@ function cloneStatusForBot(
 /**
  * 创建最小 Fastify 运行时骨架。
  *
- * 架构职责：
  * 1. 路由注册（Route Registration）：基于静态契约注册系统的 Phase 1 HTTP 接口。
  * 2. 入口协议转换：将 HTTP Query/Body 参数转换为系统内部的强类型请求对象（如 StatusQuery, ReplayRequest）。
  * 3. 处理器抽象：支持注入业务处理器（Handlers），实现 Fastify 框架与核心业务逻辑的解耦。
- *
- * 架构意图：
- * 1. 轻量级网关：提供一个可测试、低开销的 HTTP 接入层，支持 listen/close 生命周期管理及 fastify.inject() 测试模拟。
+ * 4. 轻量级网关：提供一个可测试、低开销的 HTTP 接入层，支持 listen/close 生命周期管理及 fastify.inject() 测试模拟。
  *
  * @param input 路由目录、健康基线和占位处理器
  * @param dependencies 可注入的 Fastify 实例工厂

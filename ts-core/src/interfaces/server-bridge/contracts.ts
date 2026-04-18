@@ -1,7 +1,6 @@
 /**
  * 服务端桥接入口契约与事件封装。
  *
- * 架构职责：
  * 1. 非侵入式观测：定义 Server Bridge 入口，用于接收来自 Minecraft 插件或其他服务端组件的外部事件。
  * 2. 运行时影响约束：显式声明桥接事件仅用于“观测（observe_only）”，不直接触发 Bot 的状态写操作或任务调度。
  * 3. 载荷稳压：提供 `createServerBridgeEventEnvelope` 工厂函数，对桥接事件的元数据进行校验并对扩展载荷执行深度克隆。
@@ -54,11 +53,9 @@ function cloneReadonlyPayload(
 /**
  * 创建服务端桥接事件包。
  *
- * 架构职责：
- * 1. 外部事件适配（External Event Adaptation）：将来自外部插件或系统的非结构化事件转化为接口层标准的事件信封。
+ * 外部事件适配（External Event Adaptation）：将来自外部插件或系统的非结构化事件转化为接口层标准的事件信封。
  *
- * 架构意图：
- * 1. 观测语义保障：显式通过 runtime_effect: "observe_only" 声明该入口仅用于数据观测，不具备触发核心逻辑状态写操作的权限，从而在接口层建立一道安全防线。
+ * 观测语义保障：显式通过 runtime_effect: "observe_only" 声明该入口仅用于数据观测，不具备触发核心逻辑状态写操作的权限，从而在接口层建立一道安全防线。
  *
  * @param input 包含 Bot ID, 事件 ID, 事件类型, 时间戳及可选载荷的输入
  * @returns 标准化的只读桥接事件包

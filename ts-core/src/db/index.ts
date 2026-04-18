@@ -1,7 +1,6 @@
 /**
  * 数据库与基础设施接入模块。
  *
- * 架构职责：
  * 1. 物理连接管理：封装 PostgreSQL (Drizzle ORM) 与 Redis (ioredis) 的连接池管理、描述符生成及资源生命周期（Resource Lifecycle）。
  * 2. 存储契约（Catalog）：定义统一的 Redis 键命名规范（Key Catalog）和任务队列存储模型。
  * 3. 演进管理（Migration）：维护数据库 Schema 的版本演进（Drizzle Migrations）与执行策略。
@@ -18,7 +17,6 @@ export * from "./migrations.js";
 /**
  * db 模块边界声明。
  *
- * 架构意图：
  * 1. 边界定义：明确数据库模块在物理连接（Postgres/Redis）、键空间管理（Keys）及数据演进（Migrations）三个维度的职责。
  * 2. 拓扑管理：作为系统级模块清单的一项，定义其在全局架构中的定位。
  */

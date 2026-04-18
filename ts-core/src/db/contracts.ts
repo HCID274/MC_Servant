@@ -1,7 +1,6 @@
 /**
  * 数据库契约与存储模型。
  *
- * 架构职责：
  * 1. Schema 契约：定义 PostgreSQL 的业务 Schema、表清单及必要的数据库扩展（如 pgvector）。
  * 2. 状态缓存模型：定义 Redis 中存储的 Bot 实时状态快照（BotStateCache）结构。
  * 3. 基础设施映射：建立起运行时状态与底层存储表示之间的契约关联。
@@ -90,11 +89,9 @@ export const POSTGRES_EXTENSION_CONTRACTS = Object.freeze([
 /**
  * 创建 Bot 状态缓存快照。
  *
- * 架构职责：
- * 1. 状态序列化工厂（State Serialization Factory）：生成符合 Redis 存储契约的、不可变的 Bot 状态快照。
+ * 状态序列化工厂（State Serialization Factory）：生成符合 Redis 存储契约的、不可变的 Bot 状态快照。
  *
- * 架构意图：
- * 1. 缓存一致性：负责验证时间戳和任务元数据的合法性，确保 Redis 中的实时状态数据可供外部系统（如 Dashboard 或监控）安全可靠地消费。
+ * 缓存一致性：负责验证时间戳和任务元数据的合法性，确保 Redis 中的实时状态数据可供外部系统（如 Dashboard 或监控）安全可靠地消费。
  *
  * @param input 包含状态、当前任务及更新时间戳的输入
  * @returns 经过验证和冻结的状态缓存对象

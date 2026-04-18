@@ -1,7 +1,6 @@
 /**
  * 运行时事件定义与工厂。
  *
- * 架构职责：
  * 1. 事件字典：维护系统所有运行时事件类型（bot.*, task.*, state.*, reflex.* 等）。
  * 2. 生命周期建模：定义任务在不同阶段（Accepted, Started, Discarded, Terminal）的详细事件载荷。
  * 3. 稳压适配：提供核心工厂函数，将运行时的 ExecJob 及其执行结果转换为标准化、不可变的 TaskLifecycleEvent。

@@ -1,7 +1,6 @@
 /**
  * 运行时状态机逻辑。
  *
- * 架构职责：
  * 1. 状态转移校验：实现 `canTransition` 逻辑，确保 BotActor 严格遵循预设的状态迁移图（Initializing -> Idle -> Executing 等）。
  * 2. 中断判定策略：通过 `resolveInterruptDecision` 实现复杂的中断决策逻辑，区分抢占式中断（如 Reflex）与排队式中断。
  * 3. 统一转换决策：提供 `resolveTransition` 作为状态机的“大脑”，根据外部诱因（Ready, Job Pulled, Failed, Died 等）产出结构化的转换决策。
