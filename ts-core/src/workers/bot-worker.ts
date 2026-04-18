@@ -1,10 +1,8 @@
 /**
- * BotWorker（机器人工作线程） 真实运行时。
+ * BotWorker 真实运行时。
  *
- * 架构职责：
- * 1. 串行消费 `bot:{botId}:exec`（执行队列）。
- * 2. 只通过 BotActor（机器人执行代理） 单写者入口执行技能。
- * 3. 发出 started（已开始）/ completed（已完成）/ failed（已失败）/ discarded（已丢弃） 生命周期事件。
+ * 1. 任务串行化：持续消费 `bot:{botId}:exec` 队列，确保机器人的物理动作任务（如移动、挖掘）严格串行执行。
+ * 2. 状态机驱动：通过 BotActor 代理接口执行技能，并根据执行结果触发任务生命周期事件（Started, Completed, Failed 等）。
  */
 
 import { Worker, type WorkerOptions } from "bullmq";
@@ -138,6 +136,7 @@ export interface BotWorkerRuntime {
   /** 获取处理过程事件快照。 */
   getEvents(): readonly BotWorkerRuntimeEvent[];
 }
+/** 创建默认的执行工作线程。 */
 
 function createDefaultBotWorker(input: {
   queueName: ExecQueueName;
@@ -149,6 +148,7 @@ function createDefaultBotWorker(input: {
     concurrency: 1,
   });
 }
+/** 克隆并校验机器人任务负载。 */
 
 function cloneBotWorkerTask(data: unknown): BotWorkerTask {
   const candidate = data as BotWorkerTask;
@@ -164,6 +164,7 @@ function cloneBotWorkerTask(data: unknown): BotWorkerTask {
     exec_job: cloneExecJob(candidate.exec_job),
   });
 }
+/** 克隆底层执行任务。 */
 
 function cloneExecJob(job: ExecJob): ExecJob {
   switch (job.type) {
@@ -173,6 +174,7 @@ function cloneExecJob(job: ExecJob): ExecJob {
       return cloneSandboxCodeJob(job);
   }
 }
+/** 克隆技能调用任务及其参数。 */
 
 function cloneSkillCallJob(job: SkillCallJob): SkillCallJob {
   assertCommonExecJob(job);
@@ -245,6 +247,7 @@ function cloneSkillCallJob(job: SkillCallJob): SkillCallJob {
       });
   }
 }
+/** 克隆沙箱代码执行任务。 */
 
 function cloneSandboxCodeJob(job: SandboxCodeJob): SandboxCodeJob {
   assertCommonExecJob(job);
@@ -258,6 +261,7 @@ function cloneSandboxCodeJob(job: SandboxCodeJob): SandboxCodeJob {
     code: job.code,
   });
 }
+/** 校验执行任务的通用必要字段。 */
 
 function assertCommonExecJob(job: ExecJob): void {
   assertNonEmptyString(job.message_id, "message_id");
@@ -274,6 +278,7 @@ function assertCommonExecJob(job: ExecJob): void {
     throw new Error("exec job priority is invalid");
   }
 }
+/** 捕获并创建异常报错快照。 */
 
 function createErrorSnapshot(error: unknown): TaskFailedErrorSnapshot {
   if (error instanceof Error) {
@@ -288,7 +293,16 @@ function createErrorSnapshot(error: unknown): TaskFailedErrorSnapshot {
   });
 }
 
-/** 创建 BotWorker（机器人工作线程） 真实运行时。 */
+/**
+ * 创建 BotWorker 真实运行时。
+ *
+ * 1. 执行网关：作为机器人的底层执行网关，将上层调度派发的抽象任务转化为实际对 BotActor 的调用。
+ * 2. 纪元守卫：在执行前验证任务纪元（Intent Epoch）的新鲜度，拦截过期指令。
+ * 3. 日志流：向 actionSink 发射标准化的生命周期动作（started, completed, failed），供后续持久化审计。
+ *
+ * @param input 包含执行队列连接与运行时依赖的输入
+ * @returns 机器人工作线程运行时句柄
+ */
 export function createBotWorkerRuntime(input: {
   /** 待消费的执行队列。 */
   readonly queue: BotWorkerRuntimeQueue;

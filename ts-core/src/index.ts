@@ -11,7 +11,13 @@ import { skillsModuleBoundary } from "./skills/index.js";
 import { workersModuleBoundary } from "./workers/index.js";
 import { worldModelModuleBoundary } from "./world-model/index.js";
 
-/** TS Core 的模块边界清单。 */
+/**
+ * TS Core 的模块边界清单。
+ *
+ * 架构意图：
+ * 1. 集中管理所有子系统的边界定义，提供全局的模块拓扑视图。
+ * 2. 作为应用启动（Bootstrap）和依赖注入（DI）的基准清单。
+ */
 export const coreModuleBoundaries = [
   runtimeModuleBoundary,
   skillsModuleBoundary,

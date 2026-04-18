@@ -131,10 +131,12 @@ export interface SkillDefinition<TName extends SkillName = SkillName> {
   /** 参数校验函数。 */
   readonly validateParams: (params: unknown) => params is SkillParamsByName[TName];
 }
+/** 判断变量是否为普通对象记录。 */
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+/** 检查对象是否只包含声明的白名单属性。 */
 
 function hasOnlyAllowedKeys(
   record: Record<string, unknown>,
@@ -142,26 +144,32 @@ function hasOnlyAllowedKeys(
 ): boolean {
   return Object.keys(record).every((key) => allowedKeys.includes(key));
 }
+/** 判断变量是否为有限数值。 */
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
+/** 判断变量是否为正整数。 */
 
 function isPositiveInteger(value: unknown): value is number {
   return Number.isInteger(value) && (value as number) > 0;
 }
+/** 判断变量是否为非空字符串。 */
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
+/** 判断变量是否为合法的装备目标位。 */
 
 function isEquipDestination(value: unknown): value is EquipDestination {
   return typeof value === "string" && (EQUIP_DESTINATIONS as readonly string[]).includes(value);
 }
+/** 浅层冻结普通对象。 */
 
 function freezePlainObject<TValue extends object>(value: TValue): Readonly<TValue> {
   return Object.freeze({ ...value });
 }
+/** 创建冻结的底层技能定义。 */
 
 function createSkillDefinition<TName extends SkillName>(input: {
   name: TName;

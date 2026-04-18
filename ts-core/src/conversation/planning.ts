@@ -24,9 +24,12 @@ import type {
 /**
  * 创建对话规划上下文。
  *
+ * 架构职责：
+ * 1. 规划边界校验（Planning Boundary Validation）：封装并校验进入 LLM 规划阶段所需的上下文信息。
+ *
  * 架构意图：
- * 1. 数据校验：确保进入 LLM 规划阶段的基础元数据（Bot ID, Message ID, Content）完整。
- * 2. 状态约束：强制要求 modify 意图必须携带被中断任务的信息。
+ * 1. 数据完整性：确保 modify 等特殊意图必须携带被中断任务的信息，防止 LLM 在信息缺失的情况下进行错误规划。
+ * 2. 状态约束：强制要求所有规划输入必须经过克隆（Readonly），防止规划过程中意外修改原始消息状态。
  *
  * @param input 规划上下文输入
  * @returns 经过校验和克隆的只读上下文
@@ -50,8 +53,11 @@ export function createConversationPlanningContext(
 /**
  * 创建技能调用路径的规划产物。
  *
+ * 架构职责：
+ * 1. 技能草案工厂（Skill Draft Factory）：将 LLM 生成的回复和技能参数封装为标准化的 SkillCallDraft。
+ *
  * 架构意图：
- * 将 LLM 生成的回复和技能参数封装为标准化的 SkillCallDraft。
+ * 1. 模式对齐：确保回复文本已完成性格化处理（ensureReplyEndsWithMeow），且技能参数符合技能目录的契约要求。
  *
  * @param input 包含回复、技能名和参数的输入
  * @returns 技能调用规划草案
@@ -74,8 +80,11 @@ export function createSkillCallPlanDraft<TInput extends SkillCallInput>(input: {
 /**
  * 创建沙箱代码执行路径的规划产物。
  *
+ * 架构职责：
+ * 1. 代码草案工厂（Code Draft Factory）：将 LLM 生成的回复和待执行源码封装为标准化的 SandboxCodeDraft。
+ *
  * 架构意图：
- * 将 LLM 生成的回复和待执行源码封装为标准化的 SandboxCodeDraft。
+ * 1. 安全封装：将原始代码片段包装为符合执行契约的草案对象，并应用性格化回复。
  *
  * @param input 包含回复和代码的输入
  * @returns 沙箱代码规划草案
@@ -97,9 +106,11 @@ export function createSandboxCodePlanDraft(input: {
 /**
  * 将规划产物包装成运行时可消费的执行任务。
  *
+ * 架构职责：
+ * 1. 跨层翻译（Cross-Layer Translation）：负责将对话层的“规划草案”转换为执行层可直接消费的任务对象（ExecJob）。
+ *
  * 架构意图：
- * 负责将对话层的“规划构想”转换为执行层的“可执行单元（Job）”，
- * 建立对话消息元数据（Message ID, Epoch, Snapshot TS）与任务实例之间的关联。
+ * 1. 任务关联：建立对话消息元数据（Message ID, Epoch, Snapshot TS）与任务实例之间的强关联，确保任务执行的可追溯性。
  *
  * @param input 包含规划草案、消息 ID、纪元、时间戳和优先级的输入
  * @returns 对应的运行时任务对象

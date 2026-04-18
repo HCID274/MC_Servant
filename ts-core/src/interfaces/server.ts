@@ -76,6 +76,9 @@ export interface InterfaceServerRuntime<TBotId extends string = string> {
   close(): Promise<void>;
 }
 
+/**
+ * 创建 HTTP 400 错误。
+ */
 function createHttpBadRequest(message: string): Error & { statusCode: 400 } {
   const error = new Error(message) as Error & { statusCode: 400 };
 
@@ -84,6 +87,9 @@ function createHttpBadRequest(message: string): Error & { statusCode: 400 } {
   return error;
 }
 
+/**
+ * 读取并校验必填字符串。
+ */
 function readRequiredString(value: unknown, fieldName: string): string {
   if (typeof value !== "string") {
     throw createHttpBadRequest(`${fieldName} must be a string`);
@@ -98,12 +104,18 @@ function readRequiredString(value: unknown, fieldName: string): string {
   return normalizedValue;
 }
 
+/**
+ * 校验请求中的 Bot ID 是否匹配当前运行时。
+ */
 function assertRequestBotId(requestBotId: string, runtimeBotId: string): void {
   if (requestBotId !== runtimeBotId) {
     throw createHttpBadRequest("bot_id does not match current runtime bot");
   }
 }
 
+/**
+ * 读取并校验整数。
+ */
 function readInteger(value: unknown, fieldName: string, fallback?: number): number {
   const resolved = value ?? fallback;
 
@@ -125,6 +137,9 @@ function readInteger(value: unknown, fieldName: string, fallback?: number): numb
   return numericValue;
 }
 
+/**
+ * 读取并校验监听参数。
+ */
 function readListenOptions(input: InterfaceServerListenOptions): InterfaceServerListenOptions {
   assertNonEmptyString(input.host, "listen.host");
 
@@ -138,6 +153,9 @@ function readListenOptions(input: InterfaceServerListenOptions): InterfaceServer
   });
 }
 
+/**
+ * 为指定 Bot 克隆状态快照。
+ */
 function cloneStatusForBot(
   status: InterfaceBotStatusSnapshot,
   botId: string,
@@ -149,10 +167,18 @@ function cloneStatusForBot(
 }
 
 /**
- * 创建最小 Fastify（接口网关） 运行时骨架。
+ * 创建最小 Fastify 运行时骨架。
+ *
+ * 架构职责：
+ * 1. 路由注册（Route Registration）：基于静态契约注册系统的 Phase 1 HTTP 接口。
+ * 2. 入口协议转换：将 HTTP Query/Body 参数转换为系统内部的强类型请求对象（如 StatusQuery, ReplayRequest）。
+ * 3. 处理器抽象：支持注入业务处理器（Handlers），实现 Fastify 框架与核心业务逻辑的解耦。
+ *
+ * 架构意图：
+ * 1. 轻量级网关：提供一个可测试、低开销的 HTTP 接入层，支持 listen/close 生命周期管理及 fastify.inject() 测试模拟。
  *
  * @param input 路由目录、健康基线和占位处理器
- * @param dependencies 可注入的 Fastify（接口网关） 实例工厂
+ * @param dependencies 可注入的 Fastify 实例工厂
  * @returns 已注册四条最小路由的运行时句柄
  */
 export function createInterfaceServerRuntime<TBotId extends string>(

@@ -212,6 +212,7 @@ export interface ReflexTriggeredEventPayload {
   /** 参与评估的实体标识。 */
   entities: readonly string[];
 }
+/** 深度冻结任务相关数据对象。 */
 
 function freezeTaskValue<T>(value: T): T {
   if (Array.isArray(value)) {
@@ -227,6 +228,7 @@ function freezeTaskValue<T>(value: T): T {
 
   return value;
 }
+/** 创建任务生命周期事件载荷基类。 */
 
 function createTaskLifecyclePayloadBase<TStatus extends TaskHistoryStatus>(
   job: ExecJob,
@@ -249,9 +251,8 @@ export function isRuntimeEventType(value: string): value is RuntimeEventType {
 /**
  * 创建最小运行时事件日志。
  *
- * 架构意图：
- * 它是系统事件总线的“入站包装器”，负责将各种原子事件统一收口为符合领域模型的 RuntimeEventLogEntry。
- * 默认使用 Info 级别，支持可选的任务 ID、Bot ID 和自定义载荷。
+ * 1. 系统适配：作为事件总线的“入站包装器”，负责将各种原子事件统一收口为符合领域模型的 RuntimeEventLogEntry。
+ * 2. 追踪支持：默认使用 Info 级别，并支持可选的任务 ID 和 Bot ID 关联，为全链路日志追踪提供基础。
  *
  * @param input 包含事件 ID, 类型, 来源, 时间戳及可选属性的输入
  * @returns 标准化的运行时事件日志条目
@@ -280,9 +281,8 @@ export function createRuntimeEventLogEntry(input: {
 /**
  * 创建任务已接受（Accepted）生命周期事件。
  *
- * 架构意图：
- * 当一个任务成功进入执行队列时触发。除了包含通用的任务元数据外，
- * 它还专门记录了任务的执行优先级和规划时的快照时间戳，用于后续的审计和分析。
+ * 1. 状态流转标识：标志着一个任务已成功通过初步校验并进入执行队列。
+ * 2. 元数据补齐：专门记录任务的执行优先级和规划时的快照时间戳。
  *
  * @param job 待执行的任务对象
  * @returns 初始化的生命周期事件
@@ -304,9 +304,8 @@ export function createTaskAcceptedLifecycleEvent(
 /**
  * 创建任务已开始（Started）生命周期事件。
  *
- * 架构意图：
- * 当任务开始被 BotActor 真实执行时触发。主要载荷为基础的任务元数据，
- * 标志着任务从“待处理”转为“运行中”。
+ * 1. 运行时切换：当任务正式被 BotActor 认领并启动执行时触发。
+ * 2. 状态锚点：标志着任务从“待处理”转为“运行中”，为性能统计提供起始点。
  *
  * @param job 正在执行的任务对象
  * @returns 状态更新后的生命周期事件
@@ -324,10 +323,8 @@ export function createTaskStartedLifecycleEvent(
 /**
  * 创建任务已丢弃（Discarded）生命周期事件。
  *
- * 架构意图：
- * 当任务因为过期（意图纪元旧）或快照失效而被系统拒绝执行时触发。
- * 它必须包含具体的丢弃原因（discard_reason），并在因为纪元过期被丢弃时，
- * 可选记录当前的最新纪元，以便客户端理解状态不一致的原因。
+ * 1. 异常处理：当任务因为意图纪元过期或环境快照失效而被拒绝执行时触发。
+ * 2. 冲突诊断：包含具体的丢弃原因，并可选记录当前的最新纪元。
  *
  * @param input 包含任务、丢弃原因和当前纪元的输入
  * @returns 经过归类的生命周期事件
@@ -355,10 +352,9 @@ export function createTaskDiscardedLifecycleEvent(input: {
 /**
  * 创建任务终态（Terminal）生命周期事件。
  *
- * 架构意图：
- * 统一处理任务进入 Completed, Failed 或 Interrupted 终态时的事件生成。
- * 它强制要求所有终态事件包含总步数（total_steps）和执行耗时（duration_ms）。
- * 针对不同终态，它会额外执行稳压克隆（freezeTaskValue）以保护错误对象或中断来源数据。
+ * 1. 结果收口：统一处理任务进入 Completed, Failed 或 Interrupted 终态时的事件生成。
+ * 2. 效能审计：强制要求包含总步数和执行耗时，确保所有结束的任务都具备性能评估数据。
+ * 3. 数据稳定性：对错误快照或中断来源数据执行深层冻结，防止后续变动。
  *
  * @param input 包含任务、终态、步数、耗时及状态特定信息的判别联合输入
  * @returns 终态生命周期事件
@@ -431,12 +427,10 @@ export function createTaskTerminalLifecycleEvent(
 }
 
 /**
- * 将任务生命周期事件包裹为运行时事件日志。
+ * 将任务生命周期事件包裹为运行时事件日志条目。
  *
- * 架构意图：
- * 它是生命周期事件到系统通用日志条目的“桥接器”。
- * 它负责将 lifecycle 对象中的 payload 解构并投影到 EventLogEntry 中，
- * 同时建立起日志条目与 taskId 的显式关联，方便系统进行全链路追踪。
+ * 1. 逻辑桥接：作为生命周期事件到系统通用日志条目的转换层。
+ * 2. 全链路关联：解构载荷并投影到 EventLogEntry，显式建立 taskId 关联。
  *
  * @param input 包含事件 ID, 生命周期对象, 来源, 时间戳及 Bot ID 的输入
  * @returns 包装后的运行时事件日志

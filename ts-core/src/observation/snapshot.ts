@@ -30,14 +30,23 @@ import {
   ThreatRuleId,
 } from "./contracts.js";
 
+/**
+ * 冻结只读数组。
+ */
 function freezeReadonlyArray<T>(values: readonly T[]): readonly T[] {
   return Object.freeze([...values]);
 }
 
+/**
+ * 冻结位置坐标。
+ */
 function freezePosition(position: SnapshotPosition): SnapshotPosition {
   return Object.freeze({ x: position.x, y: position.y, z: position.z });
 }
 
+/**
+ * 冻结 Bot 状态快照。
+ */
 function freezeBotStateSnapshot(bot: BotStateSnapshot): BotStateSnapshot {
   return Object.freeze({
     ...bot,
@@ -45,6 +54,9 @@ function freezeBotStateSnapshot(bot: BotStateSnapshot): BotStateSnapshot {
   });
 }
 
+/**
+ * 深克隆背包摘要。
+ */
 function cloneInventorySummary(summary: InventorySummary): InventorySummary {
   return Object.freeze({
     items: freezeReadonlyArray(summary.items.map((item) => Object.freeze({ ...item }))),
@@ -54,6 +66,9 @@ function cloneInventorySummary(summary: InventorySummary): InventorySummary {
   });
 }
 
+/**
+ * 深克隆装备摘要。
+ */
 function cloneEquipmentSummary(summary: EquipmentSummary): EquipmentSummary {
   return Object.freeze({
     head: summary.head ? Object.freeze({ ...summary.head }) : null,
@@ -66,6 +81,9 @@ function cloneEquipmentSummary(summary: EquipmentSummary): EquipmentSummary {
   });
 }
 
+/**
+ * 深克隆实体摘要。
+ */
 function cloneEntitySummary(entity: NearbyEntitySummary): NearbyEntitySummary {
   return Object.freeze({
     ...entity,
@@ -73,6 +91,9 @@ function cloneEntitySummary(entity: NearbyEntitySummary): NearbyEntitySummary {
   });
 }
 
+/**
+ * 深克隆方块摘要。
+ */
 function cloneBlockSummary(block: NearbyBlockSummary): NearbyBlockSummary {
   return Object.freeze({
     ...block,
@@ -80,6 +101,9 @@ function cloneBlockSummary(block: NearbyBlockSummary): NearbyBlockSummary {
   });
 }
 
+/**
+ * 深克隆主人快照。
+ */
 function cloneOwnerSnapshot(owner: OwnerSnapshot): OwnerSnapshot {
   return Object.freeze({
     ...owner,
@@ -87,6 +111,9 @@ function cloneOwnerSnapshot(owner: OwnerSnapshot): OwnerSnapshot {
   });
 }
 
+/**
+ * 深克隆完整环境快照。
+ */
 function cloneEnvironmentSnapshot(snapshot: EnvironmentSnapshot): EnvironmentSnapshot {
   const snapshotBase = {
     timestamp: snapshot.timestamp,
@@ -111,6 +138,9 @@ function cloneEnvironmentSnapshot(snapshot: EnvironmentSnapshot): EnvironmentSna
   });
 }
 
+/**
+ * 合并来自不同源的实体摘要。
+ */
 function mergeEntitySummaries(
   mineflayer: readonly NearbyEntitySummary[],
   bridge?: readonly NearbyEntitySummary[],
@@ -130,10 +160,16 @@ function mergeEntitySummaries(
   );
 }
 
+/**
+ * 生成方块的唯一键（基于坐标）。
+ */
 function getBlockKey(block: NearbyBlockSummary): string {
   return `${block.block_name}:${block.position.x}:${block.position.y}:${block.position.z}`;
 }
 
+/**
+ * 合并来自不同源的方块摘要。
+ */
 function mergeBlockSummaries(
   mineflayer: readonly NearbyBlockSummary[],
   bridge?: readonly NearbyBlockSummary[],
@@ -153,6 +189,9 @@ function mergeBlockSummaries(
   );
 }
 
+/**
+ * 合并来自不同源的 Bot 状态。
+ */
 function mergeBotState(
   mineflayer: BotStateSnapshot | undefined,
   bridge: BridgeObservationInput["bot"],
@@ -192,6 +231,9 @@ function mergeBotState(
   };
 }
 
+/**
+ * 合并来自不同源的主人快照。
+ */
 function mergeOwnerSnapshot(
   mineflayer?: OwnerSnapshot,
   bridge?: BridgeObservationInput["owner"],
@@ -214,10 +256,11 @@ function mergeOwnerSnapshot(
 /**
  * 创建环境快照。
  *
+ * 架构职责：
+ * 1. 观测物化聚合（Observation Materialized Aggregation）：将 Mineflayer 物理输入与 JAR Bridge 逻辑输入合并为统一快照。
+ *
  * 架构意图：
- * 它是系统感知的“合成器”。它接收来自 Mineflayer（主要负责基础状态、背包、装备）
- * 和 JAR Bridge（主要负责扩展实体、方块和服务器元数据）的原始输入，
- * 并根据优先级和完整性规则合并成一个全局唯一的 EnvironmentSnapshot。
+ * 1. 核心感知的“合成器”：负责解决来自不同数据源的冲突，并执行深度的克隆与冻结逻辑，确保快照在系统内部传递时的绝对稳定性。
  *
  * @param input 包含 Mineflayer 和 JAR Bridge 观测输入的源
  * @returns 合并并冻结后的环境快照
@@ -267,7 +310,12 @@ export function createEnvironmentSnapshot(input: {
   });
 }
 
-/** 创建威胁检测输入，用于把环境快照裁剪成 reflex 评估所需数据。 */
+/**
+ * 创建威胁检测输入。
+ *
+ * 架构意图：
+ * 1. 数据裁剪：将庞大的环境快照裁剪为仅包含威胁评估所需信息的精简对象（如 hostile_entities），提高评估效率。
+ */
 export function createThreatDetectorInput(snapshot: EnvironmentSnapshot): ThreatDetectorInput {
   return Object.freeze({
     snapshot,
@@ -279,6 +327,9 @@ export function createThreatDetectorInput(snapshot: EnvironmentSnapshot): Threat
   });
 }
 
+/**
+ * 选取威胁评估规则。
+ */
 function pickThreatRule(input: ThreatDetectorInput): {
   rule_id: ThreatRuleId;
   threat_level: ThreatLevel;
@@ -341,10 +392,11 @@ function pickThreatRule(input: ThreatDetectorInput): {
 /**
  * 评估环境快照中的威胁。
  *
+ * 架构职责：
+ * 1. 反射式威胁评估（Reflex Threat Assessment）：基于预设的安全规则，对环境风险进行毫秒级的判定。
+ *
  * 架构意图：
- * 它是 Bot 的“边缘计算”单元，负责快速判定环境风险。
- * 策略包括：生命值过低、着火、正在坠落、以及被敌对生物包围等。
- * 如果评估命中规则，将返回 ThreatAssessment，用于在运行时触发“反射式中断”。
+ * 1. 边缘风险控制：它是 Bot 的“脊髓反射”核心，负责识别生命值过低、坠落或被围攻等紧急情况，产出 ThreatAssessment 以触发运行时的反射式中断。
  *
  * @param input 包含快照和敌对实体的检测输入
  * @returns 威胁评估结果或 null
@@ -374,7 +426,9 @@ export function assessThreat(input: ThreatDetectorInput): ThreatAssessment | nul
   });
 }
 
-/** 创建 reflex 中断来源，用于把威胁评估结果直接交给 runtime。 */
+/**
+ * 创建 reflex 中断来源。
+ */
 export function createReflexInterruptSource(threat: ThreatAssessment): ReflexInterruptSource {
   return Object.freeze({
     type: "reflex",
@@ -424,10 +478,9 @@ export function createObservationWorldView(
 /**
  * 创建观测模块的只读边界。
  *
- * 架构意图：
- * 它是 Observation 模块的“对外接口”。通过封装 snapshotSource，
- * 它向上层提供了查询当前快照、主人快照和三维世界视图（World View）的标准化方法。
- * 这种封装确保了调用方始终只能获取到观测数据的快照副本，从而保证了线程/任务间的隔离。
+ * 作为 Observation 模块的对外统一接口，它通过封装 snapshotSource 向上层提供标准化查询能力。
+ * 这种设计确保了调用方（如 API 或执行引擎）始终只能获取到观测数据的快照副本，
+ * 从而在物理层面上保障了不同异步任务间的状态隔离，防止对底层协议对象的直接引用。
  *
  * @param snapshotSource 提供最新快照的源对象
  * @returns 完整的只读边界对象

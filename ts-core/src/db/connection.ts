@@ -177,9 +177,11 @@ export interface RedisRuntimeDependencies {
 /**
  * 基于纯配置创建 PostgreSQL 连接描述符。
  *
+ * 架构职责：
+ * 1. 契约绑定（Contract Binding）：验证数据库连接参数，并绑定业务 Schema 契约及必须安装的扩展元信息。
+ *
  * 架构意图：
- * 该函数负责验证数据库连接参数的合法性，并绑定业务 Schema 契约（PostgresSchemaContract）
- * 以及必须安装的数据库扩展（requiredExtensions）。
+ * 1. 静态描述：将物理连接参数与逻辑架构要求（Schema/Extensions）聚合为不可变的描述符，供资源工厂消费。
  *
  * @param config 基础设施配置
  * @returns 不可变的连接描述符
@@ -231,7 +233,15 @@ export function createPostgresConnectionDescriptor(
   });
 }
 
-/** 基于纯配置创建 Redis（缓存） 连接描述符。 */
+/**
+ * 基于纯配置创建 Redis（缓存） 连接描述符。
+ *
+ * 架构意图：
+ * 1. 策略锁定：强制将驱动限制为 ioredis，拓扑限制为独立节点（Standalone），并锁定 BullMQ 兼容模式。
+ *
+ * @param config Redis 配置
+ * @returns Redis 连接描述符
+ */
 export function createRedisConnectionDescriptor(config: RedisConfig): RedisConnectionDescriptor {
   assertNonEmptyString(config.url, "url");
 
@@ -243,7 +253,12 @@ export function createRedisConnectionDescriptor(config: RedisConfig): RedisConne
   });
 }
 
-/** 把 PostgreSQL（关系型数据库） 描述符转换为真实连接池参数。 */
+/**
+ * 把 PostgreSQL（关系型数据库） 描述符转换为真实连接池参数。
+ *
+ * 架构意图：
+ * 1. 运行时转换：将静态描述符投影为 pg 驱动所需的物理连接配置。
+ */
 export function createPostgresRuntimePoolConfig(
   descriptor: PostgresConnectionDescriptor,
 ): PostgresRuntimePoolConfig {
@@ -262,7 +277,12 @@ export function createPostgresRuntimePoolConfig(
   });
 }
 
-/** 创建 Redis（缓存） 运行时连接选项，锁死 BullMQ（任务队列） 兼容形态。 */
+/**
+ * 创建 Redis（缓存） 运行时连接选项。
+ *
+ * 架构意图：
+ * 1. 健壮性锁定：锁死 lazyConnect 和 maxRetriesPerRequest: null，确保连接行为符合 BullMQ 的严格要求，防止由于重试冲突导致的任务丢失。
+ */
 export function createRedisRuntimeClientOptions(): RedisRuntimeClientOptions {
   return Object.freeze({
     lazyConnect: true,
@@ -274,10 +294,12 @@ export function createRedisRuntimeClientOptions(): RedisRuntimeClientOptions {
 /**
  * 创建 PostgreSQL 真实运行时资源。
  *
- * 架构设计：
- * 1. 实例化：调用工厂创建物理连接池。
- * 2. 预热：通过 warmupPool 确保连接池可用。
- * 3. 包装：集成 Drizzle ORM 句柄，并封装 close 清理逻辑。
+ * 架构职责：
+ * 1. 物理资源实例化（Physical Resource Instantiation）：调用驱动工厂创建连接池，并注入 Drizzle ORM 句柄。
+ * 2. 探活与预热（Warmup）：确保在资源返回前物理连接已初步就绪。
+ *
+ * 架构意图：
+ * 1. 生命周期闭环：通过封装异步的 close 逻辑，确保数据库连接在系统停机时能被平滑释放，防止连接泄露。
  *
  * @param descriptor 连接描述符
  * @param dependencies 可注入的依赖
@@ -313,9 +335,11 @@ export async function createPostgresRuntimeResource(
 /**
  * 创建 Redis 真实运行时资源。
  *
- * 架构设计：
- * 1. 配置注入：强制锁定 lazyConnect 和 BullMQ 兼容性选项。
- * 2. 延迟连接：支持在资源创建后手动触发 connect。
+ * 架构职责：
+ * 1. 驱动配置适配（Driver Config Adaptation）：强制锁定 BullMQ 兼容性选项，创建 ioredis 客户端。
+ *
+ * 架构意图：
+ * 1. 统一 IO 接入：将不同的 Redis 用途（状态缓存、任务队列）收口在统一的资源生命周期管理之下。
  *
  * @param descriptor 连接描述符
  * @param dependencies 可注入的依赖
@@ -347,6 +371,9 @@ export async function createRedisRuntimeResource(
   }
 }
 
+/**
+ * 创建默认的 PostgreSQL 连接池。
+ */
 function createDefaultPostgresPool(config: PostgresRuntimePoolConfig): Pool {
   return new Pool({
     host: config.host,
@@ -363,10 +390,16 @@ function createDefaultPostgresPool(config: PostgresRuntimePoolConfig): Pool {
   });
 }
 
+/**
+ * 创建默认的 Drizzle 数据库句柄。
+ */
 function createDefaultDrizzleDatabase(pool: PostgresPoolLike): ReturnType<typeof drizzle> {
   return drizzle(pool as Pool);
 }
 
+/**
+ * 预热 PostgreSQL 连接池。
+ */
 async function warmupPostgresPool(pool: PostgresPoolLike): Promise<void> {
   if (pool.connect === undefined) {
     return;
@@ -376,10 +409,16 @@ async function warmupPostgresPool(pool: PostgresPoolLike): Promise<void> {
   borrowedClient?.release();
 }
 
+/**
+ * 关闭 PostgreSQL 连接池。
+ */
 async function closePostgresPool(pool: PostgresPoolLike): Promise<void> {
   await pool.end();
 }
 
+/**
+ * 创建默认的 Redis 客户端。
+ */
 function createDefaultRedisClient(
   descriptor: RedisConnectionDescriptor,
   options: RedisRuntimeClientOptions,
@@ -398,10 +437,16 @@ function createDefaultRedisClient(
   return new RedisConstructor(descriptor.url, redisOptions);
 }
 
+/**
+ * 连接 Redis 客户端。
+ */
 async function connectRedisClient(client: RedisClientLike): Promise<void> {
   await client.connect?.();
 }
 
+/**
+ * 关闭 Redis 客户端。
+ */
 async function closeRedisClient(client: RedisClientLike): Promise<void> {
   if (client.quit !== undefined) {
     await client.quit();

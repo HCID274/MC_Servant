@@ -98,6 +98,9 @@ export type GameChatIngressDecision =
       readonly candidate: GameChatIngressCandidate;
     };
 
+/**
+ * 校验主人绑定解析状态的一致性。
+ */
 function assertOwnerResolutionConsistency(input: {
   owner_id: string | null;
   owner_resolution: GameChatOwnerResolutionState;
@@ -111,6 +114,9 @@ function assertOwnerResolutionConsistency(input: {
   }
 }
 
+/**
+ * 创建游戏聊天入口候选对象。
+ */
 function createGameChatIngressCandidate(input: {
   bot_id: string;
   owner_id: string | null;
@@ -142,6 +148,12 @@ function createGameChatIngressCandidate(input: {
   });
 }
 
+/**
+ * 归一化并清洗游戏聊天命令内容。
+ *
+ * 架构意图：
+ * 1. 命令提取：识别并移除前缀（如 /svs），将原始聊天转换为纯净的指令文本。
+ */
 function normalizeGameChatCommandContent(content: string): string | null {
   const trimmedContent = content.trim();
 
@@ -155,13 +167,12 @@ function normalizeGameChatCommandContent(content: string): string | null {
 /**
  * 创建游戏聊天入口判定结果。
  *
+ * 架构职责：
+ * 1. 游戏入口安检（Game Ingress Screening）：接收物理游戏内的聊天输入，执行前缀过滤、身份匹配与指令清洗。
+ * 2. 入口状态分发：返回 accepted (进入主线), ignored (忽略闲聊), 或 rejected (报错提示) 状态。
+ *
  * 架构意图：
- * 它是游戏入口的“安检员”。它接收原始聊天输入，并根据以下策略做出判定：
- * 1. 绑定缺失 -> Rejected: 尚未建立主人绑定。
- * 2. 非主人发送 -> Ignored: 忽略其他玩家的消息。
- * 3. 缺少前缀 -> Ignored: 忽略非命令性质的普通聊天。
- * 4. 空命令 -> Rejected: 命令前缀后无有效内容。
- * 5. 合法命令 -> Accepted: 移除前缀并包装为标准消息信封。
+ * 1. 统一适配：作为 Mineflayer 原始事件到系统核心消息信封的适配器，确保只有合法的、来自主人的命令能够触发系统任务。
  *
  * @param input 包含 Bot ID, 主人绑定状态, 发送者 ID, 消息内容及时间戳的输入
  * @returns 判定结果（Accepted / Ignored / Rejected）

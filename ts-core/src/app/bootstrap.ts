@@ -443,7 +443,16 @@ export interface AppBootstrapContract<TBotId extends string = string> {
   readonly readiness: readonly AppReadinessDescriptor[];
 }
 
-/** 创建应用装配层的外部认证初始配置。 */
+/**
+ * 创建应用装配层的外部认证初始配置。
+ *
+ * 架构意图：
+ * 1. 提供外部认证（如 Minecraft 账户登录）在引导阶段的静态视图。
+ * 2. 预判认证入口和密钥注入状态，辅助引导层决定是否需要暂停启动流程等待人工干预。
+ *
+ * @param input 包含环境变量或 Bot 配置的可选输入
+ * @returns 初始认证配置对象
+ */
 export function createAppExternalAuthInitialConfig(
   input: {
     env?: DataConfigEnvironment;
@@ -455,7 +464,16 @@ export function createAppExternalAuthInitialConfig(
   return createAppExternalAuthInitialConfigFromRuntimeState(runtimeState);
 }
 
-/** 从应用环境中解析一次性外部认证明文密钥绑定，结果仅供运行时启动动作使用。 */
+/**
+ * 从应用环境中解析一次性外部认证明文密钥绑定。
+ *
+ * 架构意图：
+ * 1. 将明文密钥（如账户 Token 或密码）的提取逻辑封装在引导层。
+ * 2. 结果仅供运行时启动动作（如 Mineflayer 登录）瞬间使用，不在配置对象中长期留存。
+ *
+ * @param input 包含环境变量或 Bot 配置的输入
+ * @returns 密钥绑定对象，如果未找到则返回 undefined
+ */
 export function createAppExternalAuthSecretFromEnvironment(input: {
   env?: DataConfigEnvironment;
   botConfig?: unknown;
@@ -464,13 +482,16 @@ export function createAppExternalAuthSecretFromEnvironment(input: {
 }
 
 /**
- * 创建应用装配结果，用于把现有公开契约收口为单进程组合根。
+ * 创建应用引导契约。
  *
- * 架构设计：
- * 该函数是整个应用的“大脑装配点”，它负责：
- * 1. 验证基础输入的合法性（Bot ID, 时间戳）。
- * 2. 依次初始化配置、生命周期计划、数据库描述、运行时骨架和诊断目录。
- * 3. 将分散的子系统对象聚合成一个不可变的 AppBootstrapContract，供启动流程使用。
+ * 架构职责：
+ * 1. 验证基础引导参数（Bot ID, 启动时间戳）的合法性。
+ * 2. 依次聚合配置、生命周期计划、数据库描述、运行时骨架和诊断目录。
+ * 3. 生成一个不可变的、且包含所有子系统定义的“组合根契约（Composition Root Contract）”。
+ *
+ * 架构意图：
+ * 1. 将“定义”与“实例创建”解耦，确保系统在没有任何真实 I/O 资源被分配前，就能完成所有静态结构的校验。
+ * 2. 为测试提供一个完整的“声明式”系统快照，便于在不启动真实服务的情况下进行验证。
  *
  * @param input 应用引导输入
  * @returns 完整的引导契约对象
@@ -655,6 +676,15 @@ export async function closeAppRuntimeResources<TBotId extends string>(input: {
 /**
  * 创建运行时核心资源：observation（观测） 缓存、Mineflayer（Minecraft 协议客户端） 传输与 BotActor（机器人执行代理）。
  *
+ * 架构职责：
+ * 1. 核心链路建立：初始化 Mineflayer 协议传输层和事件驱动的观测缓存。
+ * 2. 状态机激活：创建并启动 BotActor，将其注入初始认证计划。
+ * 3. 异步就绪：确保核心组件（特别是协议连接）在函数返回前已进入预期的就绪状态。
+ *
+ * 架构意图：
+ * 1. 构建系统的“中枢神经系统”，连接物理协议层与逻辑执行层。
+ * 2. 封装复杂的异步启动顺序，为上层提供一个原子的核心资源包。
+ *
  * @param bootstrap 引导契约
  * @param dependencies 可注入的运行时核心依赖
  * @returns 已完成最小启动闭环的运行时核心资源
@@ -725,6 +755,10 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
 /**
  * 按应用约定关闭运行时核心资源。
  *
+ * 架构意图：
+ * 1. 严格遵循关闭顺序（如先停状态机，再断开协议连接），防止挂起的事件处理。
+ * 2. 优雅释放 Mineflayer 占用的套接字（Socket）资源。
+ *
  * @param input 运行时核心资源与目录信息
  */
 export async function closeAppRuntimeCoreResources<TBotId extends string>(input: {
@@ -760,6 +794,15 @@ export async function closeAppRuntimeCoreResources<TBotId extends string>(input:
 
 /**
  * 创建服务层运行时资源。
+ *
+ * 架构职责：
+ * 1. 消息路由绑定：建立 HTTP 接口网关，并将入站消息转换为 BullMQ 异步任务。
+ * 2. 队列初始化：初始化 Conversation 任务队列，实现请求的持久化削峰。
+ * 3. 健康状态关联：将接口层的健康检查输出与底层 BotActor 的实时状态动态绑定。
+ *
+ * 架构意图：
+ * 1. 定义应用的“对客界面（Fronting）”，统一处理入站 IO 协议映射。
+ * 2. 实现生产/消费模式的解耦，确保 HTTP 请求不会因为后端 logic 处理缓慢而超时。
  *
  * @param bootstrap 引导契约
  * @param infrastructure 已创建的基础设施资源
@@ -858,6 +901,10 @@ export async function createAppRuntimeServices<TBotId extends string>(
 /**
  * 按服务层约定顺序关闭 Fastify（接口网关） 与 BullMQ（任务队列）。
  *
+ * 架构意图：
+ * 1. 先关闭入站流量（HTTP Server），再停止处理逻辑（Workers），确保进行中的任务有机会完成（Drain）。
+ * 2. 统一错误汇总清理，防止残留的监听器导致进程无法正常退出。
+ *
  * @param input 服务资源与目录信息
  */
 export async function closeAppRuntimeServices<TBotId extends string>(input: {
@@ -888,6 +935,15 @@ export async function closeAppRuntimeServices<TBotId extends string>(input: {
 
 /**
  * 创建完整应用进程资源。
+ *
+ * 架构职责：
+ * 1. 级联初始化：按照 基础设施 -> 核心运行时 -> 服务层 的拓扑顺序依次拉起整个应用。
+ * 2. 根级生命周期控制：管理整个单进程实例的启动与原子化销毁。
+ * 3. 错误传播管理：任何环节的失败都将触发已创建资源的自动回滚清理。
+ *
+ * 架构意图：
+ * 1. 它是真正的“一键拉起”入口，将所有底层的复杂装配隐藏在单一的 Promise 之下。
+ * 2. 提供最高级别的资源隔离保障，确保进程级别的 IO 资源始终处于受控状态。
  *
  * @param bootstrap 引导契约
  * @param dependencies 基础设施与服务层依赖
@@ -1020,6 +1076,13 @@ function resolveAppExternalAuthResolution(
   });
 }
 
+/**
+ * 从运行时状态创建外部认证初始配置。
+ *
+ * 架构意图：
+ * 1. 状态投影：将复杂的 ExternalAuthState 转换为引导层专用的简化配置视图。
+ * 2. 入口锁定：在引导阶段就确定认证操作的物理入口（如聊天命令）。
+ */
 function createAppExternalAuthInitialConfigFromRuntimeState(
   runtimeState: ExternalAuthState,
 ): AppExternalAuthInitialConfig {
@@ -1030,6 +1093,13 @@ function createAppExternalAuthInitialConfigFromRuntimeState(
   });
 }
 
+/**
+ * 为运行时核心组件创建外部认证状态。
+ *
+ * 架构意图：
+ * 1. 依赖解耦：将引导契约中的状态重新包装为运行时所需的领域对象。
+ * 2. 运行时校验：在创建核心组件前，确保“已认证”或“待认证”状态下必须持有明文密钥。
+ */
 function createAppRuntimeCoreExternalAuth(
   bootstrap: AppBootstrapContract,
   dependencies: AppRuntimeCoreResourceDependencies,
@@ -1067,6 +1137,12 @@ function createAppRuntimeCoreExternalAuth(
   }
 }
 
+/**
+ * 创建应用层使用的运行时骨架契约。
+ *
+ * 架构意图：
+ * 1. 视图脱敏：将底层的 RuntimeScaffold 投影为应用层可见的 Contract 对象，隐藏不必要的实现细节。
+ */
 function createAppRuntimeScaffoldContract(scaffold: RuntimeScaffold): AppRuntimeScaffoldContract {
   return Object.freeze({
     defaultStatus: scaffold.defaultStatus,
@@ -1109,6 +1185,13 @@ function createAppResourceDirectory<TBotId extends string>(input: {
   });
 }
 
+/**
+ * 创建运行时核心资源目录。
+ *
+ * 架构意图：
+ * 1. 资源定义：显式配置观测模式（事件驱动缓存）和 Mineflayer 连接参数。
+ * 2. 顺序管理：定义核心资源（观测、传输、代理）的生命周期拓扑顺序。
+ */
 function createAppRuntimeCoreDirectory<TBotId extends string>(input: {
   botId: TBotId;
   runtimeScaffold: RuntimeScaffold;
@@ -1143,6 +1226,12 @@ function createAppRuntimeCoreDirectory<TBotId extends string>(input: {
   });
 }
 
+/**
+ * 创建应用默认的 HTTP 监听配置。
+ *
+ * 架构意图：
+ * 1. 边界设定：固定内网监听地址与端口，作为单进程服务的标准接入点。
+ */
 function createAppHttpListenOptions(): InterfaceServerListenOptions {
   return Object.freeze({
     host: "0.0.0.0",
@@ -1150,6 +1239,13 @@ function createAppHttpListenOptions(): InterfaceServerListenOptions {
   });
 }
 
+/**
+ * 创建服务层资源目录。
+ *
+ * 架构意图：
+ * 1. 服务拓扑：关联 BullMQ 队列目录与 Fastify 路由定义。
+ * 2. 生命周期规划：定义服务层资源的物理拉起与销毁顺序。
+ */
 function createAppServiceDirectory<TBotId extends string>(input: {
   workers: WorkerQueueCatalog<TBotId>;
   httpListen: InterfaceServerListenOptions;
@@ -1169,6 +1265,12 @@ function createAppServiceDirectory<TBotId extends string>(input: {
   });
 }
 
+/**
+ * 创建应用默认的接口状态快照。
+ *
+ * 架构意图：
+ * 1. 初始投影：在 BotActor 尚未完全活跃或快照不可用时，提供一个基于引导契约的保底状态视图。
+ */
 function createAppDefaultInterfaceStatusSnapshot<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
   runtimeCore?: AppRuntimeCoreResources<TBotId>,
@@ -1184,6 +1286,7 @@ function createAppDefaultInterfaceStatusSnapshot<TBotId extends string>(
   });
 }
 
+/** 创建带有应用执行计划的外部认证契约。 */
 function createAppExternalAuthPlanContract(
   plan: RuntimeScaffold["externalAuthPlan"],
 ): AppExternalAuthPlanContract {
@@ -1222,6 +1325,7 @@ function createAppExternalAuthPlanContract(
   }
 }
 
+/** 提取数据层机器人配置。 */
 function selectDataBotConfig(input: unknown): unknown {
   const botConfig = asOptionalPlainObject(input, "botConfig");
 
@@ -1242,6 +1346,7 @@ function selectDataBotConfig(input: unknown): unknown {
   return Object.keys(dataBotConfig).length === 0 ? undefined : dataBotConfig;
 }
 
+/** 解析系统必需的认证入口点配置。 */
 function resolveRequiredAuthEntrypoint(
   env: DataConfigEnvironment,
   authConfig: Readonly<Record<string, unknown>> | undefined,
@@ -1258,6 +1363,7 @@ function resolveRequiredAuthEntrypoint(
   return entrypointValue;
 }
 
+/** 从环境及配置对象中解析外部认证所需密钥。 */
 function resolveExternalAuthSecretBinding(
   env: DataConfigEnvironment,
   authConfig: Readonly<Record<string, unknown>> | undefined,
@@ -1301,6 +1407,12 @@ function resolveExternalAuthSecretBinding(
   return undefined;
 }
 
+/**
+ * 推断外部认证密钥的来源。
+ *
+ * 架构意图：
+ * 1. 自动溯源：根据配置项的优先级，判定密钥是从环境变量还是 Bot 配置文件中读取。
+ */
 function inferSecretSource(
   authConfig: Readonly<Record<string, unknown>> | undefined,
 ): "env" | "bot_config" | null {
@@ -1315,6 +1427,12 @@ function inferSecretSource(
   return "env";
 }
 
+/**
+ * 推断外部认证密钥的具体引用标识。
+ *
+ * 架构意图：
+ * 1. 诊断支持：提供具体的文件键名或环境变量名，用于在认证失败时进行精准提示。
+ */
 function inferSecretReference(
   authConfig: Readonly<Record<string, unknown>> | undefined,
 ): string | null {
@@ -1332,6 +1450,12 @@ function inferSecretReference(
   return "MC_EXTERNAL_AUTH_SECRET";
 }
 
+/**
+ * 将未知输入转换为可选的普通对象。
+ *
+ * 架构意图：
+ * 1. 类型防御：在解析外部配置时提供第一层类型校验。
+ */
 function asOptionalPlainObject(
   value: unknown,
   fieldName: string,
@@ -1347,6 +1471,12 @@ function asOptionalPlainObject(
   return value as Record<string, unknown>;
 }
 
+/**
+ * 从环境变量读取可选布尔值。
+ *
+ * 架构意图：
+ * 1. 宽容解析：支持 1/true/yes/on 等多种布尔表达方式。
+ */
 function readOptionalBoolean(env: DataConfigEnvironment, fieldName: string): boolean | undefined {
   const value = env[fieldName];
 
@@ -1367,6 +1497,9 @@ function readOptionalBoolean(env: DataConfigEnvironment, fieldName: string): boo
   throw new Error(`${fieldName} must be a boolean string`);
 }
 
+/**
+ * 从普通对象读取可选布尔字段。
+ */
 function readOptionalBooleanField(value: unknown, fieldName: string): boolean | undefined {
   if (value === undefined) {
     return undefined;
@@ -1379,6 +1512,9 @@ function readOptionalBooleanField(value: unknown, fieldName: string): boolean | 
   return value;
 }
 
+/**
+ * 内部辅助函数，读取可选环境变量并确保非空。
+ */
 function readOptionalEnvValue(env: DataConfigEnvironment, fieldName: string): string | undefined {
   const value = env[fieldName];
 
@@ -1395,10 +1531,16 @@ function readOptionalEnvValue(env: DataConfigEnvironment, fieldName: string): st
   return normalizedValue;
 }
 
+/**
+ * 从环境变量读取可选字符串。
+ */
 function readOptionalString(env: DataConfigEnvironment, fieldName: string): string | undefined {
   return readOptionalEnvValue(env, fieldName);
 }
 
+/**
+ * 从环境变量读取可选整数并校验边界。
+ */
 function readOptionalInteger(
   env: DataConfigEnvironment,
   fieldName: string,
@@ -1434,6 +1576,9 @@ function readOptionalInteger(
   return integerValue;
 }
 
+/**
+ * 从对象中读取可选字符串字段。
+ */
 function readOptionalStringField(value: unknown, fieldName: string): string | undefined {
   if (value === undefined) {
     return undefined;

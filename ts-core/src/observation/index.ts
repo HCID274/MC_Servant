@@ -9,7 +9,13 @@
 
 import type { ModuleBoundary } from "../domain/contracts.js";
 
-/** observation 模块边界声明。 */
+/**
+ * observation 模块边界声明。
+ *
+ * 架构意图：
+ * 1. 边界定义：明确观测模块在环境快照定义、观测边界抽象及威胁评估三个维度的核心职责。
+ * 2. 拓扑管理：作为系统级模块清单的一项，定义其在全局架构中的定位。
+ */
 export const observationModuleBoundary = {
   moduleName: "observation",
   responsibilities: ["统一 Mineflayer 与 JAR Bridge 的只读快照契约", "提供威胁评估与只读观察边界"],

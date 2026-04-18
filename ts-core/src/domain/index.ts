@@ -10,7 +10,13 @@
 
 import type { ModuleBoundary } from "./contracts.js";
 
-/** domain 模块边界声明。 */
+/**
+ * domain 模块边界声明。
+ *
+ * 架构意图：
+ * 1. 边界定义：明确领域模块在核心类型定义、不变量校验及基础契约三个维度的核心职责。
+ * 2. 拓扑管理：作为系统级模块清单的一项，定义其在全局架构中的定位。
+ */
 export const domainModuleBoundary = {
   moduleName: "domain",
   responsibilities: [

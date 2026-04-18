@@ -367,8 +367,11 @@ export const mcServantTables = {
 /**
  * 生成 SQL CHECK 约束。
  *
+ * 架构职责：
+ * 1. 数据完整性守卫（Data Integrity Guard）：在数据库引擎层面强制执行业务枚举值的合法性校验。
+ *
  * 架构意图：
- * 在数据库层面强制文本列的取值范围，弥补 Drizzle ORM 在特定 pg 版本下对文本枚举校验的不足。
+ * 1. 弥补 ORM 局限：弥补 Drizzle ORM 在特定 PostgreSQL 版本下对文本枚举校验的不足，确保脏数据无法进入系统。
  */
 function checkInArray<TColumnName extends string>(
   name: string,

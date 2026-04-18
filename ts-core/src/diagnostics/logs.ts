@@ -24,12 +24,18 @@ import {
   type TaskJsonlLine,
 } from "./contracts.js";
 
+/**
+ * 校验数值是否为正数或零。
+ */
 function assertPositiveNumber(value: number, fieldName: string): void {
   if (!Number.isFinite(value) || value < 0) {
     throw new Error(`${fieldName} must be a non-negative number`);
   }
 }
 
+/**
+ * 校验 JSONL 错误快照的完整性。
+ */
 function assertJsonlErrorSnapshot(value: JsonlErrorSnapshot | undefined): void {
   if (!value) {
     return;
@@ -46,9 +52,11 @@ function assertJsonlErrorSnapshot(value: JsonlErrorSnapshot | undefined): void {
 /**
  * 创建诊断通道目录。
  *
+ * 架构职责：
+ * 1. 诊断能力公示（Capability Publicizing）：聚合所有支持的诊断通道及其保留期、引用字段元数据。
+ *
  * 架构意图：
- * 聚合所有支持的诊断通道（tasks, sandbox, llm）的元数据，包括其保留期（retention_days）
- * 和允许的持久化引用字段（ref_fields）。这为上层提供了统一的诊断能力视图。
+ * 1. 统一视图：为引导层（Bootstrap）提供一站式的诊断策略清单，确保系统对各通道的存储限制有全局认知。
  *
  * @returns 不可变的诊断通道目录
  */
@@ -72,7 +80,12 @@ export function createDiagnosticsCatalog(): Readonly<{
   });
 }
 
-/** 读取单个 diagnostics（诊断） 通道对应的数据目录策略。 */
+/**
+ * 获取诊断通道对应的数据目录策略。
+ *
+ * 架构意图：
+ * 1. 策略透传：作为 data/logs 策略定义的出口，供运行时逻辑快速获取目录规则。
+ */
 export function getDiagnosticsChannelPolicy(channel: DiagnosticLogChannel): JsonlDirectoryPolicy {
   return JSONL_DIRECTORY_POLICIES[channel];
 }
@@ -80,10 +93,11 @@ export function getDiagnosticsChannelPolicy(channel: DiagnosticLogChannel): Json
 /**
  * 校验诊断日志引用的合法性。
  *
- * 架构约束：
- * 1. 字段权限：确保所使用的引用字段（log_ref/code_ref）属于对应的通道策略。
- * 2. 路径隔离：强制要求路径必须以对应通道名开头（如 tasks/）。
- * 3. 格式规范：log_ref 必须以 .jsonl 结尾，code_ref 必须以 .code.ts 结尾。
+ * 架构职责：
+ * 1. 存储安全审计（Storage Auditing）：强制执行通道间的物理路径隔离与文件后缀规范。
+ *
+ * 架构意图：
+ * 1. 越权防御：确保 tasks 通道无法写入 sandbox 路径，log_ref 必须以 .jsonl 结尾，从协议层面拦截潜在的目录穿越或文件伪造风险。
  *
  * @param input 包含通道、引用字段和待校验值的输入
  */
@@ -115,7 +129,12 @@ export function assertDiagnosticStorageRef(input: {
   }
 }
 
-/** 创建 tasks（任务执行） 通道的日志引用。 */
+/**
+ * 创建任务执行通道的日志引用。
+ *
+ * 架构意图：
+ * 1. 路径标准化：生成符合 tasks/date/jobId.jsonl 规则的物理路径引用。
+ */
 export function createTaskLogRef(input: { date: string; job_id: string }): string {
   return createDatedStorageRef({
     directory: "tasks",
@@ -124,7 +143,9 @@ export function createTaskLogRef(input: { date: string; job_id: string }): strin
   });
 }
 
-/** 创建 sandbox（沙箱执行） 通道的 JSONL（结构化日志） 引用。 */
+/**
+ * 创建沙箱执行通道的 JSONL 引用。
+ */
 export function createSandboxLogRef(input: { date: string; job_id: string }): string {
   return createDatedStorageRef({
     directory: "sandbox",
@@ -133,7 +154,9 @@ export function createSandboxLogRef(input: { date: string; job_id: string }): st
   });
 }
 
-/** 创建 sandbox（沙箱执行） 通道的原始代码引用。 */
+/**
+ * 创建沙箱执行通道的原始代码引用。
+ */
 export function createSandboxCodeRef(input: { date: string; job_id: string }): string {
   return createDatedStorageRef({
     directory: "sandbox",
@@ -142,7 +165,9 @@ export function createSandboxCodeRef(input: { date: string; job_id: string }): s
   });
 }
 
-/** 创建 llm（大语言模型） 通道的调用日志引用。 */
+/**
+ * 创建 LLM 通道的调用日志引用。
+ */
 export function createLlmLogRef(input: {
   date: string;
   stage: "triage" | "chat" | "plan";
@@ -158,11 +183,12 @@ export function createLlmLogRef(input: {
 /**
  * 创建任务执行通道的只读日志行。
  *
+ * 架构职责：
+ * 1. 日志行稳压工厂（Stabilizing Factory）：在日志最终写入前，对各个事件类型的内部字段进行运行时校验。
+ *
  * 架构意图：
- * 作为一个“稳压工厂”，它负责在日志行被最终处理前，对其内部字段进行严格校验：
- * 1. 任务元数据（Job ID, Epoch）校验。
- * 2. 步骤逻辑一致性校验（如 err 状态必须携带错误对象）。
- * 3. 时序元信息校验。
+ * 1. 类型安全保障：确保 step 类型的日志行必须包含 act (Action)，且 err 状态必须携带完整的错误快照。
+ * 2. 状态完整性：校验完成（Completed）或中断（Interrupted）时的元数据（步数、耗时）是否完整。
  *
  * @param input 原始日志行对象
  * @returns 经过校验并克隆的只读日志行
@@ -211,10 +237,11 @@ export function createTaskLogLine<TAction extends string, TLine extends TaskJson
 /**
  * 创建沙箱执行通道的只读日志行。
  *
+ * 架构职责：
+ * 1. 生命周期校验：负责校验沙箱从预检（Precheck）到完成（Done）各个阶段的日志行。
+ *
  * 架构意图：
- * 负责校验沙箱执行周期的各个阶段（precheck, transpile, facade_call 等）：
- * 1. 阶段必填项校验（如 precheck 失败必须带 violation）。
- * 2. 耗时统计合法性校验。
+ * 1. 阶段必填项约束：强制要求 precheck 失败时必须携带违反规则的说明（violation），transpile 失败必须带错误对象。
  *
  * @param input 原始沙箱日志行
  * @returns 经过校验的只读日志行
@@ -269,8 +296,7 @@ export function createSandboxLogLine<TLine extends SandboxJsonlLine>(input: TLin
  * 创建大语言模型通道的只读日志行。
  *
  * 架构意图：
- * 负责校验 LLM 调用的关键元数据（模型名, Token 数, 耗时, 角色内容等），
- * 确保调用流水线的诊断信息完整。
+ * 1. 调用元数据完整性：强制校验 LLM 调用时的模型名、Token 数及耗时统计，确保审计信息足以支撑成本分析和性能监控。
  *
  * @param input 原始 LLM 日志行
  * @returns 经过校验的只读日志行

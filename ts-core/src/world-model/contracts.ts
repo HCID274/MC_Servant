@@ -1,11 +1,10 @@
 /**
  * 世界模型契约与资源查询协议。
  *
- * 架构职责：
  * 1. 资源抽象：定义 ResourceProfile 和 ResourceClusterSummary，将底层方块数据抽象为高层的“资源”概念。
- * 2. 空间语义：定义 ResourceBlockCandidate，包含位置、距离、可见性（is_exposed）及启发式评分（score）。
- * 3. 读写分离：通过 WorldModelQueryBoundary 和 WorldModelRefreshBoundary 接口，明确区分对认知的只读查询与对认知的刷新/更新操作。
- * 4. 决策支持：定义 BestResourceClusterResult 和 CandidateBlockSelectionResult，为 Bot 决定去哪里采集资源提供结构化参考。
+ * 2. 空间语义：定义 ResourceBlockCandidate，包含位置、距离、可见性及启发式评分。
+ * 3. 读写分离：通过 QueryBoundary 和 RefreshBoundary 接口，明确区分对认知的只读查询与更新操作。
+ * 4. 决策支持：定义结果结构，为 Bot 决定去哪里采集资源提供结构化参考。
  */
 
 import type { SnapshotPosition } from "../observation/contracts.js";

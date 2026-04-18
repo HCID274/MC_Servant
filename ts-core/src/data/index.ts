@@ -13,7 +13,13 @@ export * from "./contracts.js";
 export * from "./logs.js";
 export * from "./schema.js";
 
-/** data 模块边界声明。 */
+/**
+ * data 模块边界声明。
+ *
+ * 架构意图：
+ * 1. 边界定义：明确数据模块在持久化（Schema）、存储引用（Refs）及配置管理（Config）三个维度的核心职责。
+ * 2. 拓扑管理：作为系统级模块清单的一项，定义其在全局架构中的定位。
+ */
 export const dataModuleBoundary = {
   moduleName: "data",
   responsibilities: [

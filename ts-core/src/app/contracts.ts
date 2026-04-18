@@ -98,8 +98,9 @@ export interface AppReadinessDescriptor {
 /**
  * 创建一个不可变的生命周期步骤对象。
  *
- * 架构设计：
- * 该函数用于标准化系统启动或关闭过程中的每一个独立步骤，确保配置信息的完整性。
+ * 架构意图：
+ * 1. 标准化：统一生命周期（启动/关闭）中各独立原子操作的元数据格式。
+ * 2. 不可变性：通过 Object.freeze 确保生命周期定义在运行时不会被篡改。
  *
  * @param input 步骤配置项
  * @returns 冻结后的生命周期步骤
@@ -124,9 +125,9 @@ function createLifecycleStep<TName extends AppLifecycleStepName>(input: {
  * 校验生命周期阶段内的步骤顺序是否合法。
  *
  * 架构意图：
- * 1. 阶段一致性：确保所有步骤都处于其声明的阶段（如 startup 或 shutdown）。
- * 2. 依赖拓扑校验：利用数组索引判断依赖顺序。一个步骤的所有依赖必须在数组中排在其之前。
- * 3. 健壮性：防止生命周期配置中出现循环依赖或缺失依赖。
+ * 1. 拓扑正确性：验证生命周期步骤数组的物理顺序是否满足 depends_on 声明的依赖关系。
+ * 2. 边界保护：确保 startup 阶段不包含 shutdown 步骤，反之亦然。
+ * 3. 早期发现：在应用引导（Bootstrap）阶段就拦截潜在的配置错误。
  *
  * @param steps 生命周期步骤列表
  * @param phase 目标生命周期阶段
@@ -165,13 +166,27 @@ function assertLifecyclePhaseOrder(
   }
 }
 
-/** 校验生命周期计划顺序，用于锁死启动 / 关闭序列不会倒置。 */
+/**
+ * 校验完整的应用生命周期计划顺序。
+ *
+ * 架构意图：
+ * 1. 全局守卫：确保整个系统的启动和关闭序列在逻辑上是自洽且安全的。
+ */
 export function assertAppLifecyclePlan(plan: AppLifecyclePlan): void {
   assertLifecyclePhaseOrder(plan.startup, "startup");
   assertLifecyclePhaseOrder(plan.shutdown, "shutdown");
 }
 
-/** 创建默认的应用装配层生命周期计划。 */
+/**
+ * 创建默认的应用装配层生命周期计划。
+ *
+ * 架构职责：
+ * 1. 序列定义：硬编码系统启动（从加载配置到广播 Bot Ready）和关闭（从中断运行到释放数据库连接）的标准顺序。
+ * 2. 依赖声明：显式指定各步骤间的前置约束（如必须先 prepare_redis 才能 start_workers）。
+ *
+ * 架构意图：
+ * 1. 提供系统的“启动蓝图”，使复杂的初始化过程变得透明且可预测。
+ */
 export function createAppLifecyclePlan(): AppLifecyclePlan {
   const startup = Object.freeze([
     createLifecycleStep({
@@ -313,7 +328,13 @@ export function createAppLifecyclePlan(): AppLifecyclePlan {
   return plan;
 }
 
-/** 创建应用装配层的就绪 / 依赖目录。 */
+/**
+ * 创建应用装配层的就绪 / 依赖目录。
+ *
+ * 架构意图：
+ * 1. 依赖可视化：以声明式的方式展示各子系统间的依赖拓扑。
+ * 2. 状态定义：明确每个子系统进入“就绪”状态的具体判定标准。
+ */
 export function createAppReadinessCatalog(): readonly AppReadinessDescriptor[] {
   return Object.freeze([
     Object.freeze({

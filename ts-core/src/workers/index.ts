@@ -1,16 +1,14 @@
 /**
  * 异步工作线程与任务队列模块。
  *
- * 架构职责：
- * 1. 队列管理：定义并维护对话（Conversation）、执行（Bot/Exec）和摘要（Brain）三类任务队列的命名规范与物理目录。
- * 2. Worker 契约：定义各类工作线程的输入任务包（Worker Task）与输出动作（Worker Actions）结构，收口跨线程通信协议。
- * 3. 路由桥接：负责将对话层的路由决策（如 Cancel, Modify）桥接为运行时可识别的中断信号（Interrupt Signal）。
- * 4. 任务流转：规定任务如何在不同 Worker 之间流转，支撑从“收到消息”到“执行动作”再到“结果总结”的完整异步链路。
+ * 1. 队列管理：定义对话、执行和摘要三类任务队列的命名规范与物理目录，实现跨线程任务调度。
+ * 2. 交互协议：收口 Worker 的输入包与输出动作契约，并负责将对话决策桥接为运行时的中断信号。
+ * 3. 链路流转：规定任务在不同 Worker 间的流转逻辑，支持从入站消息到动作执行再到结果总结的全异步闭环。
  */
 
 import type { ModuleBoundary } from "../domain/contracts.js";
 
-/** workers（工作线程） 模块边界声明。 */
+/** workers 模块边界声明，确立工作线程在队列命名、跨线程协议及中断桥接方面的架构定位。 */
 export const workersModuleBoundary = {
   moduleName: "workers",
   responsibilities: [

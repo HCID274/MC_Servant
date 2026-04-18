@@ -38,6 +38,9 @@ export interface ServerBridgeEventEnvelope
   readonly payload?: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * 克隆只读载荷。
+ */
 function cloneReadonlyPayload(
   payload: Readonly<Record<string, unknown>> | undefined,
 ): Readonly<Record<string, unknown>> | undefined {
@@ -51,10 +54,11 @@ function cloneReadonlyPayload(
 /**
  * 创建服务端桥接事件包。
  *
+ * 架构职责：
+ * 1. 外部事件适配（External Event Adaptation）：将来自外部插件或系统的非结构化事件转化为接口层标准的事件信封。
+ *
  * 架构意图：
- * 作为一个“适配器”，它将来自外部系统（如 Server Bridge）的非结构化事件
- * 转化为接口层标准的 InterfaceEventEnvelope。它强制要求 event_type 非空，
- * 并对可选的 payload 执行克隆，确保跨边界传递的数据安全。
+ * 1. 观测语义保障：显式通过 runtime_effect: "observe_only" 声明该入口仅用于数据观测，不具备触发核心逻辑状态写操作的权限，从而在接口层建立一道安全防线。
  *
  * @param input 包含 Bot ID, 事件 ID, 事件类型, 时间戳及可选载荷的输入
  * @returns 标准化的只读桥接事件包

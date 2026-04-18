@@ -1,17 +1,17 @@
 /**
  * 运行时与 BotActor 核心模块。
  *
- * 架构职责：
- * 1. 状态机驱动：定义 Bot 的核心运行时状态（BotStatus）及其流转逻辑（State Machine），管理从初始化到执行、中断及关闭的完整生命周期。
- * 2. 任务调度：统一运行时任务（ExecJob）的包装、优先级管理及异步执行契约。
- * 3. 认证管理：处理与外部系统（如 Minecraft 服务器）的认证状态、密钥绑定及执行计划。
- * 4. 事件总线契约：定义运行时生命周期事件（Lifecycle Events），为持久化和实时推送提供标准化的事件载荷。
- * 5. 中断协议：定义并实现中断信号（Interrupt Signal）机制，支持任务的优雅中断与强制抢占。
+ * 该模块是系统的执行中枢，负责定义和驱动 Bot 的核心生命周期，包括状态机流转、异步任务调度、外部认证管理以及标准化的事件总线。
+ * 它通过定义严谨的中断协议（Interrupt Protocol）和生命周期事件（Lifecycle Events），确保机器人在复杂环境下的行为可预测且具备审计追踪能力。
  */
 
 import type { ModuleBoundary } from "../domain/contracts.js";
 
-/** runtime 模块边界声明。 */
+/**
+ * runtime 模块边界声明。
+ *
+ * 该声明确立了运行时模块在系统全局架构中的定位，主要负责承载 BotActor 的执行态边界、状态流转契约、任务包装标准及中断信号协议。
+ */
 export const runtimeModuleBoundary = {
   moduleName: "runtime",
   responsibilities: [

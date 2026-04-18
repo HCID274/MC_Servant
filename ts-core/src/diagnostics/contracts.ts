@@ -209,6 +209,12 @@ export type TaskLifecycleSummaryJsonlLine =
   | TaskFailedSummaryJsonlLine
   | TaskInterruptedSummaryJsonlLine;
 
+/**
+ * 递归冻结诊断数据。
+ *
+ * 架构职责：
+ * 1. 数据稳定性保障（Data Stability Guard）：确保生成的诊断对象（日志行、错误快照等）在创建后不可变更。
+ */
 function freezeDiagnosticValue<T>(value: T): T {
   if (Array.isArray(value)) {
     return Object.freeze(value.map((item) => freezeDiagnosticValue(item))) as T;
@@ -227,10 +233,11 @@ function freezeDiagnosticValue<T>(value: T): T {
 /**
  * 创建任务执行通道的生命周期摘要行。
  *
+ * 架构职责：
+ * 1. 运行时到日志的映射（Runtime-to-Log Mapping）：作为运行时生命周期事件到 JSONL 持久化摘要行的核心转换入口。
+ *
  * 架构意图：
- * 它是运行时生命周期事件到 JSONL 持久化行的“翻译官”。
- * 针对 Started, Completed, Failed, Interrupted 四种状态，分别映射为不同的日志载荷。
- * 尤其在 Failed 和 Interrupted 状态下，它会额外提取错误信息或中断来源。
+ * 1. 结构化摘要：针对 Started, Completed, Failed, Interrupted 四种状态，分别提取关键元数据（耗时、步数、错误原因），生成标准化的摘要载荷，支持后续的审计分析。
  *
  * @param input 包含 Unix 时间戳和生命周期事件的输入
  * @returns 格式化后的 JSONL 摘要行

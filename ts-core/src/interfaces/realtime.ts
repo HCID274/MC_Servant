@@ -25,6 +25,9 @@ export interface RealtimeEventEnvelope<TType extends RuntimeEventType = RuntimeE
   readonly payload?: RuntimeEventLogEntry["payload"];
 }
 
+/**
+ * 克隆实时事件载荷。
+ */
 function cloneRealtimePayload(
   payload: RuntimeEventLogEntry["payload"] | undefined,
 ): RuntimeEventLogEntry["payload"] | undefined {
@@ -35,6 +38,15 @@ function cloneRealtimePayload(
   return cloneRealtimeValue(payload);
 }
 
+/**
+ * 递归深度克隆并冻结值。
+ *
+ * 架构职责：
+ * 1. 数据隔离保障（Data Isolation Guard）：确保推送或同步的载荷是完全解耦且不可变的。
+ *
+ * 架构意图：
+ * 1. 线程/闭包安全：防止由于并发消息推送或 Replay 过程中原始对象被意外修改导致的脏读或状态不一致。
+ */
 function cloneRealtimeValue<TValue>(value: TValue): TValue {
   if (Array.isArray(value)) {
     return Object.freeze(value.map((item) => cloneRealtimeValue(item))) as TValue;
@@ -55,9 +67,11 @@ function cloneRealtimeValue<TValue>(value: TValue): TValue {
 /**
  * 创建实时推送事件信封。
  *
+ * 架构职责：
+ * 1. 事件标准化包装（Event Standardized Wrapping）：将运行时的原始事件统一封装为适合推送和补拉的协议格式。
+ *
  * 架构意图：
- * 作为一个工厂函数，它将运行时的原始事件数据（序号、类型、时间戳、载荷）
- * 包装成结构化的 RealtimeEventEnvelope。它强制执行载荷的深克隆，确保数据的不可变性。
+ * 1. 契约闭环：强制执行载荷的深克隆（Object.freeze），确保每一个推送到 Socket.io 或返回到补拉 API 的事件都是不可变的独立单元。
  *
  * @param input 包含序号、Bot ID、类型、时间戳、会话 ID 和可选载荷的输入
  * @returns 包装后的只读事件信封
@@ -84,8 +98,7 @@ export function createRealtimeEventEnvelope<TType extends RuntimeEventType>(inpu
  * 克隆实时推送事件。
  *
  * 架构意图：
- * 用于在 replay（补拉）等接口边界处切断调用方对原始对象的引用，
- * 确保输出的数据是完全独立的副本。
+ * 1. 引用切断：用于在补拉（Replay）等接口边界处彻底断开对原始对象的引用，确保输出数据的物理独立性。
  *
  * @param input 原始事件信封
  * @returns 克隆后的新信封

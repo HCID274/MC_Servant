@@ -9,7 +9,13 @@
 
 import type { ModuleBoundary } from "../domain/contracts.js";
 
-/** diagnostics 模块边界声明。 */
+/**
+ * diagnostics 模块边界声明。
+ *
+ * 架构意图：
+ * 1. 边界定义：明确诊断模块在结构化日志（JSONL）定义、存储目录管理及保留策略（Retention）三个维度的核心职责。
+ * 2. 拓扑管理：作为系统级模块清单的一项，定义其在全局架构中的定位。
+ */
 export const diagnosticsModuleBoundary = {
   moduleName: "diagnostics",
   responsibilities: [

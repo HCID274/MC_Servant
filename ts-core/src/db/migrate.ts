@@ -12,8 +12,11 @@ import { runDrizzleMigrations } from "./migrations.js";
 /**
  * 从进程环境创建只读快照。
  *
+ * 架构职责：
+ * 1. 环境隔离（Environment Isolation）：隔离 Node.js process.env 的动态性。
+ *
  * 架构意图：
- * 隔离 Node.js process.env 的动态性，为迁移过程提供一个稳定的配置来源。
+ * 1. 稳定性保障：为迁移过程提供一个稳定的、不可变的配置来源，防止迁移期间环境变量意外变更导致的副作用。
  *
  * @param env 原始环境变量
  * @returns 冻结后的环境变量记录
@@ -36,7 +39,10 @@ export function createMigrationEnvironmentSnapshot(
  * 执行 Drizzle 迁移 CLI 入口。
  *
  * 架构职责：
- * 作为独立的脚本入口，负责初始化迁移环境、触发迁移逻辑并输出状态摘要。
+ * 1. CLI 协议适配：负责初始化迁移环境、触发核心迁移逻辑并输出标准化的状态摘要。
+ *
+ * 架构意图：
+ * 1. 独立工具链：作为独立于主应用的脚本入口，确保数据库演进可以作为部署流水线（CI/CD）中的独立环节运行。
  */
 export async function runMigrationCli(): Promise<void> {
   const result = await runDrizzleMigrations({

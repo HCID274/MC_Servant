@@ -24,6 +24,7 @@ import {
   type SandboxValueContract,
 } from "./contracts.js";
 
+/** 创建方法契约描述。 */
 function createMethodContract<TName extends string>(input: {
   name: TName;
   access: "read" | "write";
@@ -41,6 +42,7 @@ function createMethodContract<TName extends string>(input: {
   });
 }
 
+/** 创建值字段契约描述。 */
 function createValueContract<TName extends string>(name: TName): SandboxValueContract<TName> {
   return Object.freeze({
     kind: "value",
@@ -65,10 +67,8 @@ export const SANDBOX_BOT_SKILL_BINDINGS = Object.freeze({
 /**
  * 创建 Facade API 的最小顶层契约描述。
  *
- * 架构意图：
- * 它是沙箱环境的“能力说明书”。通过这个工厂函数，系统构建出一个完整的、分区的 API 目录，
- * 包括动作（bot）、世界（world）、知识（knowledge）、记忆（memory）、聊天（chat）、主人（owner）和任务（task）。
- * 每一个条目都包含访问模式和参数顺序等契约细节，用于指导沙箱执行器的运行时注入。
+ * 1. 能力说明书：构建沙箱环境可用的 API 目录，涵盖动作（bot）、世界（world）、知识（knowledge）等多个分区。
+ * 2. 指令对齐：明确每个 API 的访问模式（读/写）和参数契约，用于指导沙箱执行器的运行时注入。
  *
  * @returns 不可变的沙箱门面契约
  */

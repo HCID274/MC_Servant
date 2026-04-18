@@ -1,16 +1,14 @@
 /**
  * 机器人技能契约与注册模块。
  *
- * 架构职责：
- * 1. 技能建模：定义系统支持的所有原子动作（Skills）及其参数契约。
- * 2. 契约复用：提供统一的 skill_call 结构，由运行时的直接调用和沙箱内的代理调用共享。
- * 3. 注册表管理：维护技能定义的版本化清单（如 Phase 1 清单），为 BotActor 提供可用的动作集。
- * 4. 工厂校验：提供强类型的技能调用工厂，确保任务生成的参数合法性。
+ * 1. 技能建模：定义系统支持的所有原子动作及其参数契约，实现业务能力的标准描述。
+ * 2. 契约复用：统一 skill_call 结构，确保运行时直接调用与沙箱代理调用遵循一致的交互协议。
+ * 3. 注册表管理：维护版本化的技能清单，为 BotActor 提供明确的可用动作能力集。
  */
 
 import type { ModuleBoundary } from "../domain/contracts.js";
 
-/** skills 模块边界声明。 */
+/** skills 模块边界声明，确立技能目录、参数契约及执行注册表在系统中的物理边界。 */
 export const skillsModuleBoundary = {
   moduleName: "skills",
   responsibilities: [

@@ -31,6 +31,10 @@ function createProcessEnvironmentSnapshot(
 /**
  * 解析当前机器人的唯一标识符。
  *
+ * 架构意图：
+ * 1. 确保在多智能体（Multi-Agent）环境中，每个实例都具有明确的身份标识。
+ * 2. 默认 fallback 到 "local-bot" 以支持零配置的本地开发与调试。
+ *
  * @param env 环境变量
  * @returns 机器人 ID
  */
@@ -46,6 +50,10 @@ function resolveBotId(env: NodeJS.ProcessEnv): string {
 
 /**
  * 将启动过程中捕获的错误格式化为可读字符串。
+ *
+ * 架构意图：
+ * 1. 在进程边界（Shell/Process Exit）提供统一的错误呈现格式。
+ * 2. 确保在没有正式日志记录器（Logger）可用的引导早期阶段，依然能输出有意义的诊断信息。
  *
  * @param error 捕获的异常对象
  */

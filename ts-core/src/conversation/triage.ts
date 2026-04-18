@@ -22,14 +22,29 @@ import type {
 
 const CONVERSATION_INTENTS = ["chat", "task", "modify", "cancel"] as const;
 
+/**
+ * 校验字符串是否为合法的对话意图。
+ *
+ * 架构意图：
+ * 1. 类型守卫：在运行时确保外部输入的意图值符合系统的核心意图枚举。
+ */
 function isConversationIntent(value: string): value is MessageTriage["intent"] {
   return (CONVERSATION_INTENTS as readonly string[]).includes(value);
 }
 
+/**
+ * 校验字符串是否为合法的对话优先级。
+ */
 function isConversationPriority(value: string): value is ConversationPriority {
   return Object.values(ConversationPriority).includes(value as ConversationPriority);
 }
 
+/**
+ * 将通用的 MessageTriage 投影为特定意图的分诊结构。
+ *
+ * 架构意图：
+ * 1. 类型收敛：确保后续处理特定意图（如 task 或 chat）的逻辑能拿到准确的、经过类型收紧的分诊对象。
+ */
 function toConversationTriageFor<TIntent extends MessageTriage["intent"]>(
   triage: MessageTriage,
   intent: TIntent,
@@ -48,9 +63,11 @@ function toConversationTriageFor<TIntent extends MessageTriage["intent"]>(
 /**
  * 将原始分诊输出收口到安全回退值。
  *
- * 架构设计：
- * 作为一个“稳压器”，它确保无论 LLM 或上游返回什么内容，最终都能得到一个合法的 MessageTriage 对象，
- * 从而保证后续路由逻辑不会因为类型错误或非法枚举值而崩溃。
+ * 架构职责：
+ * 1. 稳压器作用：确保无论 LLM 或上游返回什么内容，最终都能得到一个合法的 MessageTriage 对象。
+ *
+ * 架构意图：
+ * 1. 容错性保障：防止后续路由逻辑因为类型错误或非法枚举值而崩溃。
  *
  * @param input 包含意图、优先级和原因的可选输入
  * @returns 格式化后的分诊结果
@@ -78,7 +95,7 @@ export function createMessageTriage(input: {
  * 将对话优先级映射为可入执行队列的优先级。
  *
  * 架构意图：
- * 该函数建立起面向用户的对话感知优先级与面向引擎的任务调度权重之间的桥梁。
+ * 1. 优先级桥接：建立起面向用户的对话感知优先级与面向引擎的任务调度权重之间的映射关系。
  *
  * @param priority 对话优先级
  * @returns 执行引擎优先级
@@ -98,13 +115,16 @@ export function toConversationExecPriority(priority: ConversationPriority): Exec
 /**
  * 根据分诊结果与当前执行态生成纯路由决策。
  *
- * 架构设计：
- * 这是对话系统的“分光镜”，它接收分诊意图和系统活跃状态（has_active_task），
- * 产出具体的路由决策（RouteDecision）。主要策略包括：
- * 1. chat: 触发闲聊回复，并判断是否需要检索记忆。
- * 2. cancel: 强制中断当前任务，触发取消模板回复。
- * 3. task: 若优先级为 Interrupt 且有活跃任务，则走“中断并入队”流程，否则直接入队。
- * 4. modify: 固定走“中断并重规划”流程。
+ * 架构职责：
+ * 1. 分光镜决策：接收分诊意图和系统活跃状态（has_active_task），产出具体的路由决策（RouteDecision）。
+ *
+ * 架构意图：
+ * 1. 策略封装：将复杂的“什么时候该中断、什么时候该入队”的业务规则封装在纯函数中，便于单元测试。
+ * 2. 路由分支：
+ *    - chat: 触发闲聊回复，并判断是否需要检索记忆。
+ *    - cancel: 强制中断当前任务，触发取消模板回复。
+ *    - task: 若优先级为 Interrupt 且有活跃任务，则走“中断并入队”流程，否则直接入队。
+ *    - modify: 固定走“中断并重规划”流程。
  *
  * @param input 包含分诊结果、原始消息和任务活跃状态的输入
  * @returns 路由决策

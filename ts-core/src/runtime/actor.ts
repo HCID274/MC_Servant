@@ -92,7 +92,16 @@ export interface BotActorRuntime<TBotId extends string = string> {
   getSnapshot(): BotActorRuntimeSnapshot<TBotId>;
 }
 
-/** 创建 BotActor（机器人执行代理） 最小生命周期运行时。 */
+/**
+ * 创建 BotActor 最小生命周期运行时。
+ *
+ * 1. 执行代理：作为 Bot 的唯一执行主体（Single Writer），负责序列化所有对 Minecraft 服务器的写操作（聊天、技能、移动）。
+ * 2. 状态一致性：通过内部状态机驱动 Bot 的生命周期，确保在任何时刻其执行行为均符合就绪门控（Ready Gate）的约束。
+ * 3. 结果投影：提供实时快照能力，将复杂的内部执行态（事件、聊天记录、技能历史）转换为不可变的领域模型供外部查询。
+ *
+ * @param input 包含 Bot ID, 传输层, 观测缓存, 认证状态及初始计划的输入
+ * @returns BotActor 运行时句柄
+ */
 export function createBotActorRuntime<TBotId extends string>(input: {
   botId: TBotId;
   transport: MineflayerRuntimeTransport<TBotId>;
@@ -260,7 +269,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
     },
   });
 
-  async function sendExternalAuthLoginIfNeeded(): Promise<void> {
+  /**
+ * 若外部认证处于 pending 状态，则尝试发送登录命令。
+ */
+async function sendExternalAuthLoginIfNeeded(): Promise<void> {
     if (
       externalAuth.status !== "pending" ||
       externalAuthPlan.status !== "pending" ||
@@ -291,7 +303,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
     externalAuthPlan = createExternalAuthExecutionPlan(externalAuth);
   }
 
-  async function runSerializedChatWrite(write: () => Promise<void>): Promise<void> {
+  /**
+ * 序列化执行聊天写入操作，防止多个写入动作冲突。
+ */
+async function runSerializedChatWrite(write: () => Promise<void>): Promise<void> {
     if (chatWriteInFlight !== null) {
       throw new Error("BotActor chat write is already in flight");
     }
@@ -309,6 +324,9 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   }
 }
 
+/**
+ * 校验广播回复输入的合法性。
+ */
 function assertBroadcastReplyInput(input: BotActorBroadcastReplyInput): void {
   if (input.message_id.trim().length === 0) {
     throw new Error("message_id must be a non-empty string");

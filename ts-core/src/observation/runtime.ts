@@ -66,7 +66,19 @@ export interface ObservationRuntimeCache {
   bindMineflayerEvents(input: ObservationMineflayerEventBinding): ObservationEventSubscription;
 }
 
-/** 创建事件驱动的 observation（观测） 运行时缓存。 */
+/**
+ * 创建事件驱动的 observation 运行时缓存。
+ *
+ * 架构职责：
+ * 1. 观测物化视图（Materialized View）：作为 Mineflayer 与 JAR Bridge 原始输入的聚合点，维护最新的环境快照副本。
+ * 2. 事件驱动刷新：通过监听 Mineflayer 物理事件（如 physicsTick, blockUpdate），自动刷新快照并重新评估威胁。
+ *
+ * 架构意图：
+ * 1. 降低 IO 消耗：将高频的物理事件（Mineflayer 原生对象）映射为领域快照（Plain Object），供后续所有逻辑层以只读方式消费，避免频繁访问底层协议栈。
+ *
+ * @param input 可选初始快照
+ * @returns observation 运行时缓存句柄
+ */
 export function createObservationRuntimeCache(
   input: {
     initialSnapshot?: EnvironmentSnapshot;
@@ -140,6 +152,12 @@ export function createObservationRuntimeCache(
   });
 }
 
+/**
+ * 移除观测事件监听器。
+ *
+ * 架构意图：
+ * 1. 驱动兼容性：兼容 Node.js 原生 EventEmitter 与某些自定义驱动的事件移除接口（off vs removeListener）。
+ */
 function removeObservationListener(
   source: MineflayerEventSource,
   eventName: string,

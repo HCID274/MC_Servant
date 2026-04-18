@@ -1,10 +1,9 @@
 /**
- * ConversationWorker（对话工作线程） 真实运行时。
+ * ConversationWorker 真实运行时。
  *
- * 架构职责：
- * 1. 消费 `msg:{botId}` BullMQ（任务队列） 消息。
- * 2. 在无真实 LLM（大语言模型） 时使用安全分诊与模板回复兜底。
- * 3. 只通过注入的 BotActor（机器人执行代理） 单写者 sink（汇点）写入游戏聊天。
+ * 1. 消息消费：作为 BullMQ 消费者，持续拉取并处理 `msg:{botId}` 队列中的入站用户消息。
+ * 2. 意图分诊：调用底层分诊逻辑识别意图（如闲聊、规划），在无真实大模型环境时提供安全兜底与模板回复。
+ * 3. 动作分发：根据分诊结果，安全地向 BotActor 单写者汇点提交聊天回复，或将规划任务推入执行队列。
  */
 
 import { Worker, type WorkerOptions } from "bullmq";
@@ -155,6 +154,7 @@ export interface ConversationWorkerRuntime {
   /** 获取处理过程事件快照。 */
   getEvents(): readonly ConversationWorkerRuntimeEvent[];
 }
+/** 创建默认的对话处理工作线程。 */
 
 function createDefaultConversationWorker(input: {
   queueName: MessageQueueName;
@@ -165,6 +165,7 @@ function createDefaultConversationWorker(input: {
     connection: input.connection as WorkerOptions["connection"],
   });
 }
+/** 生成默认的对话意图分诊结果。 */
 
 function createDefaultTriage(): MessageTriage {
   return createMessageTriage({
@@ -173,6 +174,7 @@ function createDefaultTriage(): MessageTriage {
     reason: "conversation_worker_fallback",
   });
 }
+/** 生成强制的移动意图分诊结果。 */
 
 function createGoToTriage(): MessageTriage {
   return createMessageTriage({
@@ -181,6 +183,7 @@ function createGoToTriage(): MessageTriage {
     reason: "deterministic_goto_command",
   });
 }
+/** 克隆并校验对话任务数据。 */
 
 function cloneWorkerTask(data: unknown): ConversationWorkerTask {
   const candidate = data as ConversationWorkerTask;
@@ -190,6 +193,7 @@ function cloneWorkerTask(data: unknown): ConversationWorkerTask {
     message: candidate.message,
   });
 }
+/** 尝试解析文本中的强制移动指令。 */
 
 function parseDeterministicGoToCommand(content: string): {
   readonly x: number;
@@ -211,6 +215,7 @@ function parseDeterministicGoToCommand(content: string): {
     z: Number(match[3]),
   });
 }
+/** 将系统执行优先级映射到队列数值。 */
 
 function toBullmqPriority(priority: ExecPriority): number {
   switch (priority) {
@@ -223,7 +228,16 @@ function toBullmqPriority(priority: ExecPriority): number {
   }
 }
 
-/** 创建 ConversationWorker（对话工作线程） 真实运行时。 */
+/**
+ * 创建 ConversationWorker 真实运行时。
+ *
+ * 1. 消息轮询：作为守护进程持续监听指定的 BullMQ 消息队列，获取前端或游戏内抛出的原始对话事件。
+ * 2. 意图分诊：结合上下文信息（如当前是否有执行中任务），动态判断用户意图并产出路由决策。
+ * 3. 动作桥接：将闲聊路由映射为广播回复，将规划任务（如确定的 goTo 命令）转换后推入底层执行队列。
+ *
+ * @param input 包含队列连接与运行时依赖的输入
+ * @returns 对话工作线程运行时句柄
+ */
 export function createConversationWorkerRuntime(input: {
   /** 待消费的消息队列。 */
   readonly queue: ConversationWorkerRuntimeQueue;

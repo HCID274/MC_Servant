@@ -15,7 +15,13 @@ export * from "./keys.js";
 export * from "./connection.js";
 export * from "./migrations.js";
 
-/** db 模块边界声明。 */
+/**
+ * db 模块边界声明。
+ *
+ * 架构意图：
+ * 1. 边界定义：明确数据库模块在物理连接（Postgres/Redis）、键空间管理（Keys）及数据演进（Migrations）三个维度的职责。
+ * 2. 拓扑管理：作为系统级模块清单的一项，定义其在全局架构中的定位。
+ */
 export const dbModuleBoundary = {
   moduleName: "db",
   responsibilities: [

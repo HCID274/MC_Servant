@@ -69,12 +69,11 @@ export const JSONL_DIRECTORY_POLICIES = {
 /**
  * 判断数据库中的日志引用是否为安全的相对路径。
  *
+ * 架构职责：
+ * 1. 路径安全审计（Path Security Auditing）：在存储前校验路径合法性，防止路径穿越（Path Traversal）风险。
+ *
  * 架构意图：
- * 采用严格的白名单策略校验路径合法性：
- * 1. 禁止绝对路径。
- * 2. 禁止 Windows 风格反斜杠。
- * 3. 禁止包含 '..' 或 '.' 等特殊段，防止目录向上穿越。
- * 4. 确保路径已标准化，无冗余分段。
+ * 1. 安全校验：采用严格的白名单策略。禁止绝对路径、禁止 Windows 风格反斜杠、禁止包含 '..' 或 '.' 等特殊段，确保日志引用始终局限在 logs 根目录下。
  *
  * @param value 待校验的路径引用字符串
  * @returns 是否安全合法
@@ -99,6 +98,12 @@ export function isValidStorageRef(value: string): boolean {
   return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
+/**
+ * 校验单个路径片段的合法性。
+ *
+ * 架构意图：
+ * 1. 片段校验：确保日期段或文件名等原子分段符合存储引用的安全契约。
+ */
 function isValidStorageRefSegment(value: string): boolean {
   if (value.length === 0 || value.includes("\\") || pathPosix.isAbsolute(value)) {
     return false;
@@ -118,8 +123,11 @@ function isValidStorageRefSegment(value: string): boolean {
 /**
  * 创建符合目录规则的日期分桶日志引用。
  *
+ * 架构职责：
+ * 1. 路径生成（Path Generation）：按照三级目录结构（directory/date/fileName）标准化日志引用格式。
+ *
  * 架构意图：
- * 按照 `directory/date/fileName` 的三级结构生成路径，便于按日期进行日志归档与清理。
+ * 1. 存储一致性：统一全系统的冷日志（tasks, sandbox, llm）分桶策略，便于按日期进行日志归档与清理。
  *
  * @param input 包含目录名、日期段和文件名的输入
  * @returns 组合后的安全存储引用

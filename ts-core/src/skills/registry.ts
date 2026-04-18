@@ -14,6 +14,7 @@ import {
   type SkillDefinition,
   type SkillName,
 } from "./contracts.js";
+/** 内部技能定义映射表类型。 */
 
 type SkillDefinitionMap = Partial<Record<SkillName, SkillDefinition>>;
 
@@ -26,9 +27,8 @@ export interface SkillRegistry {
 /**
  * 创建技能注册表。
  *
- * 架构意图：
- * 作为一个工厂函数，它将输入的技能定义数组转化为按技能名索引的映射表（Map），
- * 并封装为不可变的 SkillRegistry 对象。
+ * 1. 结构化索引：将输入的技能定义数组转化为按技能名索引的映射表。
+ * 2. 状态冻结：产出不可变的只读快照，为运行时的技能检索提供稳定的数据底座。
  *
  * @param definitions 初始技能定义数组
  * @returns 只读的技能注册表快照
@@ -48,9 +48,7 @@ export function createSkillRegistry(definitions: readonly SkillDefinition[] = []
 /**
  * 在注册表上追加或覆盖一个技能定义。
  *
- * 架构设计：
- * 遵循不可变数据模式。它不会修改传入的 registry，
- * 而是通过组合旧定义和新定义来创建一个全新的 SkillRegistry 实例。
+ * 1. 纯函数演进：遵循不可变数据模式，通过组合旧定义与新定义产出全新的注册表实例，确保演进过程无副作用。
  *
  * @param registry 原注册表
  * @param definition 待注册的技能定义
@@ -82,8 +80,7 @@ export function hasSkillDefinition(registry: SkillRegistry, name: SkillName): bo
 /**
  * 列出当前注册表中的所有技能定义。
  *
- * 架构意图：
- * 强制按 Phase 1 定义的固定顺序输出技能，确保下游（如 LLM Context 构造）看到的技能列表具有确定性。
+ * 1. 确定性顺序：强制按系统约定的固定顺序（如 Phase 1 清单顺序）输出技能，确保下游消费方看到的能力列表具有确定性。
  *
  * @param registry 技能注册表
  * @returns 排序后的技能定义数组
@@ -97,14 +94,7 @@ export function listSkillDefinitions(registry: SkillRegistry): readonly SkillDef
   return Object.freeze(definitions);
 }
 
-/**
- * 创建内置 Phase 1 技能的初始注册表。
- *
- * 架构意图：
- * 提供系统默认的技能集，支撑 BotActor 初始阶段的动作执行能力。
- *
- * @returns 包含 goTo, mine, cutTree, collect, equip 的注册表
- */
+/** 创建内置 Phase 1 技能的初始注册表。 */
 export function createPhase1SkillRegistry(): SkillRegistry {
   return createSkillRegistry(PHASE1_SKILL_DEFINITIONS);
 }

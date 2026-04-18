@@ -27,22 +27,26 @@ import {
   type SandboxStepResult,
 } from "./contracts.js";
 
+/** 断言数值是否为正整数。 */
 function assertPositiveInteger(value: number, fieldName: string): void {
   if (!Number.isInteger(value) || value < 0) {
     throw new Error(`${fieldName} must be a non-negative integer`);
   }
 }
 
+/** 断言数值是否为正数。 */
 function assertPositiveNumber(value: number, fieldName: string): void {
   if (!Number.isFinite(value) || value < 0) {
     throw new Error(`${fieldName} must be a non-negative number`);
   }
 }
 
+/** 判断字符串是否为合法的沙箱步骤动作名。 */
 function isSandboxStepActionName(value: string): value is SandboxStepActionName {
   return (SANDBOX_STEP_ACTION_NAMES as readonly string[]).includes(value);
 }
 
+/** 校验沙箱错误对象的合法性与完整性。 */
 function assertSandboxError(error: SandboxExecutionError): void {
   if (!(SANDBOX_ERROR_NAMES as readonly string[]).includes(error.name)) {
     throw new Error(`Unsupported sandbox error: ${error.name}`);
@@ -85,12 +89,14 @@ function assertSandboxError(error: SandboxExecutionError): void {
   }
 }
 
+/** 校验沙箱阶段性日志是否非空。 */
 function assertSandboxPhaseLogs(phaseLogs: readonly SandboxJsonlLine[]): void {
   if (phaseLogs.length === 0) {
     throw new Error("phase_logs must contain at least one entry");
   }
 }
 
+/** 校验沙箱结果中的日志与代码引用是否符合存储安全契约。 */
 function assertSandboxResultRefs(input: {
   log_ref: string;
   code_ref?: string;
@@ -122,10 +128,8 @@ export const DEFAULT_SANDBOX_RESOURCE_LIMITS = Object.freeze({
 /**
  * 创建沙箱资源限制对象。
  *
- * 架构意图：
- * 它是沙箱安全性的第一道防线。它负责合并默认配置与自定义配置，
- * 并校验关键约束（如 script_timeout 必须小于总 timeout），
- * 确保每个沙箱实例都在确定的资源范围内运行。
+ * 1. 资源边界设定：合并默认配置与自定义补丁，为沙箱实例划定明确的 CPU 时间、内存及睡眠配额。
+ * 2. 约束校验：强制执行安全性约束（如 script_timeout 必须短于总 timeout），作为沙箱安全运行的第一道防线。
  *
  * @param input 可选的资源限制补丁
  * @returns 经过校验和冻结的资源限制对象
@@ -158,9 +162,8 @@ export function createSandboxResourceLimits(
 /**
  * 创建结构化的沙箱错误对象。
  *
- * 架构意图：
- * 作为一个“稳压工厂”，它在错误对象穿过沙箱边界进入主进程前对其进行严格校验（assertSandboxError）。
- * 它确保了错误类型是系统预定义的，且包含所有必要的上下文信息，从而保证了后续错误处理的一致性。
+ * 1. 稳压校验：在错误穿过沙箱边界进入主进程前进行严格审计，确保错误类型属于系统预定义集合。
+ * 2. 契约保证：确保所有抛出的沙箱异常均包含必要的上下文信息，保证后续诊断逻辑的一致性。
  *
  * @param input 原始错误对象
  * @returns 经过校验并克隆的只读错误对象
@@ -174,9 +177,8 @@ export function createSandboxError<TError extends SandboxExecutionError>(input: 
 /**
  * 创建单步沙箱执行结果。
  *
- * 架构意图：
- * 专门用于记录沙箱代码中对 Facade 方法的每一次调用。
- * 它负责校验动作名是否合法、耗时是否有效，并强制要求非 OK 状态下必须携带错误信息。
+ * 1. 行为审计：专门记录沙箱代码对 Facade 方法的每一次原子调用，是实现沙箱可观测性的基础。
+ * 2. 状态联锁：校验动作名的合法性、耗时有效性，并强制要求非 OK 状态必须携带结构化错误信息。
  *
  * @param input 包含步骤索引、动作名、参数、状态及可选结果/错误的输入
  * @returns 经过校验并克隆的只读步骤结果
@@ -222,10 +224,8 @@ export function createSandboxStepResult<TAction extends SandboxStepActionName>(i
 /**
  * 创建沙箱执行请求对象。
  *
- * 架构意图：
- * 它是进入沙箱流水线的“通行证”。它聚合了源码、环境快照、任务元数据以及资源限制。
- * 关键在于它强制执行了 log_ref 和 code_ref 的路径引用校验，
- * 确保沙箱产生的日志会被写入正确且安全的物理位置。
+ * 1. 准入封装：作为进入沙箱流水线的“通行证”，聚合源码、环境快照及资源限制。
+ * 2. 存储安全绑定：强制执行日志与代码引用的安全校验，确保沙箱产出的持久化数据位于正确的物理隔离位置。
  *
  * @param input 包含任务 ID, Bot ID, 纪元, 代码, 日志引用及可选限制的输入
  * @returns 经过校验和冻结的请求对象
@@ -266,9 +266,8 @@ export function createSandboxExecutionRequest(input: {
 /**
  * 创建成功完成的沙箱执行结果。
  *
- * 架构意图：
- * 负责聚合成功执行后的全部产物：包括任务元数据、各阶段日志（phase_logs）、
- * 具体的步骤详情（step_results）以及终态摘要。它校验摘要中的步数与实际结果长度的一致性。
+ * 1. 结果物化：聚合执行后的全部产物，包括阶段性日志、单步详情及终态摘要。
+ * 2. 完整性校验：强制校验摘要步数与实际执行结果长度的一致性，确保持久化数据的逻辑严密。
  *
  * @param input 包含任务 ID, 日志, 步骤结果及摘要的输入
  * @returns 经过校验并克隆的成功结果对象
@@ -321,9 +320,8 @@ export function createSandboxExecutionSuccess(input: {
 /**
  * 创建失败结束的沙箱执行结果。
  *
- * 架构意图：
- * 与成功结果类似，但强制要求包含终态错误（error）。它在结果生成时再次执行 assertSandboxError，
- * 确保异常信息在传递出模块前是结构化且合规的。
+ * 1. 故障现场捕获：聚合执行失败时的日志与步骤详情，并强制要求包含终态结构化错误对象。
+ * 2. 边界一致性：在输出前再次执行错误校验，确保异常信息符合系统定义的分类契约。
  *
  * @param input 包含任务 ID, 日志, 步骤结果, 摘要及错误对象的输入
  * @returns 经过校验并克隆的失败结果对象
@@ -375,9 +373,8 @@ export function createSandboxExecutionFailure(input: {
 /**
  * 创建被中断的沙箱执行结果。
  *
- * 架构意图：
- * 专门用于处理因外部原因（如用户取消、反射式中断）导致的沙箱终止。
- * 强制要求包含 AbortError 类型的错误对象，记录中断的具体原因。
+ * 1. 中断追溯：专门处理因外部信号（如用户取消、反射式中断）导致的沙箱终止。
+ * 2. 原因固定：强制要求包含 AbortError，确保系统能明确记录中断的物理来源与逻辑原因。
  *
  * @param input 包含任务 ID, 日志, 步骤结果, 摘要及中断错误的输入
  * @returns 经过校验并克隆的中断结果对象

@@ -1,10 +1,8 @@
 /**
  * 技能真实执行边界。
  *
- * 架构职责：
- * 1. 将 `skill_call`（技能调用） 任务收口到可注入执行适配器。
- * 2. 当前阶段只允许 `goTo`（前往坐标） 进入真实执行路径。
- * 3. 为测试提供 fake（假） movement adapter（移动适配器） 注入点，避免依赖真实 MC（Minecraft，我的世界） 服务器。
+ * 1. 逻辑收口：将 skill_call 任务统一路由到可注入的执行适配器中。
+ * 2. 交互隔离：通过 GoToMovementAdapter 抽象 Mineflayer 物理移动能力，支持在测试环境注入假实现。
  */
 
 import { ExecutionTaskKind } from "../domain/contracts.js";
@@ -38,7 +36,7 @@ export interface SkillExecutionDependencies {
   readonly goToMovement: GoToMovementAdapter;
 }
 
-/** 创建冻结的 `goTo`（前往坐标） 技能执行结果。 */
+/** 创建冻结的 goTo 技能执行结果。 */
 export function createGoToSkillExecutionResult(
   params: Readonly<GoToSkillParams>,
 ): GoToSkillExecutionResult {
@@ -54,7 +52,15 @@ export function createGoToSkillExecutionResult(
   });
 }
 
-/** 执行单个 `skill_call`（技能调用） 任务。 */
+/**
+ * 执行单个 skill_call 任务。
+ *
+ * 1. 类型分发：校验任务类型并将其分发到对应的技能执行逻辑。
+ * 2. 安全边界：当前阶段强制锁定仅允许 goTo 技能进入真实执行路径。
+ *
+ * @param input 包含任务对象与注入依赖的输入
+ * @returns 技能执行结果
+ */
 export async function executeSkillCallJob(input: {
   /** 待执行任务。 */
   readonly job: SkillCallJob;

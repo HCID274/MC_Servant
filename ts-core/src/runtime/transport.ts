@@ -140,6 +140,7 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
 }
 
 const DEFAULT_MINEFLAYER_CONNECT_TIMEOUT_MS = 30_000;
+/** Mineflayer 寻路插件内部接口声明。 */
 
 interface MineflayerPathfinderApi {
   /** 设置 pathfinder（寻路器） 移动配置。 */
@@ -147,6 +148,7 @@ interface MineflayerPathfinderApi {
   /** 执行寻路目标。 */
   goto(goal: unknown): Promise<void> | void;
 }
+/** Mineflayer 寻路插件模块结构。 */
 
 interface MineflayerPathfinderModule {
   /** Mineflayer（Minecraft 协议客户端） pathfinder（寻路器） 插件函数。 */
@@ -167,7 +169,7 @@ interface MineflayerPathfinderModule {
   };
 }
 
-/** 创建 Mineflayer（Minecraft 协议客户端） 运行时传输描述。 */
+/** 创建 Mineflayer 运行时传输描述。 */
 export function createMineflayerTransportDescriptor<TBotId extends string>(input: {
   botId: TBotId;
   username?: string;
@@ -199,7 +201,7 @@ export function createMineflayerTransportDescriptor<TBotId extends string>(input
   });
 }
 
-/** 创建真实 Mineflayer（Minecraft 协议客户端） Bot 实例。 */
+/** 创建真实 Mineflayer Bot 实例。 */
 export async function createDefaultMineflayerBot(
   options: MineflayerCreateBotOptions,
 ): Promise<MineflayerBotHandle> {
@@ -210,7 +212,17 @@ export async function createDefaultMineflayerBot(
   return mineflayer.createBot(options);
 }
 
-/** 创建 Mineflayer（Minecraft 协议客户端） 运行时传输工厂。 */
+/**
+ * 创建 Mineflayer 运行时传输工厂。
+ *
+ * 1. 协议栈隔离：作为物理 Mineflayer 协议栈与系统逻辑层之间的网关，管理真实的 TCP 连接与事件流。
+ * 2. 交互状态管理：维护连接的精细状态（Connecting, Connected, Spawned），并提供标准化的 chat 和 goTo 能力。
+ * 3. 稳压清理：内置清理逻辑，确保连接在失败或关闭时能被平滑回收。
+ *
+ * @param descriptor 传输连接描述符
+ * @param dependencies 可注入的驱动与配置
+ * @returns 运行时传输句柄
+ */
 export function createMineflayerRuntimeTransport<TBotId extends string>(
   descriptor: MineflayerTransportDescriptor<TBotId>,
   dependencies: MineflayerRuntimeTransportDependencies = {},
@@ -347,6 +359,7 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
       return eventSource;
     },
   });
+/** 清理 Mineflayer 机器人实例与底层连接。 */
 
   function cleanupMineflayerBot(reason: string): void {
     const currentBot = bot;
@@ -368,6 +381,9 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
   }
 }
 
+/**
+ * 创建只读的 Mineflayer 事件源。
+ */
 function createReadonlyMineflayerEventSource(bot: MineflayerBotHandle): MineflayerEventSource {
   return Object.freeze({
     on(eventName: string, listener: (...args: readonly unknown[]) => void): unknown {
@@ -385,6 +401,9 @@ function createReadonlyMineflayerEventSource(bot: MineflayerBotHandle): Mineflay
   });
 }
 
+/**
+ * 创建 Mineflayer 驱动所需的选项对象。
+ */
 function createMineflayerCreateBotOptions(
   descriptor: MineflayerTransportDescriptor,
 ): MineflayerCreateBotOptions {
@@ -397,6 +416,9 @@ function createMineflayerCreateBotOptions(
   };
 }
 
+/**
+ * 绑定运行时状态监听器。
+ */
 function attachRuntimeStateListeners(
   bot: MineflayerBotHandle,
   handlers: {
@@ -422,8 +444,9 @@ function attachRuntimeStateListeners(
   };
 }
 
-// 连接层继续保留 login（协议登录） 后即可聊天的能力，以服务 EasyAuth（离线服认证模组） 登录命令；
-// 但 world_ready（世界交互就绪） 必须等到 spawn（生成） 事件后才打开，由上层在技能执行入口前门控。
+/**
+ * 等待 Mineflayer 生成。
+ */
 function waitForMineflayerSpawn(bot: MineflayerBotHandle, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -466,6 +489,9 @@ function waitForMineflayerSpawn(bot: MineflayerBotHandle, timeoutMs: number): Pr
   });
 }
 
+/**
+ * 注册一次性事件监听。
+ */
 function addOnceListener(
   source: MineflayerEventSource,
   eventName: string,
@@ -485,6 +511,9 @@ function addOnceListener(
   return () => removeEventListener(source, eventName, wrappedListener);
 }
 
+/**
+ * 注册事件监听并返回移除函数。
+ */
 function addEventListener(
   source: MineflayerEventSource,
   eventName: string,
@@ -495,6 +524,9 @@ function addEventListener(
   return () => removeEventListener(source, eventName, listener);
 }
 
+/**
+ * 移除事件监听器。
+ */
 function removeEventListener(
   source: MineflayerEventSource,
   eventName: string,
@@ -508,6 +540,9 @@ function removeEventListener(
   source.removeListener?.(eventName, listener);
 }
 
+/**
+ * 将 Mineflayer 错误转换为字符串。
+ */
 function stringifyMineflayerError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -516,6 +551,9 @@ function stringifyMineflayerError(error: unknown): string {
   return String(error);
 }
 
+/**
+ * 动态加载 Mineflayer 寻路插件。
+ */
 async function loadMineflayerPathfinder(): Promise<MineflayerPathfinderModule> {
   return (await import("mineflayer-pathfinder")) as unknown as MineflayerPathfinderModule;
 }

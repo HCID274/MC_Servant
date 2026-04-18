@@ -493,10 +493,12 @@ export function createTaskPersistencePlan(input: {
 /**
  * 获取任务持久化写入计划。
  *
+ * 架构职责：
+ * 1. 计划分发（Plan Dispatching）：根据任务的生命周期阶段，动态生成对应的数据库写入序列。
+ *
  * 架构意图：
- * 该函数根据任务的当前生命周期阶段（如 entry, running, terminal, brain_summary），
- * 从全局写入序列（TASK_PERSISTENCE_WRITE_SEQUENCE）中筛选出对应的持久化步骤。
- * 它确保了数据库更新的时序性，并支持 BrainWorker 阶段的可选会话聚合。
+ * 1. 顺序一致性：确保全系统（Worker、Brain 等）遵循统一的写入步骤（如先写 event_log 再写 task_history），防止由于竞争导致的审计断档。
+ * 2. 扩展性：通过 includeSessionAggregation 标志支持 BrainWorker 阶段的可选会话聚合。
  *
  * @param input 包含阶段和可选聚合标志的输入
  * @returns 经过筛选的持久化写入步骤
@@ -529,9 +531,11 @@ export function createTaskPersistencePlan(input: {
 /**
  * 创建持久化事件日志记录。
  *
+ * 架构职责：
+ * 1. 事件对象工厂（Event Object Factory）：验证并创建符合数据库 Schema 的只读事件日志对象。
+ *
  * 架构意图：
- * 作为一个工厂函数，它负责验证输入的基础标识符（bot_id）和时间戳（created_at），
- * 并生成一个符合数据库 Schema 的只读事件日志对象。
+ * 1. 数据校验：在持久化前强制进行标识符、时间戳和序号的合法性校验，作为数据写入的第一道防线。
  *
  * @param input 包含 seq, bot_id, session_id, type, payload 和 created_at 的输入
  * @returns 经过验证和克隆的只读记录
@@ -568,9 +572,11 @@ export function createPersistedEventLogRecord<TType extends PersistedEventType>(
 /**
  * 从运行时生命周期事件创建持久化事件日志记录。
  *
+ * 架构职责：
+ * 1. 领域适配（Domain Adaptation）：将运行时的 TaskLifecycleEvent 无损转换为持久化层记录。
+ *
  * 架构意图：
- * 负责将运行时的 TaskLifecycleEvent 转换为持久化层可识别的 EventLogRecord。
- * 这是一个关键的适配器，确保了运行时状态机事件能够无损地进入持久化流水线。
+ * 1. 契约映射：确保运行时状态机的每个关键迁移事件都能在持久化流水线中找到对应的位置，支撑 Replay 与系统回溯。
  *
  * @param input 包含 seq, bot_id, session_id, lifecycle 事件和 created_at 的输入
  * @returns 对应的生命周期持久化记录
@@ -599,11 +605,11 @@ export function createPersistedTaskLifecycleEventLogRecord<
 /**
  * 创建步骤进度（step.progress）的持久化事件记录。
  *
+ * 架构职责：
+ * 1. 进度追踪（Progress Tracking）：专门用于记录任务执行过程中每一个原子步骤的执行状态、参数及结果。
+ *
  * 架构意图：
- * 专门用于记录任务执行过程中的每一个原子步骤。
- * 它从运行时 ExecJob 中提取核心元数据（job_id, type, message_id, epoch），
- * 并结合当前的步骤状态（status）、索引（step_index）及输入输出参数（params/result），
- * 生成细粒度的进度记录。
+ * 1. 细粒度审计：从运行时的 ExecJob 中提取核心元数据（job_id, type, message_id, epoch），结合当前步骤的动态信息生成可回溯记录。
  *
  * @param input 包含 job, step_index, action, status 等执行细节的输入
  * @returns 步骤进度持久化记录
@@ -665,12 +671,12 @@ export function createPersistedTaskProgressEventLogRecord(input: {
 /**
  * 创建任务历史已接受（Accepted）记录。
  *
+ * 架构职责：
+ * 1. 初始快照工厂（Initial Snapshot Factory）：在任务被接受时，创建其初始持久化快照并进行严格的分层校验。
+ *
  * 架构意图：
- * 当任务刚被系统接受时，创建其初始持久化快照。
- * 它负责根据任务类型（沙箱代码或技能调用）分发逻辑：
- * 1. 沙箱代码：强制要求 code_ref。
- * 2. 技能调用：禁止 code_ref，提取技能名和参数。
- * 同时校验 log_ref 的频道一致性，确保数据存储的物理隔离。
+ * 1. 存储隔离：校验 log_ref 的频道一致性，确保 sandbox 与普通任务的日志存储在物理上隔离。
+ * 2. 类型分发：针对 SandboxCode 和 SkillCall 强制执行不同的字段约束。
  *
  * @param input 包含 bot_id, job, log_ref, code_ref 和 created_at 的输入
  * @returns 初始化的任务历史记录
@@ -733,7 +739,7 @@ export function createPersistedTaskHistoryAcceptedRecord(input: {
  * 创建任务历史开始执行（Started）更新补丁。
  *
  * 架构意图：
- * 当任务由“就绪”转为“执行中”时，记录其真实的开始时间，用于后续的耗时统计。
+ * 1. 性能统计基准：记录任务真实的开始时间，为后续计算执行耗时提供精准基准点。
  *
  * @param input 任务 ID 和开始时间
  * @returns 状态更新补丁
@@ -782,11 +788,11 @@ export function createPersistedTaskHistoryTerminalPatch(input: {
 /**
  * 创建任务历史终态（Terminal）更新补丁。
  *
+ * 架构职责：
+ * 1. 终态补丁工厂（Terminal Patch Factory）：统一处理任务进入 Completed, Failed 或 Interrupted 终态时的持久化数据补丁。
+ *
  * 架构意图：
- * 统一处理任务进入 Completed, Failed 或 Interrupted 终态时的持久化数据补丁。
- * 它负责校验终态参数的完整性：
- * 1. Failed 状态：强制要求携带错误信息（error）。
- * 2. Interrupted 状态：强制要求携带中断来源信息（interrupt_source）。
+ * 1. 完整性约束：在数据库写入前强制校验终态特有字段（如 Failed 必须有 error，Interrupted 必须有 source），确保历史数据的可回溯性。
  *
  * @param input 包含任务 ID, 终态类型, 完成时间, 耗时, 总步数及相关信息的输入
  * @returns 终态更新补丁
@@ -846,7 +852,15 @@ export function createPersistedTaskHistoryTerminalPatch(input: {
   }
 }
 
-/** 创建崩溃恢复用的未闭合任务检测输入。 */
+/**
+ * 创建崩溃恢复用的未闭合任务检测输入。
+ *
+ * 架构意图：
+ * 1. 恢复准备：封装 Bot 标识和相关的历史事件集合，为检测崩溃后的残留任务提供数据底座。
+ *
+ * @param input 包含 bot_id, started_events, terminal_events 等信息的输入
+ * @returns 经过校验的检测输入对象
+ */
 export function createUnclosedTaskDetectionInput(input: {
   bot_id: string;
   started_events: readonly PersistedTaskStartedEventLogRecord[];
@@ -873,7 +887,18 @@ export function createUnclosedTaskDetectionInput(input: {
   });
 }
 
-/** 计算未闭合任务列表，用于纯函数化表达 event_log 崩溃恢复查询结果。 */
+/**
+ * 计算未闭合任务列表。
+ *
+ * 架构职责：
+ * 1. 崩溃恢复计算（Crash Recovery Calculation）：利用 event_log 的真理源推断哪些任务已被接受但未正常结束。
+ *
+ * 架构意图：
+ * 1. 纯函数恢复逻辑：通过对比 started_events 和 terminal_events，在不依赖复杂数据库查询的情况下，计算出需要恢复或标记失败的任务清单。
+ *
+ * @param input 包含检测输入和限制的输入
+ * @returns 检测出的未闭合任务结果
+ */
 export function detectUnclosedTasks(
   input: UnclosedTaskDetectionInput,
 ): UnclosedTaskDetectionResult {
@@ -899,6 +924,7 @@ export function detectUnclosedTasks(
     open_tasks: Object.freeze(openTasks),
   });
 }
+/** 克隆持久化数据值。 */
 
 function clonePersistedValue<TValue>(value: TValue): TValue {
   if (Array.isArray(value)) {
@@ -916,42 +942,49 @@ function clonePersistedValue<TValue>(value: TValue): TValue {
 
   return value;
 }
+/** 断言持久化标识符的合法性。 */
 
 function assertPersistedIdentifier(value: string, fieldName: string): void {
   if (value.trim().length === 0) {
     throw new Error(`${fieldName} must be a non-empty string`);
   }
 }
+/** 断言持久化时间戳的合法性。 */
 
 function assertPersistedTimestamp(value: string, fieldName: string): void {
   if (Number.isNaN(Date.parse(value))) {
     throw new Error(`${fieldName} must be a valid timestamp`);
   }
 }
+/** 断言数值是否为正整数。 */
 
 function assertPositiveInteger(value: number, fieldName: string): void {
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`${fieldName} must be a positive integer`);
   }
 }
+/** 断言数值是否为非负整数。 */
 
 function assertNonNegativeInteger(value: number, fieldName: string): void {
   if (!Number.isInteger(value) || value < 0) {
     throw new Error(`${fieldName} must be a non-negative integer`);
   }
 }
+/** 断言任务历史日志引用的合法性。 */
 
 function assertTaskHistoryLogRef(value: string, channel: "tasks" | "sandbox"): void {
   if (!isValidStorageRef(value) || !value.startsWith(`${channel}/`) || !value.endsWith(".jsonl")) {
     throw new Error(`task_history.log_ref must point to ${channel}/*.jsonl: ${value}`);
   }
 }
+/** 断言沙箱代码引用的合法性。 */
 
 function assertSandboxCodeRef(value: string): void {
   if (!isValidStorageRef(value) || !value.startsWith("sandbox/") || !value.endsWith(".code.ts")) {
     throw new Error(`task_history.code_ref must point to sandbox/*.code.ts: ${value}`);
   }
 }
+/** 归一化未关闭任务的数量限制。 */
 
 function normalizeUnclosedTaskLimit(limit: number | undefined): number {
   if (limit === undefined) {
@@ -961,6 +994,7 @@ function normalizeUnclosedTaskLimit(limit: number | undefined): number {
   assertPositiveInteger(limit, "limit");
   return limit;
 }
+/** 断言重放请求的 Bot 绑定是否匹配。 */
 
 function assertReplayBotBinding(
   expectedBotId: string,
@@ -971,6 +1005,7 @@ function assertReplayBotBinding(
     throw new Error(`${fieldName} must match bot_id`);
   }
 }
+/** 比较未关闭任务候选者的优先级。 */
 
 function compareUnclosedTaskCandidates(
   left: PersistedTaskStartedEventLogRecord,
@@ -1207,11 +1242,11 @@ export type DataConfigEnvironment = Readonly<Record<string, string | undefined>>
 /**
  * 创建基础设施配置（DataConfig）。
  *
+ * 架构职责：
+ * 1. 配置组合（Configuration Composition）：作为配置加载的组合根，统一环境变量与 Bot 级覆盖。
+ *
  * 架构意图：
- * 它是配置加载的组合根，负责：
- * 1. 基础加载：从环境变量快照中解析基础配置。
- * 2. 覆盖解析：将传入的 Bot 级配置（botConfig）解析为强类型的 Overlay 对象。
- * 3. 策略合并：将 Overlay 合并到基础配置中，实现“环境配置为底，Bot 配置覆盖”的层级逻辑。
+ * 1. 声明式配置：从环境变量快照和 Bot 配置中加载配置，提供一致的 DataConfig 视图。
  *
  * @param input 包含环境变量和 Bot 级覆盖配置的可选输入
  * @returns 最终生效的 DataConfig
@@ -1231,10 +1266,11 @@ export function createDataConfig(
 /**
  * 解析并校验 Bot 级覆盖配置。
  *
+ * 架构职责：
+ * 1. 动态配置守门员（Dynamic Config Gatekeeper）：校验非结构化输入并清洗为强类型的覆盖对象。
+ *
  * 架构意图：
- * 作为一个“守门员”，它负责将数据库或 API 传入的非结构化（unknown）配置对象，
- * 按照白名单机制（logs, embedding）清洗并转换为强类型的 BotConfigOverlay。
- * 这确保了动态配置的安全性，防止意外的 key 干扰系统行为。
+ * 1. 安全边界：通过白名单机制清洗 Bot 配置，防止非法或未知的 Key 干扰系统关键路径。
  *
  * @param input 原始 Bot 配置对象
  * @returns 经过校验和清洗的覆盖对象
@@ -1263,10 +1299,12 @@ export function createBotConfigOverlay(input: unknown): BotConfigOverlay {
 /**
  * 将 Bot 级覆盖合并到基础配置。
  *
+ * 架构职责：
+ * 1. 配置合并策略（Merge Strategy）：实现“环境配置为底，Bot 配置覆盖”的级联合并。
+ *
  * 架构意图：
- * 实现具体的合并策略。例如，日志根目录（baseDir）和各目录的保留期（retention）
- * 会根据 Overlay 中的值决定是使用全局默认值还是 Bot 自定义值。
- * 它确保了生成的最终配置（DataConfig）是完全冻结（Object.freeze）且自包含的。
+ * 1. 运行时不可变性：确保生成的最终配置（DataConfig）是完全冻结的，防止运行时状态污染。
+ * 2. 合并逻辑：例如，日志根目录（baseDir）和各目录的保留期（retention）会优先使用 Overlay 中的值。
  *
  * @param baseConfig 基础配置
  * @param overlay 覆盖配置
@@ -1312,6 +1350,7 @@ export function applyBotConfigOverlay(
     }),
   });
 }
+/** 基于环境变量创建基础数据配置。 */
 
 function createBaseDataConfig(env: DataConfigEnvironment): DataConfig {
   const poolMin = readPositiveInteger(env, PG_POOL_MIN_ENV_BINDING);
@@ -1355,6 +1394,7 @@ function createBaseDataConfig(env: DataConfigEnvironment): DataConfig {
     }),
   });
 }
+/** 归一化机器人日志配置参数。 */
 
 function normalizeBotLogsConfig(input: unknown): BotLogsConfigOverlay {
   const logsConfig = asPlainObject(input, "botConfig.logs");
@@ -1373,6 +1413,7 @@ function normalizeBotLogsConfig(input: unknown): BotLogsConfigOverlay {
     ...(normalizedRetention === undefined ? {} : { retention: normalizedRetention }),
   });
 }
+/** 归一化机器人向量模型配置参数。 */
 
 function normalizeBotEmbeddingConfig(input: unknown): BotEmbeddingConfigOverlay {
   const embeddingConfig = asPlainObject(input, "botConfig.embedding");
@@ -1389,6 +1430,7 @@ function normalizeBotEmbeddingConfig(input: unknown): BotEmbeddingConfigOverlay 
     ),
   });
 }
+/** 归一化日志保留时长配置。 */
 
 function normalizeRetentionOverlay(input: unknown): Partial<LogRetentionConfig> | undefined {
   const retention = asPlainObject(input, "botConfig.logs.retention");
@@ -1437,6 +1479,7 @@ function normalizeRetentionOverlay(input: unknown): Partial<LogRetentionConfig> 
         }),
   });
 }
+/** 读取必填的字符串环境变量。 */
 
 function readRequiredString(env: DataConfigEnvironment, binding: ConfigEnvBinding<string>): string {
   const value = readBindingValue(env, binding);
@@ -1447,6 +1490,7 @@ function readRequiredString(env: DataConfigEnvironment, binding: ConfigEnvBindin
 
   return normalizeRequiredString(value, binding.envVar);
 }
+/** 读取可选的字符串环境变量。 */
 
 function readOptionalString(
   env: DataConfigEnvironment,
@@ -1464,6 +1508,7 @@ function readOptionalString(
 
   return normalizeRequiredString(value, binding.envVar);
 }
+/** 读取正整数类型的环境变量。 */
 
 function readPositiveInteger(
   env: DataConfigEnvironment,
@@ -1471,6 +1516,7 @@ function readPositiveInteger(
 ): number {
   return normalizePositiveInteger(readBindingValue(env, binding), binding.envVar);
 }
+/** 读取网络端口环境变量。 */
 
 function readPort(env: DataConfigEnvironment, binding: ConfigEnvBinding<number>): number {
   const port = normalizePositiveInteger(readBindingValue(env, binding), binding.envVar);
@@ -1481,6 +1527,7 @@ function readPort(env: DataConfigEnvironment, binding: ConfigEnvBinding<number>)
 
   return port;
 }
+/** 读取环境绑定的泛型值。 */
 
 function readBindingValue(
   env: DataConfigEnvironment,
@@ -1498,6 +1545,7 @@ function readBindingValue(
 
   return binding.defaultValue;
 }
+/** 归一化并校验必填字符串。 */
 
 function normalizeRequiredString(value: unknown, fieldName: string): string {
   if (typeof value !== "string") {
@@ -1512,6 +1560,7 @@ function normalizeRequiredString(value: unknown, fieldName: string): string {
 
   return normalizedValue;
 }
+/** 归一化并校验正整数。 */
 
 function normalizePositiveInteger(value: unknown, fieldName: string): number {
   const numericValue =
@@ -1527,6 +1576,7 @@ function normalizePositiveInteger(value: unknown, fieldName: string): number {
 
   return numericValue;
 }
+/** 将输入值转换为只读对象类型。 */
 
 function asPlainObject(value: unknown, fieldName: string): Readonly<Record<string, unknown>> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1535,6 +1585,7 @@ function asPlainObject(value: unknown, fieldName: string): Readonly<Record<strin
 
   return value as Record<string, unknown>;
 }
+/** 断言对象是否只包含允许的键名。 */
 
 function assertAllowedKeys(
   value: Readonly<Record<string, unknown>>,

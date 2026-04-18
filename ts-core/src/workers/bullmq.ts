@@ -1,10 +1,9 @@
 /**
- * BullMQ（任务队列） 运行时队列工厂。
+ * BullMQ 运行时队列工厂。
  *
- * 架构职责：
- * 1. 基于共享 Redis（缓存） 连接创建三组真实 BullMQ Queue（任务队列） 实例。
- * 2. 收口 Conversation / Bot / Brain 三队列的运行时句柄与关闭边界。
- * 3. 提供依赖注入能力，允许测试在无真实 Redis（缓存） 的情况下验证创建与关闭时序。
+ * 1. 实例管理：基于共享 Redis 连接创建对话、执行和摘要三组真实的 BullMQ 队列实例。
+ * 2. 资源收口：统一管理三队列的运行时句柄与生命周期关闭边界。
+ * 3. 依赖注入：提供自定义 Queue 工厂注入能力，支持无真实 Redis 环境下的测试验证。
  */
 
 import { Queue, type QueueOptions } from "bullmq";
@@ -71,6 +70,7 @@ export interface WorkerBullmqDependencies {
 export function createBullmqPhysicalQueueName(name: WorkerQueueName): string {
   return name.replaceAll(":", "__");
 }
+/** 创建底层的 BullMQ 队列实例。 */
 
 function createBullmqQueue<TName extends WorkerQueueName>(input: {
   name: TName;
@@ -94,6 +94,7 @@ function createBullmqQueue<TName extends WorkerQueueName>(input: {
 
   return Object.freeze(queueLike);
 }
+/** 初始化特定任务的队列运行时。 */
 
 function createQueueRuntime<TName extends WorkerQueueName>(input: {
   name: TName;

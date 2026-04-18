@@ -362,9 +362,8 @@ export interface RuntimeScaffold {
 /**
  * 创建外部认证密钥绑定。
  *
- * 架构意图：
- * 将来自环境变量或配置的明文密钥及其来源元数据（Source, Reference）进行强类型封装，
- * 为后续的登录命令生成（如 /login <secret>）提供安全、确定的输入。
+ * 1. 密钥封装：将来自环境变量或配置的明文密钥及其来源元数据（Source, Reference）进行强类型封装。
+ * 2. 安全输入：为后续的登录命令生成（如 /login <secret>）提供安全、确定的输入保障。
  *
  * @param input 包含来源、引用和密钥明文的输入
  * @returns 不可变的密钥绑定对象
@@ -400,10 +399,8 @@ export function createExternalAuthCommandAction(
 /**
  * 创建外部认证执行计划。
  *
- * 架构设计：
- * 根据当前的 ExternalAuthState，决定下一步需要执行的认证动作。
- * 特别是在 pending 状态下，它会利用绑定的密钥生成真实的 ExternalAuthCommandAction，
- * 并同步提供脱敏后的 action_summary 供外部查询。
+ * 1. 动态决策：根据当前的 ExternalAuthState 决定下一步需要执行的认证动作（如发送登录命令）。
+ * 2. 状态映射：在 pending 状态下生成真实的认证动作，并同步产出脱敏后的摘要供外部查询。
  *
  * @param state 内部认证状态
  * @param secret 可选的注入密钥绑定
@@ -466,10 +463,8 @@ export function createExternalAuthExecutionPlan(
 /**
  * 创建对外可见的外部认证脱敏状态。
  *
- * 架构意图：
- * 作为一个“脱敏器”，它将内部包含敏感密钥引用的认证状态
- * 转换为安全的、适合暴露给客户端的 PublicState。它移除了具体的密钥细节，
- * 仅保留状态机指示和脱敏后的动作摘要。
+ * 1. 安全投影：作为一个“脱敏器”，将包含敏感密钥引用的内部状态转换为适合暴露给客户端的 PublicState。
+ * 2. 隐私保护：移除具体的密钥物理细节，仅保留状态机指示和脱敏后的动作预览。
  *
  * @param state 内部认证状态
  * @returns 脱敏后的公开状态
@@ -514,12 +509,10 @@ export function createExternalAuthPublicState(state: ExternalAuthState): Externa
 /**
  * 创建运行时就绪门控结果。
  *
- * 架构意图：
- * 实现核心的“就绪判定”策略。门控综合考虑了运行时状态（忙碌、初始化、已停机）
- * 和外部认证状态（待认证、认证失败）。它产出一个综合的 ready 标志，
- * 并列出具体的阻断原因（blocked_by），支撑系统按需开放 HTTP 和实时推送能力。
+ * 1. 准入判定：实现核心的“就绪”逻辑。综合考虑运行时状态（如是否忙碌）与外部认证状态（如是否成功）。
+ * 2. 能力授权：产出综合 ready 标志并列出阻断原因（blocked_by），决定系统是否可开放 HTTP 或实时推送能力。
  *
- * @param input 包含 Bot 状态和外部认证状态的输入
+ * @param input 包含 Bot 状态 and 外部认证状态的输入
  * @returns 门控判定结果
  */
 export function createRuntimeReadyGate(input: {
@@ -571,9 +564,8 @@ export function createRuntimeReadyGate(input: {
 /**
  * 创建外部认证运行时状态。
  *
- * 架构意图：
- * 作为一个工厂函数，它将认证结果（成功、失败、待定）统一收口为标准的 ExternalAuthState。
- * 它负责从密钥绑定中提取来源和引用元数据，并确保状态对象的结构一致性。
+ * 1. 状态收口：将认证结果（成功、失败、待定）统一封装为标准的 ExternalAuthState。
+ * 2. 契约保证：负责从密钥绑定中提取元数据，确保状态对象在全系统内的结构一致性。
  *
  * @param input 包含认证状态及相关元数据的判别联合输入
  * @returns 统一的认证状态对象
@@ -625,10 +617,8 @@ export function createExternalAuthState(
 /**
  * 创建运行时骨架占位对象。
  *
- * 架构意图：
- * 它是运行时初始化的“蓝图”。它聚合了初始状态、认证状态、初始执行计划以及门控结果，
- * 为 BotActor 提供了一个完整的启动上下文。它还定义了运行时支持的任务类型（Skill, Sandbox）
- * 和标准的中断信号模板。
+ * 1. 启动蓝图：聚合初始状态、认证计划及门控结果，为 BotActor 提供完整的启动上下文。
+ * 2. 边界定义：定义运行时支持的任务类型（Skill, Sandbox）和标准的中断信号模板。
  *
  * @param input 可选的认证状态和密钥注入
  * @returns 完整的运行时骨架
@@ -659,6 +649,7 @@ export function createRuntimeScaffold(
     },
   });
 }
+/** 创建外部认证流转动作摘要。 */
 
 function createExternalAuthActionSummary(): ExternalAuthActionSummary {
   return Object.freeze({
@@ -669,6 +660,7 @@ function createExternalAuthActionSummary(): ExternalAuthActionSummary {
     retry_allowed: true,
   });
 }
+/** 解析外部认证执行阶段的具体密钥。 */
 
 function resolveExternalAuthExecutionSecret(
   state: ExternalAuthPendingState,
