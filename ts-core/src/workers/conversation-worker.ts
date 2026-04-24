@@ -8,8 +8,13 @@
 
 import { Worker, type WorkerOptions } from "bullmq";
 
-import { createConversationReply } from "../conversation/chat.js";
+import { createCancelTemplateReply, createConversationReply } from "../conversation/chat.js";
 import type { ConversationRouteDecision } from "../conversation/contracts.js";
+import {
+  type ConversationGeneratedReply,
+  ConversationLlmChatError,
+  type ConversationLlmDiagnosticRecord,
+} from "../conversation/llm.js";
 import { createConversationRouteDecision, createMessageTriage } from "../conversation/triage.js";
 import type { RedisClientLike } from "../db/index.js";
 import { ConversationPriority, type MessageTriage } from "../domain/contracts.js";
@@ -19,7 +24,9 @@ import { createBullmqPhysicalQueueName } from "./bullmq.js";
 import {
   type BotWorkerTask,
   type ConversationWorkerTask,
+  type InterruptRuntimeAction,
   createBotWorkerTask,
+  createConversationWorkerActions,
   createConversationWorkerTask,
 } from "./contracts.js";
 import type { MessageQueueName } from "./queues.js";
@@ -35,6 +42,22 @@ export type ConversationWorkerRuntimeEvent =
       readonly message_id: string;
       /** 回复内容。 */
       readonly content: string;
+    }
+  | {
+      /** 事件类型。 */
+      readonly type: "llm.chat.diagnostic";
+      /** 目标 Bot 标识。 */
+      readonly bot_id: string;
+      /** 原始消息标识。 */
+      readonly message_id: string;
+      /** 模型名。 */
+      readonly model: string;
+      /** 日志引用。 */
+      readonly log_ref: string;
+      /** 是否成功。 */
+      readonly ok: boolean;
+      /** 失败摘要。 */
+      readonly error_summary?: string;
     }
   | {
       /** 事件类型。 */
@@ -87,6 +110,14 @@ export type ConversationEnqueueExecTaskSink = (input: {
   readonly priority: number;
 }) => Promise<unknown>;
 
+/** ConversationWorker（对话工作线程） 运行时中断汇点。 */
+export type ConversationInterruptRuntimeSink = (input: {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** 运行时中断信号。 */
+  readonly signal: InterruptRuntimeAction["signal"];
+}) => Promise<unknown>;
+
 /** ConversationWorker（对话工作线程） 分诊依赖。 */
 export type ConversationWorkerTriage = (input: {
   /** Worker 输入任务。 */
@@ -101,7 +132,7 @@ export type ConversationWorkerReplyGenerator = (input: {
   readonly triage: MessageTriage;
   /** 路由决策。 */
   readonly route: ConversationRouteDecision;
-}) => string | Promise<string>;
+}) => string | ConversationGeneratedReply | Promise<string | ConversationGeneratedReply>;
 
 /** ConversationWorker（对话工作线程） BullMQ（任务队列） Worker 最小能力。 */
 export interface ConversationBullmqWorkerLike {
@@ -127,6 +158,8 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly replyGenerator?: ConversationWorkerReplyGenerator;
   /** 广播回复汇点，真实路径指向 BotActor.broadcastReply。 */
   readonly broadcastReplySink: ConversationBroadcastReplySink;
+  /** 运行时中断汇点，真实路径指向 BotActor 中断入口。 */
+  readonly interruptRuntimeSink?: ConversationInterruptRuntimeSink;
   /** 执行任务入队汇点，真实路径指向 `bot:{botId}:exec`（执行队列）。 */
   readonly enqueueExecTaskSink?: ConversationEnqueueExecTaskSink;
   /** 当前是否已有活跃任务。 */
@@ -229,6 +262,55 @@ function toBullmqPriority(priority: ExecPriority): number {
 }
 
 /**
+ * 归一化回复生成结果。
+ *
+ * @param result 回复生成器返回值
+ * @returns 统一后的回复结构
+ */
+function normalizeGeneratedReply(
+  result: string | ConversationGeneratedReply,
+): ConversationGeneratedReply {
+  if (typeof result === "string") {
+    return Object.freeze({
+      mode: "template",
+      reply: result,
+    });
+  }
+
+  return Object.freeze({
+    ...result,
+    ...(result.diagnostics === undefined ? {} : { diagnostics: result.diagnostics }),
+  });
+}
+
+/**
+ * 记录 LLM（大语言模型） 诊断事件。
+ *
+ * @param events 事件列表
+ * @param botId Bot 标识
+ * @param diagnostics 诊断摘要
+ */
+function appendLlmDiagnosticEvent(
+  events: ConversationWorkerRuntimeEvent[],
+  botId: string,
+  diagnostics: ConversationLlmDiagnosticRecord,
+): void {
+  events.push(
+    Object.freeze({
+      type: "llm.chat.diagnostic",
+      bot_id: botId,
+      message_id: diagnostics.message_id,
+      model: diagnostics.model,
+      log_ref: diagnostics.log_ref,
+      ok: diagnostics.ok,
+      ...(diagnostics.error_summary === undefined
+        ? {}
+        : { error_summary: diagnostics.error_summary }),
+    }),
+  );
+}
+
+/**
  * 创建 ConversationWorker 真实运行时。
  *
  * 1. 消息轮询：作为守护进程持续监听指定的 BullMQ 消息队列，获取前端或游戏内抛出的原始对话事件。
@@ -263,29 +345,82 @@ export function createConversationWorkerRuntime(input: {
 
     switch (route.kind) {
       case "chat_reply": {
-        const generatedReply =
-          (await input.dependencies.replyGenerator?.({ task, triage, route })) ??
-          `收到：${task.message.content}`;
-        const reply = createConversationReply({
-          mode: "template",
-          reply: generatedReply,
-        });
+        try {
+          const generatedReply = normalizeGeneratedReply(
+            (await input.dependencies.replyGenerator?.({ task, triage, route })) ??
+              `收到：${task.message.content}`,
+          );
+          if (generatedReply.diagnostics !== undefined) {
+            appendLlmDiagnosticEvent(events, task.bot_id, generatedReply.diagnostics);
+          }
+          const reply =
+            generatedReply.mode === "llm"
+              ? createConversationReply({
+                  mode: "llm",
+                  reply: generatedReply.reply,
+                })
+              : createConversationReply({
+                  mode: "template",
+                  reply: generatedReply.reply,
+                });
 
-        await input.dependencies.broadcastReplySink({
-          message_id: task.message.message_id,
-          content: reply.reply,
-        });
-        events.push(
-          Object.freeze({
-            type: "chat.reply",
-            bot_id: task.bot_id,
+          await input.dependencies.broadcastReplySink({
             message_id: task.message.message_id,
             content: reply.reply,
-          }),
-        );
+          });
+          events.push(
+            Object.freeze({
+              type: "chat.reply",
+              bot_id: task.bot_id,
+              message_id: task.message.message_id,
+              content: reply.reply,
+            }),
+          );
+        } catch (error) {
+          if (error instanceof ConversationLlmChatError) {
+            appendLlmDiagnosticEvent(events, task.bot_id, error.diagnostics);
+          }
+          throw error;
+        }
         break;
       }
       case "cancel_interrupt":
+        for (const action of createConversationWorkerActions({
+          bot_id: task.bot_id,
+          route,
+          intent_epoch: task.message.intent_epoch,
+          reply: createCancelTemplateReply(),
+        })) {
+          switch (action.type) {
+            case "interrupt_runtime":
+              if (input.dependencies.interruptRuntimeSink === undefined) {
+                throw new Error("cancel route requires interruptRuntimeSink");
+              }
+
+              await input.dependencies.interruptRuntimeSink({
+                bot_id: action.bot_id,
+                signal: action.signal,
+              });
+              break;
+            case "broadcast_reply":
+              await input.dependencies.broadcastReplySink({
+                message_id: task.message.message_id,
+                content: action.reply.reply,
+              });
+              events.push(
+                Object.freeze({
+                  type: "chat.reply",
+                  bot_id: task.bot_id,
+                  message_id: task.message.message_id,
+                  content: action.reply.reply,
+                }),
+              );
+              break;
+            default:
+              throw new Error(`cancel route produced unsupported action: ${action.type}`);
+          }
+        }
+
         events.push(
           Object.freeze({
             type: "cancel.logged",

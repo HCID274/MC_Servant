@@ -300,6 +300,10 @@ export function createLlmLogLine<TLine extends LlmJsonlLine>(input: TLine): TLin
     assertPositiveNumber(input.meta.input_tokens, "meta.input_tokens");
     assertPositiveNumber(input.meta.output_tokens, "meta.output_tokens");
     assertPositiveNumber(input.meta.ms, "meta.ms");
+    assertJsonlErrorSnapshot(input.err);
+    if (!input.meta.ok && input.err === undefined) {
+      throw new Error("llm meta with ok=false must include err");
+    }
   }
 
   return cloneReadonlyValue(input);

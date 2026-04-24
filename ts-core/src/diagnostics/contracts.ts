@@ -498,6 +498,8 @@ export interface LlmMetaJsonlLine {
     /** 调用是否成功。 */
     ok: boolean;
   }>;
+  /** 失败错误摘要。 */
+  readonly err?: JsonlErrorSnapshot;
 }
 
 /** llm（大语言模型） 通道的日志行联合类型。 */

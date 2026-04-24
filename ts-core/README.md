@@ -2,7 +2,7 @@
 
 TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
-当前仓库已经提供一个最小本地在线入口：`src/main.ts`（可执行入口） 会启动真实 Redis（缓存） / PostgreSQL（关系型数据库） / BullMQ（任务队列） / Fastify（接口网关） / Mineflayer（Minecraft 协议客户端），并通过 ConversationWorker（对话工作线程） 把 `POST /api/message`（消息提交接口） 的文本回复写入 Minecraft（我的世界） 聊天频道。
+当前仓库已经提供一个最小本地在线入口：`src/main.ts`（可执行入口） 会启动真实 Redis（缓存） / PostgreSQL（关系型数据库） / BullMQ（任务队列） / Fastify（接口网关） / Mineflayer（Minecraft 协议客户端），并通过 ConversationWorker（对话工作线程） 把 `POST /api/message`（消息提交接口） 的文本回复写入 Minecraft（我的世界） 聊天频道。若已配置 `LLM_BASE_URL`（大语言模型基础地址） / `LLM_API_KEY`（接口密钥） / `LLM_MODEL`（模型名），普通闲聊会走一次真实 OpenAI（开放人工智能） 兼容 `chat.completions`（对话补全） 调用。
 
 同时，仓库现在已经提供可被后续消息链路复用的真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源工厂、BullMQ（任务队列） 三队列运行时工厂、Fastify（接口网关） 服务器骨架，以及 Drizzle（数据库工具） migration（迁移） 执行入口；默认启动摘要仍不会主动连接这些外部资源。
 
@@ -24,14 +24,16 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
 - 提供单进程、单容器的最小在线启动入口与纯装配摘要。
 - 已包含 PostgreSQL（关系型数据库） / Redis（缓存） 真实资源工厂、统一关闭边界和 Drizzle（数据库工具） migration（迁移） 入口。
-- 默认入口会自动启动 HTTP（超文本传输协议） / BullMQ（任务队列） / Mineflayer（Minecraft 协议客户端） 最窄链路；真实 LLM（大语言模型） 与 BotWorker（机器人工作线程） 执行链仍留给后续任务。
+- 默认入口会自动启动 HTTP（超文本传输协议） / BullMQ（任务队列） / Mineflayer（Minecraft 协议客户端） / ConversationWorker（对话工作线程） / BotWorker（机器人工作线程） 最窄链路。
+- 普通闲聊已支持最小 OpenAI（开放人工智能） 兼容 `chat.completions`（对话补全） 回包；确定性 `goTo`（前往坐标） 命令仍优先直达执行队列。
 
 ## 最小本地启动
 
-1. 复制样例环境变量：参考 `.env.example`（环境变量样例） 准备本地 `.env`（环境变量文件） 或直接导出环境变量。
-2. 安装依赖：`pnpm install`
-3. 开发态查看启动摘要：`pnpm dev`
-4. 构建后运行：`pnpm build && pnpm start`
+1. 复制样例环境变量：参考 `.env.example`（环境变量样例） 准备本地 `.env`（环境变量文件）。
+2. 将环境变量导入当前 `shell`（命令行）：`set -a && source .env && set +a`
+3. 安装依赖：`pnpm install`
+4. 开发态查看启动摘要：`pnpm dev`
+5. 构建后运行：`pnpm build && pnpm start`
 
 启动后会打印：
 
@@ -41,6 +43,29 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 - ConversationWorker（对话工作线程） 消费的 `msg:{botId}` 队列
 
 默认会读取 `TS_CORE_BOT_ID`（机器人标识），未设置时回退到 `local-bot`。
+
+## 最小闲聊手测
+
+1. 在 `.env`（环境变量文件） 中至少配置以下项：
+   `LLM_BASE_URL=http://127.0.0.1:8045/v1`
+   `LLM_API_KEY=sk-local-dev`
+   `LLM_MODEL=bl-auto`
+2. 启动本地 OpenAI（开放人工智能） 兼容网关、Redis（缓存）、PostgreSQL（关系型数据库） 和 Minecraft（我的世界） 服务端。
+3. 运行 `pnpm build && pnpm start`。
+4. 确认控制台出现：
+   `TS Core LLM chat ok: model=... message_id=... log_ref=...`
+5. 通过 HTTP（超文本传输协议） 发送一条普通闲聊消息：
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/message \
+  -H 'content-type: application/json' \
+  -d '{"bot_id":"local-bot","message_id":"msg-demo-chat","content":"今天过得怎么样"}'
+```
+
+6. 预期结果：
+   - `ConversationWorker`（对话工作线程） 会调用一次真实 OpenAI（开放人工智能） 兼容 `chat.completions`（对话补全）；
+   - 控制台会输出一条 `LLM`（大语言模型） 诊断摘要；
+   - Minecraft（我的世界） 游戏内能看到机器人把闲聊回复发回聊天栏。
 
 ## Minecraft 连接环境变量
 

@@ -11,7 +11,7 @@
 ## 当前批次
 
 - 批次范围：`T-021` ~ `T-030`
-- 当前已完成任务：`T-021`、`T-022`
+- 当前已完成任务：`T-021`、`T-022`、`T-023`
 - 当前批次摘要：从 `T-021`（任务二十一） 起按"纵向上线切片"重排，把原 T-021（消息入队 + ConversationWorker stub） / 原 T-022（BotWorker 最小执行） / 原 T-023（真实连服 + EasyAuth + 端到端） 三任务合并为新的 `T-021`（最窄端到端 demo），把 MC（Minecraft，我的世界） 上线硬门槛前移到本批次第一个任务。后续任务沿 BotWorker → 实时层 → sandbox → 真实 LLM → BrainWorker → 部署文档 的顺序逐步加深。
 - 当前批次硬约束：`T-021`（任务二十一） 验收必须包含真实 MC 服务器手测（聊天截图 + 启动日志），不再做纯契约或纯占位任务。每个后续任务都必须给出可在 MC 中亲眼验证的新行为门槛。
 
@@ -73,4 +73,32 @@
 - 验收备注：
   - 打回点已修复：`world_ready`（世界交互就绪） 门控已前移到 `BotActor.executeSkill()`（机器人执行代理执行技能） 入口，`runtime-mineflayer-model` 与 `runtime-actor-model` 已覆盖 `spawn`（生成） 前拒绝、`spawn` 后放行。
   - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 26 个测试文件、123 条测试通过。
+  - 本次审查未重复机械预检。
+
+### T-023 — OpenAI 兼容闲聊最短闭环
+
+- 审查状态：通过。
+- 核心文件：
+  - `ts-core/src/conversation/llm.ts`
+  - `ts-core/src/conversation/index.ts`
+  - `ts-core/src/workers/conversation-worker.ts`
+  - `ts-core/src/diagnostics/contracts.ts`
+  - `ts-core/src/diagnostics/logs.ts`
+  - `ts-core/src/app/bootstrap.ts`
+  - `ts-core/src/app/entrypoint.ts`
+  - `ts-core/src/main.ts`
+  - `ts-core/src/__tests__/conversation-llm-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
+  - `ts-core/README.md`
+  - `ts-core/.env.example`
+- 变更快照：
+  - 新增 `conversation/llm.ts`（对话大语言模型适配），使用原生 `fetch`（网络请求） 接入 OpenAI（开放人工智能） 兼容 `POST /chat/completions`（对话补全接口），并支持 `LLM_BASE_URL`（大语言模型基础地址） / `LLM_API_KEY`（接口密钥） / `LLM_MODEL`（模型名） 注入。
+  - `ConversationWorker`（对话工作线程） 的普通 `chat`（闲聊） 路径现在可走真实 LLM（大语言模型） 回复，并留下最小 `llm`（大语言模型） JSONL（结构化日志） 诊断摘要；失败时显式抛出并保留失败摘要，不伪装成成功回复。
+  - 确定性 `goTo`（前往坐标） 快路径保持不变；显式 `cancel`（取消） 经过两轮打回修复后，在线真实路径现已恢复为“最小分诊 → 运行时中断 → 模板回执”，不再误走 LLM（大语言模型） 闲聊，也不再只记 `cancel.logged`（取消已记录） 事件。
+  - `startAppOnlineRuntime()`（真实在线启动入口） 已把 LLM（大语言模型） 配置、默认 `triage`（分诊） 与 `interruptRuntimeSink`（运行时中断汇点） 接入真实在线路径；`main.ts`（程序入口） 会从环境变量读取 `LLM_API_KEY`（接口密钥） 并注入在线入口。
+  - `README.md`（说明文档） 与 `.env.example`（环境变量样例） 已补齐本地 OpenAI（开放人工智能） 兼容网关的最小手测步骤。
+- 验收备注：
+  - 两个打回点均已修复：先补上在线默认 `cancel`（取消） 分诊，再补齐 `cancel`（取消） 的真实中断与模板回执。
+  - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 27 个测试文件、128 条测试通过。
   - 本次审查未重复机械预检。

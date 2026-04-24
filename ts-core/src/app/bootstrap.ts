@@ -195,6 +195,20 @@ export interface AppDiagnosticsContract {
   readonly catalog: ReturnType<typeof createDiagnosticsCatalog>;
 }
 
+/** LLM（大语言模型） 在线调用装配结果。 */
+export interface AppLlmContract {
+  /** 当前是否启用真实 LLM（大语言模型） 调用。 */
+  readonly enabled: boolean;
+  /** 当前接入协议。 */
+  readonly provider: "openai_compatible";
+  /** 基础地址。 */
+  readonly base_url: string | null;
+  /** 模型名。 */
+  readonly model: string | null;
+  /** 接口密钥是否已注入。 */
+  readonly api_key_injected: boolean;
+}
+
 /** 基础设施真实 I/O（输入输出） 资源名称清单。 */
 export const APP_RUNTIME_RESOURCE_NAMES = ["postgres", "redis"] as const;
 
@@ -428,6 +442,8 @@ export interface AppBootstrapContract<TBotId extends string = string> {
   readonly sandbox: AppSandboxContract;
   /** 诊断装配结果。 */
   readonly diagnostics: AppDiagnosticsContract;
+  /** LLM（大语言模型） 装配结果。 */
+  readonly llm: AppLlmContract;
   /** Drizzle migration（迁移） 元信息。 */
   readonly migrations: DrizzleMigrationMetadata;
   /** 真实资源目录。 */
@@ -479,6 +495,21 @@ export function createAppExternalAuthSecretFromEnvironment(input: {
 }
 
 /**
+ * 从应用环境中解析 LLM（大语言模型） 接口密钥。
+ *
+ * 1. 装配契约只暴露“是否已注入”，不长期留存明文。
+ * 2. 真正的在线入口在启动瞬间拿到密钥后立刻交给网络客户端使用。
+ *
+ * @param input 包含环境变量快照的输入
+ * @returns 已校验的密钥；未配置时返回 undefined
+ */
+export function createAppLlmApiKeyFromEnvironment(input: {
+  env?: DataConfigEnvironment;
+}): string | undefined {
+  return readOptionalString(input.env ?? {}, "LLM_API_KEY");
+}
+
+/**
  * 创建应用引导契约。
  *
  * 1. 验证基础引导参数（Bot ID, 启动时间戳）的合法性。
@@ -512,6 +543,9 @@ export function createAppBootstrapContract<TBotId extends string>(
   const redisKeys = createRedisKeyCatalog(input.botId);
   const redisConnection = createRedisConnectionDescriptor(config.redis);
   const migrations = createDrizzleMigrationMetadata({ postgres });
+  const llm = createAppLlmContract({
+    env: input.env ?? {},
+  });
   const workersCatalog = createWorkerQueueCatalog(input.botId);
   const runtimeScaffold = createRuntimeScaffold({
     externalAuth: runtimeExternalAuthResolution.state,
@@ -548,6 +582,7 @@ export function createAppBootstrapContract<TBotId extends string>(
     diagnostics: Object.freeze({
       catalog: createDiagnosticsCatalog(),
     }),
+    llm,
     migrations,
     resources: createAppResourceDirectory({
       postgres,
@@ -1237,6 +1272,49 @@ function createAppServiceDirectory<TBotId extends string>(input: {
       routes: API_ROUTE_DEFINITIONS,
       listen: input.httpListen,
     }),
+  });
+}
+
+/**
+ * 创建应用层的 LLM（大语言模型） 配置摘要。
+ *
+ * 1. 若三个核心环境变量均缺失，则声明为 disabled（未启用）。
+ * 2. 若任一项出现，则要求三项全部合法存在，避免“半配半不配”的隐性回退。
+ */
+function createAppLlmContract(input: { env: DataConfigEnvironment }): AppLlmContract {
+  const baseUrl = readOptionalString(input.env, "LLM_BASE_URL");
+  const apiKey = readOptionalString(input.env, "LLM_API_KEY");
+  const model = readOptionalString(input.env, "LLM_MODEL");
+  const hasAnyConfig = baseUrl !== undefined || apiKey !== undefined || model !== undefined;
+
+  if (!hasAnyConfig) {
+    return Object.freeze({
+      enabled: false,
+      provider: "openai_compatible",
+      base_url: null,
+      model: null,
+      api_key_injected: false,
+    });
+  }
+
+  if (baseUrl === undefined) {
+    throw new Error("LLM_BASE_URL must be configured when LLM is enabled");
+  }
+
+  if (apiKey === undefined) {
+    throw new Error("LLM_API_KEY must be configured when LLM is enabled");
+  }
+
+  if (model === undefined) {
+    throw new Error("LLM_MODEL must be configured when LLM is enabled");
+  }
+
+  return Object.freeze({
+    enabled: true,
+    provider: "openai_compatible",
+    base_url: baseUrl,
+    model,
+    api_key_injected: true,
   });
 }
 

@@ -14,6 +14,7 @@ import {
   startAppOnlineRuntime,
 } from "../app/index.js";
 import type { MineflayerBotHandle } from "../runtime/transport.js";
+import { createConversationWorkerTask } from "../workers/contracts.js";
 
 class FakeEntrypointMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-online";
@@ -262,5 +263,308 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       "redis.close",
       "postgres.close",
     ]);
+  });
+
+  it("应在真实在线入口把闲聊消息接到 OpenAI（开放人工智能） 兼容 LLM（大语言模型） 并写回聊天", async () => {
+    const events: string[] = [];
+    const writes: string[] = [];
+    const llmRequests: Array<{ url: string; body: unknown }> = [];
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-llm-online",
+      now: "2026-04-24T10:00:00.000Z",
+      env: {
+        LLM_BASE_URL: "http://127.0.0.1:8045/v1",
+        LLM_API_KEY: "sk-local-dev",
+        LLM_MODEL: "bl-auto",
+      },
+    });
+
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        llm: {
+          api_key: "sk-local-dev",
+          fetch: async (url, init) => {
+            llmRequests.push({
+              url: String(url),
+              body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+            });
+
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: "当然可以，我在这里",
+                    },
+                  },
+                ],
+                usage: {
+                  prompt_tokens: 12,
+                  completion_tokens: 5,
+                },
+              }),
+              {
+                status: 200,
+                headers: {
+                  "content-type": "application/json",
+                },
+              },
+            );
+          },
+          now: () => new Date("2026-04-24T10:00:00.000Z"),
+        },
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => undefined,
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => ({}),
+            connectClient: async () => undefined,
+            closeClient: async () => undefined,
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async () => ({ id: "job-online" }),
+              close: async () => undefined,
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => "http://127.0.0.1:0";
+              server.close = async () => originalClose();
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeEntrypointMineflayerBot(events);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        botWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+        conversationWorker: {
+          createWorker: ({ processor: capturedProcessor }) => {
+            processor = capturedProcessor;
+
+            return {
+              close: async () => undefined,
+            };
+          },
+        },
+      },
+      write: (message) => {
+        writes.push(message);
+      },
+    });
+
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-llm-online",
+        message: {
+          bot_id: "bot-llm-online",
+          message_id: "msg-online-chat",
+          content: "陪我聊聊天",
+          intent_epoch: 1,
+          snapshot_ts: 1_713_952_800_000,
+        },
+      }),
+    });
+
+    expect(bootstrap.llm).toEqual({
+      enabled: true,
+      provider: "openai_compatible",
+      base_url: "http://127.0.0.1:8045/v1",
+      model: "bl-auto",
+      api_key_injected: true,
+    });
+    expect(llmRequests).toEqual([
+      {
+        url: "http://127.0.0.1:8045/v1/chat/completions",
+        body: {
+          model: "bl-auto",
+          messages: expect.any(Array),
+        },
+      },
+    ]);
+    expect(events).toContain("chat:当然可以，我在这里喵~");
+    expect(writes).toContain(
+      "TS Core LLM chat ok: model=bl-auto message_id=msg-online-chat log_ref=llm/2026-04-24/chat-msg-online-chat.jsonl",
+    );
+
+    await runtime.close();
+  });
+
+  it("应在真实在线入口保留 cancel（取消） 的分诊语义并跳过 LLM（大语言模型） 调用", async () => {
+    const llmRequests: Array<{ url: string; body: unknown }> = [];
+    const interrupts: unknown[] = [];
+    const chats: string[] = [];
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-cancel-online",
+      now: "2026-04-24T10:00:00.000Z",
+      env: {
+        LLM_BASE_URL: "http://127.0.0.1:8045/v1",
+        LLM_API_KEY: "sk-local-dev",
+        LLM_MODEL: "bl-auto",
+      },
+    });
+
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        llm: {
+          api_key: "sk-local-dev",
+          fetch: async (url, init) => {
+            llmRequests.push({
+              url: String(url),
+              body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+            });
+
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: "不应触发",
+                    },
+                  },
+                ],
+              }),
+              {
+                status: 200,
+                headers: {
+                  "content-type": "application/json",
+                },
+              },
+            );
+          },
+          now: () => new Date("2026-04-24T10:00:00.000Z"),
+        },
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => undefined,
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => ({}),
+            connectClient: async () => undefined,
+            closeClient: async () => undefined,
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async () => ({ id: "job-online" }),
+              close: async () => undefined,
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => "http://127.0.0.1:0";
+              server.close = async () => originalClose();
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeEntrypointMineflayerBot(chats);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        botWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+        conversationWorker: {
+          interruptRuntimeSink: async ({ signal }) => {
+            interrupts.push(signal);
+          },
+          createWorker: ({ processor: capturedProcessor }) => {
+            processor = capturedProcessor;
+
+            return {
+              close: async () => undefined,
+            };
+          },
+        },
+      },
+    });
+
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cancel-online",
+        message: {
+          bot_id: "bot-cancel-online",
+          message_id: "msg-online-cancel",
+          content: "取消",
+          intent_epoch: 2,
+          snapshot_ts: 1_713_952_800_001,
+        },
+      }),
+    });
+
+    expect(llmRequests).toEqual([]);
+    expect(interrupts).toEqual([
+      {
+        source: {
+          type: "triage",
+          intent_epoch: 2,
+        },
+        reason: "cancel",
+      },
+    ]);
+    expect(chats).toEqual(["chat:好的，已经停下来了喵~"]);
+    expect(runtime.conversation_worker.getEvents()).toContainEqual({
+      type: "chat.reply",
+      bot_id: "bot-cancel-online",
+      message_id: "msg-online-cancel",
+      content: "好的，已经停下来了喵~",
+    });
+    expect(runtime.conversation_worker.getEvents()).toContainEqual({
+      type: "cancel.logged",
+      bot_id: "bot-cancel-online",
+      message_id: "msg-online-cancel",
+      reason: "online_explicit_cancel",
+    });
+
+    await runtime.close();
   });
 });

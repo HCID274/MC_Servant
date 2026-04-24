@@ -1,6 +1,7 @@
 import {
   createAppBootstrapContract,
   createAppExternalAuthSecretFromEnvironment,
+  createAppLlmApiKeyFromEnvironment,
   startAppOnlineRuntime,
 } from "./app/index.js";
 
@@ -80,6 +81,11 @@ async function main(): Promise<void> {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        llm: (() => {
+          const apiKey = createAppLlmApiKeyFromEnvironment({ env });
+
+          return apiKey === undefined ? {} : { api_key: apiKey };
+        })(),
         runtime: (() => {
           const externalAuthSecret = createAppExternalAuthSecretFromEnvironment({ env });
 

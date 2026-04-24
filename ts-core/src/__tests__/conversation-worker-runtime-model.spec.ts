@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createMessageTriage } from "../conversation/index.js";
+import { ConversationLlmChatError } from "../conversation/llm.js";
 import { ConversationPriority } from "../domain/contracts.js";
 import { createConversationWorkerTask } from "../workers/contracts.js";
 import { createConversationWorkerRuntime } from "../workers/conversation-worker.js";
@@ -28,7 +29,18 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             priority: "normal",
             reason: "unit_chat",
           }),
-        replyGenerator: () => "我听到啦",
+        replyGenerator: () => ({
+          mode: "llm",
+          reply: "我听到啦",
+          diagnostics: {
+            stage: "chat",
+            model: "bl-auto",
+            message_id: "msg-chat",
+            log_ref: "llm/2026-04-24/chat-msg-chat.jsonl",
+            ok: true,
+            lines: [],
+          },
+        }),
         broadcastReplySink: async (reply) => {
           replies.push(reply);
         },
@@ -56,6 +68,14 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       },
     ]);
     expect(runtime.getEvents()).toContainEqual({
+      type: "llm.chat.diagnostic",
+      bot_id: "bot-cw",
+      message_id: "msg-chat",
+      model: "bl-auto",
+      log_ref: "llm/2026-04-24/chat-msg-chat.jsonl",
+      ok: true,
+    });
+    expect(runtime.getEvents()).toContainEqual({
       type: "chat.reply",
       bot_id: "bot-cw",
       message_id: "msg-chat",
@@ -66,6 +86,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
   it("应只记录 cancel（取消） 路径，不写入 Mineflayer（Minecraft 协议客户端） 聊天", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const replies: Array<{ message_id: string; content: string }> = [];
+    const interrupts: Array<{ bot_id: string; signal: unknown }> = [];
     const runtime = createConversationWorkerRuntime({
       queue: {
         name: "msg:bot-cw",
@@ -85,6 +106,12 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             priority: "interrupt",
             reason: "owner_cancel",
           }),
+        replyGenerator: () => {
+          throw new Error("cancel route must not call reply generator");
+        },
+        interruptRuntimeSink: async (interrupt) => {
+          interrupts.push(interrupt);
+        },
         broadcastReplySink: async (reply) => {
           replies.push(reply);
         },
@@ -105,7 +132,30 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       }),
     });
 
-    expect(replies).toEqual([]);
+    expect(replies).toEqual([
+      {
+        message_id: "msg-cancel",
+        content: "好的，已经停下来了喵~",
+      },
+    ]);
+    expect(interrupts).toEqual([
+      {
+        bot_id: "bot-cw",
+        signal: {
+          source: {
+            type: "triage",
+            intent_epoch: 2,
+          },
+          reason: "cancel",
+        },
+      },
+    ]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "chat.reply",
+      bot_id: "bot-cw",
+      message_id: "msg-cancel",
+      content: "好的，已经停下来了喵~",
+    });
     expect(runtime.getEvents()).toContainEqual({
       type: "cancel.logged",
       bot_id: "bot-cw",
@@ -226,6 +276,73 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       message_id: "msg-goto",
       skill: "goTo",
       priority: "normal",
+    });
+  });
+
+  it("应在闲聊 LLM（大语言模型） 失败时记录诊断后继续抛错", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createMessageTriage({
+            intent: "chat",
+            priority: "normal",
+            reason: "unit_chat_error",
+          }),
+        replyGenerator: () => {
+          throw new ConversationLlmChatError(
+            "upstream overload",
+            Object.freeze({
+              stage: "chat",
+              model: "bl-auto",
+              message_id: "msg-chat-failed",
+              log_ref: "llm/2026-04-24/chat-msg-chat-failed.jsonl",
+              ok: false,
+              error_summary: "upstream overload",
+              lines: Object.freeze([]),
+            }),
+          );
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+
+    await expect(
+      processor?.({
+        data: createConversationWorkerTask({
+          bot_id: "bot-cw",
+          message: {
+            bot_id: "bot-cw",
+            message_id: "msg-chat-failed",
+            content: "你好",
+            intent_epoch: 5,
+            snapshot_ts: 104,
+          },
+        }),
+      }),
+    ).rejects.toThrow("upstream overload");
+
+    expect(runtime.getEvents()).toContainEqual({
+      type: "llm.chat.diagnostic",
+      bot_id: "bot-cw",
+      message_id: "msg-chat-failed",
+      model: "bl-auto",
+      log_ref: "llm/2026-04-24/chat-msg-chat-failed.jsonl",
+      ok: false,
+      error_summary: "upstream overload",
     });
   });
 });

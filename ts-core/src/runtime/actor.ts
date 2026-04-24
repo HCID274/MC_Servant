@@ -270,9 +270,9 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   });
 
   /**
- * 若外部认证处于 pending 状态，则尝试发送登录命令。
- */
-async function sendExternalAuthLoginIfNeeded(): Promise<void> {
+   * 若外部认证处于 pending 状态，则尝试发送登录命令。
+   */
+  async function sendExternalAuthLoginIfNeeded(): Promise<void> {
     if (
       externalAuth.status !== "pending" ||
       externalAuthPlan.status !== "pending" ||
@@ -304,9 +304,9 @@ async function sendExternalAuthLoginIfNeeded(): Promise<void> {
   }
 
   /**
- * 序列化执行聊天写入操作，防止多个写入动作冲突。
- */
-async function runSerializedChatWrite(write: () => Promise<void>): Promise<void> {
+   * 序列化执行聊天写入操作，防止多个写入动作冲突。
+   */
+  async function runSerializedChatWrite(write: () => Promise<void>): Promise<void> {
     if (chatWriteInFlight !== null) {
       throw new Error("BotActor chat write is already in flight");
     }

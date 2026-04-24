@@ -1573,5 +1573,3 @@ function assertAllowedKeys(
     }
   }
 }
-  }
-}

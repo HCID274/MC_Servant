@@ -8,6 +8,13 @@
  */
 
 import {
+  type ConversationLlmDependencies,
+  type ConversationLlmDiagnosticRecord,
+  createConversationLlmClient,
+  createConversationLlmConfig,
+  createMessageTriage,
+} from "../conversation/index.js";
+import {
   type BotWorkerRuntime,
   type BotWorkerRuntimeDependencies,
   type ConversationWorkerRuntime,
@@ -94,11 +101,19 @@ export interface AppStartupSummary<TBotId extends string = string> {
 }
 
 /** 真实在线启动入口依赖注入集合。 */
+export interface AppOnlineLlmDependencies extends ConversationLlmDependencies {
+  /** 运行时注入的接口密钥。 */
+  readonly api_key?: string;
+}
+
+/** 真实在线启动入口依赖注入集合。 */
 export interface AppOnlineEntrypointDependencies extends AppProcessRuntimeDependencies {
   /** ConversationWorker（对话工作线程） 依赖注入。 */
   readonly conversationWorker?: Omit<ConversationWorkerRuntimeDependencies, "broadcastReplySink">;
   /** BotWorker（机器人工作线程） 依赖注入。 */
   readonly botWorker?: Omit<BotWorkerRuntimeDependencies, "actor">;
+  /** LLM（大语言模型） 依赖注入。 */
+  readonly llm?: AppOnlineLlmDependencies;
 }
 
 /** 真实在线启动入口运行中资源。 */
@@ -293,6 +308,11 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   let runtime: AppRuntimeCoreResources<TBotId> | undefined;
   let botWorker: BotWorkerRuntime | undefined;
   let conversationWorker: ConversationWorkerRuntime | undefined;
+  const onlineTriage =
+    input.dependencies?.conversationWorker?.triage ?? createOnlineConversationTriage();
+  const llmReplyGenerator =
+    input.dependencies?.conversationWorker?.replyGenerator ??
+    createOnlineConversationReplyGenerator(input.bootstrap, input.dependencies?.llm, input.write);
 
   try {
     infrastructure = await createAppRuntimeResources(
@@ -312,6 +332,9 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     runtime = await createAppRuntimeCoreResources(input.bootstrap, input.dependencies?.runtime);
     input.write?.(`TS Core Mineflayer ready: ${runtime.actor.getSnapshot().transport.username}`);
     const createdRuntime = runtime;
+    const interruptRuntimeSink =
+      input.dependencies?.conversationWorker?.interruptRuntimeSink ??
+      createOnlineConversationInterruptRuntimeSink(createdRuntime.actor);
 
     botWorker = createBotWorkerRuntime({
       queue: {
@@ -333,6 +356,9 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       },
       dependencies: {
         ...(input.dependencies?.conversationWorker ?? {}),
+        ...(onlineTriage === undefined ? {} : { triage: onlineTriage }),
+        ...(llmReplyGenerator === undefined ? {} : { replyGenerator: llmReplyGenerator }),
+        interruptRuntimeSink,
         broadcastReplySink: async (reply) => {
           await createdRuntime.actor.broadcastReply(reply);
         },
@@ -384,6 +410,113 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     }).catch(() => undefined);
     throw error;
   }
+}
+
+/**
+ * 为真实在线入口创建运行时中断汇点。
+ *
+ * 入口层只保留最小调用能力，不扩大对 BotActor（机器人执行代理） 运行时内部实现的耦合面。
+ */
+function createOnlineConversationInterruptRuntimeSink<TBotId extends string>(
+  actor: AppRuntimeCoreResources<TBotId>["actor"],
+): NonNullable<ConversationWorkerRuntimeDependencies["interruptRuntimeSink"]> {
+  return async ({ signal }) => {
+    const interruptActor = actor as unknown as {
+      interrupt(interruptSignal: typeof signal): Promise<unknown>;
+    };
+
+    await interruptActor.interrupt(signal);
+  };
+}
+
+/**
+ * 为真实在线入口创建最小分诊器。
+ *
+ * 在线最短闭环仍需保留 cancel（取消） 的模板中断语义；因此这里先锁住显式取消文本，
+ * 其余消息继续回退到普通 chat（闲聊） 路径，确定性 goTo（前往坐标） 仍由 Worker 内部快路径处理。
+ */
+function createOnlineConversationTriage(): ConversationWorkerRuntimeDependencies["triage"] {
+  return ({ task }) => {
+    const normalizedContent = task.message.content.trim().replaceAll(/\s+/gu, "");
+    const isExplicitCancel =
+      normalizedContent === "取消" ||
+      normalizedContent === "停止" ||
+      normalizedContent === "停下" ||
+      normalizedContent === "停下来" ||
+      normalizedContent === "先停下" ||
+      normalizedContent === "先停一下";
+
+    if (isExplicitCancel) {
+      return createMessageTriage({
+        intent: "cancel",
+        priority: "interrupt",
+        reason: "online_explicit_cancel",
+      });
+    }
+
+    return createMessageTriage({
+      intent: "chat",
+      priority: "normal",
+      reason: "online_chat_fallback",
+    });
+  };
+}
+
+/**
+ * 为真实在线入口创建闲聊回复生成器。
+ *
+ * 只有当引导契约已显式启用 LLM（大语言模型） 时，才会返回真实 OpenAI（开放人工智能） 兼容调用逻辑。
+ */
+function createOnlineConversationReplyGenerator<TBotId extends string>(
+  bootstrap: AppBootstrapContract<TBotId>,
+  dependencies: AppOnlineLlmDependencies | undefined,
+  write: ((message: string) => void) | undefined,
+): ConversationWorkerRuntimeDependencies["replyGenerator"] | undefined {
+  if (!bootstrap.llm.enabled) {
+    return undefined;
+  }
+
+  if (dependencies?.api_key === undefined) {
+    throw new Error("LLM_API_KEY must be injected for online runtime");
+  }
+
+  const llm = createConversationLlmClient(
+    createConversationLlmConfig({
+      base_url: bootstrap.llm.base_url ?? "",
+      api_key: dependencies.api_key,
+      model: bootstrap.llm.model ?? "",
+      bot_name: bootstrap.bot_id,
+      owner_name: "主人",
+      timeout_ms: 15_000,
+    }),
+    {
+      ...dependencies,
+      onDiagnostic: async (record) => {
+        write?.(renderLlmDiagnosticMessage(record));
+        await dependencies?.onDiagnostic?.(record);
+      },
+    },
+  );
+
+  return async ({ task }) =>
+    llm.generateChatReply({
+      message_id: task.message.message_id,
+      message: task.message.content,
+    });
+}
+
+/**
+ * 渲染最小 LLM（大语言模型） 诊断摘要。
+ *
+ * @param record 诊断记录
+ * @returns 控制台输出文本
+ */
+function renderLlmDiagnosticMessage(record: ConversationLlmDiagnosticRecord): string {
+  const base =
+    `TS Core LLM ${record.stage} ${record.ok ? "ok" : "failed"}: ` +
+    `model=${record.model} message_id=${record.message_id} log_ref=${record.log_ref}`;
+
+  return record.error_summary === undefined ? base : `${base} error=${record.error_summary}`;
 }
 
 /**

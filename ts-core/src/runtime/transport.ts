@@ -359,7 +359,7 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
       return eventSource;
     },
   });
-/** 清理 Mineflayer 机器人实例与底层连接。 */
+  /** 清理 Mineflayer 机器人实例与底层连接。 */
 
   function cleanupMineflayerBot(reason: string): void {
     const currentBot = bot;
