@@ -119,6 +119,9 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   const skillExecutions: BotActorSkillExecutionRecord[] = [];
   const skillExecution = input.skillExecution ?? {
     goToMovement: input.transport,
+    mine: input.transport.mine.bind(input.transport),
+    collect: input.transport.collect.bind(input.transport),
+    equip: input.transport.equip.bind(input.transport),
   };
 
   const createSnapshot = (): BotActorRuntimeSnapshot<TBotId> =>

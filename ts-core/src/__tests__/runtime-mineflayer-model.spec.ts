@@ -1,5 +1,27 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("mineflayer-pathfinder", () => ({
+  pathfinder: Symbol("mock-pathfinder-plugin"),
+  Movements: class MockMovements {},
+  goals: {
+    GoalBlock: class MockGoalBlock {
+      constructor(
+        readonly x: number,
+        readonly y: number,
+        readonly z: number,
+      ) {}
+    },
+    GoalNear: class MockGoalNear {
+      constructor(
+        readonly x: number,
+        readonly y: number,
+        readonly z: number,
+        readonly range: number,
+      ) {}
+    },
+  },
+}));
 
 import {
   BotStatus,
@@ -11,15 +33,71 @@ import {
   createMineflayerTransportDescriptor,
   createObservationRuntimeCache,
 } from "../index.js";
-import type { MineflayerBotHandle } from "../runtime/transport.js";
+import type {
+  MineflayerBotHandle,
+  MineflayerEntityHandle,
+  MineflayerItemHandle,
+} from "../runtime/transport.js";
 
 class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-mc";
   readonly chatWrites: string[] = [];
+  readonly registry = {
+    itemsByName: {
+      cobblestone: {
+        id: 1,
+      },
+    },
+  };
+  readonly inventoryItems: MineflayerItemHandle[] = [];
+  readonly entities: Record<string, MineflayerEntityHandle | undefined> = {};
+  readonly inventory = {
+    items: (): readonly MineflayerItemHandle[] => this.inventoryItems,
+  };
+  readonly entity: { position?: { x: number; y: number; z: number } } = {};
+  readonly pathfinder = {
+    setMovements: (): void => {},
+    goto: async (): Promise<void> => {
+      await this.onGoto?.();
+    },
+  };
   closed = false;
+  onGoto?: () => void | Promise<void>;
 
   chat(text: string): void {
     this.chatWrites.push(text);
+  }
+
+  loadPlugin(): void {}
+
+  nearestEntity(
+    matcher: (entity: MineflayerEntityHandle) => boolean,
+  ): MineflayerEntityHandle | null {
+    const botPosition = this.entity.position;
+
+    if (botPosition === undefined) {
+      return null;
+    }
+
+    const candidates = Object.values(this.entities).filter(
+      (entity): entity is MineflayerEntityHandle =>
+        entity !== undefined && entity !== null && entity.position !== undefined && matcher(entity),
+    );
+
+    candidates.sort((left, right) => {
+      const leftDistance =
+        ((left.position?.x ?? 0) - botPosition.x) ** 2 +
+        ((left.position?.y ?? 0) - botPosition.y) ** 2 +
+        ((left.position?.z ?? 0) - botPosition.z) ** 2;
+      const rightDistance =
+        ((right.position?.x ?? 0) - botPosition.x) ** 2 +
+        ((right.position?.y ?? 0) - botPosition.y) ** 2 +
+        ((right.position?.z ?? 0) - botPosition.z) ** 2;
+
+      return leftDistance - rightDistance;
+    });
+
+    return candidates[0] ?? null;
   }
 
   quit(): void {
@@ -140,6 +218,135 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(failedBot.listenerCount("end")).toBe(0);
     expect(failedBot.listenerCount("kicked")).toBe(0);
     expect(failedBot.listenerCount("error")).toBe(0);
+  });
+
+  it("collect（捡拾） 应以背包目标物品总数量增加为成功条件，即使只是同一物品栈 count（数量） 增加", async () => {
+    const collectBot = new FakeMineflayerBot();
+    collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    collectBot.inventoryItems.push({
+      name: "cobblestone",
+      count: 4,
+    });
+    collectBot.entities.collectible = {
+      id: 7,
+      position: { x: 2, y: 64, z: 0 },
+      item: {
+        name: "cobblestone",
+      },
+    };
+    collectBot.onGoto = () => {
+      const stack = collectBot.inventoryItems[0];
+
+      if (stack !== undefined) {
+        Object.assign(stack, {
+          count: 5,
+        });
+      }
+      collectBot.entities.collectible = undefined;
+    };
+
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-collect-count",
+      }),
+      {
+        createBot: () => collectBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    collectBot.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.collect({
+        itemName: "cobblestone",
+        radius: 6,
+      }),
+    ).resolves.toMatchObject({
+      skill: "collect",
+      item_name: "cobblestone",
+      radius: 6,
+    });
+  });
+
+  it("collect（捡拾） 目标实体消失但背包数量未增加时必须显式失败", async () => {
+    const collectBot = new FakeMineflayerBot();
+    collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    collectBot.inventoryItems.push({
+      name: "cobblestone",
+      count: 4,
+    });
+    collectBot.entities.collectible = {
+      id: 8,
+      position: { x: 2, y: 64, z: 0 },
+      item: {
+        name: "cobblestone",
+      },
+    };
+    collectBot.onGoto = () => {
+      collectBot.entities.collectible = undefined;
+    };
+
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-collect-fail",
+      }),
+      {
+        createBot: () => collectBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    collectBot.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.collect({
+        itemName: "cobblestone",
+        radius: 6,
+      }),
+    ).rejects.toThrow("Mineflayer did not collect cobblestone in time");
+  }, 10_000);
+
+  it("collect（捡拾） 只能选择 radius（搜索半径） 内的掉落物目标", async () => {
+    const collectBot = new FakeMineflayerBot();
+    collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    let gotoCalls = 0;
+    collectBot.entities.collectible = {
+      id: 9,
+      position: { x: 12, y: 64, z: 0 },
+      item: {
+        name: "cobblestone",
+      },
+    };
+    collectBot.onGoto = () => {
+      gotoCalls += 1;
+    };
+
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-collect-radius",
+      }),
+      {
+        createBot: () => collectBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    collectBot.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.collect({
+        itemName: "cobblestone",
+        radius: 4,
+      }),
+    ).rejects.toThrow("Mineflayer cannot find collectible item cobblestone");
+    expect(gotoCalls).toBe(0);
   });
 
   it("应只在 Mineflayer（Minecraft 协议客户端） 已连接且外部认证允许时进入 IDLE（空闲）", async () => {

@@ -9,7 +9,13 @@
 import type { JsonlErrorSnapshot, LlmJsonlLine } from "../diagnostics/contracts.js";
 import { createLlmLogLine, createLlmLogRef } from "../diagnostics/logs.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
-import { SKILL_DIRECTORY, isGoToSkillParams } from "../skills/contracts.js";
+import {
+  SKILL_DIRECTORY,
+  isCollectSkillParams,
+  isEquipSkillParams,
+  isGoToSkillParams,
+  isMineSkillParams,
+} from "../skills/contracts.js";
 import type {
   ConversationHistoryTurn,
   ConversationReplyMode,
@@ -127,10 +133,18 @@ export interface ConversationLlmChatResult {
   readonly diagnostics: ConversationLlmDiagnosticRecord;
 }
 
-/** 最小移动规划成功结果。 */
+/** 在线最小真实规划允许的技能集合。 */
+export const ONLINE_PLAN_SKILLS = Object.freeze([
+  SKILL_DIRECTORY.goTo,
+  SKILL_DIRECTORY.mine,
+  SKILL_DIRECTORY.collect,
+  SKILL_DIRECTORY.equip,
+] as const);
+
+/** 最小技能规划成功结果。 */
 export type ConversationLlmPlanResult = Extract<
   ConversationSkillCallPlanDraft,
-  { skill: typeof SKILL_DIRECTORY.goTo }
+  { skill: (typeof ONLINE_PLAN_SKILLS)[number] }
 >;
 
 /** OpenAI 兼容聊天请求依赖。 */
@@ -151,8 +165,8 @@ export interface ConversationLlmClient {
   ): Promise<ReturnType<typeof createMessageTriage>>;
   /** 基于真实 OpenAI 兼容接口生成闲聊回复。 */
   generateChatReply(input: ConversationLlmChatInput): Promise<ConversationLlmChatResult>;
-  /** 基于真实 OpenAI 兼容接口生成最小 `goTo`（前往坐标） 规划。 */
-  generateGoToPlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult>;
+  /** 基于真实 OpenAI 兼容接口生成最小单技能 `skill_call`（技能调用） 规划。 */
+  generateSkillPlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult>;
 }
 
 /** 闲聊调用失败错误；包含最小诊断摘要。 */
@@ -308,7 +322,7 @@ export function createConversationTriageMessages(
   ]);
 }
 
-/** 组装最小 `goTo`（前往坐标） 规划消息列表。 */
+/** 组装最小单技能 `skill_call`（技能调用） 规划消息列表。 */
 export function createConversationPlanMessages(
   input: ConversationLlmPlanInput,
 ): readonly ConversationLlmMessage[] {
@@ -321,16 +335,26 @@ export function createConversationPlanMessages(
       role: "system",
       content: [
         "你是一个 Minecraft 任务规划器。",
-        "当前阶段只能输出单个 skill_call，并且 skill 只能是 goTo。",
-        "如果用户消息里能明确提取三个数值坐标，请输出 JSON：",
+        "当前阶段只能输出单个 skill_call。",
+        "允许的 skill 只有：goTo、mine、collect、equip。",
+        "如果是去某个坐标，请输出 JSON：",
         '{"type":"skill_call","reply":"一句简短确认回复","skill":"goTo","params":{"x":10,"y":64,"z":-5}}',
-        "如果不能明确提取三个坐标，输出 JSON：",
+        "如果是挖某种方块 N 个，请输出 JSON：",
+        '{"type":"skill_call","reply":"一句简短确认回复","skill":"mine","params":{"blockName":"stone","count":3}}',
+        "如果是捡某种掉落物，请输出 JSON：",
+        '{"type":"skill_call","reply":"一句简短确认回复","skill":"collect","params":{"itemName":"cobblestone","radius":8}}',
+        "如果是把某物装备到手上或指定槽位，请输出 JSON：",
+        '{"type":"skill_call","reply":"一句简短确认回复","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}',
+        "如果不能明确判断为 goTo、mine、collect、equip 其中一种，或参数不完整 / 不合法，输出 JSON：",
         '{"type":"cannot_plan","reason":"一句话说明为什么无法规划"}',
         "绝对规则：",
         "- 只能输出 JSON，不要解释",
         "- 不要输出 sandbox_code",
-        "- 不要输出除 goTo 之外的 skill",
-        "- params.x / y / z 必须是数字",
+        "- 不要输出除 goTo、mine、collect、equip 之外的 skill",
+        "- goTo.params.x / y / z 必须是数字",
+        "- mine.params.blockName 必须是非空字符串，count 必须是正整数",
+        "- collect.params.itemName 必须是非空字符串，radius 若提供必须是正整数",
+        "- equip.params.itemName 必须是非空字符串，destination 若提供只能是 hand、off-hand、head、torso、legs、feet",
       ].join("\n"),
     }),
     Object.freeze({
@@ -478,14 +502,14 @@ export function createConversationLlmClient(
         });
       }
     },
-    async generateGoToPlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult> {
+    async generateSkillPlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult> {
       const payload = await requestChatCompletionPayload({
         fetchImpl,
         config,
         messages: createConversationPlanMessages(input),
       });
 
-      return parseConversationGoToPlan(extractAssistantReply(payload));
+      return parseConversationSkillPlan(extractAssistantReply(payload));
     },
   });
 }
@@ -551,19 +575,19 @@ function parseConversationTriage(content: string): ReturnType<typeof createMessa
 }
 
 /**
- * 解析最小 `goTo`（前往坐标） 规划返回。
+ * 解析最小单技能 `skill_call`（技能调用） 规划返回。
  *
  * @param content assistant（助手） 文本
- * @returns 经过强校验的 `goTo`（前往坐标） 规划草案
+ * @returns 经过强校验的技能规划草案
  */
-function parseConversationGoToPlan(content: string): ConversationLlmPlanResult {
+function parseConversationSkillPlan(content: string): ConversationLlmPlanResult {
   const record = parseJsonRecord(content);
 
   if (record.type === "cannot_plan") {
     throw new ConversationLlmPlanError(
       typeof record.reason === "string" && record.reason.trim().length > 0
         ? record.reason
-        : "planner cannot determine goTo coordinates",
+        : "planner cannot determine a valid executable skill",
     );
   }
 
@@ -571,23 +595,54 @@ function parseConversationGoToPlan(content: string): ConversationLlmPlanResult {
     throw new ConversationLlmPlanError("planner must return type=skill_call or type=cannot_plan");
   }
 
-  if (record.skill !== SKILL_DIRECTORY.goTo) {
-    throw new ConversationLlmPlanError("planner must return skill=goTo");
-  }
-
-  if (!isGoToSkillParams(record.params)) {
-    throw new ConversationLlmPlanError("planner returned invalid goTo params");
-  }
-
   if (typeof record.reply !== "string" || record.reply.trim().length === 0) {
     throw new ConversationLlmPlanError("planner reply must be a non-empty string");
   }
 
-  return createSkillCallPlanDraft({
-    reply: record.reply,
-    skill: SKILL_DIRECTORY.goTo,
-    params: record.params,
-  }) as ConversationLlmPlanResult;
+  switch (record.skill) {
+    case SKILL_DIRECTORY.goTo:
+      if (!isGoToSkillParams(record.params)) {
+        throw new ConversationLlmPlanError("planner returned invalid goTo params");
+      }
+
+      return createSkillCallPlanDraft({
+        reply: record.reply,
+        skill: SKILL_DIRECTORY.goTo,
+        params: record.params,
+      }) as ConversationLlmPlanResult;
+    case SKILL_DIRECTORY.mine:
+      if (!isMineSkillParams(record.params)) {
+        throw new ConversationLlmPlanError("planner returned invalid mine params");
+      }
+
+      return createSkillCallPlanDraft({
+        reply: record.reply,
+        skill: SKILL_DIRECTORY.mine,
+        params: record.params,
+      }) as ConversationLlmPlanResult;
+    case SKILL_DIRECTORY.collect:
+      if (!isCollectSkillParams(record.params)) {
+        throw new ConversationLlmPlanError("planner returned invalid collect params");
+      }
+
+      return createSkillCallPlanDraft({
+        reply: record.reply,
+        skill: SKILL_DIRECTORY.collect,
+        params: record.params,
+      }) as ConversationLlmPlanResult;
+    case SKILL_DIRECTORY.equip:
+      if (!isEquipSkillParams(record.params)) {
+        throw new ConversationLlmPlanError("planner returned invalid equip params");
+      }
+
+      return createSkillCallPlanDraft({
+        reply: record.reply,
+        skill: SKILL_DIRECTORY.equip,
+        params: record.params,
+      }) as ConversationLlmPlanResult;
+    default:
+      throw new ConversationLlmPlanError("planner must return skill=goTo|mine|collect|equip");
+  }
 }
 
 /**

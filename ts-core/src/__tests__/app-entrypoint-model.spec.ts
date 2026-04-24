@@ -605,6 +605,252 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     await runtime.close();
   });
 
+  it("应在真实在线入口把 mine（挖掘） / collect（捡拾） / equip（装备） 三类自然语言任务规划为单个 skill_call（技能调用） 并入执行队列", async () => {
+    const llmRequests: Array<{ url: string; body: unknown }> = [];
+    const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-skill-online",
+      now: "2026-04-24T10:00:00.000Z",
+      env: {
+        LLM_BASE_URL: "http://127.0.0.1:8045/v1",
+        LLM_API_KEY: "sk-local-dev",
+        LLM_MODEL: "bl-auto",
+      },
+    });
+
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        llm: {
+          api_key: "sk-local-dev",
+          fetch: async (url, init) => {
+            llmRequests.push({
+              url: String(url),
+              body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+            });
+            const requestBody =
+              init?.body === undefined
+                ? undefined
+                : (JSON.parse(String(init.body)) as {
+                    messages?: Array<{ role: string; content: string }>;
+                  });
+            const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
+            let assistantContent =
+              '{"intent":"task","priority":"normal","reason":"主人给了明确技能指令"}';
+
+            if (userMessage.includes("主人的指令：")) {
+              if (userMessage.includes("挖两块石头")) {
+                assistantContent =
+                  '{"type":"skill_call","reply":"收到，我去挖石头","skill":"mine","params":{"blockName":"stone","count":2}}';
+              } else if (userMessage.includes("把地上的圆石捡起来")) {
+                assistantContent =
+                  '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":6}}';
+              } else {
+                assistantContent =
+                  '{"type":"skill_call","reply":"收到，我先把石镐拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}';
+              }
+            }
+
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: assistantContent,
+                    },
+                  },
+                ],
+              }),
+              {
+                status: 200,
+                headers: {
+                  "content-type": "application/json",
+                },
+              },
+            );
+          },
+          now: () => new Date("2026-04-24T10:00:00.000Z"),
+        },
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => undefined,
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => ({}),
+            connectClient: async () => undefined,
+            closeClient: async () => undefined,
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async (jobName: string, data: unknown, options: unknown) => {
+                queueAdds.push({ name, jobName, data, options });
+
+                return { id: "job-online" };
+              },
+              close: async () => undefined,
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => "http://127.0.0.1:0";
+              server.close = async () => originalClose();
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeEntrypointMineflayerBot([]);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        botWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+        conversationWorker: {
+          createWorker: ({ processor: capturedProcessor }) => {
+            processor = capturedProcessor;
+
+            return {
+              close: async () => undefined,
+            };
+          },
+        },
+      },
+    });
+
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-skill-online",
+        message: {
+          bot_id: "bot-skill-online",
+          message_id: "msg-online-mine",
+          content: "去挖两块石头",
+          intent_epoch: 5,
+          snapshot_ts: 1_713_952_800_010,
+        },
+      }),
+    });
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-skill-online",
+        message: {
+          bot_id: "bot-skill-online",
+          message_id: "msg-online-collect",
+          content: "把地上的圆石捡起来",
+          intent_epoch: 6,
+          snapshot_ts: 1_713_952_800_011,
+        },
+      }),
+    });
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-skill-online",
+        message: {
+          bot_id: "bot-skill-online",
+          message_id: "msg-online-equip",
+          content: "把石镐拿在手上",
+          intent_epoch: 7,
+          snapshot_ts: 1_713_952_800_012,
+        },
+      }),
+    });
+
+    expect(llmRequests).toHaveLength(6);
+    expect(queueAdds).toEqual([
+      {
+        name: "bot:bot-skill-online:exec",
+        jobName: "bot",
+        data: expect.objectContaining({
+          exec_job: expect.objectContaining({
+            message_id: "msg-online-mine",
+            priority: "normal",
+            skill: "mine",
+            params: { blockName: "stone", count: 2 },
+          }),
+        }),
+        options: {
+          jobId: "msg-online-mine",
+          priority: 5,
+        },
+      },
+      {
+        name: "bot:bot-skill-online:exec",
+        jobName: "bot",
+        data: expect.objectContaining({
+          exec_job: expect.objectContaining({
+            message_id: "msg-online-collect",
+            priority: "normal",
+            skill: "collect",
+            params: { itemName: "cobblestone", radius: 6 },
+          }),
+        }),
+        options: {
+          jobId: "msg-online-collect",
+          priority: 5,
+        },
+      },
+      {
+        name: "bot:bot-skill-online:exec",
+        jobName: "bot",
+        data: expect.objectContaining({
+          exec_job: expect.objectContaining({
+            message_id: "msg-online-equip",
+            priority: "normal",
+            skill: "equip",
+            params: { itemName: "stone_pickaxe", destination: "hand" },
+          }),
+        }),
+        options: {
+          jobId: "msg-online-equip",
+          priority: 5,
+        },
+      },
+    ]);
+    expect(runtime.conversation_worker.getEvents()).toContainEqual({
+      type: "task.accepted",
+      bot_id: "bot-skill-online",
+      message_id: "msg-online-mine",
+      skill: "mine",
+      priority: "normal",
+    });
+    expect(runtime.conversation_worker.getEvents()).toContainEqual({
+      type: "task.accepted",
+      bot_id: "bot-skill-online",
+      message_id: "msg-online-collect",
+      skill: "collect",
+      priority: "normal",
+    });
+    expect(runtime.conversation_worker.getEvents()).toContainEqual({
+      type: "task.accepted",
+      bot_id: "bot-skill-online",
+      message_id: "msg-online-equip",
+      skill: "equip",
+      priority: "normal",
+    });
+
+    await runtime.close();
+  });
+
   it("应在真实在线入口把 modify（修改） 分诊结果降级为 chat（闲聊），而不是误走规划", async () => {
     const llmRequests: Array<{ url: string; body: unknown }> = [];
     const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];

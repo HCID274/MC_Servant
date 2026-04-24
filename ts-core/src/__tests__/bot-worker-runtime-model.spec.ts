@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { ExecPriority, TaskHistoryStatus, createSkillCallJob } from "../index.js";
-import { SKILL_DIRECTORY, createGoToSkillExecutionResult } from "../skills/index.js";
+import {
+  SKILL_DIRECTORY,
+  createEquipSkillExecutionResult,
+  createGoToSkillExecutionResult,
+} from "../skills/index.js";
 import { createBotWorkerRuntime } from "../workers/bot-worker.js";
 import { createBotWorkerTask } from "../workers/contracts.js";
 
@@ -178,6 +182,70 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
         message_id: "msg-worker-stale",
         status: TaskHistoryStatus.Discarded,
         reason: "intent_epoch_stale",
+      },
+    ]);
+  });
+
+  it("应把 equip（装备） 任务沿现有生命周期链路执行到 completed（已完成）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const executedSkills: string[] = [];
+    const runtime = createBotWorkerRuntime({
+      queue: {
+        name: "bot:bot-worker:exec",
+        connection: {},
+      },
+      dependencies: {
+        actor: {
+          async executeSkill(job) {
+            executedSkills.push(job.skill);
+
+            return {
+              result: createEquipSkillExecutionResult({
+                itemName: "stone_pickaxe",
+                destination: "hand",
+              }),
+              snapshot: {} as never,
+            };
+          },
+        },
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+    const task = createBotWorkerTask({
+      bot_id: "bot-worker",
+      exec_job: createSkillCallJob({
+        message_id: "msg-worker-equip",
+        intent_epoch: 1,
+        snapshot_ts: 110,
+        priority: ExecPriority.Normal,
+        skill: SKILL_DIRECTORY.equip,
+        params: { itemName: "stone_pickaxe", destination: "hand" },
+      }),
+    });
+
+    await runtime.start();
+    await processor?.({ data: task });
+
+    expect(executedSkills).toEqual(["equip"]);
+    expect(runtime.getEvents()).toEqual([
+      {
+        type: "task.started",
+        bot_id: "bot-worker",
+        message_id: "msg-worker-equip",
+        status: TaskHistoryStatus.Started,
+      },
+      {
+        type: "task.completed",
+        bot_id: "bot-worker",
+        message_id: "msg-worker-equip",
+        status: TaskHistoryStatus.Completed,
+        total_steps: 1,
       },
     ]);
   });

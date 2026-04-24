@@ -12,7 +12,13 @@ import {
   createMineflayerTransportDescriptor,
   createSkillCallJob,
 } from "../runtime/index.js";
-import { SKILL_DIRECTORY, createGoToSkillExecutionResult } from "../skills/index.js";
+import {
+  SKILL_DIRECTORY,
+  createCollectSkillExecutionResult,
+  createEquipSkillExecutionResult,
+  createGoToSkillExecutionResult,
+  createMineSkillExecutionResult,
+} from "../skills/index.js";
 
 function createFakeTransport(input?: {
   chat?: (text: string) => Promise<void> | void;
@@ -20,6 +26,15 @@ function createFakeTransport(input?: {
     readonly x: number;
     readonly y: number;
     readonly z: number;
+  }) => Promise<void> | void;
+  mine?: (params: { readonly blockName: string; readonly count: number }) => Promise<void> | void;
+  collect?: (params: {
+    readonly itemName: string;
+    readonly radius?: number;
+  }) => Promise<void> | void;
+  equip?: (params: {
+    readonly itemName: string;
+    readonly destination?: "hand" | "off-hand" | "head" | "torso" | "legs" | "feet";
   }) => Promise<void> | void;
   worldReady?: boolean;
 }): MineflayerRuntimeTransport<"bot-actor"> {
@@ -55,6 +70,33 @@ function createFakeTransport(input?: {
       await input?.goTo?.(params);
 
       return createGoToSkillExecutionResult(params);
+    },
+    async mine(params) {
+      if (!connected) {
+        throw new Error("not connected");
+      }
+
+      await input?.mine?.(params);
+
+      return createMineSkillExecutionResult(params);
+    },
+    async collect(params) {
+      if (!connected) {
+        throw new Error("not connected");
+      }
+
+      await input?.collect?.(params);
+
+      return createCollectSkillExecutionResult(params);
+    },
+    async equip(params) {
+      if (!connected) {
+        throw new Error("not connected");
+      }
+
+      await input?.equip?.(params);
+
+      return createEquipSkillExecutionResult(params);
     },
     getSnapshot() {
       return Object.freeze({
@@ -345,5 +387,95 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
     releaseMove?.();
     await firstExecution;
     expect(actor.getSnapshot().status).toBe(BotStatus.IDLE);
+  });
+
+  it("应在 ready（就绪） 后执行 mine（挖掘） / collect（捡拾） / equip（装备）", async () => {
+    const executed: string[] = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        mine: (params) => {
+          executed.push(`mine:${params.blockName}:${params.count}`);
+        },
+        collect: (params) => {
+          executed.push(`collect:${params.itemName}:${params.radius ?? 8}`);
+        },
+        equip: (params) => {
+          executed.push(`equip:${params.itemName}:${params.destination ?? "hand"}`);
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+    });
+
+    await actor.start();
+    await expect(
+      actor.executeSkill(
+        createSkillCallJob({
+          message_id: "msg-mine",
+          intent_epoch: 1,
+          snapshot_ts: 100,
+          priority: ExecPriority.Normal,
+          skill: SKILL_DIRECTORY.mine,
+          params: { blockName: "stone", count: 2 },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      result: {
+        skill: "mine",
+        mined_count: 2,
+      },
+    });
+    await expect(
+      actor.executeSkill(
+        createSkillCallJob({
+          message_id: "msg-collect",
+          intent_epoch: 1,
+          snapshot_ts: 101,
+          priority: ExecPriority.Normal,
+          skill: SKILL_DIRECTORY.collect,
+          params: { itemName: "cobblestone", radius: 6 },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      result: {
+        skill: "collect",
+        item_name: "cobblestone",
+      },
+    });
+    const equipOutcome = await actor.executeSkill(
+      createSkillCallJob({
+        message_id: "msg-equip",
+        intent_epoch: 1,
+        snapshot_ts: 102,
+        priority: ExecPriority.Normal,
+        skill: SKILL_DIRECTORY.equip,
+        params: { itemName: "stone_pickaxe", destination: "hand" },
+      }),
+    );
+
+    expect(equipOutcome.result).toMatchObject({
+      skill: "equip",
+      item_name: "stone_pickaxe",
+      destination: "hand",
+    });
+    expect(executed).toEqual(["mine:stone:2", "collect:cobblestone:6", "equip:stone_pickaxe:hand"]);
+    expect(actor.getSnapshot().skill_executions).toEqual([
+      {
+        message_id: "msg-mine",
+        skill: "mine",
+      },
+      {
+        message_id: "msg-collect",
+        skill: "collect",
+      },
+      {
+        message_id: "msg-equip",
+        skill: "equip",
+      },
+    ]);
   });
 });

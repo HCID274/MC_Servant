@@ -514,9 +514,9 @@ function createOnlineConversationReplyGenerator(
 }
 
 /**
- * 为真实在线入口创建最小 `goTo`（前往坐标） 规划器。
+ * 为真实在线入口创建最小单技能 `skill_call`（技能调用） 规划器。
  *
- * 当前阶段只允许规划到单个 `skill_call.goTo`（技能调用前往坐标）。
+ * 当前阶段只允许规划到单个 `skill_call`（技能调用），且技能集合限定为 goTo / mine / collect / equip。
  */
 function createOnlineConversationPlanner(
   llm: ConversationLlmClient | undefined,
@@ -526,10 +526,11 @@ function createOnlineConversationPlanner(
   }
 
   return async ({ task, route }) =>
-    llm.generateGoToPlan({
+    llm.generateSkillPlan({
       message_id: task.message.message_id,
       message: task.message.content,
-      snapshot_context: "online_runtime: world interaction task planning; only goTo is executable",
+      snapshot_context:
+        "online_runtime: single skill world interaction planning; executable skills: goTo, mine, collect, equip",
       triage_reason: route.triage.reason,
     });
 }

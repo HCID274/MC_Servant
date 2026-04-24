@@ -209,14 +209,14 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     expect(replies).toEqual([
       {
         message_id: "msg-task",
-        content: "抱歉，这次我还没能规划出可执行的移动任务喵~",
+        content: "抱歉，这次我还没能规划出可执行的技能任务喵~",
       },
     ]);
     expect(runtime.getEvents()).toContainEqual({
       type: "chat.reply",
       bot_id: "bot-cw",
       message_id: "msg-task",
-      content: "抱歉，这次我还没能规划出可执行的移动任务喵~",
+      content: "抱歉，这次我还没能规划出可执行的技能任务喵~",
     });
     expect(runtime.getEvents()).toContainEqual({
       type: "task.discarded",
@@ -363,7 +363,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     expect(replies).toEqual([
       {
         message_id: "msg-plan-failed",
-        content: "抱歉，这次我还没能规划出可执行的移动任务喵~",
+        content: "抱歉，这次我还没能规划出可执行的技能任务喵~",
       },
     ]);
     expect(enqueuedTasks).toEqual([]);
@@ -373,6 +373,75 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       message_id: "msg-plan-failed",
       status: "discarded",
       reason: "planner_failed",
+    });
+  });
+
+  it("应通过 planner（规划器） 把自然语言采集任务转换为 mine（挖掘） 执行队列任务", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const enqueuedTasks: unknown[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createMessageTriage({
+            intent: "task",
+            priority: ConversationPriority.Normal,
+            reason: "llm_task_mine",
+          }),
+        planner: async () => ({
+          type: "skill_call",
+          reply: "收到，我去挖石头",
+          skill: "mine",
+          params: { blockName: "stone", count: 2 },
+        }),
+        broadcastReplySink: async () => undefined,
+        enqueueExecTaskSink: async ({ task, priority }) => {
+          enqueuedTasks.push({ task, priority });
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-mine",
+          content: "去挖两块石头",
+          intent_epoch: 6,
+          snapshot_ts: 105,
+        },
+      }),
+    });
+
+    expect(enqueuedTasks).toHaveLength(1);
+    expect(enqueuedTasks[0]).toMatchObject({
+      priority: 5,
+      task: {
+        exec_job: {
+          message_id: "msg-mine",
+          skill: "mine",
+          params: { blockName: "stone", count: 2 },
+        },
+      },
+    });
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.accepted",
+      bot_id: "bot-cw",
+      message_id: "msg-mine",
+      skill: "mine",
+      priority: "normal",
     });
   });
 

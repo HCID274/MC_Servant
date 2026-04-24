@@ -1,8 +1,17 @@
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import {
+  type CollectSkillExecutionResult,
+  type CollectSkillParams,
+  type EquipSkillExecutionResult,
+  type EquipSkillParams,
   type GoToSkillExecutionResult,
   type GoToSkillParams,
+  type MineSkillExecutionResult,
+  type MineSkillParams,
+  createCollectSkillExecutionResult,
+  createEquipSkillExecutionResult,
   createGoToSkillExecutionResult,
+  createMineSkillExecutionResult,
 } from "../skills/index.js";
 
 /** Mineflayer（Minecraft 协议客户端） 传输连接状态清单。 */
@@ -44,6 +53,54 @@ export interface MineflayerEventSource {
   removeListener?(eventName: string, listener: (...args: readonly unknown[]) => void): unknown;
 }
 
+/** Mineflayer（Minecraft 协议客户端） 三维坐标最小结构。 */
+export interface MineflayerVec3Like {
+  /** X 坐标。 */
+  readonly x: number;
+  /** Y 坐标。 */
+  readonly y: number;
+  /** Z 坐标。 */
+  readonly z: number;
+}
+
+/** Mineflayer（Minecraft 协议客户端） 方块句柄最小结构。 */
+export interface MineflayerBlockHandle {
+  /** 标准方块名称。 */
+  readonly name?: string;
+  /** 方块坐标。 */
+  readonly position?: MineflayerVec3Like;
+}
+
+/** Mineflayer（Minecraft 协议客户端） 物品句柄最小结构。 */
+export interface MineflayerItemHandle {
+  /** 标准物品名称。 */
+  readonly name?: string;
+  /** 可读展示名。 */
+  readonly displayName?: string;
+  /** 物品堆叠数量。 */
+  readonly count?: number;
+}
+
+/** Mineflayer（Minecraft 协议客户端） 实体句柄最小结构。 */
+export interface MineflayerEntityHandle {
+  /** 实体标识。 */
+  readonly id?: number | string;
+  /** 实体名。 */
+  readonly name?: string;
+  /** 实体展示名。 */
+  readonly displayName?: string;
+  /** 实体坐标。 */
+  readonly position?: MineflayerVec3Like;
+  /** 可能存在的掉落物信息。 */
+  readonly item?: MineflayerItemHandle;
+  /** 兼容字段：掉落物信息。 */
+  readonly droppedItem?: MineflayerItemHandle;
+  /** 兼容字段：对象数据。 */
+  readonly objectData?: unknown;
+  /** 元数据载荷。 */
+  readonly metadata?: readonly unknown[];
+}
+
 /** Mineflayer（Minecraft 协议客户端） Bot 句柄的最小生命周期接口。 */
 export interface MineflayerBotHandle extends MineflayerEventSource {
   /** Mineflayer（Minecraft 协议客户端） 实际登录用户名。 */
@@ -66,8 +123,34 @@ export interface MineflayerBotHandle extends MineflayerEventSource {
   loadPlugin?(plugin: unknown): void;
   /** mineflayer-pathfinder（Mineflayer 寻路插件） 注入后的最小 API（应用程序接口）。 */
   readonly pathfinder?: MineflayerPathfinderApi;
+  /** 当前世界实体索引，供最小捡拾路径做候选兜底。 */
+  readonly entities?: Readonly<Record<string, MineflayerEntityHandle>>;
+  /** 当前背包快照。 */
+  readonly inventory?: {
+    /** 返回当前背包内的物品列表。 */
+    items(): readonly MineflayerItemHandle[];
+  };
   /** 向 Minecraft（我的世界） 游戏聊天频道写入文本。 */
   chat?(text: string): void | Promise<void>;
+  /** 查找附近方块。 */
+  findBlocks?(input: {
+    /** 方块匹配条件。 */
+    matching: (block: MineflayerBlockHandle) => boolean;
+    /** 搜索半径。 */
+    maxDistance: number;
+    /** 最多返回数量。 */
+    count: number;
+  }): readonly MineflayerVec3Like[] | Promise<readonly MineflayerVec3Like[]>;
+  /** 读取指定坐标的方块。 */
+  blockAt?(position: MineflayerVec3Like): MineflayerBlockHandle | null | undefined;
+  /** 挖掘指定方块。 */
+  dig?(block: MineflayerBlockHandle): void | Promise<void>;
+  /** 查找最近的实体。 */
+  nearestEntity?(
+    matcher: (entity: MineflayerEntityHandle) => boolean,
+  ): MineflayerEntityHandle | null;
+  /** 装备物品到目标槽位。 */
+  equip?(item: MineflayerItemHandle, destination: string): void | Promise<void>;
   /** 断开连接的优先方法。 */
   quit?(reason?: string): void;
   /** 断开连接的兼容方法。 */
@@ -133,6 +216,12 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   chat(text: string): Promise<void>;
   /** 通过受控 Mineflayer（Minecraft 协议客户端） 移动能力执行 `goTo`（前往坐标）。 */
   goTo(params: Readonly<GoToSkillParams>): Promise<GoToSkillExecutionResult>;
+  /** 通过受控 Mineflayer（Minecraft 协议客户端） 执行 `mine`（挖掘）。 */
+  mine(params: Readonly<MineSkillParams>): Promise<MineSkillExecutionResult>;
+  /** 通过受控 Mineflayer（Minecraft 协议客户端） 执行 `collect`（捡拾）。 */
+  collect(params: Readonly<CollectSkillParams>): Promise<CollectSkillExecutionResult>;
+  /** 通过受控 Mineflayer（Minecraft 协议客户端） 执行 `equip`（装备）。 */
+  equip(params: Readonly<EquipSkillParams>): Promise<EquipSkillExecutionResult>;
   /** 获取当前连接描述快照。 */
   getSnapshot(): MineflayerTransportSnapshot<TBotId>;
   /** 获取当前只读事件源；未连接或已回收时为 null。 */
@@ -165,6 +254,13 @@ interface MineflayerPathfinderModule {
       x: number,
       y: number,
       z: number,
+    ) => unknown;
+    /** 近距离目标。 */
+    readonly GoalNear: new (
+      x: number,
+      y: number,
+      z: number,
+      range: number,
     ) => unknown;
   };
 }
@@ -320,37 +416,111 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
       await bot.chat(text);
     },
     async goTo(params: Readonly<GoToSkillParams>): Promise<GoToSkillExecutionResult> {
-      if (state !== "connected" || bot === null) {
-        throw new Error("Mineflayer transport must be connected before goTo");
+      const { currentBot, pathfinder, pathfinderModule } = await createPathfinderContext("goTo");
+      const movements = new pathfinderModule.Movements(currentBot, currentBot.registry);
+      pathfinder.setMovements?.(movements);
+      await pathfinder.goto(new pathfinderModule.goals.GoalBlock(params.x, params.y, params.z));
+
+      return createGoToSkillExecutionResult(params);
+    },
+    async mine(params: Readonly<MineSkillParams>): Promise<MineSkillExecutionResult> {
+      const { currentBot, pathfinder, pathfinderModule } = await createPathfinderContext("mine");
+
+      if (typeof currentBot.findBlocks !== "function") {
+        throw new Error("Mineflayer bot handle does not expose findBlocks for mine");
+      }
+      if (typeof currentBot.blockAt !== "function") {
+        throw new Error("Mineflayer bot handle does not expose blockAt for mine");
+      }
+      if (typeof currentBot.dig !== "function") {
+        throw new Error("Mineflayer bot handle does not expose dig for mine");
       }
 
-      if (!spawned && bot.entity?.position === undefined) {
-        throw new Error("Mineflayer transport must reach spawn before goTo");
-      }
+      const positions = await currentBot.findBlocks({
+        matching: (block) =>
+          normalizeMinecraftName(block.name) === normalizeMinecraftName(params.blockName),
+        maxDistance: 32,
+        count: params.count,
+      });
 
-      const currentBot = bot;
-      const pathfinderModule = await loadMineflayerPathfinder();
-
-      if (!pathfinderLoaded) {
-        if (typeof currentBot.loadPlugin !== "function") {
-          throw new Error("Mineflayer bot handle does not expose loadPlugin for pathfinder");
-        }
-
-        currentBot.loadPlugin(pathfinderModule.pathfinder);
-        pathfinderLoaded = true;
-      }
-
-      if (currentBot.pathfinder === undefined) {
-        throw new Error("Mineflayer bot handle does not expose pathfinder after plugin load");
+      if (positions.length < params.count) {
+        throw new Error(`Mineflayer cannot find enough ${params.blockName} blocks to mine`);
       }
 
       const movements = new pathfinderModule.Movements(currentBot, currentBot.registry);
-      currentBot.pathfinder.setMovements?.(movements);
-      await currentBot.pathfinder.goto(
-        new pathfinderModule.goals.GoalBlock(params.x, params.y, params.z),
-      );
+      pathfinder.setMovements?.(movements);
 
-      return createGoToSkillExecutionResult(params);
+      for (const position of positions.slice(0, params.count)) {
+        const block = currentBot.blockAt(position);
+
+        if (block === null || block === undefined) {
+          throw new Error(`Mineflayer cannot load target block for ${params.blockName}`);
+        }
+
+        await pathfinder.goto(
+          new pathfinderModule.goals.GoalNear(position.x, position.y, position.z, 1),
+        );
+        await currentBot.dig(block);
+      }
+
+      return createMineSkillExecutionResult(params);
+    },
+    async collect(params: Readonly<CollectSkillParams>): Promise<CollectSkillExecutionResult> {
+      const { currentBot, pathfinder, pathfinderModule } = await createPathfinderContext("collect");
+      const radius = params.radius ?? 8;
+      const targetEntity = findCollectTargetEntity(currentBot, params.itemName, radius);
+
+      if (targetEntity === null || targetEntity.position === undefined) {
+        throw new Error(`Mineflayer cannot find collectible item ${params.itemName}`);
+      }
+
+      const movements = new pathfinderModule.Movements(currentBot, currentBot.registry);
+      pathfinder.setMovements?.(movements);
+      const inventoryCountBefore = countInventoryItems(currentBot, params.itemName);
+
+      await pathfinder.goto(
+        new pathfinderModule.goals.GoalNear(
+          targetEntity.position.x,
+          targetEntity.position.y,
+          targetEntity.position.z,
+          1,
+        ),
+      );
+      await waitForCollectResolution({
+        bot: currentBot,
+        itemName: params.itemName,
+        radius,
+        inventoryCountBefore,
+        initialTargetId: targetEntity.id,
+      });
+
+      return createCollectSkillExecutionResult(params);
+    },
+    async equip(params: Readonly<EquipSkillParams>): Promise<EquipSkillExecutionResult> {
+      ensureWorldInteractionReady("equip");
+      const currentBot = bot;
+
+      if (currentBot === null) {
+        throw new Error("Mineflayer transport must be connected before equip");
+      }
+
+      if (currentBot.inventory === undefined || typeof currentBot.inventory.items !== "function") {
+        throw new Error("Mineflayer bot handle does not expose inventory for equip");
+      }
+      if (typeof currentBot.equip !== "function") {
+        throw new Error("Mineflayer bot handle does not expose equip");
+      }
+
+      const item = currentBot.inventory
+        .items()
+        .find((candidate) => matchesMinecraftItemName(candidate, params.itemName));
+
+      if (item === undefined) {
+        throw new Error(`Mineflayer inventory does not contain ${params.itemName}`);
+      }
+
+      await currentBot.equip(item, params.destination ?? "hand");
+      return createEquipSkillExecutionResult(params);
     },
     getSnapshot(): MineflayerTransportSnapshot<TBotId> {
       return createSnapshot();
@@ -379,6 +549,300 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
       // 清理路径不能覆盖连接失败或上层关闭的真实原因。
     }
   }
+
+  /** 为世界交互技能创建 pathfinder（寻路器） 执行上下文。 */
+  async function createPathfinderContext(skill: "goTo" | "mine" | "collect"): Promise<{
+    currentBot: MineflayerBotHandle;
+    pathfinder: MineflayerPathfinderApi;
+    pathfinderModule: MineflayerPathfinderModule;
+  }> {
+    ensureWorldInteractionReady(skill);
+    const currentBot = bot;
+
+    if (currentBot === null) {
+      throw new Error(`Mineflayer transport must be connected before ${skill}`);
+    }
+
+    const pathfinderModule = await loadMineflayerPathfinder();
+
+    if (!pathfinderLoaded) {
+      if (typeof currentBot.loadPlugin !== "function") {
+        throw new Error("Mineflayer bot handle does not expose loadPlugin for pathfinder");
+      }
+
+      currentBot.loadPlugin(pathfinderModule.pathfinder);
+      pathfinderLoaded = true;
+    }
+
+    if (currentBot.pathfinder === undefined) {
+      throw new Error("Mineflayer bot handle does not expose pathfinder after plugin load");
+    }
+
+    return {
+      currentBot,
+      pathfinder: currentBot.pathfinder,
+      pathfinderModule,
+    };
+  }
+
+  /** 统一校验世界交互 ready（就绪） 门控。 */
+  function ensureWorldInteractionReady(skill: "goTo" | "mine" | "collect" | "equip"): void {
+    if (state !== "connected" || bot === null) {
+      throw new Error(`Mineflayer transport must be connected before ${skill}`);
+    }
+
+    if (!spawned && bot.entity?.position === undefined) {
+      throw new Error(`Mineflayer transport must reach spawn before ${skill}`);
+    }
+  }
+}
+
+/** 规范化 Minecraft（我的世界） 标准名称。 */
+function normalizeMinecraftName(value: string | undefined): string {
+  return (
+    value
+      ?.trim()
+      .toLowerCase()
+      .replace(/[\s-]+/gu, "_") ?? ""
+  );
+}
+
+/** 判断物品句柄是否匹配目标标准名称。 */
+function matchesMinecraftItemName(item: MineflayerItemHandle, itemName: string): boolean {
+  const expected = normalizeMinecraftName(itemName);
+
+  return (
+    normalizeMinecraftName(item.name) === expected ||
+    normalizeMinecraftName(item.displayName) === expected
+  );
+}
+
+/** 判断未知值是否为普通对象。 */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/** 解析注册表中的标准物品 ID。 */
+function findRegistryItemId(registry: unknown, itemName: string): number | null {
+  if (!isRecord(registry) || !isRecord(registry.itemsByName)) {
+    return null;
+  }
+
+  const item = registry.itemsByName[normalizeMinecraftName(itemName)];
+
+  return isRecord(item) && typeof item.id === "number" ? item.id : null;
+}
+
+/** 从未知结构中提取可能的物品 ID。 */
+function collectNumericIds(value: unknown): readonly number[] {
+  if (typeof value === "number") {
+    return Object.freeze([value]);
+  }
+
+  if (Array.isArray(value)) {
+    return Object.freeze(value.flatMap((entry) => [...collectNumericIds(entry)]));
+  }
+
+  if (!isRecord(value)) {
+    return Object.freeze([]);
+  }
+
+  const ids: number[] = [];
+
+  for (const [key, nested] of Object.entries(value)) {
+    if ((key === "itemId" || key === "id") && typeof nested === "number") {
+      ids.push(nested);
+      continue;
+    }
+
+    ids.push(...collectNumericIds(nested));
+  }
+
+  return Object.freeze(ids);
+}
+
+/** 从实体上提取可用于匹配的物品名称。 */
+function collectEntityCandidateNames(entity: MineflayerEntityHandle): readonly string[] {
+  const names = [
+    entity.name,
+    entity.displayName,
+    entity.item?.name,
+    entity.item?.displayName,
+    entity.droppedItem?.name,
+    entity.droppedItem?.displayName,
+  ].filter((value): value is string => typeof value === "string");
+
+  if (isRecord(entity.objectData)) {
+    const objectNames = [entity.objectData.name, entity.objectData.displayName].filter(
+      (value): value is string => typeof value === "string",
+    );
+    names.push(...objectNames);
+  }
+
+  for (const metadataEntry of entity.metadata ?? []) {
+    if (!isRecord(metadataEntry)) {
+      continue;
+    }
+
+    for (const key of ["name", "displayName"] as const) {
+      const candidate = metadataEntry[key];
+
+      if (typeof candidate === "string") {
+        names.push(candidate);
+      }
+    }
+
+    if (isRecord(metadataEntry.item)) {
+      for (const key of ["name", "displayName"] as const) {
+        const candidate = metadataEntry.item[key];
+
+        if (typeof candidate === "string") {
+          names.push(candidate);
+        }
+      }
+    }
+  }
+
+  return Object.freeze(names);
+}
+
+/** 判断掉落物实体是否匹配目标物品名。 */
+function matchesCollectTargetEntity(
+  entity: MineflayerEntityHandle,
+  itemName: string,
+  registry: unknown,
+): boolean {
+  const expected = normalizeMinecraftName(itemName);
+
+  if (
+    collectEntityCandidateNames(entity).some(
+      (candidate) => normalizeMinecraftName(candidate) === expected,
+    )
+  ) {
+    return true;
+  }
+
+  const expectedItemId = findRegistryItemId(registry, itemName);
+
+  if (expectedItemId === null) {
+    return false;
+  }
+
+  return collectNumericIds(entity.metadata).includes(expectedItemId);
+}
+
+/** 计算两点间的平方距离。 */
+function calculateDistanceSquared(a: MineflayerVec3Like, b: MineflayerVec3Like): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = a.z - b.z;
+
+  return dx * dx + dy * dy + dz * dz;
+}
+
+/** 从当前世界状态中定位最近的目标掉落物。 */
+function findCollectTargetEntity(
+  bot: MineflayerBotHandle,
+  itemName: string,
+  radius: number,
+): MineflayerEntityHandle | null {
+  const botPosition = bot.entity?.position;
+
+  if (botPosition === undefined) {
+    return null;
+  }
+
+  const radiusSquared = radius * radius;
+  const isInRadius = (entity: MineflayerEntityHandle): boolean =>
+    entity.position !== undefined &&
+    calculateDistanceSquared(entity.position, botPosition) <= radiusSquared;
+
+  if (typeof bot.nearestEntity === "function") {
+    const entity = bot.nearestEntity(
+      (candidate) =>
+        isInRadius(candidate) && matchesCollectTargetEntity(candidate, itemName, bot.registry),
+    );
+
+    if (entity !== null) {
+      return entity;
+    }
+  }
+
+  const entities = Object.values(bot.entities ?? {}).filter(
+    (entity): entity is MineflayerEntityHandle =>
+      entity !== null &&
+      entity !== undefined &&
+      entity.position !== undefined &&
+      isInRadius(entity) &&
+      matchesCollectTargetEntity(entity, itemName, bot.registry),
+  );
+
+  entities.sort(
+    (left, right) =>
+      calculateDistanceSquared(left.position as MineflayerVec3Like, botPosition) -
+      calculateDistanceSquared(right.position as MineflayerVec3Like, botPosition),
+  );
+
+  return entities[0] ?? null;
+}
+
+/** 统计背包内匹配物品的数量。 */
+function countInventoryItems(bot: MineflayerBotHandle, itemName: string): number {
+  return (
+    bot.inventory?.items().reduce((total, item) => {
+      if (!matchesMinecraftItemName(item, itemName)) {
+        return total;
+      }
+
+      return total + (item.count ?? 1);
+    }, 0) ?? 0
+  );
+}
+
+/** 等待掉落物被真正捡起，防止“走到附近就算成功”。 */
+async function waitForCollectResolution(input: {
+  bot: MineflayerBotHandle;
+  itemName: string;
+  radius: number;
+  inventoryCountBefore: number;
+  initialTargetId: number | string | undefined;
+}): Promise<void> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < 3_000) {
+    if (countInventoryItems(input.bot, input.itemName) > input.inventoryCountBefore) {
+      return;
+    }
+
+    const currentTarget = findCollectTargetEntity(input.bot, input.itemName, input.radius);
+
+    if (
+      currentTarget !== null &&
+      input.bot.entity?.position !== undefined &&
+      currentTarget.position !== undefined &&
+      calculateDistanceSquared(input.bot.entity.position, currentTarget.position) >
+        input.radius * input.radius
+    ) {
+      throw new Error(`Mineflayer failed to get close enough to collect ${input.itemName}`);
+    }
+
+    if (
+      currentTarget === null &&
+      input.initialTargetId !== undefined &&
+      countInventoryItems(input.bot, input.itemName) <= input.inventoryCountBefore
+    ) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 100);
+      });
+      continue;
+    }
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 100);
+    });
+  }
+
+  throw new Error(`Mineflayer did not collect ${input.itemName} in time`);
 }
 
 /**

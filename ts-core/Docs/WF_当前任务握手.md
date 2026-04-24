@@ -1,98 +1,103 @@
 # 当前任务握手区
 
-【任务序号】: T-025
-【当前状态】: 进行中
+【任务序号】: T-026
+【当前状态】: 待开发
 
 ---
 
 ## Manager 任务指令
 
 **任务目标**:
-在 `skills`（技能） + `runtime`（运行时） + `workers`（工作线程） + `conversation`（对话） 这一组主干模块内，把 Phase 1（第一阶段） 真实可执行技能面从单个 `goTo`（前往坐标） 扩到三项现有技能：`mine`（挖掘） / `collect`（捡拾） / `equip`（装备）。本轮目标不是上 `sandbox`（沙箱），而是让女仆在真实 MC（Minecraft，我的世界） 在线入口里，能通过自然语言被规划为这三类 `skill_call`（技能调用），并复用现有 `BotWorker`（机器人工作线程） / `BotActor`（机器人执行代理） 单写者链路执行。
+在 `interfaces`（接口边界） + `diagnostics`（诊断） + `app`（应用装配） 这一组主干模块内，补齐真实 MC（Minecraft，我的世界） 手测所需的只读观测出口：当前状态读取、事件顺序回放、最近一次 `LLM`（大语言模型） 调用摘要查看。本轮目标是让操作者在女仆在线测试时能快速判断“在线状态是什么、刚才发生了哪些事件、最近一次模型调用是否成功”，不是新增控制入口或业务写接口。
 
 **上下文说明**:
-1. `T-021`（任务二十一） 已完成真实消息入队与在线聊天闭环。
-2. `T-022`（任务二十二） 已完成 `goTo`（前往坐标） 最小真实执行链与 `world_ready`（世界交互就绪） 门控。
-3. `T-023`（任务二十三） 已完成真实 OpenAI（开放人工智能） 兼容 `chat.completions`（对话补全） 闲聊闭环与在线 `cancel`（取消） 语义。
-4. `T-024`（任务二十四） 已完成真实 `triage`（分诊） + 最小 `goTo`（前往坐标） `plan`（规划），并确认在线入口不暴露 `modify`（修改当前任务） 半通路。
-5. 当前缺口在于：真实动作面仍几乎只有“移动到坐标”。如果不把现有 Phase 1（第一阶段） 技能目录里至少 2-3 个能力接到真实执行链，女仆虽然能“听懂并移动”，但演示面依然过窄。
+1. `T-021`（任务二十一） 已完成真实 MC（Minecraft，我的世界） 在线聊天闭环。
+2. `T-022`（任务二十二） 已完成 `goTo`（前往坐标） 最小真实执行链。
+3. `T-023`（任务二十三） 已完成 OpenAI（开放人工智能） 兼容闲聊闭环与真实 `cancel`（取消） 中断语义。
+4. `T-024`（任务二十四） 已完成真实 `triage`（分诊） + 最小 `goTo`（前往坐标） 规划。
+5. `T-025`（任务二十五） 已把真实技能面扩到 `mine`（挖掘） / `collect`（捡拾） / `equip`（装备）。
+6. 当前缺口不是“女仆不能做事”，而是“手测时看不清系统状态”：操作者需要一个只读接口判断 Bot（机器人） 是否在线、事件是否按序产生、最近一次 `LLM`（大语言模型） 调用是否失败，以及失败日志引用在哪里。
 
 **输入文件白名单（Coder 仅限读取以下文件）**:
-1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏的约束》；第 3 节《消息流》；第 9 节《Phase 1 实施顺序》
-2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 2 节《BotActor 状态机》；第 5 节《单写者执行边界》
-3. `ts-core/Docs/04_CONVERSATION_SPEC.md` — 第 2 节《两阶段 LLM 调用模型》；第 5.1 节《输出格式选择：skill_call 优先》；第 5.6 节《skill_call 路径的 Prompt》；第 5.7 节《skill_call 输出解析》
+1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏的约束》；第 8 节《Event Protocol》；第 15 节《模块划分》
+2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 6 节《Worker 生命周期》；第 9 节《诊断事件清单》；第 10 节《错误分类》
+3. `ts-core/Docs/05_DATA_SPEC.md` — 第 4.4 节《LLM I/O 日志格式》；第 6 节《event_log 查询模式》；第 8.3 节《state 缓存结构》
 4. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》
 5. `ts-core/scripts/pre_review.sh` — 全文件
 6. `ts-core/README.md` — 全文件（仅在需要补最小手测说明时允许更新）
-7. `ts-core/.env.example` — 全文件（仅在需要补新增环境变量说明时允许更新）
-8. `ts-core/src/skills/contracts.ts` — 全文件
-9. `ts-core/src/skills/execution.ts` — 全文件
-10. `ts-core/src/skills/index.ts` — 全文件
-11. `ts-core/src/runtime/transport.ts` — 全文件
-12. `ts-core/src/runtime/actor.ts` — 全文件
-13. `ts-core/src/runtime/tasking.ts` — 全文件
-14. `ts-core/src/workers/contracts.ts` — 全文件
-15. `ts-core/src/workers/bot-worker.ts` — 全文件
-16. `ts-core/src/workers/conversation-worker.ts` — 全文件
-17. `ts-core/src/workers/index.ts` — 全文件
-18. `ts-core/src/conversation/contracts.ts` — 全文件
-19. `ts-core/src/conversation/llm.ts` — 全文件
-20. `ts-core/src/conversation/planning.ts` — 全文件
-21. `ts-core/src/app/entrypoint.ts` — 全文件（仅在需要补在线装配时允许更新）
-22. `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts` — 全文件
-23. `ts-core/src/__tests__/runtime-actor-model.spec.ts` — 全文件
-24. `ts-core/src/__tests__/runtime-skill-execution-model.spec.ts` — 全文件
-25. `ts-core/src/__tests__/bot-worker-runtime-model.spec.ts` — 全文件
-26. `ts-core/src/__tests__/conversation-llm-planning-model.spec.ts` — 全文件
-27. `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts` — 全文件
+7. `ts-core/src/interfaces/contracts.ts` — 全文件
+8. `ts-core/src/interfaces/api.ts` — 全文件
+9. `ts-core/src/interfaces/server.ts` — 全文件
+10. `ts-core/src/interfaces/realtime.ts` — 全文件
+11. `ts-core/src/interfaces/index.ts` — 全文件
+12. `ts-core/src/diagnostics/contracts.ts` — 全文件
+13. `ts-core/src/diagnostics/logs.ts` — 全文件
+14. `ts-core/src/diagnostics/index.ts` — 全文件
+15. `ts-core/src/app/contracts.ts` — 全文件
+16. `ts-core/src/app/bootstrap.ts` — 全文件
+17. `ts-core/src/app/entrypoint.ts` — 全文件
+18. `ts-core/src/app/index.ts` — 全文件
+19. `ts-core/src/data/contracts.ts` — 全文件（仅在需要复用事件 / 回放契约时允许更新）
+20. `ts-core/src/data/schema.ts` — 全文件（仅在需要复用 `event_log`（事件日志） 字段定义时允许更新；本轮不做 migration（迁移））
+21. `ts-core/src/data/logs.ts` — 全文件（仅在需要读取 `LLM`（大语言模型） 日志引用摘要时允许更新）
+22. `ts-core/src/data/index.ts` — 全文件
+23. `ts-core/src/workers/conversation-worker.ts` — 全文件（仅允许接出最近一次 `LLM`（大语言模型） 调用摘要的只读诊断 sink（汇点））
+24. `ts-core/src/workers/contracts.ts` — 全文件（仅允许补只读诊断类型，不允许改任务生命周期语义）
+25. `ts-core/src/conversation/llm.ts` — 全文件（仅允许复用或导出既有诊断摘要类型，不允许改 prompt（提示词） 语义）
+26. `ts-core/src/__tests__/interfaces-server-model.spec.ts` — 全文件
+27. `ts-core/src/__tests__/interfaces-model.spec.ts` — 全文件
 28. `ts-core/src/__tests__/app-entrypoint-model.spec.ts` — 全文件
+29. `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts` — 全文件
+30. `ts-core/src/__tests__/sandbox-diagnostics-model.spec.ts` — 全文件（仅在复用 JSONL（结构化日志） 诊断断言时允许更新）
 
 **核心逻辑要求**:
 
-1. **真实执行技能扩到三项现有技能**:
-   - 本轮只允许扩 `mine`（挖掘） / `collect`（捡拾） / `equip`（装备） 三个现有 Phase 1（第一阶段） 技能；不得新增 `follow`（跟随） / `goToOwner`（前往主人） / `attack`（攻击） 等新技能名。
-   - `skills/execution.ts`（技能执行边界） 不能再只放行 `goTo`（前往坐标）；必须把这三项现有技能接入真实执行分发，并保持强类型参数校验。
-   - 任何真实动作仍只能经 `BotActor.executeSkill()`（机器人执行代理执行技能） 单写者入口进入 Mineflayer（Minecraft 协议客户端） 侧能力，不得旁路直连底层 Bot（机器人） 实例。
+1. **状态读取必须只读、脱敏、可手测**:
+   - 现有 `/api/status`（状态接口） 若已存在，应在其上收口；若缺字段，补最小字段，不另起写接口。
+   - 返回内容应至少包含 `bot_id`（机器人标识）、运行时状态、Mineflayer（Minecraft 协议客户端） 连接 / `world_ready`（世界交互就绪） 快照、工作线程是否已装配、可选的最近一次 `LLM`（大语言模型） 调用摘要。
+   - 绝不能暴露 `LLM_API_KEY`（大语言模型接口密钥）、EasyAuth（离线服认证模组） 明文密码、PostgreSQL（关系型数据库） 连接串、Redis（缓存） 密码或底层 Bot（机器人） 可写句柄。
 
-2. **自然语言规划扩到受限多技能 `skill_call`（技能调用）**:
-   - `LLM`（大语言模型） `plan`（规划） 路径不再只允许 `goTo`（前往坐标），而是允许在 `goTo` / `mine` / `collect` / `equip` 四个现有技能中择一输出单个 `skill_call`（技能调用）。
-   - 仍然只允许单个 `skill_call`（技能调用）；不得引入 `sandbox_code`（沙箱代码）、多步编排或代码生成。
-   - 规划结果必须做强校验：技能名必须在允许集合内，参数必须与 `skills/contracts.ts`（技能契约） 一一对齐；非法产物只允许按“规划失败”处理，不得伪装成闲聊成功。
+2. **事件回放必须保持 append-only（只追加） 语义**:
+   - `/api/replay`（事件回放接口） 必须按 `bot_id`（机器人标识） 过滤，按 `seq`（序号） 升序返回，`after_seq`（起始序号） 必须是排他条件。
+   - `limit`（数量限制） 必须有上限，默认值和最大值要稳定；非法 `after_seq` / `limit` 不能进入数据层。
+   - 若当前环境有真实 `event_log`（事件日志） repository（仓库 / 存储适配） 注入，应读取真实来源；测试环境可用注入式内存实现，但不能把“空列表”伪装成真实 PG（关系型数据库） 查询成功。
+   - 回放接口只读，不允许补任何调试写入、事件伪造或队列写入能力。
 
-3. **三项技能的最小在线语义必须可演示**:
-   - `mine`（挖掘）：至少支持“挖某种方块 N 个”的最小真实执行语义，失败必须显式抛错，不得静默成功。
-   - `collect`（捡拾）：至少支持“捡某种掉落物”的最小真实执行语义，允许先做近距离 / 单目标版本，但不能是纯占位。
-   - `equip`（装备）：至少支持“把某物装备到手上或指定槽位”的最小真实执行语义，非法槽位或物品缺失必须显式失败。
-   - 若底层能力暂时只能做到收窄版本，允许做“最小必要收窄”，但必须在测试与手测说明里明确边界。
+3. **最近一次 LLM 调用摘要必须最小可诊断**:
+   - 摘要只保存最近一次即可，本轮不做完整审计查询；完整原始 I/O（输入输出） 仍以 JSONL（结构化日志） 文件为准。
+   - 摘要字段建议限制为：`stage`（阶段：triage / chat / plan）、`message_id`（消息标识）、`status`（状态：ok / error）、`model`（模型名）、`log_ref`（日志引用）、`error_summary`（错误摘要，可选）、`created_at`（创建时间）。
+   - 不得把完整 prompt（提示词）、completion（补全）、用户原文长上下文、密钥或认证信息塞进状态接口；状态接口只给定位线索。
+   - `ConversationWorker`（对话工作线程） 若需要接出诊断，只能通过依赖注入的只读诊断 sink（汇点） 记录摘要，不得反向依赖 `interfaces`（接口边界）。
 
-4. **对话与执行链路必须一起升级**:
-   - `ConversationWorker`（对话工作线程） 规划成功后仍必须复用 `createExecJobFromPlan()`（由规划产物创建执行任务） / `bot:{botId}:exec`（执行队列） / `BotWorker`（机器人工作线程） 链路，不新增任何技能旁路。
-   - `BotWorker`（机器人工作线程） 的生命周期事件不能退化；新技能至少要保持 accepted（已接收） / started（已开始） / completed（已完成） / failed（已失败） 语义一致。
-   - `cancel`（取消） 与 `chat`（闲聊） 路径不得被本轮技能扩展打坏。
+4. **在线装配必须复用现有入口**:
+   - `startAppOnlineRuntime()`（真实在线启动入口） 负责把状态读取、回放读取、最近 `LLM`（大语言模型） 摘要源接到 Fastify（接口网关） 路由。
+   - 不新增新的进程入口，不改变 `POST /api/message`（消息提交接口） 的入队语义，不改变 `BotWorker`（机器人工作线程） / `ConversationWorker`（对话工作线程） 的任务生命周期。
+   - Socket.io（实时推送） 若已有广播模型，本轮最多补只读事件类型适配；不得把 Socket.io 变成消息入口。
 
 5. **范围边界**:
    - 本任务不引入 `sandbox`（沙箱） / `isolated-vm`（隔离虚拟机）。
-   - 本任务不接 `cutTree`（砍树）；该技能依赖更高层资源流程，留到后续再评估。
-   - 本任务不新增调试写接口，不改 EasyAuth（离线服认证模组） 数据源，不扩状态 / 回放接口。
+   - 本任务不新增技能、不改 `mine`（挖掘） / `collect`（捡拾） / `equip`（装备） 执行语义。
+   - 本任务不新增数据库 migration（迁移），除非发现现有 `event_log`（事件日志） 契约与代码完全缺失且必须补纯 TypeScript（类型脚本） 契约；这种情况需在反馈里说明。
+   - 本任务不做网页 UI（用户界面），只提供可用 `curl`（命令行请求） 或测试调用验证的接口能力。
 
 **验收标准**:
 
-1. 自动化测试证明 `mine`（挖掘） / `collect`（捡拾） / `equip`（装备） 已进入真实技能执行分发边界，且参数强校验生效。
-2. 至少三条自然语言消息可分别被真实 LLM（大语言模型） 规划为 `mine`（挖掘） / `collect`（捡拾） / `equip`（装备） 的单个 `skill_call`（技能调用），并进入现有执行队列。
-3. 规划失败或非法技能输出不会入执行队列，只会返回明确失败回执。
-4. `chat`（闲聊） / `cancel`（取消） / 已有 `goTo`（前往坐标） 路径在本轮后仍保持通过。
+1. `/api/status`（状态接口） 能返回真实在线装配的只读运行状态、连接 / `world_ready`（世界交互就绪） 摘要与最近一次 `LLM`（大语言模型） 调用摘要，且不含任何密钥 / 明文密码 / 可写 Bot（机器人） 句柄。
+2. `/api/replay`（事件回放接口） 按 `bot_id`（机器人标识） + `after_seq`（起始序号） + `limit`（数量限制） 返回升序事件；非法参数被路由层拒绝或规范化，不进入数据读取层。
+3. `ConversationWorker`（对话工作线程） 的 `triage`（分诊） / `chat`（闲聊） / `plan`（规划） 成功与失败路径能更新最近一次 `LLM`（大语言模型） 摘要；失败摘要能指向 `log_ref`（日志引用） 或错误摘要。
+4. `POST /api/message`（消息提交接口）、`chat`（闲聊）、`cancel`（取消）、`goTo`（前往坐标）、`mine`（挖掘）、`collect`（捡拾）、`equip`（装备） 既有路径不回归。
 5. `bash ts-core/scripts/pre_review.sh` 全部通过。
 
 ---
 
 ## Coder 自检清单
-- [ ] 任务序号核对为 `T-025`
+- [ ] 任务序号核对为 `T-026`
 - [ ] 仅读取并修改白名单内文件
-- [ ] `mine`（挖掘） / `collect`（捡拾） / `equip`（装备） 已进入真实技能执行边界
-- [ ] 真实 LLM（大语言模型） `plan`（规划） 已扩到 `goTo` / `mine` / `collect` / `equip` 单技能输出
-- [ ] 规划失败或非法产物不会入执行队列
-- [ ] `chat`（闲聊） / `cancel`（取消） / 已有 `goTo`（前往坐标） 路径未回归
-- [ ] 未引入 `sandbox_code`（沙箱代码） / `isolated-vm`（隔离虚拟机） / 新调试写入口
+- [ ] `/api/status`（状态接口） 为只读、脱敏输出，不暴露密钥 / 明文密码 / 可写 Bot（机器人） 句柄
+- [ ] `/api/replay`（事件回放接口） 按 `bot_id`（机器人标识） 过滤、按 `seq`（序号） 升序、`after_seq`（起始序号） 排他、`limit`（数量限制） 有上限
+- [ ] 最近一次 `LLM`（大语言模型） 调用摘要覆盖成功与失败路径，且只保存最小诊断字段
+- [ ] 未新增调试写接口、未改变消息入队 / 技能执行 / cancel（取消） 中断语义
+- [ ] 自动化测试覆盖状态读取、事件回放、`LLM`（大语言模型） 摘要脱敏与既有路径回归
 - [ ] 执行 bash ts-core/scripts/pre_review.sh 全部通过
 
 ---
@@ -105,24 +110,24 @@
 
 ## Coder 执行反馈（仅 Coder 填写）
 
-**回填序号**: `T-025`
+**回填序号**: 
 
 **修改文件**:
-- （待填写）
+- 
 
 **执行摘要**:
-- （待填写）
+- 
 
 **预检输出摘要**:
-- （待填写）
+- 
 
 **遗留疑问**:
-- （待填写）
+- 
 
 ---
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
 
-- **T-026**: 在 `interfaces`（接口边界） + `diagnostics`（诊断） + `app`（应用装配） 内补齐状态读取、事件顺序回放与最近一次 `LLM`（大语言模型） 调用摘要查看，支撑真实 MC（Minecraft，我的世界） 手测复核。
-- **T-027（可选 / MVP 后置）**: 在 `sandbox`（沙箱） + `runtime`（运行时） 内接入 `isolated-vm`（隔离虚拟机） 真实执行与 Facade API（门面接口） 桥接；优先评估“渐进披露 + LRU（最近最少使用） 热队列”而不是一次性全量 Facade（门面接口） 上下文。
-- **T-028**: 在 `brain`（摘要工作线程） + `data`（数据层） + `conversation`（对话） 内补齐任务摘要沉淀与可检索记忆，为后续复杂任务与沙箱经验蒸馏做准备。
+- **T-027（可选 / MVP 后置）**: 在 `sandbox`（沙箱） + `runtime`（运行时） 内接入 `isolated-vm`（隔离虚拟机） 真实执行与 Facade API（门面接口） 桥接；启动前必须评估“渐进披露 + LRU（最近最少使用） 热队列”，不默认一次性塞入全量 Facade（门面接口） 手册。
+- **T-028**: 在 `conversation`（对话） + `runtime`（运行时） + `diagnostics`（诊断） 内补 `chat_reply`（闲聊回复） 注入 BotActor（机器人执行代理） 状态只读投影，让女仆执行任务时能回答“我正在做什么”。
+- **T-029**: 在 `brain`（摘要工作线程） + `data`（数据层） + `conversation`（对话） 内补齐任务摘要沉淀与可检索记忆，为复杂任务与后续 sandbox（沙箱） 经验蒸馏做准备。

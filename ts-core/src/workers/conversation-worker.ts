@@ -24,6 +24,7 @@ import { createConversationRouteDecision, createMessageTriage } from "../convers
 import type { RedisClientLike } from "../db/index.js";
 import { ConversationPriority, type MessageTriage } from "../domain/contracts.js";
 import { ExecPriority, TaskHistoryStatus } from "../runtime/tasking.js";
+import type { SkillName } from "../skills/index.js";
 import { createBullmqPhysicalQueueName } from "./bullmq.js";
 import {
   type BotWorkerTask,
@@ -93,7 +94,7 @@ export type ConversationWorkerRuntimeEvent =
       /** 原始消息标识。 */
       readonly message_id: string;
       /** 技能名。 */
-      readonly skill: "goTo";
+      readonly skill: SkillName;
       /** 执行队列优先级。 */
       readonly priority: ExecPriority;
     };
@@ -257,7 +258,7 @@ function toBullmqPriority(priority: ExecPriority): number {
 function createPlanningFailureReply() {
   return createConversationReply({
     mode: "template",
-    reply: "抱歉，这次我还没能规划出可执行的移动任务喵~",
+    reply: "抱歉，这次我还没能规划出可执行的技能任务喵~",
   });
 }
 
@@ -499,7 +500,7 @@ export function createConversationWorkerRuntime(input: {
           priority: route.exec_priority,
         });
 
-        if (execJob.type !== "skill_call" || execJob.skill !== "goTo") {
+        if (execJob.type !== "skill_call") {
           await input.dependencies.broadcastReplySink({
             message_id: task.message.message_id,
             content: plannerFailureReply.reply,
@@ -567,13 +568,13 @@ export function createConversationWorkerRuntime(input: {
           priority: toBullmqPriority(execJob.priority),
         });
 
-        if (execJob.type === "skill_call" && execJob.skill === "goTo") {
+        if (execJob.type === "skill_call") {
           events.push(
             Object.freeze({
               type: "task.accepted",
               bot_id: task.bot_id,
               message_id: task.message.message_id,
-              skill: "goTo",
+              skill: execJob.skill,
               priority: execJob.priority,
             }),
           );

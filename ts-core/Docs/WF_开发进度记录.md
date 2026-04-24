@@ -11,7 +11,7 @@
 ## 当前批次
 
 - 批次范围：`T-021` ~ `T-030`
-- 当前已完成任务：`T-021`、`T-022`、`T-023`、`T-024`
+- 当前已完成任务：`T-021`、`T-022`、`T-023`、`T-024`、`T-025`
 - 当前批次摘要：从 `T-021`（任务二十一） 起按"纵向上线切片"重排，把原 T-021（消息入队 + ConversationWorker stub） / 原 T-022（BotWorker 最小执行） / 原 T-023（真实连服 + EasyAuth + 端到端） 三任务合并为新的 `T-021`（最窄端到端 demo），把 MC（Minecraft，我的世界） 上线硬门槛前移到本批次第一个任务。后续任务沿 BotWorker → 实时层 → sandbox → 真实 LLM → BrainWorker → 部署文档 的顺序逐步加深。
 - 当前批次硬约束：`T-021`（任务二十一） 验收必须包含真实 MC 服务器手测（聊天截图 + 启动日志），不再做纯契约或纯占位任务。每个后续任务都必须给出可在 MC 中亲眼验证的新行为门槛。
 
@@ -121,4 +121,32 @@
 - 验收备注：
   - 新增测试已锁住两类关键回归：`triage`（分诊） prompt 不再暴露 `modify`（修改当前任务），以及在线入口即使收到 `modify`（修改当前任务） 结果也不会触发 `planner`（规划器） / 执行入队。
   - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 28 个测试文件、136 条测试通过。
+  - 本次审查未重复机械预检。
+
+### T-025 — 真实技能面扩展到 mine / collect / equip
+
+- 审查状态：通过。
+- 核心文件：
+  - `ts-core/src/skills/execution.ts`
+  - `ts-core/src/runtime/actor.ts`
+  - `ts-core/src/runtime/transport.ts`
+  - `ts-core/src/workers/conversation-worker.ts`
+  - `ts-core/src/conversation/llm.ts`
+  - `ts-core/src/app/entrypoint.ts`
+  - `ts-core/src/__tests__/runtime-skill-execution-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-actor-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts`
+  - `ts-core/src/__tests__/bot-worker-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/conversation-llm-planning-model.spec.ts`
+  - `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
+- 变更快照：
+  - `skills/execution.ts`（技能执行边界） 已把真实分发从单个 `goTo`（前往坐标） 扩到 `mine`（挖掘） / `collect`（捡拾） / `equip`（装备），仍只通过强类型 `skill_call`（技能调用） 载荷进入执行链。
+  - `MineflayerRuntimeTransport`（Mineflayer 运行时传输） 新增受控 `mine()` / `collect()` / `equip()` 能力；三者均复用 `BotActor.executeSkill()`（机器人执行代理执行技能） 单写者路径，不暴露底层 Bot（机器人） 句柄。
+  - `ConversationWorker`（对话工作线程） 的规划成功路径不再只接受 `goTo`（前往坐标），可把 `mine`（挖掘） / `collect`（捡拾） / `equip`（装备） 的单个 `skill_call`（技能调用） 推入 `bot:{botId}:exec`（执行队列）；`chat`（闲聊） 与 `cancel`（取消） 路径保持不变。
+  - OpenAI（开放人工智能） 兼容 `plan`（规划） prompt（提示词） 已扩到 `goTo` / `mine` / `collect` / `equip` 四个技能，仍禁止 `sandbox_code`（沙箱代码） 和 `cutTree`（砍树），非法技能或非法参数会显式规划失败而不入队。
+  - 首轮打回点已修复：`collect`（捡拾） 现在按 `radius`（搜索半径） 选择目标，并以背包内目标物品总数量增长作为唯一成功条件；同栈 `count`（数量） 增加可识别，目标实体消失但背包未增长不再伪成功。
+- 验收备注：
+  - 新增测试覆盖三项真实技能分发、在线自然语言规划入队、非法规划失败、`collect`（捡拾） 半径与数量语义，以及既有 `chat`（闲聊） / `cancel`（取消） / `goTo`（前往坐标） 回归。
+  - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 28 个测试文件、146 条测试通过。
   - 本次审查未重复机械预检。
