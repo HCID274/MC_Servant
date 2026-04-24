@@ -206,7 +206,18 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       }),
     });
 
-    expect(replies).toEqual([]);
+    expect(replies).toEqual([
+      {
+        message_id: "msg-task",
+        content: "抱歉，这次我还没能规划出可执行的移动任务喵~",
+      },
+    ]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "chat.reply",
+      bot_id: "bot-cw",
+      message_id: "msg-task",
+      content: "抱歉，这次我还没能规划出可执行的移动任务喵~",
+    });
     expect(runtime.getEvents()).toContainEqual({
       type: "task.discarded",
       bot_id: "bot-cw",
@@ -216,8 +227,9 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
   });
 
-  it("应把窄格式 goTo（前往坐标） 命令解析为执行队列任务", async () => {
+  it("应通过 planner（规划器） 把自然语言移动任务转换为 goTo（前往坐标） 执行队列任务", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const replies: Array<{ message_id: string; content: string }> = [];
     const enqueuedTasks: unknown[] = [];
     const runtime = createConversationWorkerRuntime({
       queue: {
@@ -232,7 +244,21 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             close: async () => undefined,
           };
         },
-        broadcastReplySink: async () => undefined,
+        triage: () =>
+          createMessageTriage({
+            intent: "task",
+            priority: ConversationPriority.Urgent,
+            reason: "llm_task_goto",
+          }),
+        planner: async () => ({
+          type: "skill_call",
+          reply: "收到，我这就去目标坐标",
+          skill: "goTo",
+          params: { x: 10, y: 64, z: -5 },
+        }),
+        broadcastReplySink: async (reply) => {
+          replies.push(reply);
+        },
         enqueueExecTaskSink: async ({ task, priority }) => {
           enqueuedTasks.push({ task, priority });
         },
@@ -246,16 +272,22 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
         message: {
           bot_id: "bot-cw",
           message_id: "msg-goto",
-          content: "去 (10,64,-5)",
+          content: "请去坐标 x=10 y=64 z=-5",
           intent_epoch: 4,
           snapshot_ts: 103,
         },
       }),
     });
 
+    expect(replies).toEqual([
+      {
+        message_id: "msg-goto",
+        content: "收到，我这就去目标坐标喵~",
+      },
+    ]);
     expect(enqueuedTasks).toHaveLength(1);
     expect(enqueuedTasks[0]).toMatchObject({
-      priority: 5,
+      priority: 1,
       task: {
         worker: "bot",
         bot_id: "bot-cw",
@@ -264,7 +296,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           message_id: "msg-goto",
           intent_epoch: 4,
           snapshot_ts: 103,
-          priority: "normal",
+          priority: "urgent",
           skill: "goTo",
           params: { x: 10, y: 64, z: -5 },
         },
@@ -275,7 +307,72 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       bot_id: "bot-cw",
       message_id: "msg-goto",
       skill: "goTo",
-      priority: "normal",
+      priority: "urgent",
+    });
+  });
+
+  it("应在 planner（规划器） 失败时回模板失败回执且不入执行队列", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const replies: Array<{ message_id: string; content: string }> = [];
+    const enqueuedTasks: unknown[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createMessageTriage({
+            intent: "task",
+            priority: ConversationPriority.Normal,
+            reason: "llm_task_invalid_plan",
+          }),
+        planner: async () => {
+          throw new Error("planner returned invalid goTo payload");
+        },
+        broadcastReplySink: async (reply) => {
+          replies.push(reply);
+        },
+        enqueueExecTaskSink: async ({ task, priority }) => {
+          enqueuedTasks.push({ task, priority });
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-plan-failed",
+          content: "帮我走到矿洞门口",
+          intent_epoch: 5,
+          snapshot_ts: 104,
+        },
+      }),
+    });
+
+    expect(replies).toEqual([
+      {
+        message_id: "msg-plan-failed",
+        content: "抱歉，这次我还没能规划出可执行的移动任务喵~",
+      },
+    ]);
+    expect(enqueuedTasks).toEqual([]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.discarded",
+      bot_id: "bot-cw",
+      message_id: "msg-plan-failed",
+      status: "discarded",
+      reason: "planner_failed",
     });
   });
 

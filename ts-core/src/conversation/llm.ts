@@ -1,21 +1,29 @@
 /**
- * OpenAI（开放人工智能） 兼容闲聊调用适配。
+ * OpenAI 兼容对话调用适配。
  *
  * 1. 最短闭环：封装 `POST /chat/completions`（对话补全接口） 的最小请求与响应解析。
- * 2. 诊断留痕：为每次调用生成 `llm`（大语言模型） JSONL（结构化日志） 摘要，覆盖阶段、模型、成功与失败信息。
- * 3. 入口收口：只负责 Stage 2-Chat（闲聊回复） 路径，不冒充规划器或分诊器。
+ * 2. 多阶段复用：统一承载 Stage 1-Triage（分诊）、Stage 2-Chat（闲聊） 与最小 Stage 2-Plan（规划） 请求。
+ * 3. 诊断留痕：为闲聊阶段生成 `llm`（大语言模型） JSONL（结构化日志） 摘要，覆盖模型、成功与失败信息。
  */
 
 import type { JsonlErrorSnapshot, LlmJsonlLine } from "../diagnostics/contracts.js";
 import { createLlmLogLine, createLlmLogRef } from "../diagnostics/logs.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
-import type { ConversationHistoryTurn, ConversationReplyMode } from "./contracts.js";
+import { SKILL_DIRECTORY, isGoToSkillParams } from "../skills/contracts.js";
+import type {
+  ConversationHistoryTurn,
+  ConversationReplyMode,
+  ConversationSkillCallPlanDraft,
+  InterruptedTaskSummary,
+} from "./contracts.js";
+import { createSkillCallPlanDraft } from "./planning.js";
+import { createMessageTriage } from "./triage.js";
 
-/** OpenAI（开放人工智能） 兼容闲聊客户端配置。 */
+/** OpenAI 兼容闲聊客户端配置。 */
 export interface ConversationLlmConfig {
-  /** OpenAI（开放人工智能） 兼容基础地址。 */
+  /** OpenAI 兼容基础地址。 */
   readonly base_url: string;
-  /** OpenAI（开放人工智能） 兼容接口密钥。 */
+  /** OpenAI 兼容接口密钥。 */
   readonly api_key: string;
   /** 默认模型名。 */
   readonly model: string;
@@ -27,7 +35,7 @@ export interface ConversationLlmConfig {
   readonly timeout_ms: number;
 }
 
-/** 单条 OpenAI（开放人工智能） 兼容对话消息。 */
+/** 单条 OpenAI 兼容对话消息。 */
 export interface ConversationLlmMessage {
   /** 消息角色。 */
   readonly role: "system" | "user" | "assistant";
@@ -79,6 +87,36 @@ export interface ConversationLlmChatInput {
   readonly memory_context?: string;
 }
 
+/** 分诊请求输入。 */
+export interface ConversationLlmTriageInput {
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 当前主人消息。 */
+  readonly message: string;
+  /** 最近对话历史。 */
+  readonly history?: readonly ConversationHistoryTurn[];
+  /** 一行 Bot 状态摘要。 */
+  readonly bot_summary?: string;
+}
+
+/** 最小移动规划请求输入。 */
+export interface ConversationLlmPlanInput {
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 当前主人消息。 */
+  readonly message: string;
+  /** 规划时的一行环境快照。 */
+  readonly snapshot_context: string;
+  /** 分诊理由。 */
+  readonly triage_reason?: string;
+  /** 可选任务历史摘要。 */
+  readonly task_history_context?: string;
+  /** 可选记忆摘要。 */
+  readonly memory_context?: string;
+  /** modify（修改） 时的被中断任务摘要。 */
+  readonly interrupted_task?: InterruptedTaskSummary;
+}
+
 /** 闲聊调用成功结果。 */
 export interface ConversationLlmChatResult {
   /** 固定为 `llm`（大语言模型） 回复。 */
@@ -89,7 +127,13 @@ export interface ConversationLlmChatResult {
   readonly diagnostics: ConversationLlmDiagnosticRecord;
 }
 
-/** OpenAI（开放人工智能） 兼容聊天请求依赖。 */
+/** 最小移动规划成功结果。 */
+export type ConversationLlmPlanResult = Extract<
+  ConversationSkillCallPlanDraft,
+  { skill: typeof SKILL_DIRECTORY.goTo }
+>;
+
+/** OpenAI 兼容聊天请求依赖。 */
 export interface ConversationLlmDependencies {
   /** 可注入 fetch（网络请求） 实现。 */
   readonly fetch?: typeof fetch;
@@ -101,8 +145,14 @@ export interface ConversationLlmDependencies {
 
 /** 闲聊客户端暴露的最小能力。 */
 export interface ConversationLlmClient {
-  /** 基于真实 OpenAI（开放人工智能） 兼容接口生成闲聊回复。 */
+  /** 基于真实 OpenAI 兼容接口执行 Stage 1-Triage（分诊）。 */
+  generateTriage(
+    input: ConversationLlmTriageInput,
+  ): Promise<ReturnType<typeof createMessageTriage>>;
+  /** 基于真实 OpenAI 兼容接口生成闲聊回复。 */
   generateChatReply(input: ConversationLlmChatInput): Promise<ConversationLlmChatResult>;
+  /** 基于真实 OpenAI 兼容接口生成最小 `goTo`（前往坐标） 规划。 */
+  generateGoToPlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult>;
 }
 
 /** 闲聊调用失败错误；包含最小诊断摘要。 */
@@ -128,10 +178,24 @@ export class ConversationLlmChatError extends Error {
   }
 }
 
-/** 创建只读的 OpenAI（开放人工智能） 兼容配置。 */
+/** 最小规划失败错误。 */
+export class ConversationLlmPlanError extends Error {
+  /**
+   * 创建规划失败错误。
+   *
+   * @param message 错误消息
+   * @param options 原始 cause（原因）
+   */
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ConversationLlmPlanError";
+  }
+}
+
+/** 创建只读的 OpenAI 兼容配置。 */
 export function createConversationLlmConfig(
   input: Omit<ConversationLlmConfig, "base_url"> & {
-    /** OpenAI（开放人工智能） 兼容基础地址。 */
+    /** OpenAI 兼容基础地址。 */
     readonly base_url: string;
   },
 ): ConversationLlmConfig {
@@ -200,7 +264,96 @@ export function createConversationChatMessages(
   ]);
 }
 
-/** 创建 OpenAI（开放人工智能） 兼容闲聊客户端。 */
+/** 组装 Stage 1-Triage（分诊） 的最小消息列表。 */
+export function createConversationTriageMessages(
+  input: ConversationLlmTriageInput,
+): readonly ConversationLlmMessage[] {
+  assertNonEmptyString(input.message_id, "message_id");
+  assertNonEmptyString(input.message, "message");
+
+  const historyLines =
+    input.history?.map((turn) =>
+      turn.role === "bot" ? `[Bot] ${turn.content}` : `[主人] ${turn.content}`,
+    ) ?? [];
+
+  return Object.freeze([
+    Object.freeze({
+      role: "system",
+      content: [
+        "你是一个消息分类器。根据用户消息和上下文，判断用户的意图类别和紧迫度。",
+        "当前在线最小闭环只允许输出 chat、task、cancel 三类意图，不要输出 modify。",
+        "只输出 JSON，不要输出其他内容。",
+        "意图分类规则：",
+        "- chat：闲聊、问候、问问题、情感表达、与 Minecraft 游戏操作无关的对话",
+        "- task：要求 Bot 执行游戏内动作（采集、移动、制造、跟随等）",
+        "- cancel：要求停止当前任务（只有明确指向当前动作的停止指令）",
+        "紧迫度规则：",
+        "- interrupt：必须立刻中止当前动作",
+        "- urgent：尽快执行，插队",
+        "- normal：正常排队",
+        "- background：低优先级",
+        '输出格式：{"intent":"chat|task|cancel","priority":"interrupt|urgent|normal|background","reason":"一句话说明判断依据"}',
+      ].join("\n"),
+    }),
+    Object.freeze({
+      role: "user",
+      content: [
+        `Bot 状态：${input.bot_summary?.trim() || "idle"}`,
+        "---",
+        ...(historyLines.length > 0 ? historyLines : ["[无最近对话]"]),
+        "---",
+        `[主人] ${input.message}`,
+      ].join("\n"),
+    }),
+  ]);
+}
+
+/** 组装最小 `goTo`（前往坐标） 规划消息列表。 */
+export function createConversationPlanMessages(
+  input: ConversationLlmPlanInput,
+): readonly ConversationLlmMessage[] {
+  assertNonEmptyString(input.message_id, "message_id");
+  assertNonEmptyString(input.message, "message");
+  assertNonEmptyString(input.snapshot_context, "snapshot_context");
+
+  return Object.freeze([
+    Object.freeze({
+      role: "system",
+      content: [
+        "你是一个 Minecraft 任务规划器。",
+        "当前阶段只能输出单个 skill_call，并且 skill 只能是 goTo。",
+        "如果用户消息里能明确提取三个数值坐标，请输出 JSON：",
+        '{"type":"skill_call","reply":"一句简短确认回复","skill":"goTo","params":{"x":10,"y":64,"z":-5}}',
+        "如果不能明确提取三个坐标，输出 JSON：",
+        '{"type":"cannot_plan","reason":"一句话说明为什么无法规划"}',
+        "绝对规则：",
+        "- 只能输出 JSON，不要解释",
+        "- 不要输出 sandbox_code",
+        "- 不要输出除 goTo 之外的 skill",
+        "- params.x / y / z 必须是数字",
+      ].join("\n"),
+    }),
+    Object.freeze({
+      role: "user",
+      content: [
+        `环境快照：${input.snapshot_context}`,
+        ...(input.triage_reason === undefined ? [] : [`分诊理由：${input.triage_reason}`]),
+        ...(input.task_history_context === undefined
+          ? []
+          : [`任务历史：${input.task_history_context}`]),
+        ...(input.memory_context === undefined ? [] : [`记忆摘要：${input.memory_context}`]),
+        ...(input.interrupted_task === undefined
+          ? []
+          : [
+              `被中断任务：message_id=${input.interrupted_task.message_id}; summary=${input.interrupted_task.intent_summary}${input.interrupted_task.last_step === undefined ? "" : `; last_step=${input.interrupted_task.last_step}`}`,
+            ]),
+        `主人的指令：${input.message}`,
+      ].join("\n"),
+    }),
+  ]);
+}
+
+/** 创建 OpenAI 兼容闲聊客户端。 */
 export function createConversationLlmClient(
   config: ConversationLlmConfig,
   dependencies: ConversationLlmDependencies = {},
@@ -209,6 +362,25 @@ export function createConversationLlmClient(
   const now = dependencies.now ?? (() => new Date());
 
   return Object.freeze({
+    async generateTriage(
+      input: ConversationLlmTriageInput,
+    ): Promise<ReturnType<typeof createMessageTriage>> {
+      try {
+        const payload = await requestChatCompletionPayload({
+          fetchImpl,
+          config,
+          messages: createConversationTriageMessages(input),
+        });
+
+        return parseConversationTriage(extractAssistantReply(payload));
+      } catch {
+        return createMessageTriage({
+          intent: "chat",
+          priority: "normal",
+          reason: "llm_triage_fallback",
+        });
+      }
+    },
     async generateChatReply(input: ConversationLlmChatInput): Promise<ConversationLlmChatResult> {
       const startedAt = now();
       const startedAtMs = startedAt.getTime();
@@ -239,27 +411,11 @@ export function createConversationLlmClient(
       ]);
 
       try {
-        const response = await fetchWithTimeout(
+        const payload = await requestChatCompletionPayload({
           fetchImpl,
-          `${config.base_url}/chat/completions`,
-          {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              authorization: `Bearer ${config.api_key}`,
-            },
-            body: JSON.stringify({
-              model: config.model,
-              messages,
-            }),
-          },
-          config.timeout_ms,
-        );
-        const payload = (await response.json()) as OpenAiCompatibleChatCompletionResponse;
-
-        if (!response.ok) {
-          throw new Error(extractOpenAiErrorMessage(payload, response.status));
-        }
+          config,
+          messages,
+        });
 
         const reply = extractAssistantReply(payload);
         const finishedAt = now();
@@ -322,6 +478,15 @@ export function createConversationLlmClient(
         });
       }
     },
+    async generateGoToPlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult> {
+      const payload = await requestChatCompletionPayload({
+        fetchImpl,
+        config,
+        messages: createConversationPlanMessages(input),
+      });
+
+      return parseConversationGoToPlan(extractAssistantReply(payload));
+    },
   });
 }
 
@@ -341,7 +506,7 @@ function createConversationLlmDiagnosticRecord(
 }
 
 /**
- * 提取 OpenAI（开放人工智能） 兼容返回中的回复文本。
+ * 提取 OpenAI 兼容返回中的回复文本。
  *
  * @param payload 接口返回
  * @returns 第一条 assistant（助手） 回复文本
@@ -368,7 +533,65 @@ function extractAssistantReply(payload: OpenAiCompatibleChatCompletionResponse):
 }
 
 /**
- * 提取 OpenAI（开放人工智能） 兼容错误摘要。
+ * 解析分诊阶段返回。
+ *
+ * @param content assistant（助手） 文本
+ * @returns 收敛后的分诊结果
+ */
+function parseConversationTriage(content: string): ReturnType<typeof createMessageTriage> {
+  const record = parseJsonRecord(content);
+
+  return createMessageTriage({
+    ...(typeof record.intent === "string" ? { intent: record.intent } : {}),
+    ...(typeof record.priority === "string" ? { priority: record.priority } : {}),
+    ...(typeof record.reason === "string"
+      ? { reason: record.reason }
+      : { reason: "llm_triage_fallback" }),
+  });
+}
+
+/**
+ * 解析最小 `goTo`（前往坐标） 规划返回。
+ *
+ * @param content assistant（助手） 文本
+ * @returns 经过强校验的 `goTo`（前往坐标） 规划草案
+ */
+function parseConversationGoToPlan(content: string): ConversationLlmPlanResult {
+  const record = parseJsonRecord(content);
+
+  if (record.type === "cannot_plan") {
+    throw new ConversationLlmPlanError(
+      typeof record.reason === "string" && record.reason.trim().length > 0
+        ? record.reason
+        : "planner cannot determine goTo coordinates",
+    );
+  }
+
+  if (record.type !== "skill_call") {
+    throw new ConversationLlmPlanError("planner must return type=skill_call or type=cannot_plan");
+  }
+
+  if (record.skill !== SKILL_DIRECTORY.goTo) {
+    throw new ConversationLlmPlanError("planner must return skill=goTo");
+  }
+
+  if (!isGoToSkillParams(record.params)) {
+    throw new ConversationLlmPlanError("planner returned invalid goTo params");
+  }
+
+  if (typeof record.reply !== "string" || record.reply.trim().length === 0) {
+    throw new ConversationLlmPlanError("planner reply must be a non-empty string");
+  }
+
+  return createSkillCallPlanDraft({
+    reply: record.reply,
+    skill: SKILL_DIRECTORY.goTo,
+    params: record.params,
+  }) as ConversationLlmPlanResult;
+}
+
+/**
+ * 提取 OpenAI 兼容错误摘要。
  *
  * @param payload 接口返回
  * @param status HTTP（超文本传输协议） 状态码
@@ -405,6 +628,78 @@ function createErrorSnapshot(error: unknown): JsonlErrorSnapshot {
     name: "UnknownError",
     message: "Unknown LLM request error",
   });
+}
+
+/**
+ * 发起一次最小 OpenAI 兼容 chat.completions（对话补全） 请求。
+ *
+ * @param input 请求参数
+ * @returns 原始补全响应
+ */
+async function requestChatCompletionPayload(input: {
+  fetchImpl: typeof fetch;
+  config: ConversationLlmConfig;
+  messages: readonly ConversationLlmMessage[];
+}): Promise<OpenAiCompatibleChatCompletionResponse> {
+  const response = await fetchWithTimeout(
+    input.fetchImpl,
+    `${input.config.base_url}/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${input.config.api_key}`,
+      },
+      body: JSON.stringify({
+        model: input.config.model,
+        messages: input.messages,
+      }),
+    },
+    input.config.timeout_ms,
+  );
+  const payload = (await response.json()) as OpenAiCompatibleChatCompletionResponse;
+
+  if (!response.ok) {
+    throw new Error(extractOpenAiErrorMessage(payload, response.status));
+  }
+
+  return payload;
+}
+
+/**
+ * 从 assistant（助手） 文本中提取 JSON（结构化数据） 对象。
+ *
+ * @param content assistant（助手） 原始文本
+ * @returns 解析后的普通对象
+ */
+function parseJsonRecord(content: string): Record<string, unknown> {
+  const trimmed = content.trim();
+  const fencedMatch = /^```(?:json)?\s*([\s\S]*?)\s*```$/u.exec(trimmed);
+  const normalized = fencedMatch?.[1]?.trim() ?? extractBraceWrappedJson(trimmed) ?? trimmed;
+  const parsed = JSON.parse(normalized) as unknown;
+
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("LLM response must be a JSON object");
+  }
+
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * 尝试从混合文本中截取首尾大括号包裹的 JSON（结构化数据） 对象。
+ *
+ * @param content 原始文本
+ * @returns JSON 片段；若不存在则返回 undefined
+ */
+function extractBraceWrappedJson(content: string): string | undefined {
+  const firstBraceIndex = content.indexOf("{");
+  const lastBraceIndex = content.lastIndexOf("}");
+
+  if (firstBraceIndex === -1 || lastBraceIndex === -1 || lastBraceIndex <= firstBraceIndex) {
+    return undefined;
+  }
+
+  return content.slice(firstBraceIndex, lastBraceIndex + 1);
 }
 
 /**

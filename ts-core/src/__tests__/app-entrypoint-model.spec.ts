@@ -290,13 +290,23 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
               url: String(url),
               body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
             });
+            const requestBody =
+              init?.body === undefined
+                ? undefined
+                : (JSON.parse(String(init.body)) as {
+                    messages?: Array<{ role: string; content: string }>;
+                  });
+            const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
+            const assistantContent = userMessage.includes("Bot 状态：")
+              ? '{"intent":"chat","priority":"normal","reason":"普通闲聊"}'
+              : "当然可以，我在这里";
 
             return new Response(
               JSON.stringify({
                 choices: [
                   {
                     message: {
-                      content: "当然可以，我在这里",
+                      content: assistantContent,
                     },
                   },
                 ],
@@ -400,19 +410,356 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       model: "bl-auto",
       api_key_injected: true,
     });
-    expect(llmRequests).toEqual([
-      {
-        url: "http://127.0.0.1:8045/v1/chat/completions",
-        body: {
-          model: "bl-auto",
-          messages: expect.any(Array),
-        },
+    expect(llmRequests).toHaveLength(2);
+    expect(llmRequests[0]).toEqual({
+      url: "http://127.0.0.1:8045/v1/chat/completions",
+      body: {
+        model: "bl-auto",
+        messages: expect.any(Array),
       },
-    ]);
+    });
+    expect(llmRequests[1]).toEqual({
+      url: "http://127.0.0.1:8045/v1/chat/completions",
+      body: {
+        model: "bl-auto",
+        messages: expect.any(Array),
+      },
+    });
     expect(events).toContain("chat:当然可以，我在这里喵~");
     expect(writes).toContain(
       "TS Core LLM chat ok: model=bl-auto message_id=msg-online-chat log_ref=llm/2026-04-24/chat-msg-online-chat.jsonl",
     );
+
+    await runtime.close();
+  });
+
+  it("应在真实在线入口把自然语言坐标任务接到 LLM（大语言模型） 分诊与规划，并入 goTo（前往坐标） 执行队列", async () => {
+    const llmRequests: Array<{ url: string; body: unknown }> = [];
+    const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-plan-online",
+      now: "2026-04-24T10:00:00.000Z",
+      env: {
+        LLM_BASE_URL: "http://127.0.0.1:8045/v1",
+        LLM_API_KEY: "sk-local-dev",
+        LLM_MODEL: "bl-auto",
+      },
+    });
+
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        llm: {
+          api_key: "sk-local-dev",
+          fetch: async (url, init) => {
+            llmRequests.push({
+              url: String(url),
+              body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+            });
+            const requestBody =
+              init?.body === undefined
+                ? undefined
+                : (JSON.parse(String(init.body)) as {
+                    messages?: Array<{ role: string; content: string }>;
+                  });
+            const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
+            const assistantContent = userMessage.includes("主人的指令：")
+              ? '{"type":"skill_call","reply":"收到，我这就过去","skill":"goTo","params":{"x":10,"y":64,"z":-5}}'
+              : '{"intent":"task","priority":"urgent","reason":"主人给了明确坐标移动指令"}';
+
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: assistantContent,
+                    },
+                  },
+                ],
+              }),
+              {
+                status: 200,
+                headers: {
+                  "content-type": "application/json",
+                },
+              },
+            );
+          },
+          now: () => new Date("2026-04-24T10:00:00.000Z"),
+        },
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => undefined,
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => ({}),
+            connectClient: async () => undefined,
+            closeClient: async () => undefined,
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async (jobName: string, data: unknown, options: unknown) => {
+                queueAdds.push({ name, jobName, data, options });
+
+                return { id: "job-online" };
+              },
+              close: async () => undefined,
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => "http://127.0.0.1:0";
+              server.close = async () => originalClose();
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeEntrypointMineflayerBot([]);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        botWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+        conversationWorker: {
+          createWorker: ({ processor: capturedProcessor }) => {
+            processor = capturedProcessor;
+
+            return {
+              close: async () => undefined,
+            };
+          },
+        },
+      },
+    });
+
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-plan-online",
+        message: {
+          bot_id: "bot-plan-online",
+          message_id: "msg-online-plan",
+          content: "请去坐标 x=10 y=64 z=-5",
+          intent_epoch: 3,
+          snapshot_ts: 1_713_952_800_002,
+        },
+      }),
+    });
+
+    expect(llmRequests).toHaveLength(2);
+    expect(queueAdds).toEqual([
+      {
+        name: "bot:bot-plan-online:exec",
+        jobName: "bot",
+        data: expect.objectContaining({
+          worker: "bot",
+          bot_id: "bot-plan-online",
+          exec_job: expect.objectContaining({
+            message_id: "msg-online-plan",
+            priority: "urgent",
+            skill: "goTo",
+            params: { x: 10, y: 64, z: -5 },
+          }),
+        }),
+        options: {
+          jobId: "msg-online-plan",
+          priority: 1,
+        },
+      },
+    ]);
+    expect(runtime.conversation_worker.getEvents()).toContainEqual({
+      type: "chat.reply",
+      bot_id: "bot-plan-online",
+      message_id: "msg-online-plan",
+      content: "收到，我这就过去喵~",
+    });
+    expect(runtime.conversation_worker.getEvents()).toContainEqual({
+      type: "task.accepted",
+      bot_id: "bot-plan-online",
+      message_id: "msg-online-plan",
+      skill: "goTo",
+      priority: "urgent",
+    });
+
+    await runtime.close();
+  });
+
+  it("应在真实在线入口把 modify（修改） 分诊结果降级为 chat（闲聊），而不是误走规划", async () => {
+    const llmRequests: Array<{ url: string; body: unknown }> = [];
+    const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-modify-online",
+      now: "2026-04-24T10:00:00.000Z",
+      env: {
+        LLM_BASE_URL: "http://127.0.0.1:8045/v1",
+        LLM_API_KEY: "sk-local-dev",
+        LLM_MODEL: "bl-auto",
+      },
+    });
+
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        llm: {
+          api_key: "sk-local-dev",
+          fetch: async (url, init) => {
+            llmRequests.push({
+              url: String(url),
+              body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+            });
+
+            const assistantContent =
+              llmRequests.length === 1
+                ? '{"intent":"modify","priority":"urgent","reason":"主人要求修改当前移动目标"}'
+                : "好的，我先记下这个修改请求喵~";
+
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: assistantContent,
+                    },
+                  },
+                ],
+              }),
+              {
+                status: 200,
+                headers: {
+                  "content-type": "application/json",
+                },
+              },
+            );
+          },
+          now: () => new Date("2026-04-24T10:00:00.000Z"),
+        },
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => undefined,
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => ({}),
+            connectClient: async () => undefined,
+            closeClient: async () => undefined,
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async (jobName: string, data: unknown, options: unknown) => {
+                queueAdds.push({ name, jobName, data, options });
+
+                return { id: "job-online" };
+              },
+              close: async () => undefined,
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => "http://127.0.0.1:0";
+              server.close = async () => originalClose();
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeEntrypointMineflayerBot([]);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        botWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+        conversationWorker: {
+          createWorker: ({ processor: capturedProcessor }) => {
+            processor = capturedProcessor;
+
+            return {
+              close: async () => undefined,
+            };
+          },
+        },
+      },
+    });
+
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-modify-online",
+        message: {
+          bot_id: "bot-modify-online",
+          message_id: "msg-online-modify",
+          content: "把刚才的目标改成去 10 64 -5",
+          intent_epoch: 4,
+          snapshot_ts: 1_713_952_800_003,
+        },
+      }),
+    });
+
+    expect(llmRequests).toHaveLength(2);
+    expect(queueAdds).toEqual([]);
+    expect(runtime.conversation_worker.getEvents()).not.toContainEqual(
+      expect.objectContaining({
+        type: "task.accepted",
+        message_id: "msg-online-modify",
+      }),
+    );
+    expect(runtime.conversation_worker.getEvents()).toContainEqual({
+      type: "chat.reply",
+      bot_id: "bot-modify-online",
+      message_id: "msg-online-modify",
+      content: "好的，我先记下这个修改请求喵~",
+    });
+    expect(llmRequests[1]).toEqual({
+      url: "http://127.0.0.1:8045/v1/chat/completions",
+      body: expect.objectContaining({
+        model: "bl-auto",
+        messages: expect.arrayContaining([
+          expect.objectContaining({
+            role: "user",
+            content: "[主人] 把刚才的目标改成去 10 64 -5",
+          }),
+        ]),
+      }),
+    });
 
     await runtime.close();
   });

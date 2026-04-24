@@ -9,17 +9,21 @@
 import { Worker, type WorkerOptions } from "bullmq";
 
 import { createCancelTemplateReply, createConversationReply } from "../conversation/chat.js";
-import type { ConversationRouteDecision } from "../conversation/contracts.js";
+import type {
+  ConversationPlanDraft,
+  ConversationPlanningTriage,
+  ConversationRouteDecision,
+} from "../conversation/contracts.js";
 import {
   type ConversationGeneratedReply,
   ConversationLlmChatError,
   type ConversationLlmDiagnosticRecord,
 } from "../conversation/llm.js";
+import { createExecJobFromPlan } from "../conversation/planning.js";
 import { createConversationRouteDecision, createMessageTriage } from "../conversation/triage.js";
 import type { RedisClientLike } from "../db/index.js";
 import { ConversationPriority, type MessageTriage } from "../domain/contracts.js";
-import { ExecPriority, TaskHistoryStatus, createSkillCallJob } from "../runtime/tasking.js";
-import { SKILL_DIRECTORY } from "../skills/index.js";
+import { ExecPriority, TaskHistoryStatus } from "../runtime/tasking.js";
 import { createBullmqPhysicalQueueName } from "./bullmq.js";
 import {
   type BotWorkerTask,
@@ -79,7 +83,7 @@ export type ConversationWorkerRuntimeEvent =
       /** 任务历史状态。 */
       readonly status: TaskHistoryStatus.Discarded;
       /** 丢弃原因。 */
-      readonly reason: "planner_unavailable";
+      readonly reason: "planner_unavailable" | "planner_failed";
     }
   | {
       /** 事件类型。 */
@@ -134,6 +138,19 @@ export type ConversationWorkerReplyGenerator = (input: {
   readonly route: ConversationRouteDecision;
 }) => string | ConversationGeneratedReply | Promise<string | ConversationGeneratedReply>;
 
+/** ConversationWorker（对话工作线程） 最小规划依赖。 */
+export type ConversationWorkerPlanner = (input: {
+  /** Worker 输入任务。 */
+  readonly task: ConversationWorkerTask;
+  /** 已收紧到可规划意图的分诊结果。 */
+  readonly triage: ConversationPlanningTriage;
+  /** 已收紧到规划分支的路由。 */
+  readonly route: Extract<
+    ConversationRouteDecision,
+    { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
+  >;
+}) => ConversationPlanDraft | Promise<ConversationPlanDraft>;
+
 /** ConversationWorker（对话工作线程） BullMQ（任务队列） Worker 最小能力。 */
 export interface ConversationBullmqWorkerLike {
   /** 关闭 Worker（工作线程）。 */
@@ -156,6 +173,8 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly triage?: ConversationWorkerTriage;
   /** 回复生成函数，默认生成模板闲聊回复。 */
   readonly replyGenerator?: ConversationWorkerReplyGenerator;
+  /** 最小规划函数，成功时返回可执行规划草案。 */
+  readonly planner?: ConversationWorkerPlanner;
   /** 广播回复汇点，真实路径指向 BotActor.broadcastReply。 */
   readonly broadcastReplySink: ConversationBroadcastReplySink;
   /** 运行时中断汇点，真实路径指向 BotActor 中断入口。 */
@@ -207,15 +226,6 @@ function createDefaultTriage(): MessageTriage {
     reason: "conversation_worker_fallback",
   });
 }
-/** 生成强制的移动意图分诊结果。 */
-
-function createGoToTriage(): MessageTriage {
-  return createMessageTriage({
-    intent: "task",
-    priority: ConversationPriority.Normal,
-    reason: "deterministic_goto_command",
-  });
-}
 /** 克隆并校验对话任务数据。 */
 
 function cloneWorkerTask(data: unknown): ConversationWorkerTask {
@@ -224,28 +234,6 @@ function cloneWorkerTask(data: unknown): ConversationWorkerTask {
   return createConversationWorkerTask({
     bot_id: candidate.bot_id,
     message: candidate.message,
-  });
-}
-/** 尝试解析文本中的强制移动指令。 */
-
-function parseDeterministicGoToCommand(content: string): {
-  readonly x: number;
-  readonly y: number;
-  readonly z: number;
-} | null {
-  const trimmed = content.trim();
-  const match = /^去\s*(?:\(\s*)?(-?\d+)(?:\s*,\s*|\s+)(-?\d+)(?:\s*,\s*|\s+)(-?\d+)\s*\)?$/u.exec(
-    trimmed,
-  );
-
-  if (match === null) {
-    return null;
-  }
-
-  return Object.freeze({
-    x: Number(match[1]),
-    y: Number(match[2]),
-    z: Number(match[3]),
   });
 }
 /** 将系统执行优先级映射到队列数值。 */
@@ -259,6 +247,18 @@ function toBullmqPriority(priority: ExecPriority): number {
     case ExecPriority.Background:
       return 10;
   }
+}
+
+/**
+ * 创建任务规划失败的模板回复。
+ *
+ * 当前阶段不把规划失败伪装成闲聊；统一返回明确失败回执。
+ */
+function createPlanningFailureReply() {
+  return createConversationReply({
+    mode: "template",
+    reply: "抱歉，这次我还没能规划出可执行的移动任务喵~",
+  });
 }
 
 /**
@@ -332,11 +332,7 @@ export function createConversationWorkerRuntime(input: {
 
   const processTask = async (job: { readonly data: unknown }): Promise<void> => {
     const task = cloneWorkerTask(job.data);
-    const goToParams = parseDeterministicGoToCommand(task.message.content);
-    const triage =
-      goToParams === null
-        ? await (input.dependencies.triage?.({ task }) ?? createDefaultTriage())
-        : createGoToTriage();
+    const triage = await (input.dependencies.triage?.({ task }) ?? createDefaultTriage());
     const route = createConversationRouteDecision({
       triage,
       message: task.message.content,
@@ -431,51 +427,159 @@ export function createConversationWorkerRuntime(input: {
         );
         break;
       case "plan_exec":
-      case "modify_interrupt_then_plan":
-        if (goToParams !== null && route.kind === "plan_exec") {
-          if (input.dependencies.enqueueExecTaskSink === undefined) {
-            throw new Error("goTo deterministic plan requires enqueueExecTaskSink");
-          }
+      case "modify_interrupt_then_plan": {
+        const plannerFailureReply = createPlanningFailureReply();
 
-          const execJob = createSkillCallJob({
+        if (input.dependencies.planner === undefined) {
+          await input.dependencies.broadcastReplySink({
             message_id: task.message.message_id,
-            intent_epoch: task.message.intent_epoch,
-            snapshot_ts: task.message.snapshot_ts,
-            priority: ExecPriority.Normal,
-            skill: SKILL_DIRECTORY.goTo,
-            params: goToParams,
-          });
-          const botTask = createBotWorkerTask({
-            bot_id: task.bot_id,
-            exec_job: execJob,
-          });
-
-          await input.dependencies.enqueueExecTaskSink({
-            task: botTask,
-            priority: toBullmqPriority(execJob.priority),
+            content: plannerFailureReply.reply,
           });
           events.push(
             Object.freeze({
-              type: "task.accepted",
+              type: "chat.reply",
               bot_id: task.bot_id,
               message_id: task.message.message_id,
-              skill: "goTo" as const,
-              priority: execJob.priority,
+              content: plannerFailureReply.reply,
+            }),
+          );
+          events.push(
+            Object.freeze({
+              type: "task.discarded",
+              bot_id: task.bot_id,
+              message_id: task.message.message_id,
+              status: TaskHistoryStatus.Discarded,
+              reason: "planner_unavailable",
             }),
           );
           break;
         }
 
+        let plan: ConversationPlanDraft;
+        try {
+          plan = await input.dependencies.planner({
+            task,
+            triage: route.triage,
+            route,
+          });
+        } catch {
+          await input.dependencies.broadcastReplySink({
+            message_id: task.message.message_id,
+            content: plannerFailureReply.reply,
+          });
+          events.push(
+            Object.freeze({
+              type: "chat.reply",
+              bot_id: task.bot_id,
+              message_id: task.message.message_id,
+              content: plannerFailureReply.reply,
+            }),
+          );
+          events.push(
+            Object.freeze({
+              type: "task.discarded",
+              bot_id: task.bot_id,
+              message_id: task.message.message_id,
+              status: TaskHistoryStatus.Discarded,
+              reason: "planner_failed",
+            }),
+          );
+          break;
+        }
+
+        if (input.dependencies.enqueueExecTaskSink === undefined) {
+          throw new Error("planning route requires enqueueExecTaskSink");
+        }
+
+        const execJob = createExecJobFromPlan({
+          plan,
+          message_id: task.message.message_id,
+          intent_epoch: task.message.intent_epoch,
+          snapshot_ts: task.message.snapshot_ts,
+          priority: route.exec_priority,
+        });
+
+        if (execJob.type !== "skill_call" || execJob.skill !== "goTo") {
+          await input.dependencies.broadcastReplySink({
+            message_id: task.message.message_id,
+            content: plannerFailureReply.reply,
+          });
+          events.push(
+            Object.freeze({
+              type: "chat.reply",
+              bot_id: task.bot_id,
+              message_id: task.message.message_id,
+              content: plannerFailureReply.reply,
+            }),
+          );
+          events.push(
+            Object.freeze({
+              type: "task.discarded",
+              bot_id: task.bot_id,
+              message_id: task.message.message_id,
+              status: TaskHistoryStatus.Discarded,
+              reason: "planner_failed",
+            }),
+          );
+          break;
+        }
+
+        if (route.requires_interrupt) {
+          if (input.dependencies.interruptRuntimeSink === undefined) {
+            throw new Error("planning route requires interruptRuntimeSink");
+          }
+
+          await input.dependencies.interruptRuntimeSink({
+            bot_id: task.bot_id,
+            signal: {
+              source: {
+                type: "triage",
+                intent_epoch: task.message.intent_epoch,
+              },
+              reason: route.kind === "modify_interrupt_then_plan" ? "modify" : route.triage.reason,
+            },
+          });
+        }
+
+        const reply = createConversationReply({
+          mode: "llm",
+          reply: plan.reply,
+        });
+        await input.dependencies.broadcastReplySink({
+          message_id: task.message.message_id,
+          content: reply.reply,
+        });
         events.push(
           Object.freeze({
-            type: "task.discarded",
+            type: "chat.reply",
             bot_id: task.bot_id,
             message_id: task.message.message_id,
-            status: TaskHistoryStatus.Discarded,
-            reason: "planner_unavailable",
+            content: reply.reply,
           }),
         );
+
+        const botTask = createBotWorkerTask({
+          bot_id: task.bot_id,
+          exec_job: execJob,
+        });
+        await input.dependencies.enqueueExecTaskSink({
+          task: botTask,
+          priority: toBullmqPriority(execJob.priority),
+        });
+
+        if (execJob.type === "skill_call" && execJob.skill === "goTo") {
+          events.push(
+            Object.freeze({
+              type: "task.accepted",
+              bot_id: task.bot_id,
+              message_id: task.message.message_id,
+              skill: "goTo",
+              priority: execJob.priority,
+            }),
+          );
+        }
         break;
+      }
     }
   };
 

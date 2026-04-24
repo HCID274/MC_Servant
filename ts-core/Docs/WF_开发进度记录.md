@@ -11,7 +11,7 @@
 ## 当前批次
 
 - 批次范围：`T-021` ~ `T-030`
-- 当前已完成任务：`T-021`、`T-022`、`T-023`
+- 当前已完成任务：`T-021`、`T-022`、`T-023`、`T-024`
 - 当前批次摘要：从 `T-021`（任务二十一） 起按"纵向上线切片"重排，把原 T-021（消息入队 + ConversationWorker stub） / 原 T-022（BotWorker 最小执行） / 原 T-023（真实连服 + EasyAuth + 端到端） 三任务合并为新的 `T-021`（最窄端到端 demo），把 MC（Minecraft，我的世界） 上线硬门槛前移到本批次第一个任务。后续任务沿 BotWorker → 实时层 → sandbox → 真实 LLM → BrainWorker → 部署文档 的顺序逐步加深。
 - 当前批次硬约束：`T-021`（任务二十一） 验收必须包含真实 MC 服务器手测（聊天截图 + 启动日志），不再做纯契约或纯占位任务。每个后续任务都必须给出可在 MC 中亲眼验证的新行为门槛。
 
@@ -101,4 +101,24 @@
 - 验收备注：
   - 两个打回点均已修复：先补上在线默认 `cancel`（取消） 分诊，再补齐 `cancel`（取消） 的真实中断与模板回执。
   - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 27 个测试文件、128 条测试通过。
+  - 本次审查未重复机械预检。
+
+### T-024 — 真实 LLM 最小分诊与 goTo 规划
+
+- 审查状态：通过。
+- 核心文件：
+  - `ts-core/src/conversation/llm.ts`
+  - `ts-core/src/workers/conversation-worker.ts`
+  - `ts-core/src/app/entrypoint.ts`
+  - `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/conversation-llm-planning-model.spec.ts`
+  - `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
+- 变更快照：
+  - OpenAI（开放人工智能） 兼容客户端已从“只会闲聊”扩到最小 `triage`（分诊） + `goTo`（前往坐标） `plan`（规划）：新增 `generateTriage()`（生成分诊） 与 `generateGoToPlan()`（生成前往坐标规划），统一复用同一套 `chat.completions`（对话补全） 调用与 JSON（结构化文本） 强校验边界。
+  - `ConversationWorker`（对话工作线程） 已移除旧的正则 `goTo`（前往坐标） 快路径；`task`（任务） 现在统一走 `planner`（规划器） → `createExecJobFromPlan()`（由规划产物创建执行任务） → `bot:{botId}:exec`（执行队列） → `BotWorker`（机器人工作线程） / `BotActor.executeSkill()`（机器人执行代理执行技能） 真实执行链。规划失败时只回模板失败回执，不伪装成闲聊成功。
+  - 真实在线入口 `startAppOnlineRuntime()`（在线启动入口） 已把 `triage`（分诊） / `chat`（闲聊） / `plan`（规划） 三条路径接到共享 LLM（大语言模型） 客户端；`cancel`（取消） 仍优先保留规则命中 + 中断 + 模板回执，不触发闲聊回复。
+  - 打回修复采用方案 A：在线 `triage`（分诊） prompt 已收窄到只允许 `chat`（闲聊） / `task`（任务） / `cancel`（取消） 三类；若上游仍意外返回 `modify`（修改当前任务），在线入口会直接降级为 `chat/normal`（闲聊 / 普通），阻断“缺 `interrupted_task`（被中断任务摘要） 仍继续规划”的半通路。
+- 验收备注：
+  - 新增测试已锁住两类关键回归：`triage`（分诊） prompt 不再暴露 `modify`（修改当前任务），以及在线入口即使收到 `modify`（修改当前任务） 结果也不会触发 `planner`（规划器） / 执行入队。
+  - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 28 个测试文件、136 条测试通过。
   - 本次审查未重复机械预检。

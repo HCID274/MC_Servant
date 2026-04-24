@@ -8,6 +8,7 @@
  */
 
 import {
+  type ConversationLlmClient,
   type ConversationLlmDependencies,
   type ConversationLlmDiagnosticRecord,
   createConversationLlmClient,
@@ -308,11 +309,20 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   let runtime: AppRuntimeCoreResources<TBotId> | undefined;
   let botWorker: BotWorkerRuntime | undefined;
   let conversationWorker: ConversationWorkerRuntime | undefined;
+  const onlineLlmClient = createOnlineConversationLlmClient(
+    input.bootstrap,
+    input.dependencies?.llm,
+    input.write,
+  );
   const onlineTriage =
-    input.dependencies?.conversationWorker?.triage ?? createOnlineConversationTriage();
+    input.dependencies?.conversationWorker?.triage ??
+    createOnlineConversationTriage(onlineLlmClient);
   const llmReplyGenerator =
     input.dependencies?.conversationWorker?.replyGenerator ??
-    createOnlineConversationReplyGenerator(input.bootstrap, input.dependencies?.llm, input.write);
+    createOnlineConversationReplyGenerator(onlineLlmClient);
+  const onlinePlanner =
+    input.dependencies?.conversationWorker?.planner ??
+    createOnlineConversationPlanner(onlineLlmClient);
 
   try {
     infrastructure = await createAppRuntimeResources(
@@ -358,6 +368,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         ...(input.dependencies?.conversationWorker ?? {}),
         ...(onlineTriage === undefined ? {} : { triage: onlineTriage }),
         ...(llmReplyGenerator === undefined ? {} : { replyGenerator: llmReplyGenerator }),
+        ...(onlinePlanner === undefined ? {} : { planner: onlinePlanner }),
         interruptRuntimeSink,
         broadcastReplySink: async (reply) => {
           await createdRuntime.actor.broadcastReply(reply);
@@ -433,13 +444,16 @@ function createOnlineConversationInterruptRuntimeSink<TBotId extends string>(
  * 为真实在线入口创建最小分诊器。
  *
  * 在线最短闭环仍需保留 cancel（取消） 的模板中断语义；因此这里先锁住显式取消文本，
- * 其余消息继续回退到普通 chat（闲聊） 路径，确定性 goTo（前往坐标） 仍由 Worker 内部快路径处理。
+ * 其余消息则交给真实 LLM（大语言模型） 做最小 triage（分诊）；若未启用 LLM（大语言模型），再安全回退为普通 chat（闲聊）。
  */
-function createOnlineConversationTriage(): ConversationWorkerRuntimeDependencies["triage"] {
-  return ({ task }) => {
+function createOnlineConversationTriage(
+  llm: ConversationLlmClient | undefined,
+): ConversationWorkerRuntimeDependencies["triage"] {
+  return async ({ task }) => {
     const normalizedContent = task.message.content.trim().replaceAll(/\s+/gu, "");
     const isExplicitCancel =
       normalizedContent === "取消" ||
+      normalizedContent === "停" ||
       normalizedContent === "停止" ||
       normalizedContent === "停下" ||
       normalizedContent === "停下来" ||
@@ -454,24 +468,82 @@ function createOnlineConversationTriage(): ConversationWorkerRuntimeDependencies
       });
     }
 
-    return createMessageTriage({
-      intent: "chat",
-      priority: "normal",
-      reason: "online_chat_fallback",
+    if (llm === undefined) {
+      return createMessageTriage({
+        intent: "chat",
+        priority: "normal",
+        reason: "online_chat_fallback",
+      });
+    }
+
+    const triage = await llm.generateTriage({
+      message_id: task.message.message_id,
+      message: task.message.content,
+      bot_summary: "online_runtime_ready",
     });
+
+    if (triage.intent === "modify") {
+      return createMessageTriage({
+        intent: "chat",
+        priority: "normal",
+        reason: "online_modify_fallback",
+      });
+    }
+
+    return triage;
   };
 }
 
 /**
  * 为真实在线入口创建闲聊回复生成器。
  *
- * 只有当引导契约已显式启用 LLM（大语言模型） 时，才会返回真实 OpenAI（开放人工智能） 兼容调用逻辑。
+ * 只有当引导契约已显式启用 LLM 时，才会返回真实 OpenAI 兼容调用逻辑。
  */
-function createOnlineConversationReplyGenerator<TBotId extends string>(
+function createOnlineConversationReplyGenerator(
+  llm: ConversationLlmClient | undefined,
+): ConversationWorkerRuntimeDependencies["replyGenerator"] | undefined {
+  if (llm === undefined) {
+    return undefined;
+  }
+
+  return async ({ task }) =>
+    llm.generateChatReply({
+      message_id: task.message.message_id,
+      message: task.message.content,
+    });
+}
+
+/**
+ * 为真实在线入口创建最小 `goTo`（前往坐标） 规划器。
+ *
+ * 当前阶段只允许规划到单个 `skill_call.goTo`（技能调用前往坐标）。
+ */
+function createOnlineConversationPlanner(
+  llm: ConversationLlmClient | undefined,
+): ConversationWorkerRuntimeDependencies["planner"] | undefined {
+  if (llm === undefined) {
+    return undefined;
+  }
+
+  return async ({ task, route }) =>
+    llm.generateGoToPlan({
+      message_id: task.message.message_id,
+      message: task.message.content,
+      snapshot_context: "online_runtime: world interaction task planning; only goTo is executable",
+      triage_reason: route.triage.reason,
+    });
+}
+
+/**
+ * 为真实在线入口创建共享的 LLM（大语言模型） 客户端。
+ *
+ * 统一让 triage（分诊） / chat（闲聊） / plan（规划） 复用同一套 OpenAI（开放人工智能） 兼容配置。
+ */
+function createOnlineConversationLlmClient<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
   dependencies: AppOnlineLlmDependencies | undefined,
   write: ((message: string) => void) | undefined,
-): ConversationWorkerRuntimeDependencies["replyGenerator"] | undefined {
+): ConversationLlmClient | undefined {
   if (!bootstrap.llm.enabled) {
     return undefined;
   }
@@ -480,7 +552,7 @@ function createOnlineConversationReplyGenerator<TBotId extends string>(
     throw new Error("LLM_API_KEY must be injected for online runtime");
   }
 
-  const llm = createConversationLlmClient(
+  return createConversationLlmClient(
     createConversationLlmConfig({
       base_url: bootstrap.llm.base_url ?? "",
       api_key: dependencies.api_key,
@@ -497,12 +569,6 @@ function createOnlineConversationReplyGenerator<TBotId extends string>(
       },
     },
   );
-
-  return async ({ task }) =>
-    llm.generateChatReply({
-      message_id: task.message.message_id,
-      message: task.message.content,
-    });
 }
 
 /**
