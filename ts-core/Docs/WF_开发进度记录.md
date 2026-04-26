@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-021` ~ `T-030`
-- 当前已完成任务：`T-021`、`T-022`、`T-023`、`T-024`、`T-025`、`T-026`、`T-027`、`T-028`
-- 当前活跃任务：`T-029`（任务二十九） 超大文件拆分。
+- 当前已完成任务：`T-021`、`T-022`、`T-023`、`T-024`、`T-025`、`T-026`、`T-027`、`T-028`、`T-029`
+- 当前活跃任务：`T-030`（任务三十） 模式重构与最后收口。
 - 当前批次摘要：`T-021`（任务二十一） 到 `T-027`（任务二十七） 已完成 MC（Minecraft，我的世界） 上线、真实 LLM（大语言模型）、多技能、观测出口与 sandbox_code（沙箱代码） 真实执行链。自 `T-028`（任务二十八） 起，本批次最后三项改为架构治理：`T-028`（循环依赖治理）、`T-029`（超大文件拆分）、`T-030`（模式重构与收口）。
 - 当前批次硬约束：`T-021`（任务二十一） 到 `T-027`（任务二十七） 的可运行主干不得回归。`T-028`（任务二十八） 到 `T-030`（任务三十） 是架构止血任务，重点是依赖图、文件边界与可维护性，不要求新增 MC（Minecraft，我的世界） 可见行为；但必须保持现有 MC（Minecraft，我的世界） 行为测试与预检全绿。
 
@@ -239,3 +239,30 @@
   - Manager（管理代理） 复核 `pnpm dep:cycles`（循环依赖检测） 输出为 `No circular dependency found`（未发现循环依赖），并额外用独立脚本扫描模块图，未发现值级或类型级环。
   - Manager（管理代理） 复核运行 `pnpm typecheck`（类型检查） 通过；其余机械项以 Coder（编码代理） 回填为准：`bash scripts/pre_review.sh` 通过，28 个测试文件、161 条测试通过。
   - 残留说明：`sandbox`（沙箱） → `diagnostics`（诊断） → `data`（数据层） 是既有日志分层依赖，不构成本轮循环；`T-029`（任务二十九） 拆文件时继续压窄文件边界。
+
+### T-029 — 超大文件拆分与 Mineflayer 能力端口切分
+
+- 审查状态：通过。
+- 核心文件：
+  - `ts-core/src/app/bootstrap.ts`
+  - `ts-core/src/app/bootstrap/*`
+  - `ts-core/src/data/contracts.ts`
+  - `ts-core/src/data/contracts/*`
+  - `ts-core/src/runtime/transport.ts`
+  - `ts-core/src/runtime/transport/*`
+  - `ts-core/src/conversation/llm.ts`
+  - `ts-core/src/conversation/llm/*`
+  - `ts-core/src/workers/conversation-worker.ts`
+  - `ts-core/src/workers/conversation-worker/*`
+- 变更快照：
+  - 五个目标超大文件均已改为 1 行兼容 barrel（聚合导出）入口，实际实现拆入职责子目录；旧外部 import（导入）路径保持可用。
+  - `app/bootstrap`（应用引导） 已拆为 `types`（类型）、`contract`（装配契约）、`resources`（基础设施资源）、`runtime-core`（运行时核心）、`services`（服务层）、`process`（进程生命周期）、`external-auth`（外部认证）、`env`（环境读取）、`directories`（目录投影） 等模块，基础设施 → 运行时核心 → 服务层的创建顺序与关闭顺序保持不变。
+  - `data/contracts`（数据契约） 已按 `tables`（表常量）、`event-log`（事件日志）、`task-history`（任务历史）、`persistence`（持久化计划）、`config-types`（配置类型）、`config`（配置工厂） 与 `utils`（内部工具） 拆分，对外继续由 `data/contracts.ts`（数据契约入口） 聚合导出。
+  - `runtime/transport`（运行时传输） 已拆出 `types`（类型）、`lifecycle`（生命周期）、`pathfinder`（寻路器）、`go-to` / `mine` / `collect` / `equip` 技能 adapter（适配器） 与 `naming`（命名归一化）；`MineflayerBotHandle`（Mineflayer 机器人句柄） 下沉为多个能力 port（端口）的组合，技能 adapter（适配器） 仅依赖自身需要的能力端口。
+  - `conversation/llm`（对话大语言模型） 已拆成 `types`（类型）、`config`（配置）、`messages`（消息构造）、`client`（客户端）、`http`（请求）、`parsers`（解析）、`diagnostics`（诊断） 与 `errors`（错误）；未抽 `executeStage`（阶段执行模板），未改 skill（技能） 策略表，未文件化 Prompt（提示词）。
+  - `workers/conversation-worker`（对话工作线程） 已拆出 `runtime`（运行时调度）、`types`（类型）、`events`（事件）、`helpers`（辅助） 与 `handlers/chat-reply`、`handlers/cancel-interrupt`、`handlers/plan-exec`，保留原 `chat`（闲聊） / `cancel`（取消） / `plan`（规划） 行为。
+- 验收备注：
+  - Manager（管理代理） 复核 `pnpm dep:cycles`（循环依赖检测） 通过，未发现循环依赖。
+  - Manager（管理代理） 复核 `pnpm typecheck`（类型检查） 通过。
+  - Manager（管理代理） 复核 `bash ts-core/scripts/pre_review.sh`（评审前预检脚本） 全部通过：28 个测试文件、161 条测试通过。
+  - 行数备注：本轮五个目标文件已全部拆分；仓内仍有 `sandbox/execution.ts`（沙箱执行）、`app/entrypoint.ts`（应用在线入口） 等既存 >500 行文件，不属于 T-029（任务二十九） 拆分目标。

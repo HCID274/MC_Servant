@@ -1,129 +1,117 @@
 # 当前任务握手区
 
-【任务序号】: T-028
-【当前状态】: 待审查
+【任务序号】: T-030
+【当前状态】: 待开发
 
 ---
 
 ## Manager 任务指令
 
 **任务目标**:
-在 `core-ports`（核心端口层） + `runtime`（运行时） + `sandbox`（沙箱） + `skills`（技能） + `observation`（观测） + `diagnostics`（诊断） + `data`（数据层） 这一组架构边界内，完成循环依赖治理。目标是把被多方共享的纯类型、枚举、事件载荷、任务状态与日志类型下沉到 `ts-core/src/core-ports/`（核心端口层），让 `runtime`（运行时）、`sandbox`（沙箱）、`skills`（技能）、`observation`（观测）、`diagnostics`（诊断）、`data`（数据层） 只单向依赖端口层，消除当前模块循环并加入预检守门。
+在 `conversation/llm`（对话大语言模型） + `interfaces`（接口层） + `domain`（领域基础） + `Docs/01_ARCHITECTURE.md`（架构规范） 这一组模块内完成架构治理批次最后收口：抽出 `executeStage`（阶段执行模板） 统一三段 LLM（大语言模型） 调用流程，把 `parseConversationSkillPlan`（解析对话技能规划） 改为 table-driven（表驱动） skill（技能） 策略表，抽离 Prompt（提示词） 模板，收口小型 DRY（不要重复自己） 问题，并把字段命名约定写入架构文档。目标是降低后续 T-031（任务三十一） 状态投影注入与 T-032（任务三十二） composite output（复合输出） 的改动风险，不新增 MC（Minecraft，我的世界） 行为。
 
 **上下文说明**:
-1. `T-027`（任务二十七） 已通过，当前系统已具备真实 `sandbox_code`（沙箱代码） 执行链，但引入后放大了 `runtime`（运行时） ↔ `sandbox`（沙箱） 的值级循环。
-2. 最近架构审查确认至少存在两类问题：值级循环包括 `runtime`（运行时） ↔ `sandbox`（沙箱）、`runtime`（运行时） ↔ `diagnostics`（诊断）；类型级循环包括 `runtime`（运行时） ↔ `observation`（观测）、`runtime`（运行时） ↔ `skills`（技能）、`data`（数据层） → `runtime`（运行时）。
-3. 本轮是架构止血，不新增业务能力，不改变 `BotActor`（机器人执行代理） 单写者语义，不改变 MC（Minecraft，我的世界） 行为，不改变 `skill_call`（技能调用） / `sandbox_code`（沙箱代码） / `chat`（闲聊） / `cancel`（取消） 的对外行为。
-4. 本轮默认新建 `ts-core/src/core-ports/`（核心端口层），不要把更多跨模块共享类型继续堆入 `domain`（领域层）。`domain`（领域层） 只保留更基础的领域对象与不变量工具；`core-ports`（核心端口层） 承载跨模块端口契约。
-5. 本轮必须把循环依赖检测接入 `bash ts-core/scripts/pre_review.sh`（评审前预检脚本）。可选 `madge`（依赖图工具） 或 `dependency-cruiser`（依赖巡检工具），优先选改动小、输出明确、能在本项目稳定运行的一种。
+1. `T-028`（任务二十八） 已完成循环依赖治理，`pre_review.sh`（评审前预检脚本） 已接入 `pnpm dep:cycles`（循环依赖检测）；本轮不得重新引入循环依赖。
+2. `T-029`（任务二十九） 已把 `conversation/llm.ts`（对话大语言模型入口） 拆到 `conversation/llm/*`，并把五个超大文件拆成职责子目录。本轮必须在这些小文件内做模式重构，禁止回滚拆分。
+3. 本轮仍是治理任务，不新增技能、不改 `BotActor`（机器人执行代理） 单写者语义、不改 `ConversationWorker`（对话工作线程） 对外行为、不改 OpenAI（开放人工智能） 兼容接口字段。
+4. 当前 `conversation/llm/client.ts`（大语言模型客户端） 三个方法 `generateTriage`（生成分诊） / `generateChatReply`（生成闲聊回复） / `generateSkillPlan`（生成技能规划） 有重复结构：记录开始时间、组消息、发请求、解析、写诊断、失败处理。需要抽成内部模板方法，但三个公共方法签名和失败语义必须保持。
+5. 当前 `conversation/llm/parsers.ts`（大语言模型解析器） 的 `parseConversationSkillPlan()` 仍是 `switch`（分支） + 多处类型断言；本轮要改成 skill（技能） 到 guard（守卫） / builder（构建器） 的策略表，新增技能时只需扩表。
+6. 当前 Prompt（提示词） 文本内仍有 skill（技能） 样例参数和猫娘人设硬编码。本轮要把模板与 skill（技能） 段生成拆开，避免在 Prompt（提示词） 中写死 Minecraft（我的世界） 事实数据；示例参数只能是占位符或由技能 schema（结构约束）动态生成的字段说明。
 
 **输入文件白名单（Coder 仅限读取以下文件）**:
-1. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏的约束》；第 2 节《七层技术架构》；第 6 节《执行核心：BotActor 状态机》；第 8 节《Event Protocol》；第 14 节《数据与持久化边界》；第 15 节《模块划分》；第 16 节《目录结构》
-2. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 1 节《BotActor 核心定位》；第 2 节《状态机完整定义》；第 3 节《中断协议详细规格》；第 5 节《任务执行流》；第 8 节《observation 与 BotActor 的交互契约》；第 9 节《诊断事件清单》
-3. `ts-core/Docs/03_SANDBOX_SPEC.md` — 第 4 节《Facade API 完整类型定义》；第 5 节《Facade API 注入机制》；第 7 节《超时与生命周期管理》；第 9 节《步骤结果收集》；第 10 节《skill_call 与 sandbox_code 的统一抽象》
-4. `ts-core/Docs/04_CONVERSATION_SPEC.md` — 第 11 节《回复广播与事件发射》；第 12 节《ConversationWorker 完整处理流程》；第 15 节《错误处理与降级》
-5. `ts-core/Docs/05_DATA_SPEC.md` — 第 2 节《PostgreSQL Schema 设计》；第 4 节《JSONL 日志规格》；第 6 节《event_log 查询模式》；第 9 节《数据一致性约定》
-6. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》；第 5 节《状态流转》；第 9 节《预检脚本》
-7. `ts-core/Docs/WF_架构治理批次计划.md` — 第 0 节《起因与硬约束》；第 `T-028` 节《循环依赖治理》
-8. `ts-core/scripts/pre_review.sh` — 全文件
-9. `ts-core/package.json` — 全文件（仅允许新增循环依赖检测所需开发依赖与脚本）
-10. `ts-core/pnpm-lock.yaml` — 全文件（仅随依赖安装更新）
-11. `ts-core/tsconfig.json` — 全文件（只读，除非依赖检测工具必须读取配置；原则上不修改）
-12. `ts-core/src/core-ports/**` — 新增目录，全文件
-13. `ts-core/src/domain/contracts.ts` — 全文件（只读优先；仅当需要复用 `ModuleBoundary`（模块边界） 或基础领域类型时允许最小适配）
-14. `ts-core/src/domain/invariants.ts` — 全文件（只读）
-15. `ts-core/src/runtime/contracts.ts` — 全文件
-16. `ts-core/src/runtime/events.ts` — 全文件
-17. `ts-core/src/runtime/tasking.ts` — 全文件
-18. `ts-core/src/runtime/state-machine.ts` — 全文件
-19. `ts-core/src/runtime/actor.ts` — 全文件
-20. `ts-core/src/runtime/transport.ts` — 全文件（仅允许 import（导入）路径与类型来源适配，不拆文件）
-21. `ts-core/src/runtime/index.ts` — 全文件
-22. `ts-core/src/observation/contracts.ts` — 全文件
-23. `ts-core/src/observation/runtime.ts` — 全文件
-24. `ts-core/src/observation/snapshot.ts` — 全文件（只读优先；仅允许类型来源适配）
-25. `ts-core/src/observation/index.ts` — 全文件
-26. `ts-core/src/skills/contracts.ts` — 全文件
-27. `ts-core/src/skills/execution.ts` — 全文件
-28. `ts-core/src/skills/registry.ts` — 全文件
-29. `ts-core/src/skills/index.ts` — 全文件
-30. `ts-core/src/sandbox/contracts.ts` — 全文件
-31. `ts-core/src/sandbox/execution.ts` — 全文件
-32. `ts-core/src/sandbox/facade.ts` — 全文件（只读优先；仅允许类型来源适配）
-33. `ts-core/src/sandbox/index.ts` — 全文件
-34. `ts-core/src/diagnostics/contracts.ts` — 全文件
-35. `ts-core/src/diagnostics/logs.ts` — 全文件
-36. `ts-core/src/diagnostics/index.ts` — 全文件
-37. `ts-core/src/data/contracts.ts` — 全文件
-38. `ts-core/src/data/schema.ts` — 全文件
-39. `ts-core/src/data/logs.ts` — 全文件
-40. `ts-core/src/data/index.ts` — 全文件
-41. `ts-core/src/interfaces/contracts.ts` — 全文件（仅允许类型来源适配）
-42. `ts-core/src/interfaces/realtime.ts` — 全文件（仅允许类型来源适配）
-43. `ts-core/src/interfaces/server.ts` — 全文件（仅允许类型来源适配）
-44. `ts-core/src/interfaces/index.ts` — 全文件（仅允许导出适配）
-45. `ts-core/src/conversation/contracts.ts` — 全文件（仅允许类型来源适配）
-46. `ts-core/src/conversation/planning.ts` — 全文件（仅允许类型来源适配）
-47. `ts-core/src/conversation/triage.ts` — 全文件（仅允许类型来源适配）
-48. `ts-core/src/conversation/llm.ts` — 全文件（只读优先；仅允许类型来源适配，不做 `DRY`（不要重复自己） 重构）
-49. `ts-core/src/conversation/index.ts` — 全文件（仅允许导出适配）
-50. `ts-core/src/workers/contracts.ts` — 全文件（仅允许类型来源适配）
-51. `ts-core/src/workers/bot-worker.ts` — 全文件（仅允许类型来源适配）
-52. `ts-core/src/workers/conversation-worker.ts` — 全文件（仅允许类型来源适配）
-53. `ts-core/src/workers/index.ts` — 全文件（仅允许导出适配）
-54. `ts-core/src/app/bootstrap.ts` — 全文件（仅允许依赖注入适配，例如向 `BotActor`（机器人执行代理） 注入日志引用工厂；不拆文件）
-55. `ts-core/src/app/entrypoint.ts` — 全文件（仅允许类型来源适配）
-56. `ts-core/src/app/index.ts` — 全文件（仅允许导出适配）
-57. `ts-core/src/__tests__/*.spec.ts` — 全部测试文件（仅允许因 import（导入）路径、公开类型来源、循环检测新增测试而最小修改）
+1. `AGENTS.md` — 第 2 节《用户强约束》；第 3 节《Minecraft 事实来源约束》；第 9 节《编码规范》；第 11 节《文档规则》
+2. `ts-core/agent.md` — 全文件
+3. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏的约束》；第 15 节《模块划分》；第 16 节《目录结构》；允许新增一节《命名约定》
+4. `ts-core/Docs/04_CONVERSATION_SPEC.md` — 第 2 节《两阶段 LLM 调用模型》；第 3 节《Stage 1: Triage Prompt 设计》；第 4 节《Stage 2-Chat: 闲聊回复》；第 5 节《Stage 2-Plan: 任务规划》；第 14 节《人设一致性保障》；第 15 节《错误处理与降级》；第 16 节《LLM 客户端抽象》
+5. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》；第 5 节《状态流转》；第 9 节《预检脚本》
+6. `ts-core/Docs/WF_架构治理批次计划.md` — 第 `T-030` 节《模式重构与最后收口》
+7. `ts-core/scripts/pre_review.sh` — 全文件（只读）
+8. `ts-core/package.json` — 全文件（只读；原则上不修改依赖）
+9. `ts-core/tsconfig.json` — 全文件（只读）
+10. `ts-core/src/conversation/llm.ts` — 全文件
+11. `ts-core/src/conversation/llm/**` — 全部文件；允许新增 `prompts/`、`stage.ts`、`skill-plan-table.ts` 或同等职责文件
+12. `ts-core/src/conversation/contracts.ts` — 全文件（仅允许导入路径或类型适配）
+13. `ts-core/src/conversation/planning.ts` — 全文件（仅允许导入路径或类型适配）
+14. `ts-core/src/conversation/triage.ts` — 全文件（仅允许导入路径或类型适配）
+15. `ts-core/src/conversation/index.ts` — 全文件（仅允许导出适配）
+16. `ts-core/src/core-ports/skills.ts` — 全文件（只读优先；仅允许导出辅助类型的最小补强，不改已有技能语义）
+17. `ts-core/src/core-ports/index.ts` — 全文件（仅允许导出适配）
+18. `ts-core/src/domain/invariants.ts` — 全文件（允许新增通用正整数 / 正数断言与只读克隆复用工具）
+19. `ts-core/src/interfaces/server.ts` — 全文件（仅允许错误工厂迁移后的导入适配）
+20. `ts-core/src/interfaces/errors.ts` — 新增文件，全文件
+21. `ts-core/src/interfaces/index.ts` — 全文件（仅允许导出适配）
+22. `ts-core/src/app/bootstrap.ts` — 全文件（仅允许导出适配）
+23. `ts-core/src/app/bootstrap/**` — 全部文件（仅允许 Prompt（提示词）模板加载 / 注入所需的最小装配适配，不改变启动顺序）
+24. `ts-core/src/app/entrypoint.ts` — 全文件（仅允许 Prompt（提示词）模板注入或导入路径适配，不改变在线启动语义）
+25. `ts-core/src/workers/conversation-worker.ts` — 全文件（仅允许导入路径适配）
+26. `ts-core/src/workers/conversation-worker/**` — 全部文件（仅允许导入路径适配）
+27. `ts-core/src/diagnostics/contracts.ts` — 全文件（仅允许类型导入适配）
+28. `ts-core/src/diagnostics/logs.ts` — 全文件（仅允许类型导入适配）
+29. `ts-core/src/__tests__/conversation-llm-runtime-model.spec.ts` — 全文件
+30. `ts-core/src/__tests__/conversation-llm-planning-model.spec.ts` — 全文件
+31. `ts-core/src/__tests__/interfaces-server-model.spec.ts` — 全文件
+32. `ts-core/src/__tests__/app-entrypoint-model.spec.ts` — 全文件（仅允许因 Prompt（提示词）模板注入或导入路径变化做最小适配）
+33. `ts-core/src/__tests__/*.spec.ts` — 其他测试文件（仅允许因导入路径、公共导出或通用工具迁移导致的最小适配）
 
 **核心逻辑要求**:
 
-1. **必须消除真实循环依赖，而不是只让工具安静**:
-   - `runtime`（运行时） 不得值级依赖 `sandbox`（沙箱）、`diagnostics`（诊断）、`skills`（技能）、`observation`（观测）。
-   - `sandbox`（沙箱）、`diagnostics`（诊断）、`skills`（技能）、`observation`（观测）、`data`（数据层） 不得反向依赖 `runtime`（运行时） 的实现文件来获取共享枚举或载荷类型。
-   - 若只靠 `import type`（类型导入） 保持双向类型耦合，仍不算完成；本轮目标是架构方向收敛，不只是运行时加载无环。
+1. **只做治理收口，不改业务语义**:
+   - `generateTriage()`（生成分诊） 失败仍回退为 `chat/normal`（闲聊 / 普通）。
+   - `generateChatReply()`（生成闲聊回复） 失败仍抛 `ConversationLlmChatError`（对话大语言模型闲聊错误） 并携带诊断。
+   - `generateSkillPlan()`（生成技能规划） 失败仍抛 `ConversationLlmPlanError`（对话大语言模型规划错误）。
+   - `chat`（闲聊）、`cancel`（取消）、`skill_call`（技能调用）、`sandbox_code`（沙箱代码）、`status`（状态） / `replay`（回放） 既有测试语义不得改变。
 
-2. **共享契约下沉到 `core-ports`（核心端口层）**:
-   - 至少下沉这些跨模块共享项：`BotStatus`（机器人状态）、`InterruptSource`（中断来源）、任务历史状态、任务终态、执行任务类型 / 载荷、运行时事件类型 / 载荷、技能名 / 技能参数、威胁评估相关纯类型、日志行需要复用的任务状态。
-   - 原模块可保留 re-export（重新导出） 以降低调用方迁移成本，但 re-export（重新导出） 不得重新制造循环。
-   - `core-ports/index.ts`（核心端口层入口） 需要提供清晰 barrel（聚合导出），便于后续模块按端口依赖。
+2. **抽 `executeStage`（阶段执行模板）**:
+   - 在 `conversation/llm`（对话大语言模型） 内新增内部模板方法，统一 startedAt（开始时间）、logRef（日志引用）、invocationLines（调用日志行）、`requestChatCompletionPayload()`（发起对话补全请求）、成功诊断、失败诊断的重复流程。
+   - 三个公共方法只保留 `buildMessages`（构建消息）、`parse`（解析）、`onFailure`（失败策略） 等差异点。
+   - 模板方法必须保持诊断字段、日志引用路径、token（文本配额）统计和耗时语义不变。
 
-3. **实现依赖通过 DI（依赖注入） 装配，不能从核心层反向 import（导入） 上层实现**:
-   - `runtime/actor.ts`（运行时执行代理） 不再直接 `import`（导入） `diagnostics/logs.ts`（诊断日志文件）。`createSandboxLogRef`（创建沙箱日志引用） 或等价能力由 `app/bootstrap.ts`（应用引导） 注入。
-   - `runtime`（运行时） 不再从 `skills/index.ts`（技能入口） 导入实现或目录对象；如需技能参数校验，只依赖 `core-ports`（核心端口层） 的纯端口契约，真实执行仍由注入的 skill executor（技能执行器） / adapter（适配器） 完成。
-   - `sandbox/execution.ts`（沙箱执行器） 不再从 `runtime/tasking.ts`（运行时任务模型） 取任务状态；改为从 `core-ports`（核心端口层） 取纯枚举。
-   - `data/contracts.ts`（数据契约） 与 `data/schema.ts`（数据结构） 不再依赖 `runtime/events.ts`（运行时事件） 或 `runtime/tasking.ts`（运行时任务模型）。
+3. **把 `parseConversationSkillPlan()`（解析对话技能规划） 改为策略表**:
+   - 新增 skill（技能） 到 `{ guard, buildPlan }` 的只读策略表，覆盖 `goTo`（前往坐标）、`mine`（挖掘）、`collect`（捡拾）、`equip`（装备）。
+   - 移除现有 `switch`（分支） 中重复 case（分支） 结构；新增技能时应只扩表。
+   - 尽量移除 `as ConversationLlmPlanResult`（类型断言）。若 TypeScript（类型脚本） 泛型收敛确实需要一个极小断言，必须限制在策略表内部并加中文注释说明原因，禁止散落在每个技能分支。
 
-4. **预检守门必须可重复执行**:
-   - `pre_review.sh`（评审前预检脚本） 必须增加循环检测步骤，位置应在 typecheck（类型检查） 之前或之后均可，但失败时必须让脚本退出非零。
-   - 若使用 `madge`（依赖图工具），命令必须能识别 TypeScript（类型脚本） / NodeNext（节点下一代模块解析） 项目；若工具对 `type-only`（仅类型） 边表现不稳定，需要在 Coder（编码代理） 反馈中说明实际检测口径。
-   - 循环检测不能依赖全局安装，必须通过 `package.json`（包配置） / `pnpm-lock.yaml`（依赖锁文件） 固化。
+4. **Prompt（提示词）模板化与 skill（技能）段动态生成**:
+   - 把 triage（分诊）、chat（闲聊）、plan（规划） 的 Prompt（提示词）正文从 `messages.ts`（消息构造） 中拆出到 `conversation/llm/prompts/`（提示词目录） 或同等独立模板文件；`messages.ts` 只负责参数填充和消息组装。
+   - plan（规划） 的允许技能列表、参数字段说明与非法输出规则必须从 `SKILL_DIRECTORY`（技能目录） / 策略表 / 参数 schema（结构约束）生成或集中定义，不要在多处手写。
+   - 不得在 Prompt（提示词） 中写死 Minecraft（我的世界） 领域事实数据；`stone`、`cobblestone`、`stone_pickaxe` 等具体样例应替换为 `<block_name>`、`<item_name>`、`<destination>` 等占位符或通用 schema（结构约束）说明。
+   - 如果采用 `.md`（Markdown 文档） 模板文件，必须保证测试和运行时能稳定加载；若需要注入模板对象，在线入口必须提供默认模板，不能让缺文件导致已通过路径启动失败。
 
-5. **严格控制范围，禁止借机重构大文件或改业务语义**:
-   - 不拆 `app/bootstrap.ts`（应用引导）、`data/contracts.ts`（数据契约）、`runtime/transport.ts`（运行时传输）、`conversation/llm.ts`（对话大语言模型） 等超大文件；这些留给 `T-029`（任务二十九）。
-   - 不抽 `executeStage`（阶段执行模板）、不改 prompt（提示词） 文件化、不做 skill（技能） 策略表重构；这些留给 `T-030`（任务三十）。
-   - 不新增 MC（Minecraft，我的世界） 事实数据，不改变 EasyAuth（离线服认证模组） 外部认证策略，不改变任何 HTTP（超文本传输协议） 接口字段。
+5. **小型 DRY（不要重复自己） 与错误工厂收口**:
+   - 把 `timeout_ms`（超时毫秒） 正数校验等通用校验收敛到 `domain/invariants.ts`（领域不变量），不要在 `conversation/llm/config.ts`（大语言模型配置） 继续内联重复。
+   - 新增 `interfaces/errors.ts`（接口错误工厂），集中 `createHttpBadRequest`（HTTP 400 错误） 与 `createHttpServiceUnavailable`（HTTP 503 错误）；`interfaces/server.ts`（接口服务器） 只导入使用。
+   - 对诊断记录等只读克隆逻辑优先复用 `cloneReadonlyValue`（只读值克隆） 或同等已有工具，避免重复手写多层 `Object.freeze()`（冻结对象）。
+
+6. **命名约定写入架构文档**:
+   - 在 `Docs/01_ARCHITECTURE.md`（架构规范） 增补《命名约定》小节。
+   - 明确：对外协议 / 持久化字段使用 `snake_case`（下划线命名）；运行时 JS（JavaScript） / TS（TypeScript） 内部变量使用 `camelCase`（驼峰命名）；跨边界转换由工厂函数集中处理，例如 `bot_id`（机器人标识字段） ↔ `botId`（机器人标识变量）。
+   - 不把阶段性实现清单堆进 `AGENTS.md`（代理规则文件）。
+
+7. **依赖图与文件边界保持健康**:
+   - 不新增模块循环；`pnpm dep:cycles`（循环依赖检测） 必须继续通过。
+   - 不把 `conversation`（对话） 反向依赖 `app`（应用装配） 或 `runtime`（运行时） 实现。
+   - 不新增重量级依赖，不改变 `package.json`（包配置） 依赖集。
 
 **验收标准**:
 
-1. `runtime`（运行时） ↔ `sandbox`（沙箱）、`runtime`（运行时） ↔ `diagnostics`（诊断）、`runtime`（运行时） ↔ `observation`（观测）、`runtime`（运行时） ↔ `skills`（技能）、`data`（数据层） → `runtime`（运行时） 这五类循环被消除；依赖检测工具输出无循环。
-2. 新增 `core-ports`（核心端口层） 后，各业务模块只从该层读取共享纯类型 / 枚举 / 载荷；`data`（数据层） 与 `diagnostics`（诊断） 不再 import（导入） `runtime/*`（运行时目录） 实现文件。
-3. `BotActor`（机器人执行代理） 的业务行为保持不变：`chat`（闲聊）、`cancel`（取消）、`skill_call`（技能调用）、`sandbox_code`（沙箱代码） 的既有测试仍通过，且没有修改对外 API（应用程序接口） 字段。
-4. Coder（编码代理） 反馈区必须贴出一张 ASCII（美国标准信息交换码） DAG（有向无环图） 或等价依赖方向摘要，说明当前模块方向，例如 `core-ports -> domain` 不允许，`runtime -> core-ports` 允许。
+1. `conversation/llm/client.ts`（大语言模型客户端） 通过 `executeStage`（阶段执行模板） 消除三段重复流程，三条公共路径的成功 / 失败诊断、异常类型和返回值语义保持原样。
+2. `parseConversationSkillPlan()`（解析对话技能规划） 改为表驱动；新增技能扩展点集中，重复 `switch`（分支） case（分支） 与分散类型断言被移除或最小化。
+3. Prompt（提示词） 模板已独立组织，plan（规划） 技能段不再写死具体 Minecraft（我的世界） 物品 / 方块样例；相关测试覆盖模板加载 / 消息组装 / 技能段生成。
+4. `interfaces/errors.ts`（接口错误工厂）、`domain/invariants.ts`（领域不变量） 与 `Docs/01_ARCHITECTURE.md`（架构规范命名约定） 完成收口，且不引入新循环依赖。
 5. `bash ts-core/scripts/pre_review.sh` 全部通过。
 
 ---
 
 ## Coder 自检清单
-- [x] 任务序号核对为 `T-028`
-- [x] 仅读取并修改白名单内文件
-- [x] `core-ports`（核心端口层） 承载跨模块共享纯类型 / 枚举 / 载荷，未继续扩大 `domain`（领域层） 职责
-- [x] 五类循环依赖均已消除，且不是仅靠忽略规则绕过
-- [x] `runtime`（运行时） 不再值级依赖 `sandbox`（沙箱）、`diagnostics`（诊断）、`skills`（技能）、`observation`（观测）
-- [x] `data`（数据层） 与 `diagnostics`（诊断） 不再依赖 `runtime/*`（运行时目录） 实现文件获取共享类型
-- [x] `pre_review.sh`（评审前预检脚本） 已加入可重复执行的循环依赖检测
-- [x] 未拆超大文件、未重构 `conversation/llm.ts`（对话大语言模型文件）、未改变业务语义
-- [x] 执行 bash ts-core/scripts/pre_review.sh 全部通过
+- [ ] 任务序号核对为 `T-030`
+- [ ] 仅读取并修改白名单内文件
+- [ ] 未新增 MC（Minecraft，我的世界） 行为、未改对外 API（应用程序接口） 字段、未改 BotActor（机器人执行代理） 单写者语义
+- [ ] `conversation/llm`（对话大语言模型） 已完成 `executeStage`（阶段执行模板） 与 skill（技能） 策略表收口
+- [ ] Prompt（提示词） 已独立组织，且未写死 Minecraft（我的世界） 事实数据
+- [ ] 小型 DRY（不要重复自己） 与接口错误工厂已收口
+- [ ] `Docs/01_ARCHITECTURE.md`（架构规范） 已新增命名约定
+- [ ] `pnpm dep:cycles`（循环依赖检测） 无循环
+- [ ] 执行 bash ts-core/scripts/pre_review.sh 全部通过
 
 ---
 
@@ -135,89 +123,12 @@
 
 ## Coder 执行反馈（仅 Coder 填写）
 
-### T-028 执行反馈
-
-**任务序号**: T-028
-
-**修改文件**:
-- `ts-core/src/core-ports/foundation.ts`
-- `ts-core/src/core-ports/skills.ts`
-- `ts-core/src/core-ports/observation.ts`
-- `ts-core/src/core-ports/runtime.ts`
-- `ts-core/src/core-ports/tasking.ts`
-- `ts-core/src/core-ports/events.ts`
-- `ts-core/src/core-ports/sandbox.ts`
-- `ts-core/src/core-ports/index.ts`
-- `ts-core/src/domain/contracts.ts`
-- `ts-core/src/runtime/contracts.ts`
-- `ts-core/src/runtime/events.ts`
-- `ts-core/src/runtime/tasking.ts`
-- `ts-core/src/runtime/actor.ts`
-- `ts-core/src/runtime/transport.ts`
-- `ts-core/src/observation/contracts.ts`
-- `ts-core/src/observation/runtime.ts`
-- `ts-core/src/skills/contracts.ts`
-- `ts-core/src/skills/execution.ts`
-- `ts-core/src/sandbox/contracts.ts`
-- `ts-core/src/sandbox/execution.ts`
-- `ts-core/src/sandbox/facade.ts`
-- `ts-core/src/diagnostics/contracts.ts`
-- `ts-core/src/data/contracts.ts`
-- `ts-core/src/data/schema.ts`
-- `ts-core/src/interfaces/contracts.ts`
-- `ts-core/src/interfaces/realtime.ts`
-- `ts-core/src/conversation/contracts.ts`
-- `ts-core/src/conversation/planning.ts`
-- `ts-core/src/conversation/triage.ts`
-- `ts-core/src/conversation/llm.ts`
-- `ts-core/src/workers/contracts.ts`
-- `ts-core/src/workers/bot-worker.ts`
-- `ts-core/src/workers/conversation-worker.ts`
-- `ts-core/src/app/bootstrap.ts`
-- `ts-core/src/__tests__/runtime-actor-model.spec.ts`
-- `ts-core/package.json`
-- `ts-core/pnpm-lock.yaml`
-- `ts-core/scripts/pre_review.sh`
-
-**执行摘要**:
-- 新增 `core-ports`（核心端口层） 聚合入口，将基础消息 / 任务枚举、技能端口、观测快照与威胁评估、运行时中断、执行任务、运行时事件载荷、沙箱执行注入端口下沉到端口层。
-- `runtime/tasking.ts`、`skills/contracts.ts`、`observation/contracts.ts` 改为兼容重新导出，保留既有导入路径但不再承载跨模块共享实现。
-- `runtime/actor.ts` 不再直接导入 `sandbox`（沙箱）、`diagnostics`（诊断）、`skills`（技能）、`observation`（观测） 实现；sandbox_code（沙箱代码） 执行与日志引用由 `app/bootstrap.ts` 组合根通过 DI（依赖注入） 提供。
-- `data`（数据层） 与 `diagnostics`（诊断） 改为从 `core-ports`（核心端口层） 读取任务状态、运行时事件载荷与错误快照，不再依赖 `runtime/*`（运行时目录） 获取共享类型。
-- `pre_review.sh`（评审前预检脚本） 新增 `pnpm dep:cycles`，并在 `package.json` / `pnpm-lock.yaml` 固化 `madge`（依赖图工具）。
-
-**依赖方向摘要**:
-
-```text
-core-ports
-  -> 无业务模块依赖
-
-runtime / sandbox / skills / observation / diagnostics / data
-  -> core-ports
-
-app
-  -> runtime + sandbox + diagnostics
-  -> 在组合根注入 sandbox 执行能力给 BotActor
-
-forbidden:
-  core-ports -> domain/runtime/sandbox/skills/observation/diagnostics/data
-  runtime -> sandbox/diagnostics/skills/observation
-  data/diagnostics -> runtime/*
-```
-
-**预检输出摘要**:
-- `pnpm dep:cycles`: `✔ No circular dependency found!`
-- `pnpm typecheck`: 通过
-- `pnpm lint`: 通过
-- `pnpm test`: 28 个测试文件全部通过，161 条测试全部通过
-- `bash scripts/pre_review.sh`: `===== 预检全部通过 =====`
-
-**遗留疑问**: 无
+（待填写）
 
 ---
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
 
-- **T-029**: 超大文件拆分 — 拆 `app/bootstrap.ts`、`data/contracts.ts`、`runtime/transport.ts`、`conversation/llm.ts`、`workers/conversation-worker.ts`，并把 `MineflayerBotHandle`（Mineflayer 机器人句柄） 按能力切 port（端口）。
-- **T-030**: 模式重构与收口 — `conversation/llm.ts` 抽 `executeStage`（阶段执行模板） 模板方法、`parseConversationSkillPlan`（解析对话技能规划） 改 skill（技能） 策略表、Prompt（提示词） 抽到 `prompts/` 模板文件、小型 DRY（不要重复自己） 收口、命名约定写入 `01_ARCHITECTURE.md`（架构规范）。
 - **T-031**: 在 `conversation`（对话） + `runtime`（运行时） + `diagnostics`（诊断） 内补 `chat_reply`（闲聊回复） 注入 BotActor（机器人执行代理） 状态只读投影，让女仆执行任务时能回答“我正在做什么”。
+- **T-032**: 在 `conversation`（对话） 内把 triage（分诊） 输出从单 intent（意图） 升级为 composite output（复合输出），支持 cancel（取消） + reply（回复） + action（动作） 的有序派发。
+- **T-033**: 在 `data`（数据层） + `workers`（工作线程） 内恢复 BrainWorker（摘要工作线程） 任务摘要与可检索记忆沉淀，放在可运行主干与架构治理之后推进。
