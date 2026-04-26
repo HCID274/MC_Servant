@@ -13,6 +13,7 @@ import { shouldSearchConversationMemory } from "./chat.js";
 import type {
   ConversationCancelRouteDecision,
   ConversationChatRouteDecision,
+  ConversationCompositeTriage,
   ConversationModifyRouteDecision,
   ConversationPlanRouteDecision,
   ConversationRouteDecision,
@@ -20,6 +21,7 @@ import type {
 } from "./contracts.js";
 
 const CONVERSATION_INTENTS = ["chat", "task", "modify", "cancel"] as const;
+const COMPOSITE_CANCEL_PRIORITIES = ["interrupt", "queued"] as const;
 
 /**
  * 校验字符串是否为合法的对话意图。
@@ -35,6 +37,11 @@ function isConversationIntent(value: string): value is MessageTriage["intent"] {
  */
 function isConversationPriority(value: string): value is ConversationPriority {
   return Object.values(ConversationPriority).includes(value as ConversationPriority);
+}
+
+/** 校验字符串是否为合法的复合 cancel（取消） 优先级。 */
+function isCompositeCancelPriority(value: string): value is "interrupt" | "queued" {
+  return (COMPOSITE_CANCEL_PRIORITIES as readonly string[]).includes(value);
 }
 
 /**
@@ -84,6 +91,199 @@ export function createMessageTriage(input: {
     priority,
     reason,
   });
+}
+
+/**
+ * 将旧单 intent（意图） 分诊适配成复合分诊。
+ *
+ * 兼容边界：旧 `chat`（闲聊） 不携带显式文本，因此转成空 reply（回复） 片段，
+ * 交由现有 Stage 2-Chat（第二阶段闲聊） 继续注入 T-031 的状态上下文。
+ */
+export function createConversationCompositeTriageFromMessageTriage(
+  triage: MessageTriage,
+): ConversationCompositeTriage {
+  switch (triage.intent) {
+    case "chat":
+      return Object.freeze({
+        reply: Object.freeze({}),
+      });
+    case "cancel":
+      return Object.freeze({
+        cancel: Object.freeze({
+          reason: triage.reason,
+          priority: "interrupt",
+        }),
+      });
+    case "task":
+      return Object.freeze({
+        action: Object.freeze({
+          intent: "task",
+          priority: triage.priority,
+          reason: triage.reason,
+        }),
+      });
+    case "modify":
+      return Object.freeze({
+        reply: Object.freeze({}),
+      });
+  }
+}
+
+/**
+ * 创建复合分诊结构。
+ *
+ * 安全收口：`modify`（修改） 与未知 action（动作） 不会进入 planner（规划器），
+ * 而是降级为普通 reply（回复），避免重新暴露“可分诊但不可正确规划”的半通路。
+ */
+export function createConversationCompositeTriage(input: {
+  readonly cancel?: { readonly reason?: string; readonly priority?: string } | null;
+  readonly reply?: string | { readonly content?: string } | null;
+  readonly action?: {
+    readonly intent?: string;
+    readonly priority?: string;
+    readonly reason?: string;
+  } | null;
+}): ConversationCompositeTriage {
+  const cancel =
+    input.cancel === undefined || input.cancel === null
+      ? undefined
+      : Object.freeze({
+          reason: input.cancel.reason?.trim() || "composite_cancel",
+          priority:
+            input.cancel.priority && isCompositeCancelPriority(input.cancel.priority)
+              ? input.cancel.priority
+              : "interrupt",
+        });
+  const reply = createCompositeReply(input.reply);
+  const action = createCompositeAction(input.action);
+
+  if (cancel === undefined && reply === undefined && action === undefined) {
+    return Object.freeze({
+      reply: Object.freeze({}),
+    });
+  }
+
+  return Object.freeze({
+    ...(cancel === undefined ? {} : { cancel }),
+    ...(reply === undefined ? {} : { reply }),
+    ...(action === undefined ? {} : { action }),
+  });
+}
+
+/** 从 JSON（结构化数据） 记录创建复合分诊结构。 */
+export function createConversationCompositeTriageFromRecord(
+  record: Record<string, unknown>,
+): ConversationCompositeTriage {
+  if (typeof record.intent === "string") {
+    return createConversationCompositeTriageFromMessageTriage(
+      createMessageTriage({
+        intent: record.intent,
+        ...(typeof record.priority === "string" ? { priority: record.priority } : {}),
+        ...(typeof record.reason === "string"
+          ? { reason: record.reason }
+          : { reason: "llm_triage_fallback" }),
+      }),
+    );
+  }
+
+  return createConversationCompositeTriage({
+    ...(isRecord(record.cancel) ? { cancel: pickReasonPriority(record.cancel) } : {}),
+    ...(typeof record.reply === "string" || isRecord(record.reply)
+      ? { reply: createReplyInput(record.reply) }
+      : {}),
+    ...(isRecord(record.action) ? { action: pickActionInput(record.action) } : {}),
+  });
+}
+
+/** 判断分诊输出是否为旧单 intent（意图） 结构。 */
+export function isMessageTriageOutput(value: unknown): value is MessageTriage {
+  return isRecord(value) && typeof value.intent === "string";
+}
+
+function createCompositeReply(
+  value: string | { readonly content?: string } | null | undefined,
+): ConversationCompositeTriage["reply"] {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value === "string") {
+    const content = value.trim();
+
+    return content.length === 0 ? Object.freeze({}) : Object.freeze({ content });
+  }
+
+  if (value.content === undefined) {
+    return Object.freeze({});
+  }
+
+  const content = value.content.trim();
+
+  return content.length === 0 ? Object.freeze({}) : Object.freeze({ content });
+}
+
+function createCompositeAction(
+  value:
+    | { readonly intent?: string; readonly priority?: string; readonly reason?: string }
+    | null
+    | undefined,
+): ConversationCompositeTriage["action"] {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (value.intent === "modify") {
+    return undefined;
+  }
+
+  if (value.intent !== "task") {
+    return undefined;
+  }
+
+  return Object.freeze({
+    intent: "task",
+    priority:
+      value.priority && isConversationPriority(value.priority)
+        ? value.priority
+        : ConversationPriority.Normal,
+    reason: value.reason?.trim() || "composite_action",
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function pickReasonPriority(record: Record<string, unknown>): {
+  readonly reason?: string;
+  readonly priority?: string;
+} {
+  return {
+    ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+    ...(typeof record.priority === "string" ? { priority: record.priority } : {}),
+  };
+}
+
+function createReplyInput(
+  value: string | Record<string, unknown>,
+): string | { readonly content?: string } {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return typeof value.content === "string" ? { content: value.content } : {};
+}
+
+function pickActionInput(record: Record<string, unknown>): {
+  readonly intent?: string;
+  readonly priority?: string;
+  readonly reason?: string;
+} {
+  return {
+    ...(typeof record.intent === "string" ? { intent: record.intent } : {}),
+    ...(typeof record.priority === "string" ? { priority: record.priority } : {}),
+    ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+  };
 }
 
 /**

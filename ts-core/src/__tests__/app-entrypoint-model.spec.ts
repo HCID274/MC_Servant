@@ -743,7 +743,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
             const assistantContent = userMessage.includes("主人的指令：")
               ? '{"type":"skill_call","reply":"收到，我这就过去","skill":"goTo","params":{"x":10,"y":64,"z":-5}}'
-              : '{"intent":"task","priority":"urgent","reason":"主人给了明确坐标移动指令"}';
+              : '{"action":{"intent":"task","priority":"urgent","reason":"主人给了明确坐标移动指令"}}';
 
             return new Response(
               JSON.stringify({

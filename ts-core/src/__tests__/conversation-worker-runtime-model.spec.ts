@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createMessageTriage } from "../conversation/index.js";
+import { createConversationCompositeTriage, createMessageTriage } from "../conversation/index.js";
 import { ConversationLlmChatError } from "../conversation/llm.js";
 import { BotStatus, createBotActorStateProjection } from "../core-ports/index.js";
 import { ConversationPriority } from "../domain/contracts.js";
@@ -394,6 +394,171 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       skill: "goTo",
       priority: "urgent",
     });
+  });
+
+  it("应按 cancel（取消）→reply（回复）→action（动作） 顺序派发 composite triage（复合分诊）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const calls: string[] = [];
+    const replies: Array<{ message_id: string; content: string }> = [];
+    const enqueuedTasks: unknown[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createConversationCompositeTriage({
+            cancel: {
+              reason: "owner_composite_cancel",
+              priority: "interrupt",
+            },
+            reply: {
+              content: "知道了",
+            },
+            action: {
+              intent: "task",
+              priority: ConversationPriority.Urgent,
+              reason: "owner_composite_goto",
+            },
+          }),
+        interruptRuntimeSink: async () => {
+          calls.push("interrupt");
+        },
+        broadcastReplySink: async (reply) => {
+          calls.push(`reply:${reply.content}`);
+          replies.push(reply);
+        },
+        planner: async () => {
+          calls.push("planner");
+
+          return {
+            type: "skill_call",
+            reply: "收到，我这就去目标坐标",
+            skill: "goTo",
+            params: { x: 1, y: 64, z: -3 },
+          };
+        },
+        enqueueExecTaskSink: async ({ task, priority }) => {
+          calls.push("enqueue");
+          enqueuedTasks.push({ task, priority });
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-composite",
+          content: "停下当前任务，回我一句知道了，然后去坐标 1 64 -3",
+          intent_epoch: 7,
+          snapshot_ts: 106,
+        },
+      }),
+    });
+
+    expect(calls).toEqual(["interrupt", "reply:知道了喵~", "planner", "enqueue"]);
+    expect(replies).toEqual([
+      {
+        message_id: "msg-composite",
+        content: "知道了喵~",
+      },
+    ]);
+    expect(enqueuedTasks).toHaveLength(1);
+    expect(enqueuedTasks[0]).toMatchObject({
+      priority: 1,
+      task: {
+        exec_job: {
+          message_id: "msg-composite",
+          priority: "urgent",
+          skill: "goTo",
+          params: { x: 1, y: 64, z: -3 },
+        },
+      },
+    });
+    expect(runtime.getEvents()).toContainEqual({
+      type: "cancel.logged",
+      bot_id: "bot-cw",
+      message_id: "msg-composite",
+      reason: "owner_composite_cancel",
+    });
+    expect(runtime.getEvents().filter((event) => event.type === "chat.reply")).toEqual([
+      {
+        type: "chat.reply",
+        bot_id: "bot-cw",
+        message_id: "msg-composite",
+        content: "知道了喵~",
+      },
+    ]);
+  });
+
+  it("应让无显式文本的 composite reply（复合回复） 复用状态上下文闲聊路径", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const stateContexts: Array<string | undefined> = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createConversationCompositeTriage({
+            reply: {},
+          }),
+        actorStateProjectionProvider: () =>
+          createBotActorStateProjection({
+            status: BotStatus.EXECUTING,
+            ready: false,
+            world_ready: true,
+            current_task: {
+              kind: "skill_call",
+              message_id: "msg-goto",
+              skill: "goTo",
+            },
+          }),
+        replyGenerator: (input) => {
+          stateContexts.push(input.state_context);
+
+          return "我正在去目标点";
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-composite-reply",
+          content: "你在干嘛",
+          intent_epoch: 8,
+          snapshot_ts: 107,
+        },
+      }),
+    });
+
+    expect(stateContexts).toEqual([
+      "当前状态：executing；ready：否；世界交互：已就绪；正在执行技能：goTo（消息 msg-goto）",
+    ]);
   });
 
   it("应在 planner（规划器） 失败时回模板失败回执且不入执行队列", async () => {

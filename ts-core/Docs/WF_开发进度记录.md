@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-031` ~ `T-040`
-- 当前已完成任务：`T-031`
-- 当前活跃任务：`T-032`（任务三十二） composite triage（复合分诊） 与 cancel（取消） / reply（回复） / action（动作） 有序派发。
+- 当前已完成任务：`T-031`、`T-032`
+- 当前活跃任务：`T-033`（任务三十三） BrainWorker（摘要工作线程） 最小摘要写入与可检索记忆端口。
 - 当前批次摘要：上一批次 `T-021`（任务二十一） 到 `T-030`（任务三十） 已完成 MC（Minecraft，我的世界） 上线闭环、真实 LLM（大语言模型） 接入、多技能、观测出口、sandbox_code（沙箱代码） 与架构治理。新批次默认继续沿可运行主干推进对话智能增强。
 - 当前批次硬约束：不得回退 `T-021` 到 `T-030` 已形成的真实在线路径、单写者路径、无循环依赖图、OpenAI（开放人工智能） 兼容配置边界与 sandbox_code（沙箱代码） 执行安全边界。
 
@@ -52,3 +52,36 @@
   - Manager（管理代理） 复跑 `cd ts-core && pnpm vitest run src/__tests__/runtime-actor-model.spec.ts src/__tests__/app-entrypoint-model.spec.ts`：2 个测试文件、24 条测试通过。
   - Manager（管理代理） 复跑 `cd ts-core && pnpm exec tsc --noEmit`：通过。
   - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 28 个测试文件、165 条测试全部通过。
+
+### T-032（已完成）
+
+- **任务主题**: composite triage（复合分诊） 与 `cancel`（取消） / `reply`（回复） / `action`（动作） 有序派发。
+- **审查时间**: 2026-04-26T21:43:50+09:00
+- **核心文件**:
+  - `src/conversation/contracts.ts`
+  - `src/conversation/triage.ts`
+  - `src/conversation/llm/types.ts`
+  - `src/conversation/llm/client.ts`
+  - `src/conversation/llm/parsers.ts`
+  - `src/conversation/llm/prompts/triage.ts`
+  - `src/workers/conversation-worker/types.ts`
+  - `src/workers/conversation-worker/runtime.ts`
+  - `src/workers/conversation-worker/handlers/plan-exec.ts`
+  - `src/app/entrypoint.ts`
+  - `src/__tests__/conversation-workers-model.spec.ts`
+  - `src/__tests__/conversation-worker-runtime-model.spec.ts`
+  - `src/__tests__/conversation-llm-planning-model.spec.ts`
+  - `src/__tests__/app-entrypoint-model.spec.ts`
+- **变更快照**:
+  - 新增 `ConversationCompositeTriage`（对话复合分诊） 强类型契约，支持 `cancel`（取消） / `reply`（回复） / `action`（动作） 任意组合，同时保留旧 `MessageTriage`（消息分诊） 与 `{intent, priority, reason}`（旧结构） 兼容适配。
+  - `triage prompt`（分诊提示词） 改为 composite JSON（复合结构化数据），解析器兼容旧单意图输出，并把 `modify`（修改） 或未知 action（动作） 安全降级到 reply（回复） 路径，不重新打开在线 modify（修改） 半通路。
+  - `ConversationWorker`（对话工作线程） 对复合结果固定按 `cancel → reply → action`（取消 → 回复 → 动作） 派发；存在显式 reply（回复） 时抑制 `plan.reply`（规划器回复） 二次广播。
+  - `startAppOnlineRuntime()`（真实在线启动入口） 默认接入 `generateCompositeTriage()`（生成复合分诊），OpenAI（开放人工智能） 兼容配置字段、BullMQ（任务队列） 队列名、BotActor（机器人执行代理） 单写者边界未改变。
+- **审查结论**:
+  - 通过。T-032（任务三十二） 已闭合“同一句话同时包含取消、回复、新动作”时语义丢失的问题，旧 chat（闲聊） / cancel（取消） / task（任务） 路径保持兼容。
+  - Coder（编码代理） 已回填真实 OpenAI（开放人工智能） 兼容 LLM（大语言模型） API（应用程序接口） 调用结果：本地网关返回的结构包含 `cancel.reason`、`reply.content` 与 `action.intent=task`。
+- **验证记录**:
+  - Manager（管理代理） 复跑 `cd ts-core && pnpm vitest run src/__tests__/conversation-workers-model.spec.ts src/__tests__/conversation-worker-runtime-model.spec.ts src/__tests__/conversation-llm-planning-model.spec.ts src/__tests__/app-entrypoint-model.spec.ts`：4 个测试文件、42 条测试通过。
+  - Manager（管理代理） 复跑 `cd ts-core && pnpm exec tsc --noEmit`：通过。
+  - Manager（管理代理） 复核本地真实 OpenAI（开放人工智能） 兼容网关：`POST /v1/chat/completions` 对测试消息返回 `cancel`（取消） / `reply`（回复） / `action`（动作） 三类语义。
+  - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 28 个测试文件、170 条测试全部通过。

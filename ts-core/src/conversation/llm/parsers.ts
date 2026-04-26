@@ -1,4 +1,5 @@
-import { createMessageTriage } from "../triage.js";
+import type { ConversationCompositeTriage } from "../contracts.js";
+import { createConversationCompositeTriageFromRecord, createMessageTriage } from "../triage.js";
 import { ConversationLlmPlanError } from "./errors.js";
 import type { OpenAiCompatibleChatCompletionResponse } from "./http.js";
 import { createConversationSkillPlanFromTable } from "./skill-plan-table.js";
@@ -37,6 +38,11 @@ export function parseConversationTriage(content: string): ReturnType<typeof crea
       ? { reason: record.reason }
       : { reason: "llm_triage_fallback" }),
   });
+}
+
+/** 解析复合分诊阶段返回，兼容旧 `{intent, priority, reason}`（旧分诊结构）。 */
+export function parseConversationCompositeTriage(content: string): ConversationCompositeTriage {
+  return createConversationCompositeTriageFromRecord(parseJsonRecord(content));
 }
 
 /** 解析最小单技能 `skill_call`（技能调用） 规划返回。 */

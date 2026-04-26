@@ -1,6 +1,7 @@
 import { SKILL_DIRECTORY } from "../../core-ports/skills.js";
 import type { LlmJsonlLine, LlmLogStage } from "../../diagnostics/contracts.js";
 import type {
+  ConversationCompositeTriage,
   ConversationHistoryTurn,
   ConversationReplyMode,
   ConversationSkillCallPlanDraft,
@@ -145,6 +146,8 @@ export interface ConversationLlmDependencies {
 
 /** 闲聊客户端暴露的最小能力。 */
 export interface ConversationLlmClient {
+  /** 基于真实 OpenAI 兼容接口执行 Stage 1-Composite Triage（复合分诊）。 */
+  generateCompositeTriage(input: ConversationLlmTriageInput): Promise<ConversationCompositeTriage>;
   /** 基于真实 OpenAI 兼容接口执行 Stage 1-Triage（分诊）。 */
   generateTriage(
     input: ConversationLlmTriageInput,

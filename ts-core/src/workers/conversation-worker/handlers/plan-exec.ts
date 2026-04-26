@@ -21,6 +21,7 @@ export async function handlePlanExecRoute(input: {
   >;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
   readonly events: ConversationWorkerRuntimeEvent[];
+  readonly suppressPlanReply?: boolean;
 }): Promise<void> {
   const plannerFailureReply = createPlanningFailureReply();
 
@@ -76,19 +77,21 @@ export async function handlePlanExecRoute(input: {
     });
   }
 
-  const reply = createConversationReply({ mode: "llm", reply: plan.reply });
-  await input.dependencies.broadcastReplySink({
-    message_id: input.task.message.message_id,
-    content: reply.reply,
-  });
-  input.events.push(
-    Object.freeze({
-      type: "chat.reply",
-      bot_id: input.task.bot_id,
+  if (input.suppressPlanReply !== true) {
+    const reply = createConversationReply({ mode: "llm", reply: plan.reply });
+    await input.dependencies.broadcastReplySink({
       message_id: input.task.message.message_id,
       content: reply.reply,
-    }),
-  );
+    });
+    input.events.push(
+      Object.freeze({
+        type: "chat.reply",
+        bot_id: input.task.bot_id,
+        message_id: input.task.message.message_id,
+        content: reply.reply,
+      }),
+    );
+  }
 
   const botTask = createBotWorkerTask({
     bot_id: input.task.bot_id,

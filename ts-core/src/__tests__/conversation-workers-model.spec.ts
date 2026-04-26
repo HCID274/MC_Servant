@@ -14,6 +14,8 @@ import {
   createBotWorkerTask,
   createBrainWorkerActions,
   createCancelTemplateReply,
+  createConversationCompositeTriage,
+  createConversationCompositeTriageFromMessageTriage,
   createConversationPlanningContext,
   createConversationReply,
   createConversationRouteDecision,
@@ -69,6 +71,60 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     expect(triage.priority).toBe(ConversationPriority.Normal);
     expect(route.kind).toBe("chat_reply");
     expect(route.queue_behavior).toBe("none");
+  });
+
+  it("应创建强类型 composite triage（复合分诊） 并兼容旧单 intent（意图） 输入", () => {
+    const composite = createConversationCompositeTriage({
+      cancel: {
+        reason: "先停下",
+        priority: "interrupt",
+      },
+      reply: "知道了",
+      action: {
+        intent: "task",
+        priority: "urgent",
+        reason: "继续规划新动作",
+      },
+    });
+    const legacy = createConversationCompositeTriageFromMessageTriage(
+      createMessageTriage({
+        intent: "task",
+        priority: "normal",
+        reason: "旧结构任务",
+      }),
+    );
+    const modifyFallback = createConversationCompositeTriage({
+      action: {
+        intent: "modify",
+        priority: "urgent",
+        reason: "不允许在线 modify 半通路",
+      },
+    });
+
+    expect(composite).toEqual({
+      cancel: {
+        reason: "先停下",
+        priority: "interrupt",
+      },
+      reply: {
+        content: "知道了",
+      },
+      action: {
+        intent: "task",
+        priority: "urgent",
+        reason: "继续规划新动作",
+      },
+    });
+    expect(legacy).toEqual({
+      action: {
+        intent: "task",
+        priority: "normal",
+        reason: "旧结构任务",
+      },
+    });
+    expect(modifyFallback).toEqual({
+      reply: {},
+    });
   });
 
   it("应让 skill_call（技能调用） / sandbox_code（沙箱代码） 双路径严格对齐现有执行契约", () => {

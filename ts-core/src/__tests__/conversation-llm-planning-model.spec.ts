@@ -79,6 +79,108 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     ]);
   });
 
+  it("应按 OpenAI（开放人工智能） 兼容 chat.completions（对话补全） 解析 composite triage（复合分诊） JSON", async () => {
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content:
+                      '{"cancel":{"reason":"主人要求先停下","priority":"interrupt"},"reply":{"content":"知道了"},"action":{"intent":"task","priority":"urgent","reason":"主人要求去坐标"}}',
+                  },
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: {
+                "content-type": "application/json",
+              },
+            },
+          ),
+      },
+    );
+
+    await expect(
+      client.generateCompositeTriage({
+        message_id: "msg-composite-triage",
+        message: "停下当前任务，回我一句知道了，然后去坐标 1 64 -3",
+        bot_summary: "executing",
+      }),
+    ).resolves.toEqual({
+      cancel: {
+        reason: "主人要求先停下",
+        priority: "interrupt",
+      },
+      reply: {
+        content: "知道了",
+      },
+      action: {
+        intent: "task",
+        priority: "urgent",
+        reason: "主人要求去坐标",
+      },
+    });
+  });
+
+  it("应把旧单 intent（意图） triage（分诊） 输出适配为 composite（复合） action（动作）", async () => {
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content:
+                      '{"intent":"task","priority":"urgent","reason":"主人给了明确坐标移动指令"}',
+                  },
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: {
+                "content-type": "application/json",
+              },
+            },
+          ),
+      },
+    );
+
+    await expect(
+      client.generateCompositeTriage({
+        message_id: "msg-legacy-triage",
+        message: "去 10 64 -5",
+      }),
+    ).resolves.toEqual({
+      action: {
+        intent: "task",
+        priority: "urgent",
+        reason: "主人给了明确坐标移动指令",
+      },
+    });
+  });
+
   it("应在 triage（分诊） 返回非法 JSON 时安全回退为 chat/normal", async () => {
     const client = createConversationLlmClient(
       createConversationLlmConfig({
@@ -123,16 +225,19 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     });
   });
 
-  it("应将在线 triage（分诊） prompt 收窄到 chat/task/cancel 三类", () => {
+  it("应将在线 triage（分诊） prompt 升级为 composite（复合） 输出且禁止 modify（修改）", () => {
     const messages = createConversationTriageMessages({
       message_id: "msg-triage-scope",
       message: "把刚才的任务改成去 10 64 -5",
       bot_summary: "online_runtime_ready",
     });
 
-    expect(messages[0]?.content).toContain("只允许输出 chat、task、cancel 三类意图");
+    expect(messages[0]?.content).toContain("输出 composite JSON");
+    expect(messages[0]?.content).toContain("cancel");
+    expect(messages[0]?.content).toContain("reply");
+    expect(messages[0]?.content).toContain("action");
+    expect(messages[0]?.content).toContain("禁止输出 modify");
     expect(messages[0]?.content).not.toContain("- modify：");
-    expect(messages[0]?.content).toContain('"intent":"chat|task|cancel"');
   });
 
   it("应按 OpenAI（开放人工智能） 兼容 chat.completions（对话补全） 发起单技能规划，并允许 goTo（前往坐标） 结果", async () => {

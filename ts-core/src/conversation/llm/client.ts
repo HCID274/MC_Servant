@@ -1,11 +1,15 @@
-import { createMessageTriage } from "../triage.js";
+import { createConversationCompositeTriage, createMessageTriage } from "../triage.js";
 import { ConversationLlmChatError, ConversationLlmPlanError } from "./errors.js";
 import {
   createConversationChatMessages,
   createConversationPlanMessages,
   createConversationTriageMessages,
 } from "./messages.js";
-import { parseConversationSkillPlan, parseConversationTriage } from "./parsers.js";
+import {
+  parseConversationCompositeTriage,
+  parseConversationSkillPlan,
+  parseConversationTriage,
+} from "./parsers.js";
 import { executeStage } from "./stage.js";
 import type {
   ConversationLlmChatInput,
@@ -26,6 +30,26 @@ export function createConversationLlmClient(
   const now = dependencies.now ?? (() => new Date());
 
   return Object.freeze({
+    async generateCompositeTriage(input: ConversationLlmTriageInput) {
+      const messages = createConversationTriageMessages(input);
+
+      const result = await executeStage({
+        config,
+        fetchImpl,
+        now,
+        onDiagnostic: dependencies.onDiagnostic,
+        stage: "triage",
+        message_id: input.message_id,
+        messages,
+        parse: parseConversationCompositeTriage,
+        onFailure: () =>
+          createConversationCompositeTriage({
+            reply: {},
+          }),
+      });
+
+      return result.value;
+    },
     async generateTriage(
       input: ConversationLlmTriageInput,
     ): Promise<ReturnType<typeof createMessageTriage>> {

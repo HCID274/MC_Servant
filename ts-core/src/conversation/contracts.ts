@@ -123,6 +123,50 @@ export interface ConversationTriageFor<TIntent extends MessageTriage["intent"]> 
 export interface ConversationPlanningTriage
   extends ConversationTriageFor<ConversationPlanningIntent> {}
 
+/** 复合分诊中 cancel（取消） 的中断优先级清单。 */
+export const CONVERSATION_COMPOSITE_CANCEL_PRIORITIES = ["interrupt", "queued"] as const;
+
+/** 复合分诊中 cancel（取消） 的中断优先级。 */
+export type ConversationCompositeCancelPriority =
+  (typeof CONVERSATION_COMPOSITE_CANCEL_PRIORITIES)[number];
+
+/** 复合分诊中的 cancel（取消） 片段。 */
+export interface ConversationCompositeCancel {
+  /** 取消原因。 */
+  readonly reason: string;
+  /** 中断语义。 */
+  readonly priority: ConversationCompositeCancelPriority;
+}
+
+/** 复合分诊中的 reply（回复） 片段。 */
+export interface ConversationCompositeReply {
+  /** 显式回复文本；为空时复用 Stage 2-Chat（第二阶段闲聊）生成器。 */
+  readonly content?: string;
+}
+
+/** 复合分诊中的 action（动作） 片段，只表示需要进入 planner（规划器）。 */
+export interface ConversationCompositeAction {
+  /** 当前最小闭环只允许 task（任务） 进入规划器。 */
+  readonly intent: "task";
+  /** 对话优先级。 */
+  readonly priority: ConversationPriority;
+  /** 分诊原因。 */
+  readonly reason: string;
+}
+
+/** ConversationWorker（对话工作线程） 可消费的复合分诊结构。 */
+export interface ConversationCompositeTriage {
+  /** 可选 cancel（取消） 片段。 */
+  readonly cancel?: ConversationCompositeCancel;
+  /** 可选 reply（回复） 片段。 */
+  readonly reply?: ConversationCompositeReply;
+  /** 可选 action（动作） 片段。 */
+  readonly action?: ConversationCompositeAction;
+}
+
+/** ConversationWorker（对话工作线程） 兼容的新旧分诊输出。 */
+export type ConversationTriageOutput = MessageTriage | ConversationCompositeTriage;
+
 /** `modify`（修改） 路径注入的被中断任务摘要。 */
 export interface InterruptedTaskSummary {
   /** 被中断的消息标识。 */

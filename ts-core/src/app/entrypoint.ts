@@ -550,19 +550,11 @@ function createOnlineConversationTriage(
       });
     }
 
-    const triage = await llm.generateTriage({
+    const triage = await llm.generateCompositeTriage({
       message_id: task.message.message_id,
       message: task.message.content,
       bot_summary: "online_runtime_ready",
     });
-
-    if (triage.intent === "modify") {
-      return createMessageTriage({
-        intent: "chat",
-        priority: "normal",
-        reason: "online_modify_fallback",
-      });
-    }
 
     return triage;
   };

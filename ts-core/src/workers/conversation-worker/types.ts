@@ -2,6 +2,7 @@ import type {
   ConversationPlanDraft,
   ConversationPlanningTriage,
   ConversationRouteDecision,
+  ConversationTriageOutput,
 } from "../../conversation/contracts.js";
 import type {
   ConversationGeneratedReply,
@@ -113,7 +114,7 @@ export type ConversationInterruptRuntimeSink = (input: {
 export type ConversationWorkerTriage = (input: {
   /** Worker 输入任务。 */
   readonly task: ConversationWorkerTask;
-}) => MessageTriage | Promise<MessageTriage>;
+}) => ConversationTriageOutput | Promise<ConversationTriageOutput>;
 
 /** ConversationWorker（对话工作线程） 回复生成依赖。 */
 export type ConversationWorkerReplyGenerator = (input: {
