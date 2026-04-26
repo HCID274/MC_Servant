@@ -386,6 +386,14 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
     await actor.start();
     const firstExecution = actor.executeSkill(job);
 
+    expect(actor.getSnapshot()).toMatchObject({
+      status: BotStatus.EXECUTING,
+      current_task: {
+        kind: "skill_call",
+        message_id: "msg-goto-1",
+        skill: "goTo",
+      },
+    });
     await expect(
       actor.executeSkill(
         createSkillCallJob({
@@ -402,6 +410,70 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
     releaseMove?.();
     await firstExecution;
     expect(actor.getSnapshot().status).toBe(BotStatus.IDLE);
+    expect(actor.getSnapshot().current_task).toBeNull();
+  });
+
+  it("应允许 EXECUTING（执行中） 状态通过单写者入口广播闲聊回复", async () => {
+    let releaseMove: (() => void) | undefined;
+    const written: string[] = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        chat: (text) => {
+          written.push(text);
+        },
+        goTo: async () => {
+          await new Promise<void>((resolve) => {
+            releaseMove = resolve;
+          });
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
+    });
+
+    await actor.start();
+    const execution = actor.executeSkill(
+      createSkillCallJob({
+        message_id: "msg-goto-running",
+        intent_epoch: 1,
+        snapshot_ts: 100,
+        priority: ExecPriority.Normal,
+        skill: SKILL_DIRECTORY.goTo,
+        params: { x: 1, y: 64, z: -3 },
+      }),
+    );
+
+    expect(actor.getSnapshot()).toMatchObject({
+      status: BotStatus.EXECUTING,
+      current_task: {
+        kind: "skill_call",
+        message_id: "msg-goto-running",
+        skill: "goTo",
+      },
+    });
+
+    const replySnapshot = await actor.broadcastReply({
+      message_id: "msg-ask-state",
+      content: "我正在去目标点喵~",
+    });
+
+    expect(written).toEqual(["我正在去目标点喵~"]);
+    expect(replySnapshot.status).toBe(BotStatus.EXECUTING);
+    expect(replySnapshot.current_task).toEqual({
+      kind: "skill_call",
+      message_id: "msg-goto-running",
+      skill: "goTo",
+    });
+
+    releaseMove?.();
+    await execution;
+    expect(actor.getSnapshot().status).toBe(BotStatus.IDLE);
+    expect(actor.getSnapshot().current_task).toBeNull();
   });
 
   it("应在 ready（就绪） 后执行 mine（挖掘） / collect（捡拾） / equip（装备）", async () => {

@@ -39,6 +39,7 @@ export function createConversationChatMessages(
         botName,
         ownerName,
         ...(input.memory_context === undefined ? {} : { memoryContext: input.memory_context }),
+        ...(input.state_context === undefined ? {} : { stateContext: input.state_context }),
       }),
     }),
     ...historyMessages,

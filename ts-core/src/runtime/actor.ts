@@ -16,6 +16,7 @@ import {
   isMineSkillParams,
 } from "../core-ports/skills.js";
 import {
+  type BotActorCurrentTaskProjection,
   BotStatus,
   type ExternalAuthExecutionPlan,
   type ExternalAuthState,
@@ -48,6 +49,8 @@ export interface BotActorRuntimeSnapshot<TBotId extends string = string> {
   readonly external_auth: ExternalAuthState;
   /** 外部认证执行计划。 */
   readonly external_auth_plan: ExternalAuthExecutionPlan;
+  /** 当前正在执行的任务只读摘要。 */
+  readonly current_task: BotActorCurrentTaskProjection | null;
   /** 本轮生命周期已产出的运行时事件类型。 */
   readonly emitted_events: readonly RuntimeEventType[];
   /** 本轮由 BotActor（机器人执行代理） 单写者完成的聊天写入记录。 */
@@ -161,6 +164,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   let status = BotStatus.INITIALIZING;
   let externalAuth = input.externalAuth;
   let externalAuthPlan = input.externalAuthPlan;
+  let currentTask: BotActorCurrentTaskProjection | null = null;
   let chatWriteInFlight: Promise<void> | null = null;
   const emittedEvents: RuntimeEventType[] = [];
   const chatWrites: BotActorChatWriteRecord[] = [];
@@ -184,6 +188,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       }),
       external_auth: externalAuth,
       external_auth_plan: externalAuthPlan,
+      current_task: currentTask,
       emitted_events: Object.freeze([...emittedEvents]),
       chat_writes: Object.freeze([...chatWrites]),
       skill_executions: Object.freeze([...skillExecutions]),
@@ -292,12 +297,12 @@ export function createBotActorRuntime<TBotId extends string>(input: {
     ): Promise<BotActorRuntimeSnapshot<TBotId>> {
       assertBroadcastReplyInput(replyInput);
 
-      const readyGate = createRuntimeReadyGate({
+      const broadcastGate = createBroadcastReplyGate({
         status,
         externalAuth,
       });
 
-      if (!readyGate.ready) {
+      if (!broadcastGate.ready) {
         throw new Error("BotActor is not ready for broadcastReply");
       }
 
@@ -339,6 +344,11 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         throw new Error(`BotActor cannot execute skill while ${status}`);
       }
 
+      currentTask = Object.freeze({
+        kind: "skill_call" as const,
+        message_id: job.message_id,
+        skill: job.skill,
+      });
       status = startDecision.to;
       emittedEvents.push(...startDecision.emittedEvents);
 
@@ -359,6 +369,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
             skill: job.skill,
           }),
         );
+        currentTask = null;
 
         return Object.freeze({
           result,
@@ -375,6 +386,8 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         }
 
         throw error;
+      } finally {
+        currentTask = null;
       }
     },
     async executeSandboxCode(
@@ -404,6 +417,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         throw new Error(`BotActor cannot execute sandbox code while ${status}`);
       }
 
+      currentTask = Object.freeze({
+        kind: "sandbox_code" as const,
+        message_id: job.message_id,
+      });
       status = startDecision.to;
       emittedEvents.push(...startDecision.emittedEvents);
 
@@ -450,6 +467,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
             total_steps: sandboxResult.summary.total_steps,
           }),
         );
+        currentTask = null;
 
         return Object.freeze({
           result: sandboxResult,
@@ -466,6 +484,8 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         }
 
         throw error;
+      } finally {
+        currentTask = null;
       }
     },
     async shutdown(): Promise<BotActorRuntimeSnapshot<TBotId>> {
@@ -539,6 +559,27 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       }
     }
   }
+}
+
+/**
+ * 创建聊天广播专用准入结果。
+ *
+ * 聊天回复允许在任务执行中穿过 BotActor（机器人执行代理） 单写者入口写回游戏，
+ * 但不能复用 executeSkill（执行技能） 的忙碌门控，否则“执行中问状态”的回复无法送达。
+ */
+function createBroadcastReplyGate(input: {
+  readonly status: BotStatus;
+  readonly externalAuth: ExternalAuthState;
+}): { readonly ready: boolean } {
+  if (input.status !== BotStatus.IDLE && input.status !== BotStatus.EXECUTING) {
+    return Object.freeze({ ready: false });
+  }
+
+  if (input.externalAuth.status === "pending" || input.externalAuth.status === "failed") {
+    return Object.freeze({ ready: false });
+  }
+
+  return Object.freeze({ ready: true });
 }
 
 /**

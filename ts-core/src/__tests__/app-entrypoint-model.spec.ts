@@ -9,10 +9,19 @@ import {
   createAppBootstrapContract,
   createAppExternalAuthSecretFromEnvironment,
   createAppStartupSummary,
+  createOnlineConversationActorStateProjectionProvider,
   renderAppStartupSummary,
   runAppEntrypoint,
   startAppOnlineRuntime,
 } from "../app/index.js";
+import type { AppRuntimeCoreResources } from "../app/index.js";
+import {
+  BotStatus,
+  createExternalAuthExecutionPlan,
+  createExternalAuthState,
+  createMineflayerTransportDescriptor,
+  createRuntimeReadyGate,
+} from "../runtime/index.js";
 import type { MineflayerBotHandle } from "../runtime/transport.js";
 import { createConversationWorkerTask } from "../workers/contracts.js";
 
@@ -425,6 +434,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         messages: expect.any(Array),
       },
     });
+    const chatRequestBody = llmRequests[1]?.body as {
+      messages?: Array<{ role: string; content: string }>;
+    };
+    expect(chatRequestBody.messages?.[0]?.content).toContain("当前状态摘要：当前状态：idle");
+    expect(chatRequestBody.messages?.[0]?.content).toContain("世界交互：已就绪");
     expect(events).toContain("chat:当然可以，我在这里喵~");
     expect(writes).toContain(
       "TS Core LLM chat ok: model=bl-auto message_id=msg-online-chat log_ref=llm/2026-04-24/chat-msg-online-chat.jsonl",
@@ -502,6 +516,57 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     await runtime.close();
+  });
+
+  it("应在真实在线状态投影中保留 sandbox_code（沙箱代码） interrupted（已中断） 终态", () => {
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const descriptor = createMineflayerTransportDescriptor({
+      botId: "bot-sandbox-interrupted",
+    });
+    const actor = {
+      getSnapshot: () =>
+        Object.freeze({
+          bot_id: "bot-sandbox-interrupted",
+          status: BotStatus.IDLE,
+          transport: Object.freeze({
+            bot_id: "bot-sandbox-interrupted" as const,
+            state: "connected" as const,
+            connected: true,
+            world_ready: true,
+            descriptor,
+            username: "bot-online",
+            last_error: null,
+          }),
+          ready_gate: createRuntimeReadyGate({
+            status: BotStatus.IDLE,
+            externalAuth,
+          }),
+          external_auth: externalAuth,
+          external_auth_plan: createExternalAuthExecutionPlan(externalAuth),
+          current_task: null,
+          emitted_events: Object.freeze([]),
+          chat_writes: Object.freeze([]),
+          skill_executions: Object.freeze([]),
+          sandbox_executions: Object.freeze([
+            {
+              message_id: "msg-sandbox-stop",
+              status: "interrupted" as const,
+              total_steps: 2,
+            },
+          ]),
+        }),
+    } as AppRuntimeCoreResources<"bot-sandbox-interrupted">["actor"];
+    const provider = createOnlineConversationActorStateProjectionProvider(actor);
+
+    const projection = provider();
+
+    expect(projection.recent_sandbox).toEqual({
+      message_id: "msg-sandbox-stop",
+      status: "interrupted",
+      total_steps: 2,
+    });
+    expect(projection.summary).toContain("最近沙箱：interrupted");
+    expect(projection.summary).not.toContain("最近沙箱：failed");
   });
 
   it("应在真实在线入口把 LLM（大语言模型） 失败摘要脱敏后再暴露到 status（状态接口）", async () => {

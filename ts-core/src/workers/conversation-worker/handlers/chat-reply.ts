@@ -4,7 +4,10 @@ import { ConversationLlmChatError } from "../../../conversation/llm.js";
 import type { MessageTriage } from "../../../core-ports/foundation.js";
 import type { ConversationWorkerTask } from "../../contracts.js";
 import { appendLlmDiagnosticEvent } from "../events.js";
-import { normalizeGeneratedReply } from "../helpers.js";
+import {
+  createConversationStateContextFromProjection,
+  normalizeGeneratedReply,
+} from "../helpers.js";
 import type {
   ConversationWorkerRuntimeDependencies,
   ConversationWorkerRuntimeEvent,
@@ -19,11 +22,13 @@ export async function handleChatReplyRoute(input: {
   readonly events: ConversationWorkerRuntimeEvent[];
 }): Promise<void> {
   try {
+    const stateContext = await readStateContext(input);
     const generatedReply = normalizeGeneratedReply(
       (await input.dependencies.replyGenerator?.({
         task: input.task,
         triage: input.triage,
         route: input.route,
+        ...(stateContext === undefined ? {} : { state_context: stateContext }),
       })) ?? `收到：${input.task.message.content}`,
     );
     if (generatedReply.diagnostics !== undefined) {
@@ -51,5 +56,21 @@ export async function handleChatReplyRoute(input: {
       appendLlmDiagnosticEvent(input.events, input.task.bot_id, error.diagnostics);
     }
     throw error;
+  }
+}
+
+/** 读取 chat_reply（闲聊回复） 专用状态摘要；失败时降级为无状态闲聊。 */
+async function readStateContext(input: {
+  readonly task: ConversationWorkerTask;
+  readonly dependencies: ConversationWorkerRuntimeDependencies;
+}): Promise<string | undefined> {
+  try {
+    return createConversationStateContextFromProjection(
+      await input.dependencies.actorStateProjectionProvider?.({
+        task: input.task,
+      }),
+    );
+  } catch {
+    return undefined;
   }
 }

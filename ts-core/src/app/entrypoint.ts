@@ -15,6 +15,7 @@ import {
   createConversationLlmConfig,
   createMessageTriage,
 } from "../conversation/index.js";
+import { createBotActorStateProjection } from "../core-ports/index.js";
 import { type LlmDiagnosticSummary, createLlmDiagnosticSummary } from "../diagnostics/index.js";
 import {
   type InterfaceBotStatusSnapshot,
@@ -383,6 +384,9 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     const interruptRuntimeSink =
       input.dependencies?.conversationWorker?.interruptRuntimeSink ??
       createOnlineConversationInterruptRuntimeSink(createdRuntime.actor);
+    const actorStateProjectionProvider =
+      input.dependencies?.conversationWorker?.actorStateProjectionProvider ??
+      createOnlineConversationActorStateProjectionProvider(createdRuntime.actor);
 
     botWorker = createBotWorkerRuntime({
       queue: {
@@ -408,6 +412,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         ...(llmReplyGenerator === undefined ? {} : { replyGenerator: llmReplyGenerator }),
         ...(onlinePlanner === undefined ? {} : { planner: onlinePlanner }),
         interruptRuntimeSink,
+        actorStateProjectionProvider,
         broadcastReplySink: async (reply) => {
           await createdRuntime.actor.broadcastReply(reply);
         },
@@ -479,6 +484,37 @@ function createOnlineConversationInterruptRuntimeSink<TBotId extends string>(
 }
 
 /**
+ * 为真实在线入口创建 BotActor（机器人执行代理） 只读状态投影提供器。
+ *
+ * 这里只读取快照并压缩为短摘要，不暴露 Mineflayer（Minecraft 协议客户端） Bot（机器人） 或中断控制器。
+ */
+export function createOnlineConversationActorStateProjectionProvider<TBotId extends string>(
+  actor: AppRuntimeCoreResources<TBotId>["actor"],
+): NonNullable<ConversationWorkerRuntimeDependencies["actorStateProjectionProvider"]> {
+  return () => {
+    const snapshot = actor.getSnapshot();
+    const recentSkill = snapshot.skill_executions.at(-1) ?? null;
+    const recentSandbox = snapshot.sandbox_executions.at(-1) ?? null;
+
+    return createBotActorStateProjection({
+      status: snapshot.status,
+      ready: snapshot.ready_gate.ready,
+      world_ready: snapshot.transport.world_ready,
+      current_task: snapshot.current_task,
+      recent_skill: recentSkill,
+      recent_sandbox:
+        recentSandbox === null
+          ? null
+          : {
+              message_id: recentSandbox.message_id,
+              status: recentSandbox.status,
+              total_steps: recentSandbox.total_steps,
+            },
+    });
+  };
+}
+
+/**
  * 为真实在线入口创建最小分诊器。
  *
  * 在线最短闭环仍需保留 cancel（取消） 的模板中断语义；因此这里先锁住显式取消文本，
@@ -544,10 +580,11 @@ function createOnlineConversationReplyGenerator(
     return undefined;
   }
 
-  return async ({ task }) =>
+  return async ({ task, state_context }) =>
     llm.generateChatReply({
       message_id: task.message.message_id,
       message: task.message.content,
+      ...(state_context === undefined ? {} : { state_context }),
     });
 }
 

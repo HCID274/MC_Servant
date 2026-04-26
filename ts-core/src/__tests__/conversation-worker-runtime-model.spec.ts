@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createMessageTriage } from "../conversation/index.js";
 import { ConversationLlmChatError } from "../conversation/llm.js";
+import { BotStatus, createBotActorStateProjection } from "../core-ports/index.js";
 import { ConversationPriority } from "../domain/contracts.js";
 import { createConversationWorkerTask } from "../workers/contracts.js";
 import { createConversationWorkerRuntime } from "../workers/conversation-worker.js";
@@ -10,6 +11,8 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
   it("应消费 chat（闲聊） 消息并通过 BotActor（机器人执行代理） sink（汇点） 广播回复", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const replies: Array<{ message_id: string; content: string }> = [];
+    const injectedStateContexts: Array<string | undefined> = [];
+    let projectionCalls = 0;
     const runtime = createConversationWorkerRuntime({
       queue: {
         name: "msg:bot-cw",
@@ -29,19 +32,37 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             priority: "normal",
             reason: "unit_chat",
           }),
-        replyGenerator: () => ({
-          mode: "llm",
-          reply: "我听到啦",
-          diagnostics: {
-            stage: "chat",
-            model: "bl-auto",
-            message_id: "msg-chat",
-            log_ref: "llm/2026-04-24/chat-msg-chat.jsonl",
-            created_at: "2026-04-24T10:00:00.000Z",
-            ok: true,
-            lines: [],
-          },
-        }),
+        actorStateProjectionProvider: () => {
+          projectionCalls += 1;
+
+          return createBotActorStateProjection({
+            status: BotStatus.EXECUTING,
+            ready: false,
+            world_ready: true,
+            current_task: {
+              kind: "skill_call",
+              message_id: "msg-mine",
+              skill: "mine",
+            },
+          });
+        },
+        replyGenerator: (input) => {
+          injectedStateContexts.push(input.state_context);
+
+          return {
+            mode: "llm",
+            reply: "我听到啦",
+            diagnostics: {
+              stage: "chat",
+              model: "bl-auto",
+              message_id: "msg-chat",
+              log_ref: "llm/2026-04-24/chat-msg-chat.jsonl",
+              created_at: "2026-04-24T10:00:00.000Z",
+              ok: true,
+              lines: [],
+            },
+          };
+        },
         broadcastReplySink: async (reply) => {
           replies.push(reply);
         },
@@ -68,6 +89,10 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
         content: "我听到啦喵~",
       },
     ]);
+    expect(projectionCalls).toBe(1);
+    expect(injectedStateContexts).toEqual([
+      "当前状态：executing；ready：否；世界交互：已就绪；正在执行技能：mine（消息 msg-mine）",
+    ]);
     expect(runtime.getEvents()).toContainEqual({
       type: "llm.chat.diagnostic",
       bot_id: "bot-cw",
@@ -84,6 +109,57 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       message_id: "msg-chat",
       content: "我听到啦喵~",
     });
+  });
+
+  it("应在状态投影读取失败时降级为无状态闲聊", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const stateContexts: Array<string | undefined> = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createMessageTriage({
+            intent: "chat",
+            priority: "normal",
+            reason: "unit_chat_projection_failed",
+          }),
+        actorStateProjectionProvider: () => {
+          throw new Error("projection source unavailable");
+        },
+        replyGenerator: (input) => {
+          stateContexts.push(input.state_context);
+
+          return "无状态回复";
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-chat-projection-failed",
+          content: "你在干嘛",
+          intent_epoch: 1,
+          snapshot_ts: 100,
+        },
+      }),
+    });
+
+    expect(stateContexts).toEqual([undefined]);
   });
 
   it("应只记录 cancel（取消） 路径，不写入 Mineflayer（Minecraft 协议客户端） 聊天", async () => {
@@ -111,6 +187,9 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           }),
         replyGenerator: () => {
           throw new Error("cancel route must not call reply generator");
+        },
+        actorStateProjectionProvider: () => {
+          throw new Error("cancel route must not call actor state projection provider");
         },
         interruptRuntimeSink: async (interrupt) => {
           interrupts.push(interrupt);
@@ -259,6 +338,9 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           skill: "goTo",
           params: { x: 10, y: 64, z: -5 },
         }),
+        actorStateProjectionProvider: () => {
+          throw new Error("plan route must not call actor state projection provider");
+        },
         broadcastReplySink: async (reply) => {
           replies.push(reply);
         },

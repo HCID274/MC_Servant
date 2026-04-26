@@ -75,6 +75,8 @@ export interface ConversationLlmChatInput {
   readonly owner_name?: string;
   /** 可选记忆摘要。 */
   readonly memory_context?: string;
+  /** 可选当前状态摘要。 */
+  readonly state_context?: string;
 }
 
 /** 分诊请求输入。 */

@@ -7,6 +7,7 @@
 
 import type { ExecutionTaskEnvelope } from "./foundation.js";
 import type { ReflexInterruptSource } from "./observation.js";
+import type { SkillName } from "./skills.js";
 
 /** Bot（机器人） 状态枚举，用于描述 BotActor（机器人执行代理） 在运行时内的最小状态集合。 */
 export enum BotStatus {
@@ -56,4 +57,165 @@ export interface RuntimeTaskEnvelope extends ExecutionTaskEnvelope {
   status: BotStatus;
   /** 任务是否允许被中断。 */
   interruptible: boolean;
+}
+
+/** BotActor（机器人执行代理） 当前任务只读投影。 */
+export type BotActorCurrentTaskProjection =
+  | {
+      /** 当前任务类型。 */
+      readonly kind: "skill_call";
+      /** 原始消息标识。 */
+      readonly message_id: string;
+      /** 正在执行的技能名。 */
+      readonly skill: SkillName;
+    }
+  | {
+      /** 当前任务类型。 */
+      readonly kind: "sandbox_code";
+      /** 原始消息标识。 */
+      readonly message_id: string;
+    };
+
+/** BotActor（机器人执行代理） 最近技能执行只读投影。 */
+export interface BotActorRecentSkillProjection {
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 最近执行的技能名。 */
+  readonly skill: SkillName;
+}
+
+/** BotActor（机器人执行代理） 最近沙箱执行只读投影。 */
+export interface BotActorRecentSandboxProjection {
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 最近沙箱终态。 */
+  readonly status: "completed" | "failed" | "interrupted";
+  /** 沙箱步骤数。 */
+  readonly total_steps: number;
+}
+
+/** BotActor（机器人执行代理） 给对话侧读取的只读状态投影。 */
+export interface BotActorStateProjection {
+  /** 当前 BotActor（机器人执行代理） 状态。 */
+  readonly status: BotStatus;
+  /** 当前 ready（就绪） 门控是否开放。 */
+  readonly ready: boolean;
+  /** 世界交互能力是否就绪。 */
+  readonly world_ready: boolean;
+  /** 当前正在执行的任务摘要。 */
+  readonly current_task: BotActorCurrentTaskProjection | null;
+  /** 最近一次技能执行摘要。 */
+  readonly recent_skill: BotActorRecentSkillProjection | null;
+  /** 最近一次沙箱执行摘要。 */
+  readonly recent_sandbox: BotActorRecentSandboxProjection | null;
+  /** 可直接注入 chat prompt（闲聊提示词） 的短摘要。 */
+  readonly summary: string;
+}
+
+/** 创建 BotActor（机器人执行代理） 只读状态投影。 */
+export function createBotActorStateProjection(input: {
+  /** 当前 BotActor（机器人执行代理） 状态。 */
+  readonly status: BotStatus;
+  /** 当前 ready（就绪） 门控是否开放。 */
+  readonly ready: boolean;
+  /** 世界交互能力是否就绪。 */
+  readonly world_ready: boolean;
+  /** 当前正在执行的任务摘要。 */
+  readonly current_task?: BotActorCurrentTaskProjection | null;
+  /** 最近一次技能执行摘要。 */
+  readonly recent_skill?: BotActorRecentSkillProjection | null;
+  /** 最近一次沙箱执行摘要。 */
+  readonly recent_sandbox?: BotActorRecentSandboxProjection | null;
+}): BotActorStateProjection {
+  const currentTask = cloneBotActorCurrentTaskProjection(input.current_task ?? null);
+  const recentSkill =
+    input.recent_skill === undefined || input.recent_skill === null
+      ? null
+      : Object.freeze({
+          message_id: input.recent_skill.message_id,
+          skill: input.recent_skill.skill,
+        });
+  const recentSandbox =
+    input.recent_sandbox === undefined || input.recent_sandbox === null
+      ? null
+      : Object.freeze({
+          message_id: input.recent_sandbox.message_id,
+          status: input.recent_sandbox.status,
+          total_steps: input.recent_sandbox.total_steps,
+        });
+
+  return Object.freeze({
+    status: input.status,
+    ready: input.ready,
+    world_ready: input.world_ready,
+    current_task: currentTask,
+    recent_skill: recentSkill,
+    recent_sandbox: recentSandbox,
+    summary: createBotActorStateProjectionSummary({
+      status: input.status,
+      ready: input.ready,
+      world_ready: input.world_ready,
+      current_task: currentTask,
+      recent_skill: recentSkill,
+      recent_sandbox: recentSandbox,
+    }),
+  });
+}
+
+/** 创建 BotActor（机器人执行代理） 给闲聊使用的短状态摘要。 */
+export function createBotActorStateProjectionSummary(input: {
+  /** 当前 BotActor（机器人执行代理） 状态。 */
+  readonly status: BotStatus;
+  /** 当前 ready（就绪） 门控是否开放。 */
+  readonly ready: boolean;
+  /** 世界交互能力是否就绪。 */
+  readonly world_ready: boolean;
+  /** 当前正在执行的任务摘要。 */
+  readonly current_task: BotActorCurrentTaskProjection | null;
+  /** 最近一次技能执行摘要。 */
+  readonly recent_skill: BotActorRecentSkillProjection | null;
+  /** 最近一次沙箱执行摘要。 */
+  readonly recent_sandbox: BotActorRecentSandboxProjection | null;
+}): string {
+  const base = `当前状态：${input.status}；ready：${input.ready ? "是" : "否"}；世界交互：${input.world_ready ? "已就绪" : "未就绪"}`;
+
+  if (input.current_task?.kind === "skill_call") {
+    return `${base}；正在执行技能：${input.current_task.skill}（消息 ${input.current_task.message_id}）`;
+  }
+
+  if (input.current_task?.kind === "sandbox_code") {
+    return `${base}；正在执行沙箱代码（消息 ${input.current_task.message_id}）`;
+  }
+
+  if (input.recent_skill !== null) {
+    return `${base}；刚完成技能：${input.recent_skill.skill}（消息 ${input.recent_skill.message_id}）`;
+  }
+
+  if (input.recent_sandbox !== null) {
+    return `${base}；最近沙箱：${input.recent_sandbox.status}，步骤 ${input.recent_sandbox.total_steps}（消息 ${input.recent_sandbox.message_id}）`;
+  }
+
+  return base;
+}
+
+/** 克隆 BotActor（机器人执行代理） 当前任务投影，避免外部引用污染只读快照。 */
+function cloneBotActorCurrentTaskProjection(
+  task: BotActorCurrentTaskProjection | null,
+): BotActorCurrentTaskProjection | null {
+  if (task === null) {
+    return null;
+  }
+
+  if (task.kind === "skill_call") {
+    return Object.freeze({
+      kind: "skill_call" as const,
+      message_id: task.message_id,
+      skill: task.skill,
+    });
+  }
+
+  return Object.freeze({
+    kind: "sandbox_code" as const,
+    message_id: task.message_id,
+  });
 }

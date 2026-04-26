@@ -9,6 +9,8 @@
 
 import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import {
+  type BotActorCurrentTaskProjection,
+  type BotActorStateProjection,
   BotStatus,
   type InterruptSignal,
   type InterruptSource,
@@ -17,7 +19,14 @@ import {
 } from "../core-ports/index.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 
-export { BotStatus, type InterruptSignal, type InterruptSource, type RuntimeTaskEnvelope };
+export {
+  BotStatus,
+  type BotActorCurrentTaskProjection,
+  type BotActorStateProjection,
+  type InterruptSignal,
+  type InterruptSource,
+  type RuntimeTaskEnvelope,
+};
 export type { ThreatAssessment } from "../core-ports/index.js";
 
 /** 外部认证受控入口清单。 */

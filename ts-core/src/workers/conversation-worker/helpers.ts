@@ -5,6 +5,7 @@ import type { ConversationGeneratedReply } from "../../conversation/llm.js";
 import { createMessageTriage } from "../../conversation/triage.js";
 import { ConversationPriority } from "../../core-ports/foundation.js";
 import type { MessageTriage } from "../../core-ports/foundation.js";
+import type { BotActorStateProjection } from "../../core-ports/runtime.js";
 import { ExecPriority } from "../../core-ports/tasking.js";
 import type { RedisClientLike } from "../../db/index.js";
 import { createBullmqPhysicalQueueName } from "../bullmq.js";
@@ -85,4 +86,17 @@ export function normalizeGeneratedReply(
     ...result,
     ...(result.diagnostics === undefined ? {} : { diagnostics: result.diagnostics }),
   });
+}
+
+/** 将 BotActor（机器人执行代理） 状态投影收口为可注入闲聊的短摘要。 */
+export function createConversationStateContextFromProjection(
+  projection: BotActorStateProjection | null | undefined,
+): string | undefined {
+  const summary = projection?.summary.trim();
+
+  if (summary === undefined || summary.length === 0) {
+    return undefined;
+  }
+
+  return summary.length > 240 ? `${summary.slice(0, 240)}...` : summary;
 }

@@ -69,6 +69,7 @@ describe("conversation llm（对话大语言模型） 运行时", () => {
         { role: "bot", content: "早上好喵~" },
       ],
       memory_context: "主人今天想测试真实闲聊回包。",
+      state_context: "当前状态：executing；正在执行技能：mine（消息 msg-mine）",
     });
 
     expect(result.reply).toBe("当然可以，我在这里陪着你");
@@ -89,12 +90,20 @@ describe("conversation llm（对话大语言模型） 运行时", () => {
               { role: "bot", content: "早上好喵~" },
             ],
             memory_context: "主人今天想测试真实闲聊回包。",
+            state_context: "当前状态：executing；正在执行技能：mine（消息 msg-mine）",
             bot_name: "maid_bot",
             owner_name: "主人",
           }),
         },
       },
     ]);
+    const requestBody = capturedRequests[0]?.body as {
+      messages?: Array<{ role: string; content: string }>;
+    };
+    expect(requestBody.messages?.[0]?.content).toContain("记忆摘要：主人今天想测试真实闲聊回包。");
+    expect(requestBody.messages?.[0]?.content).toContain(
+      "当前状态摘要：当前状态：executing；正在执行技能：mine（消息 msg-mine）",
+    );
     expect(result.diagnostics).toMatchObject({
       stage: "chat",
       model: "bl-auto",

@@ -6,6 +6,8 @@ export interface ChatSystemPromptInput {
   readonly ownerName: string;
   /** 可选记忆摘要。 */
   readonly memoryContext?: string;
+  /** 可选当前状态摘要。 */
+  readonly stateContext?: string;
 }
 
 /** 构建 Stage 2-Chat（闲聊） system prompt（系统提示词）。 */
@@ -17,5 +19,6 @@ export function createChatSystemPrompt(input: ChatSystemPromptInput): string {
     "- 回复简短自然，不超过 3 句话",
     "- 不要输出 JSON，不要输出动作计划，只说话",
     ...(input.memoryContext === undefined ? [] : [`记忆摘要：${input.memoryContext}`]),
+    ...(input.stateContext === undefined ? [] : [`当前状态摘要：${input.stateContext}`]),
   ].join("\n");
 }

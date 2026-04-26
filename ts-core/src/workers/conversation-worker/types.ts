@@ -8,6 +8,7 @@ import type {
   ConversationLlmDiagnosticRecord,
 } from "../../conversation/llm.js";
 import type { MessageTriage } from "../../core-ports/foundation.js";
+import type { BotActorStateProjection } from "../../core-ports/runtime.js";
 import type { SkillName } from "../../core-ports/skills.js";
 import type { ExecPriority, TaskHistoryStatus } from "../../core-ports/tasking.js";
 import type { RedisClientLike } from "../../db/index.js";
@@ -122,7 +123,19 @@ export type ConversationWorkerReplyGenerator = (input: {
   readonly triage: MessageTriage;
   /** 路由决策。 */
   readonly route: ConversationRouteDecision;
+  /** 可选 BotActor（机器人执行代理） 当前状态短摘要。 */
+  readonly state_context?: string;
 }) => string | ConversationGeneratedReply | Promise<string | ConversationGeneratedReply>;
+
+/** ConversationWorker（对话工作线程） 状态投影提供器。 */
+export type ConversationActorStateProjectionProvider = (input: {
+  /** Worker 输入任务。 */
+  readonly task: ConversationWorkerTask;
+}) =>
+  | BotActorStateProjection
+  | null
+  | undefined
+  | Promise<BotActorStateProjection | null | undefined>;
 
 /** ConversationWorker（对话工作线程） 最小规划依赖。 */
 export type ConversationWorkerPlanner = (input: {
@@ -159,6 +172,8 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly triage?: ConversationWorkerTriage;
   /** 回复生成函数，默认生成模板闲聊回复。 */
   readonly replyGenerator?: ConversationWorkerReplyGenerator;
+  /** BotActor（机器人执行代理） 只读状态投影提供器，仅 chat_reply（闲聊回复） 分支读取。 */
+  readonly actorStateProjectionProvider?: ConversationActorStateProjectionProvider;
   /** 最小规划函数，成功时返回可执行规划草案。 */
   readonly planner?: ConversationWorkerPlanner;
   /** 广播回复汇点，真实路径指向 BotActor.broadcastReply。 */
