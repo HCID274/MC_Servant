@@ -23,6 +23,10 @@ import {
   TASK_SUMMARIES_SEARCH_INDEXES,
   TaskHistoryStatus,
   createDatedStorageRef,
+  createDeterministicTaskSummaryText,
+  createMemoryContextFromTaskSummaries,
+  createTaskSummaryDraft,
+  createTaskSummarySource,
   eventLogTable,
   isValidStorageRef,
   mcServantTables,
@@ -168,5 +172,106 @@ describe("data 持久化契约", () => {
         },
       },
     ]);
+  });
+
+  it("应创建只读 task_summaries（任务摘要） 草案并拒绝 discarded（已丢弃） 与空摘要", () => {
+    const draft = createTaskSummaryDraft({
+      task_id: "msg-summary-1",
+      bot_id: "bot-data",
+      message_id: "msg-summary-1",
+      intent: "挖掘煤矿",
+      status: TaskHistoryStatus.Completed,
+      summary: "任务完成，Bot 挖到了目标方块并返回空闲状态。",
+      log_ref: "tasks/2026-04-26/msg-summary-1.jsonl",
+      embedding: [0.1, 0.2],
+      created_at: "2026-04-26T00:00:00.000Z",
+    });
+
+    expect(draft.id).toBe("task-summary:bot-data:msg-summary-1");
+    expect(Object.isFrozen(draft)).toBe(true);
+    expect(Object.isFrozen(draft.embedding)).toBe(true);
+    expect(() =>
+      createTaskSummaryDraft({
+        task_id: "msg-summary-2",
+        bot_id: "bot-data",
+        message_id: "msg-summary-2",
+        intent: "过期任务",
+        status: TaskHistoryStatus.Discarded,
+        summary: "不应写入",
+        created_at: "2026-04-26T00:00:00.000Z",
+      }),
+    ).toThrow(/completed, failed, or interrupted/);
+    expect(() =>
+      createTaskSummaryDraft({
+        task_id: "msg-summary-3",
+        bot_id: "bot-data",
+        message_id: "msg-summary-3",
+        intent: "空摘要",
+        status: TaskHistoryStatus.Failed,
+        summary: "   ",
+        created_at: "2026-04-26T00:00:00.000Z",
+      }),
+    ).toThrow(/summary must be a non-empty string/);
+  });
+
+  it("应从任务历史和 JSONL（结构化日志） 输入生成确定性兜底摘要", () => {
+    const source = createTaskSummarySource({
+      bot_id: "bot-data",
+      task_id: "msg-source-1",
+      message_id: "msg-source-1",
+      intent_epoch: 3,
+      status: TaskHistoryStatus.Failed,
+      intent: "前往坐标",
+      log_ref: "sandbox/2026-04-26/msg-source-1.jsonl",
+      created_at: "2026-04-26T00:00:00.000Z",
+      terminal_detail: "path not found",
+      jsonl_excerpt: ["facade_result goTo err", "sandbox_done"],
+    });
+
+    expect(Object.isFrozen(source)).toBe(true);
+    expect(Object.isFrozen(source.jsonl_excerpt)).toBe(true);
+    expect(createDeterministicTaskSummaryText(source)).toContain(
+      "任务 msg-source-1 以 failed 结束",
+    );
+    expect(createDeterministicTaskSummaryText(source)).toContain("facade_result goTo err");
+  });
+
+  it("应按 score（分数） / created_at（创建时间） 稳定拼接 memory（记忆）上下文并支持预算截断", () => {
+    const older = createTaskSummaryDraft({
+      task_id: "msg-memory-old",
+      bot_id: "bot-data",
+      message_id: "msg-memory-old",
+      intent: "旧任务",
+      status: TaskHistoryStatus.Completed,
+      summary: "旧摘要",
+      created_at: "2026-04-25T00:00:00.000Z",
+    });
+    const newer = createTaskSummaryDraft({
+      task_id: "msg-memory-new",
+      bot_id: "bot-data",
+      message_id: "msg-memory-new",
+      intent: "新任务",
+      status: TaskHistoryStatus.Interrupted,
+      summary: "新摘要内容较长",
+      created_at: "2026-04-26T00:00:00.000Z",
+    });
+
+    expect(
+      createMemoryContextFromTaskSummaries({
+        results: [
+          { summary: older, score: 0.5 },
+          { summary: newer, score: 0.9 },
+        ],
+        limit: 1,
+        char_budget: 120,
+      }),
+    ).toBe("[interrupted] 新任务: 新摘要内容较长");
+    expect(
+      createMemoryContextFromTaskSummaries({
+        results: [{ summary: newer, score: 0.9 }],
+        limit: 5,
+        char_budget: 18,
+      }),
+    ).toBe("[interrupted] 新任务…");
   });
 });

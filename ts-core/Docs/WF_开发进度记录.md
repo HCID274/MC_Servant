@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-031` ~ `T-040`
-- 当前已完成任务：`T-031`、`T-032`
-- 当前活跃任务：`T-033`（任务三十三） BrainWorker（摘要工作线程） 最小摘要写入与可检索记忆端口。
+- 当前已完成任务：`T-031`、`T-032`、`T-033`
+- 当前活跃任务：`T-034`（任务三十四） 网页轻面板状态 / 消息 / 事件同步接口。
 - 当前批次摘要：上一批次 `T-021`（任务二十一） 到 `T-030`（任务三十） 已完成 MC（Minecraft，我的世界） 上线闭环、真实 LLM（大语言模型） 接入、多技能、观测出口、sandbox_code（沙箱代码） 与架构治理。新批次默认继续沿可运行主干推进对话智能增强。
 - 当前批次硬约束：不得回退 `T-021` 到 `T-030` 已形成的真实在线路径、单写者路径、无循环依赖图、OpenAI（开放人工智能） 兼容配置边界与 sandbox_code（沙箱代码） 执行安全边界。
 
@@ -85,3 +85,24 @@
   - Manager（管理代理） 复跑 `cd ts-core && pnpm exec tsc --noEmit`：通过。
   - Manager（管理代理） 复核本地真实 OpenAI（开放人工智能） 兼容网关：`POST /v1/chat/completions` 对测试消息返回 `cancel`（取消） / `reply`（回复） / `action`（动作） 三类语义。
   - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 28 个测试文件、170 条测试全部通过。
+
+### T-033（已完成）
+
+- **任务主题**: BrainWorker（摘要工作线程） 最小摘要写入链路与可检索 memory（记忆）端口。
+- **审查时间**: 2026-04-26T22:01:02+09:00
+- **核心文件**:
+  - `src/data/contracts/task-history.ts`
+  - `src/workers/brain-worker.ts`
+  - `src/workers/index.ts`
+  - `src/__tests__/data-model.spec.ts`
+  - `src/__tests__/brain-worker-runtime-model.spec.ts`
+- **变更快照**:
+  - data（数据层）新增 `TaskSummarySource`（任务摘要来源） / `TaskSummaryDraft`（任务摘要草案） / `TaskSummary`（任务摘要） / `TaskMemorySearchResult`（任务记忆检索结果）契约，稳定摘要标识采用 `task-summary:{bot_id}:{message_id}`（任务摘要：机器人标识：消息标识）。
+  - 新增 `createDeterministicTaskSummaryText()`（创建确定性任务摘要文本） 与 `createTaskSummaryDraft()`（创建任务摘要草案），只允许 `completed`（已完成） / `failed`（已失败） / `interrupted`（已中断） 写入摘要，拒绝 `discarded`（已丢弃） 与空摘要。
+  - 新增 `createMemoryContextFromTaskSummaries()`（由任务摘要生成记忆上下文），按 score（分数） / `created_at`（创建时间） / `id`（标识） 稳定排序，并支持 limit（数量上限） 与字符预算截断。
+  - 新增 `createBrainWorkerRuntime()`（创建摘要工作线程运行时），通过 DI（依赖注入）消费 `brain`（摘要队列）任务，依序读取 source（来源）、生成 summary（摘要）、可选生成 embedding（向量嵌入）、持久化 task_summaries（任务摘要），并记录成功 / 失败事件。
+  - BrainWorker（摘要工作线程）保持只读历史 / 日志、只写摘要的边界，不导入 runtime transport（运行时传输）、BotActor（机器人执行代理）实现或 Mineflayer（Minecraft 协议客户端）适配器。
+- **审查结论**:
+  - 通过。T-033（任务三十三） 已补齐 Level 1（一级） 任务摘要链路和 memory（记忆）读取端口，本轮未触碰 LLM（大语言模型） 调用链路或 Prompt（提示词），因此不需要真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
+- **验证记录**:
+  - Manager（管理代理）复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、177 条测试全部通过。

@@ -24,6 +24,9 @@ import {
   normalizeUnclosedTaskLimit,
 } from "./utils.js";
 
+const DEFAULT_MEMORY_CONTEXT_LIMIT = 5;
+const DEFAULT_MEMORY_CONTEXT_CHAR_BUDGET = 800;
+
 /** task_history（任务历史） accepted（已接受） 快照基类。 */
 export interface PersistedTaskHistoryAcceptedRecordBase {
   /** 主键；与 job_id / message_id 对齐。 */
@@ -161,6 +164,283 @@ export interface UnclosedTaskDetectionResult {
   readonly limit: number;
   /** 未闭合任务列表。 */
   readonly open_tasks: readonly UnclosedTaskCandidate[];
+}
+
+/** task_summaries（任务摘要） 允许持久化的终态。 */
+export type PersistedTaskSummaryStatus =
+  | TaskHistoryStatus.Completed
+  | TaskHistoryStatus.Failed
+  | TaskHistoryStatus.Interrupted;
+
+/** BrainWorker（摘要工作线程） 读取到的最小摘要来源。 */
+export interface TaskSummarySource {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** task_history（任务历史） 主键。 */
+  readonly task_id: string;
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 意图纪元。 */
+  readonly intent_epoch: number;
+  /** 真实终态。 */
+  readonly status: PersistedTaskSummaryStatus;
+  /** 原始任务意图或技能摘要。 */
+  readonly intent: string;
+  /** JSONL（结构化日志） 引用。 */
+  readonly log_ref?: string;
+  /** task_history（任务历史） 记录的创建时间。 */
+  readonly created_at: string;
+  /** 终态事件或 JSONL（结构化日志） 派生的短文本。 */
+  readonly terminal_detail?: string;
+  /** JSONL（结构化日志） 摘要输入行。 */
+  readonly jsonl_excerpt?: readonly string[];
+}
+
+/** task_summaries（任务摘要） 写入草案。 */
+export interface TaskSummaryDraft {
+  /** 稳定摘要标识。 */
+  readonly id: string;
+  /** task_history（任务历史） 主键。 */
+  readonly task_id: string;
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** 意图摘要。 */
+  readonly intent: string;
+  /** 真实终态。 */
+  readonly status: PersistedTaskSummaryStatus;
+  /** Level 1（一级） 摘要正文。 */
+  readonly summary: string;
+  /** JSONL（结构化日志） 引用。 */
+  readonly log_ref?: string;
+  /** 可选 embedding（向量嵌入）。 */
+  readonly embedding?: readonly number[];
+  /** 创建时间。 */
+  readonly created_at: string;
+}
+
+/** task_summaries（任务摘要） 持久化快照。 */
+export type TaskSummary = TaskSummaryDraft;
+
+/** memory（记忆）检索结果。 */
+export interface TaskMemorySearchResult {
+  /** 任务摘要。 */
+  readonly summary: TaskSummary;
+  /** 检索分数；越大越靠前。 */
+  readonly score?: number;
+}
+
+/** memory（记忆）上下文工厂输入。 */
+export interface MemoryContextFromTaskSummariesInput {
+  /** 检索结果。 */
+  readonly results: readonly TaskMemorySearchResult[];
+  /** 最大条数。 */
+  readonly limit?: number;
+  /** 最大字符预算。 */
+  readonly char_budget?: number;
+}
+
+/** 判断状态是否可写入 task_summaries（任务摘要）。 */
+export function isPersistedTaskSummaryStatus(
+  status: TaskHistoryStatus,
+): status is PersistedTaskSummaryStatus {
+  return (
+    status === TaskHistoryStatus.Completed ||
+    status === TaskHistoryStatus.Failed ||
+    status === TaskHistoryStatus.Interrupted
+  );
+}
+
+/** 创建稳定的 task_summaries（任务摘要） 标识。 */
+export function createTaskSummaryId(input: { bot_id: string; message_id: string }): string {
+  assertPersistedIdentifier(input.bot_id, "bot_id");
+  assertPersistedIdentifier(input.message_id, "message_id");
+
+  return `task-summary:${input.bot_id}:${input.message_id}`;
+}
+
+/** 创建 BrainWorker（摘要工作线程） 的确定性兜底摘要结果。 */
+export function createDeterministicTaskSummaryText(source: TaskSummarySource): string {
+  const detailParts = [
+    `任务 ${source.task_id} 以 ${source.status} 结束`,
+    `意图：${source.intent}`,
+    source.terminal_detail,
+    ...(source.jsonl_excerpt ?? []).slice(0, 3),
+  ].filter((part): part is string => part !== undefined && part.trim().length > 0);
+
+  return detailParts.join("；");
+}
+
+/** 创建 BrainWorker（摘要工作线程） 摘要来源快照。 */
+export function createTaskSummarySource(input: TaskSummarySource): TaskSummarySource {
+  assertPersistedIdentifier(input.bot_id, "bot_id");
+  assertPersistedIdentifier(input.task_id, "task_id");
+  assertPersistedIdentifier(input.message_id, "message_id");
+  assertNonNegativeInteger(input.intent_epoch, "intent_epoch");
+  assertPersistedTaskSummaryStatus(input.status);
+  assertPersistedIdentifier(input.intent, "intent");
+  assertPersistedTimestamp(input.created_at, "created_at");
+
+  if (input.log_ref !== undefined) {
+    assertTaskSummaryLogRef(input.log_ref);
+  }
+
+  return Object.freeze({
+    bot_id: input.bot_id,
+    task_id: input.task_id,
+    message_id: input.message_id,
+    intent_epoch: input.intent_epoch,
+    status: input.status,
+    intent: input.intent,
+    ...(input.log_ref === undefined ? {} : { log_ref: input.log_ref }),
+    created_at: input.created_at,
+    ...(input.terminal_detail === undefined ? {} : { terminal_detail: input.terminal_detail }),
+    ...(input.jsonl_excerpt === undefined
+      ? {}
+      : { jsonl_excerpt: Object.freeze([...input.jsonl_excerpt]) }),
+  });
+}
+
+/** 创建 task_summaries（任务摘要） 草案。 */
+export function createTaskSummaryDraft(input: {
+  id?: string;
+  task_id: string;
+  bot_id: string;
+  message_id: string;
+  intent: string;
+  status: TaskHistoryStatus;
+  summary: string;
+  log_ref?: string;
+  embedding?: readonly number[];
+  created_at: string;
+}): TaskSummaryDraft {
+  assertPersistedIdentifier(input.task_id, "task_id");
+  assertPersistedIdentifier(input.bot_id, "bot_id");
+  assertPersistedIdentifier(input.message_id, "message_id");
+  assertPersistedIdentifier(input.intent, "intent");
+  assertPersistedTaskSummaryStatus(input.status);
+  assertPersistedIdentifier(input.summary, "summary");
+  assertPersistedTimestamp(input.created_at, "created_at");
+
+  if (input.log_ref !== undefined) {
+    assertTaskSummaryLogRef(input.log_ref);
+  }
+
+  const embedding =
+    input.embedding === undefined ? undefined : Object.freeze(validateEmbedding(input.embedding));
+
+  return Object.freeze({
+    id: input.id ?? createTaskSummaryId(input),
+    task_id: input.task_id,
+    bot_id: input.bot_id,
+    intent: input.intent,
+    status: input.status,
+    summary: input.summary,
+    ...(input.log_ref === undefined ? {} : { log_ref: input.log_ref }),
+    ...(embedding === undefined ? {} : { embedding }),
+    created_at: input.created_at,
+  });
+}
+
+/** 由 task_summaries（任务摘要） 检索结果创建可注入 Prompt（提示词） 的 memory（记忆）上下文。 */
+export function createMemoryContextFromTaskSummaries(
+  input: MemoryContextFromTaskSummariesInput,
+): string {
+  const limit = input.limit ?? DEFAULT_MEMORY_CONTEXT_LIMIT;
+  const charBudget = input.char_budget ?? DEFAULT_MEMORY_CONTEXT_CHAR_BUDGET;
+  assertPositiveInteger(limit, "limit");
+  assertPositiveInteger(charBudget, "char_budget");
+
+  const sortedResults = [...input.results]
+    .map((result) =>
+      Object.freeze({
+        summary: createTaskSummaryDraft({
+          ...result.summary,
+          message_id: result.summary.task_id,
+        }),
+        ...(result.score === undefined ? {} : { score: result.score }),
+      }),
+    )
+    .sort(compareTaskMemorySearchResults)
+    .slice(0, limit);
+  const lines: string[] = [];
+  let usedChars = 0;
+
+  for (const result of sortedResults) {
+    const line = `[${result.summary.status}] ${result.summary.intent}: ${result.summary.summary}`;
+    const remaining = charBudget - usedChars;
+
+    if (remaining <= 0) {
+      break;
+    }
+
+    if (line.length > remaining) {
+      lines.push(`${line.slice(0, Math.max(0, remaining - 1))}…`);
+      break;
+    }
+
+    lines.push(line);
+    usedChars += line.length + 1;
+  }
+
+  return lines.join("\n");
+}
+
+function assertPersistedTaskSummaryStatus(
+  status: TaskHistoryStatus,
+): asserts status is PersistedTaskSummaryStatus {
+  if (!isPersistedTaskSummaryStatus(status)) {
+    throw new Error("task_summaries.status must be completed, failed, or interrupted");
+  }
+}
+
+function assertTaskSummaryLogRef(value: string): void {
+  if (value.startsWith("tasks/")) {
+    assertTaskHistoryLogRef(value, "tasks");
+    return;
+  }
+
+  if (value.startsWith("sandbox/")) {
+    assertTaskHistoryLogRef(value, "sandbox");
+    return;
+  }
+
+  throw new Error(
+    `task_summaries.log_ref must point to tasks/*.jsonl or sandbox/*.jsonl: ${value}`,
+  );
+}
+
+function validateEmbedding(value: readonly number[]): readonly number[] {
+  if (value.length === 0) {
+    throw new Error("embedding must not be empty");
+  }
+
+  for (const item of value) {
+    if (!Number.isFinite(item)) {
+      throw new Error("embedding must contain only finite numbers");
+    }
+  }
+
+  return [...value];
+}
+
+function compareTaskMemorySearchResults(
+  left: Readonly<{ summary: TaskSummary; score?: number }>,
+  right: Readonly<{ summary: TaskSummary; score?: number }>,
+): number {
+  const leftScore = left.score ?? Number.NEGATIVE_INFINITY;
+  const rightScore = right.score ?? Number.NEGATIVE_INFINITY;
+
+  if (leftScore !== rightScore) {
+    return rightScore - leftScore;
+  }
+
+  const createdAtDiff = Date.parse(right.summary.created_at) - Date.parse(left.summary.created_at);
+
+  if (createdAtDiff !== 0) {
+    return createdAtDiff;
+  }
+
+  return left.summary.id.localeCompare(right.summary.id);
 }
 
 /**
