@@ -39,10 +39,9 @@ TS Core 是以 TypeScript 为唯一执行核心的 Minecraft Bot Agent 系统，
 | 03 | `Docs/03_SANDBOX_SPEC.md` | isolated-vm 集成、Facade API 类型定义 | v0.1 |
 | 04 | `Docs/04_CONVERSATION_SPEC.md` | 意图分类、LLM prompt 设计、代码生成约束 | v0.1 |
 | 05 | `Docs/05_DATA_SPEC.md` | Drizzle schema、JSONL 日志、pgvector | v0.1 |
-| 06 | `Docs/06_INTERFACE_SPEC.md` | Fastify 路由、Socket.io 事件协议 | 待编写 |
-| 07 | `Docs/07_SKILL_CATALOG.md` | Phase 1 技能清单与 Facade API 签名 | 待编写 |
-| 08 | `Docs/08_DEPLOYMENT.md` | Docker Compose 拓扑、环境变量 | 待编写 |
 | 09 | `Docs/09_AGENT_WORKFLOW.md` | 三角色协作工作流规范 | v0.1 |
+
+> 默认只读取上表存在且稳定的核心规范。阶段性备忘、讨论记录和实现快照不得长期留在 `Docs/` 根目录；完成后应压缩进 `Docs/WF_任务阶段压缩记录.md` 或归档到专用目录。
 
 ### 动态工作流文件
 
@@ -53,6 +52,8 @@ TS Core 是以 TypeScript 为唯一执行核心的 Minecraft Bot Agent 系统，
 | `Docs/WF_任务阶段压缩记录.md` | 已完成批次的阶段压缩归档，默认优先读取 | Manager 追加 |
 | `Docs/WF_开发进度明细归档/` | 已完成批次的详细明细归档，按需读取 | Manager 追加 |
 | `Docs/WF_需求变更索引.md` | 需求变更摘要 | Consultant 追加 / Manager 读 |
+
+> 历史上下文默认先读 `WF_任务阶段压缩记录.md`，只有需要追具体任务实现细节时再展开 `WF_开发进度明细归档/`。
 
 ### 预检脚本
 

@@ -45,11 +45,10 @@ ts-core/Docs/
   03_SANDBOX_SPEC.md                       ← isolated-vm 集成、Facade API 类型定义
   04_CONVERSATION_SPEC.md                  ← 意图分类、LLM prompt 设计、代码生成约束
   05_DATA_SPEC.md                          ← Drizzle schema、JSONL 日志、pgvector
-  06_INTERFACE_SPEC.md                     ← Fastify 路由、Socket.io 事件协议（⏳）
-  07_SKILL_CATALOG.md                      ← Phase 1 技能清单与 Facade API 签名（⏳）
-  08_DEPLOYMENT.md                         ← Docker Compose 拓扑、环境变量（⏳）
   09_AGENT_WORKFLOW.md                     ← 本文档：协作工作流规范
 ```
+
+默认静态索引只保留已存在且稳定的规范文档。待编写文档、阶段性治理备忘、讨论记录和源码快照不得进入默认读取清单；确需保留时应压缩进 `WF_任务阶段压缩记录.md` 或迁入专用归档目录。
 
 这些文档仅 Manager 和 Consultant 可读，Coder 未经白名单授权不得访问。
 
