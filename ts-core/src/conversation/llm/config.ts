@@ -1,4 +1,4 @@
-import { assertNonEmptyString } from "../../domain/invariants.js";
+import { assertNonEmptyString, assertPositiveNumber } from "../../domain/invariants.js";
 import type { ConversationLlmConfig } from "./types.js";
 
 export function createConversationLlmConfig(
@@ -13,9 +13,7 @@ export function createConversationLlmConfig(
   assertNonEmptyString(input.bot_name, "bot_name");
   assertNonEmptyString(input.owner_name, "owner_name");
 
-  if (!Number.isFinite(input.timeout_ms) || input.timeout_ms <= 0) {
-    throw new Error("timeout_ms must be a positive number");
-  }
+  assertPositiveNumber(input.timeout_ms, "timeout_ms");
 
   return Object.freeze({
     base_url: input.base_url.replace(/\/+$/u, ""),

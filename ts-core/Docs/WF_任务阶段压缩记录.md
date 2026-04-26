@@ -71,3 +71,39 @@
   - 主干已经从“纯契约阶段”切到“可运行链路阶段”，下一批次默认继续沿 MVP（最小可运行闭环） 关键路径推进 ConversationWorker（对话工作线程） / BotWorker（机器人工作线程） / sandbox（沙箱） / demo（演示）。
 - **详细明细归档**:
   - `WF_开发进度明细归档/T-011_至_T-020.md`
+
+---
+
+## 批次 T-021 ~ T-030
+
+- **阶段主题**: MC（Minecraft，我的世界） 真实上线闭环、OpenAI（开放人工智能） 兼容 LLM（大语言模型） 接入、多技能执行、sandbox_code（沙箱代码） 执行与架构治理止血。
+- **覆盖模块**:
+  - `app`（应用装配）
+  - `runtime`（运行时）
+  - `workers`（工作线程）
+  - `conversation`（对话）
+  - `interfaces`（接口层）
+  - `skills`（技能）
+  - `sandbox`（沙箱）
+  - `observation`（观测）
+  - `diagnostics`（诊断）
+  - `data`（数据层）
+  - `core-ports`（核心端口层）
+  - `domain`（领域基础）
+- **阶段压缩摘要**:
+  - `T-021` 打通最窄 MC（Minecraft，我的世界） 在线聊天闭环：真实 `pnpm start`（启动命令） 路径可装配 PostgreSQL（关系型数据库） / Redis（缓存） / BullMQ（任务队列） / Fastify（接口网关） / Mineflayer（Minecraft 协议客户端），并通过 EasyAuth（离线服认证模组） 登录命令后把游戏消息转为回复。
+  - `T-022` 打通 `goTo`（前往坐标） 最小真实执行链：ConversationWorker（对话工作线程） 规划入 `bot:{botId}:exec`（执行队列），BotWorker（机器人工作线程） 串行调用 BotActor（机器人执行代理） 单写者入口，`world_ready`（世界交互就绪） 门控前置。
+  - `T-023` 接入 OpenAI（开放人工智能） 兼容 `chat.completions`（对话补全） 闲聊最短闭环，配置走 `LLM_BASE_URL`（大语言模型基础地址） / `LLM_API_KEY`（接口密钥） / `LLM_MODEL`（模型名），并补齐真实 `cancel`（取消） 中断 + 模板回执语义。
+  - `T-024` 把真实 LLM（大语言模型） 从闲聊扩到最小 `triage`（分诊） + 单技能 `plan`（规划），移除旧正则快路径；在线入口共享同一 LLM（大语言模型） 客户端，意外 `modify`（修改） 分诊会降级为 `chat/normal`（闲聊 / 普通）。
+  - `T-025` 扩展真实技能面到 `mine`（挖掘） / `collect`（捡拾） / `equip`（装备），全部复用 BotActor（机器人执行代理） 单写者路径；`collect`（捡拾） 成功标准修正为目标物品背包总数增长。
+  - `T-026` 补齐手测观测出口：`/api/status`（状态接口） 暴露只读运行状态与最近一次 LLM（大语言模型） 摘要，`/api/replay`（回放接口） 接入真实或注入事件源，并统一脱敏密钥、密码、连接串与过长错误摘要。
+  - `T-027` 打通 `sandbox_code`（沙箱代码） 真实执行链：`isolated-vm`（隔离虚拟机） + `esbuild`（转译器） + Facade API（门面接口） 桥接 BotActor（机器人执行代理）；同时引入渐进披露、`describe()`（描述） 与 LRU（最近最少使用） 热队列治理上下文成本。
+  - `T-028` 新增 `core-ports`（核心端口层） 并下沉共享类型，打断 `runtime`（运行时） 与 `skills`（技能） / `observation`（观测） / `diagnostics`（诊断） / `data`（数据） 的循环依赖；`pre_review.sh`（评审前预检脚本） 纳入 `madge`（依赖图工具） 循环检测。
+  - `T-029` 拆分五个超大文件，保留兼容 barrel（聚合导出） 入口；`app/bootstrap`（应用引导）、`data/contracts`（数据契约）、`runtime/transport`（运行时传输）、`conversation/llm`（对话大语言模型）、`workers/conversation-worker`（对话工作线程） 已按职责拆入子目录，并把 `MineflayerBotHandle`（Mineflayer 机器人句柄） 切成能力 port（端口）。
+  - `T-030` 完成架构治理收口：`executeStage()`（阶段执行模板） 统一 LLM（大语言模型） 三段调用，技能规划改为表驱动，Prompt（提示词） 模板独立组织并去除具体 MC（Minecraft，我的世界） 示例事实，接口错误工厂与命名约定落入稳定文档。
+- **阶段结果**:
+  - 当前主干已经具备真实 MC（Minecraft，我的世界） 上线、真实 LLM（大语言模型） 闲聊 / 分诊 / 单技能规划、真实技能执行、观测查询、事件回放与 sandbox_code（沙箱代码） 执行能力。
+  - 依赖图已经由 `madge`（依赖图工具） 守门为无循环，架构治理后的下一批次可以继续推进对话智能增强，而不再先补纯契约。
+  - 下一批次默认从 `T-031`（任务三十一） 开始，先做 `chat_reply`（闲聊回复） 注入 BotActor（机器人执行代理） 状态只读投影，再推进 composite output（复合输出）。
+- **详细明细归档**:
+  - `WF_开发进度明细归档/T-021_至_T-030.md`

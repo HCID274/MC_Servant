@@ -40,6 +40,7 @@ export const interfacesModuleBoundary: ModuleBoundary = {
 export * from "./contracts.js";
 export * from "./api.js";
 export * from "./realtime.js";
+export * from "./errors.js";
 export * from "./server.js";
 export * from "./game-chat/index.js";
 export * from "./server-bridge/index.js";

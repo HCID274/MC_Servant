@@ -27,6 +27,7 @@ import {
   createInterfaceBotStatusSnapshot,
   createMessageAcceptedResponse,
 } from "./contracts.js";
+import { createHttpBadRequest, createHttpServiceUnavailable } from "./errors.js";
 
 /** HTTP（超文本传输协议） 监听参数。 */
 export interface InterfaceServerListenOptions {
@@ -72,28 +73,6 @@ export interface InterfaceServerRuntime<TBotId extends string = string> {
   listen(options?: Partial<InterfaceServerListenOptions>): Promise<string>;
   /** 关闭 HTTP（超文本传输协议） 服务。 */
   close(): Promise<void>;
-}
-
-/**
- * 创建 HTTP 400 错误。
- */
-function createHttpBadRequest(message: string): Error & { statusCode: 400 } {
-  const error = new Error(message) as Error & { statusCode: 400 };
-
-  error.statusCode = 400;
-
-  return error;
-}
-
-/**
- * 创建 HTTP 503 错误。
- */
-function createHttpServiceUnavailable(message: string): Error & { statusCode: 503 } {
-  const error = new Error(message) as Error & { statusCode: 503 };
-
-  error.statusCode = 503;
-
-  return error;
 }
 
 /**

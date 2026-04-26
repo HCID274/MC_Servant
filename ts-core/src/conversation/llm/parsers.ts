@@ -1,14 +1,7 @@
-import {
-  SKILL_DIRECTORY,
-  isCollectSkillParams,
-  isEquipSkillParams,
-  isGoToSkillParams,
-  isMineSkillParams,
-} from "../../core-ports/skills.js";
-import { createSkillCallPlanDraft } from "../planning.js";
 import { createMessageTriage } from "../triage.js";
 import { ConversationLlmPlanError } from "./errors.js";
 import type { OpenAiCompatibleChatCompletionResponse } from "./http.js";
+import { createConversationSkillPlanFromTable } from "./skill-plan-table.js";
 import type { ConversationLlmPlanResult } from "./types.js";
 
 /** 提取 OpenAI 兼容返回中的回复文本。 */
@@ -66,50 +59,11 @@ export function parseConversationSkillPlan(content: string): ConversationLlmPlan
     throw new ConversationLlmPlanError("planner reply must be a non-empty string");
   }
 
-  switch (record.skill) {
-    case SKILL_DIRECTORY.goTo:
-      if (!isGoToSkillParams(record.params)) {
-        throw new ConversationLlmPlanError("planner returned invalid goTo params");
-      }
-
-      return createSkillCallPlanDraft({
-        reply: record.reply,
-        skill: SKILL_DIRECTORY.goTo,
-        params: record.params,
-      }) as ConversationLlmPlanResult;
-    case SKILL_DIRECTORY.mine:
-      if (!isMineSkillParams(record.params)) {
-        throw new ConversationLlmPlanError("planner returned invalid mine params");
-      }
-
-      return createSkillCallPlanDraft({
-        reply: record.reply,
-        skill: SKILL_DIRECTORY.mine,
-        params: record.params,
-      }) as ConversationLlmPlanResult;
-    case SKILL_DIRECTORY.collect:
-      if (!isCollectSkillParams(record.params)) {
-        throw new ConversationLlmPlanError("planner returned invalid collect params");
-      }
-
-      return createSkillCallPlanDraft({
-        reply: record.reply,
-        skill: SKILL_DIRECTORY.collect,
-        params: record.params,
-      }) as ConversationLlmPlanResult;
-    case SKILL_DIRECTORY.equip:
-      if (!isEquipSkillParams(record.params)) {
-        throw new ConversationLlmPlanError("planner returned invalid equip params");
-      }
-
-      return createSkillCallPlanDraft({
-        reply: record.reply,
-        skill: SKILL_DIRECTORY.equip,
-        params: record.params,
-      }) as ConversationLlmPlanResult;
-    default:
-      throw new ConversationLlmPlanError("planner must return skill=goTo|mine|collect|equip");
-  }
+  return createConversationSkillPlanFromTable({
+    reply: record.reply,
+    skill: record.skill,
+    params: record.params,
+  });
 }
 
 /** 从 assistant（助手） 文本中提取 JSON（结构化数据） 对象。 */

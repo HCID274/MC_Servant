@@ -1,4 +1,7 @@
 import { assertNonEmptyString } from "../../domain/invariants.js";
+import { createChatSystemPrompt } from "./prompts/chat.js";
+import { createPlanSystemPrompt } from "./prompts/plan.js";
+import { TRIAGE_SYSTEM_PROMPT } from "./prompts/triage.js";
 import type {
   ConversationLlmChatInput,
   ConversationLlmConfig,
@@ -29,19 +32,14 @@ export function createConversationChatMessages(
       ]);
     }) ?? [];
 
-  const systemSections = [
-    `你是 ${botName}，一个在 Minecraft 中的贴心猫娘女仆。你的主人是 ${ownerName}。`,
-    "绝对规则：",
-    "- 每句回复结尾必须加“喵”或“喵~”",
-    "- 回复简短自然，不超过 3 句话",
-    "- 不要输出 JSON，不要输出动作计划，只说话",
-    ...(input.memory_context === undefined ? [] : [`记忆摘要：${input.memory_context}`]),
-  ];
-
   return Object.freeze([
     Object.freeze({
       role: "system",
-      content: systemSections.join("\n"),
+      content: createChatSystemPrompt({
+        botName,
+        ownerName,
+        ...(input.memory_context === undefined ? {} : { memoryContext: input.memory_context }),
+      }),
     }),
     ...historyMessages,
     Object.freeze({
@@ -66,21 +64,7 @@ export function createConversationTriageMessages(
   return Object.freeze([
     Object.freeze({
       role: "system",
-      content: [
-        "你是一个消息分类器。根据用户消息和上下文，判断用户的意图类别和紧迫度。",
-        "当前在线最小闭环只允许输出 chat、task、cancel 三类意图，不要输出 modify。",
-        "只输出 JSON，不要输出其他内容。",
-        "意图分类规则：",
-        "- chat：闲聊、问候、问问题、情感表达、与 Minecraft 游戏操作无关的对话",
-        "- task：要求 Bot 执行游戏内动作（采集、移动、制造、跟随等）",
-        "- cancel：要求停止当前任务（只有明确指向当前动作的停止指令）",
-        "紧迫度规则：",
-        "- interrupt：必须立刻中止当前动作",
-        "- urgent：尽快执行，插队",
-        "- normal：正常排队",
-        "- background：低优先级",
-        '输出格式：{"intent":"chat|task|cancel","priority":"interrupt|urgent|normal|background","reason":"一句话说明判断依据"}',
-      ].join("\n"),
+      content: TRIAGE_SYSTEM_PROMPT,
     }),
     Object.freeze({
       role: "user",
@@ -106,29 +90,7 @@ export function createConversationPlanMessages(
   return Object.freeze([
     Object.freeze({
       role: "system",
-      content: [
-        "你是一个 Minecraft 任务规划器。",
-        "当前阶段只能输出单个 skill_call。",
-        "允许的 skill 只有：goTo、mine、collect、equip。",
-        "如果是去某个坐标，请输出 JSON：",
-        '{"type":"skill_call","reply":"一句简短确认回复","skill":"goTo","params":{"x":10,"y":64,"z":-5}}',
-        "如果是挖某种方块 N 个，请输出 JSON：",
-        '{"type":"skill_call","reply":"一句简短确认回复","skill":"mine","params":{"blockName":"stone","count":3}}',
-        "如果是捡某种掉落物，请输出 JSON：",
-        '{"type":"skill_call","reply":"一句简短确认回复","skill":"collect","params":{"itemName":"cobblestone","radius":8}}',
-        "如果是把某物装备到手上或指定槽位，请输出 JSON：",
-        '{"type":"skill_call","reply":"一句简短确认回复","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}',
-        "如果不能明确判断为 goTo、mine、collect、equip 其中一种，或参数不完整 / 不合法，输出 JSON：",
-        '{"type":"cannot_plan","reason":"一句话说明为什么无法规划"}',
-        "绝对规则：",
-        "- 只能输出 JSON，不要解释",
-        "- 不要输出 sandbox_code",
-        "- 不要输出除 goTo、mine、collect、equip 之外的 skill",
-        "- goTo.params.x / y / z 必须是数字",
-        "- mine.params.blockName 必须是非空字符串，count 必须是正整数",
-        "- collect.params.itemName 必须是非空字符串，radius 若提供必须是正整数",
-        "- equip.params.itemName 必须是非空字符串，destination 若提供只能是 hand、off-hand、head、torso、legs、feet",
-      ].join("\n"),
+      content: createPlanSystemPrompt(),
     }),
     Object.freeze({
       role: "user",

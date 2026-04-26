@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CONVERSATION_SKILL_PLAN_TABLE,
   ConversationLlmPlanError,
   createConversationLlmClient,
   createConversationLlmConfig,
   createConversationPlanMessages,
+  createConversationSkillPlanPromptSection,
   createConversationTriageMessages,
 } from "../conversation/llm.js";
 
@@ -216,10 +218,31 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         "online_runtime: single skill world interaction planning; executable skills: goTo, mine, collect, equip",
     });
 
-    expect(messages[0]?.content).toContain(
-      "如果不能明确判断为 goTo、mine、collect、equip 其中一种，或参数不完整 / 不合法",
-    );
+    expect(messages[0]?.content).toContain("如果不能明确判断为允许技能中的一种");
     expect(messages[0]?.content).not.toContain("如果不能明确提取三个坐标");
+  });
+
+  it("单技能规划 prompt（提示词） 应由策略表生成技能段且不写死 MC（Minecraft） 示例物品", () => {
+    const messages = createConversationPlanMessages({
+      message_id: "msg-plan-template",
+      message: "把地上的东西捡起来",
+      snapshot_context:
+        "online_runtime: single skill world interaction planning; executable skills: goTo, mine, collect, equip",
+    });
+    const skillSection = createConversationSkillPlanPromptSection();
+
+    expect(Object.keys(CONVERSATION_SKILL_PLAN_TABLE)).toEqual([
+      "goTo",
+      "mine",
+      "collect",
+      "equip",
+    ]);
+    expect(messages[0]?.content).toContain(skillSection);
+    expect(messages[0]?.content).toContain("<skill_name>");
+    expect(messages[0]?.content).toContain("<param_name>");
+    expect(messages[0]?.content).not.toContain('"blockName":"stone"');
+    expect(messages[0]?.content).not.toContain('"itemName":"cobblestone"');
+    expect(messages[0]?.content).not.toContain('"itemName":"stone_pickaxe"');
   });
 
   it("应允许 mine（挖掘） / collect（捡拾） / equip（装备） 进入单技能规划结果", async () => {

@@ -676,6 +676,15 @@ ts-core/
 
 其中 `domain/`（领域） 作为横切基础层，只承载可被多模块复用的核心类型、基础校验和只读辅助，不直接承载业务流程、队列装配或外部 I/O（输入输出） 逻辑。
 
+### 16.1 命名约定
+
+TS Core（TypeScript 单核心） 在跨边界数据上固定以下命名规则，避免协议字段与运行时变量混用：
+
+- 对外协议、持久化字段、JSONL（结构化日志） 与 HTTP（超文本传输协议） 请求 / 响应统一使用 `snake_case`（下划线命名），例如 `bot_id`、`message_id`、`snapshot_ts`。
+- 运行时 JS（JavaScript） / TS（TypeScript） 内部变量、局部参数与函数参数统一使用 `camelCase`（驼峰命名），例如 `botId`、`messageId`、`snapshotTs`。
+- 跨边界转换必须由工厂函数或适配器集中处理，不允许在业务流程中散落手写字段桥接；典型桥接为 `bot_id`（机器人标识字段） ↔ `botId`（机器人标识变量）。
+- 模块内若同时持有协议对象与内部对象，应通过类型名或函数名标明边界，例如 `MessageSubmissionRequest`（消息提交请求） 保留协议字段，`createMessageAcceptedResponse()`（创建消息接受响应） 负责输出字段投影。
+
 ---
 
 ## 17. 身份与交互模型

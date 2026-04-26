@@ -22,6 +22,34 @@ export function assertNonEmptyString(value: string, fieldName: string): void {
 }
 
 /**
+ * 断言输入数字为正数。
+ *
+ * 配置边界校验（Configuration Boundary Guard）：统一 timeout_ms（超时毫秒） 等通用数值配置的失败语义。
+ *
+ * @param value 待校验值
+ * @param fieldName 字段名（用于错误提示）
+ */
+export function assertPositiveNumber(value: number, fieldName: string): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${fieldName} must be a positive number`);
+  }
+}
+
+/**
+ * 断言输入数字为正整数。
+ *
+ * 计数边界校验（Count Boundary Guard）：统一 limit（限制数） / count（数量） 等正整数配置的失败语义。
+ *
+ * @param value 待校验值
+ * @param fieldName 字段名（用于错误提示）
+ */
+export function assertPositiveInteger(value: number, fieldName: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${fieldName} must be a positive integer`);
+  }
+}
+
+/**
  * 深克隆并递归冻结对象或数组。
  *
  * 不可变性强制执行（Immutability Enforcer）：强制执行不可变数据（Immutable Data）模式。
