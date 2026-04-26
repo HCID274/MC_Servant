@@ -7,6 +7,7 @@
  * 4. 安全校验：实现 Session 与 Bot ID 的绑定校验，防止跨 Bot 的非法操作。
  */
 
+import type { LlmDiagnosticSummary } from "../diagnostics/contracts.js";
 import { MessageSource } from "../domain/contracts.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import {
@@ -208,6 +209,30 @@ export interface InterfaceBotStatusSnapshot {
   readonly updated_at: string;
   /** 当前活跃任务标识。 */
   readonly active_task_id?: string;
+  /** Mineflayer（Minecraft 协议客户端） 只读连接摘要。 */
+  readonly mineflayer?: InterfaceMineflayerStatusSnapshot;
+  /** 工作线程装配摘要。 */
+  readonly workers?: InterfaceWorkerStatusSnapshot;
+  /** 最近一次 LLM（大语言模型） 调用摘要。 */
+  readonly llm?: LlmDiagnosticSummary | null;
+}
+
+/** Mineflayer（Minecraft 协议客户端） 只读连接摘要。 */
+export interface InterfaceMineflayerStatusSnapshot {
+  /** 是否已连接到 MC（Minecraft，我的世界） 协议层。 */
+  readonly connected: boolean;
+  /** 是否已经进入世界交互就绪态。 */
+  readonly world_ready: boolean;
+  /** Bot（机器人） 游戏名。 */
+  readonly username?: string;
+}
+
+/** 工作线程装配摘要。 */
+export interface InterfaceWorkerStatusSnapshot {
+  /** ConversationWorker（对话工作线程） 是否已装配。 */
+  readonly conversation: boolean;
+  /** BotWorker（机器人工作线程） 是否已装配。 */
+  readonly bot: boolean;
 }
 
 /** 接口层外部认证快照，用于输出脱敏认证状态与 ready（就绪） 门控。 */
@@ -487,13 +512,16 @@ export function createMessageAcceptedResponse(input: {
 export function createInterfaceBotStatusSnapshot(
   input: InterfaceBotStatusSnapshot,
 ): InterfaceBotStatusSnapshot {
-  return Object.freeze({
+  return cloneReadonlyValue({
     bot_id: input.bot_id,
     status: input.status,
     intent_epoch: input.intent_epoch,
     last_event_seq: input.last_event_seq,
     updated_at: input.updated_at,
     ...(input.active_task_id ? { active_task_id: input.active_task_id } : {}),
+    ...(input.mineflayer === undefined ? {} : { mineflayer: input.mineflayer }),
+    ...(input.workers === undefined ? {} : { workers: input.workers }),
+    ...(input.llm === undefined ? {} : { llm: input.llm }),
   });
 }
 

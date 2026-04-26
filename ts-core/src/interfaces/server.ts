@@ -16,7 +16,6 @@ import {
   type StatusQuery,
   type StatusResponse,
   createReplayRequest,
-  createReplayResponse,
   createStatusQuery,
   createStatusResponse,
 } from "./api.js";
@@ -87,6 +86,17 @@ function createHttpBadRequest(message: string): Error & { statusCode: 400 } {
 }
 
 /**
+ * 创建 HTTP 503 错误。
+ */
+function createHttpServiceUnavailable(message: string): Error & { statusCode: 503 } {
+  const error = new Error(message) as Error & { statusCode: 503 };
+
+  error.statusCode = 503;
+
+  return error;
+}
+
+/**
  * 读取并校验必填字符串。
  */
 function readRequiredString(value: unknown, fieldName: string): string {
@@ -126,7 +136,7 @@ function readInteger(value: unknown, fieldName: string, fallback?: number): numb
     typeof resolved === "number"
       ? resolved
       : typeof resolved === "string"
-        ? Number.parseInt(resolved, 10)
+        ? Number(resolved.trim())
         : Number.NaN;
 
   if (!Number.isInteger(numericValue)) {
@@ -236,23 +246,27 @@ export function createInterfaceServerRuntime<TBotId extends string>(
 
   server.get("/api/replay", async (request) => {
     const queryRecord = request.query as Record<string, unknown>;
-    const replayRequest = createReplayRequest({
-      botId: readRequiredString(queryRecord.bot_id, "bot_id"),
-      afterSeq: readInteger(queryRecord.after_seq, "after_seq", 0),
-      ...(queryRecord.limit === undefined
-        ? {}
-        : { limit: readInteger(queryRecord.limit, "limit") }),
-    });
+    let replayRequest: ReplayRequest;
+    try {
+      replayRequest = createReplayRequest({
+        botId: readRequiredString(queryRecord.bot_id, "bot_id"),
+        afterSeq: readInteger(queryRecord.after_seq, "after_seq", 0),
+        ...(queryRecord.limit === undefined
+          ? {}
+          : { limit: readInteger(queryRecord.limit, "limit") }),
+      });
+    } catch (error) {
+      throw createHttpBadRequest(error instanceof Error ? error.message : "invalid replay query");
+    }
     assertRequestBotId(replayRequest.bot_id, input.bot_id);
 
-    return (
-      (await handlers.replay?.(replayRequest)) ??
-      createReplayResponse({
-        request: replayRequest,
-        state: cloneStatusForBot(input.default_status, replayRequest.bot_id),
-        events: [],
-      })
-    );
+    const replayResponse = await handlers.replay?.(replayRequest);
+
+    if (replayResponse === undefined) {
+      throw createHttpServiceUnavailable("replay event source is not configured");
+    }
+
+    return replayResponse;
   });
 
   return Object.freeze({

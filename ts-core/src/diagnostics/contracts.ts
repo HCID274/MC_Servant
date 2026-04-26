@@ -455,6 +455,30 @@ export const LLM_LOG_STAGES = ["triage", "chat", "plan"] as const;
 /** llm（大语言模型） 通道调用阶段联合类型。 */
 export type LlmLogStage = (typeof LLM_LOG_STAGES)[number];
 
+/** llm（大语言模型） 最近调用状态清单。 */
+export const LLM_DIAGNOSTIC_STATUSES = ["ok", "error"] as const;
+
+/** llm（大语言模型） 最近调用状态联合类型。 */
+export type LlmDiagnosticStatus = (typeof LLM_DIAGNOSTIC_STATUSES)[number];
+
+/** llm（大语言模型） 最近一次调用的最小诊断摘要。 */
+export interface LlmDiagnosticSummary {
+  /** 调用阶段。 */
+  readonly stage: LlmLogStage;
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 调用状态。 */
+  readonly status: LlmDiagnosticStatus;
+  /** 模型名。 */
+  readonly model: string;
+  /** JSONL（结构化日志） 引用。 */
+  readonly log_ref: string;
+  /** 创建时间。 */
+  readonly created_at: string;
+  /** 失败摘要。 */
+  readonly error_summary?: string;
+}
+
 /** llm（大语言模型） transcript（原始对话记录） 允许的角色。 */
 export const LLM_TRANSCRIPT_ROLES = ["system", "user", "assistant"] as const;
 

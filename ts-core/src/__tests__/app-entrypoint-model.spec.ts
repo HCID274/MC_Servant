@@ -429,8 +429,220 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(writes).toContain(
       "TS Core LLM chat ok: model=bl-auto message_id=msg-online-chat log_ref=llm/2026-04-24/chat-msg-online-chat.jsonl",
     );
+    const statusResponse = await runtime.services.http.server.inject({
+      method: "GET",
+      url: "/api/status?bot_id=bot-llm-online",
+    });
+
+    expect(statusResponse.statusCode).toBe(200);
+    expect(statusResponse.json()).toMatchObject({
+      bot: {
+        bot_id: "bot-llm-online",
+        status: "idle",
+        mineflayer: {
+          connected: true,
+          world_ready: true,
+          username: "bot-online",
+        },
+        workers: {
+          conversation: true,
+          bot: true,
+        },
+        llm: {
+          stage: "chat",
+          message_id: "msg-online-chat",
+          status: "ok",
+          model: "bl-auto",
+          log_ref: "llm/2026-04-24/chat-msg-online-chat.jsonl",
+          created_at: "2026-04-24T10:00:00.000Z",
+        },
+      },
+    });
+    expect(JSON.stringify(statusResponse.json())).not.toContain("sk-local-dev");
+    const messageResponse = await runtime.services.http.server.inject({
+      method: "POST",
+      url: "/api/message",
+      payload: {
+        bot_id: "bot-llm-online",
+        message_id: "msg-online-http",
+        content: "HTTP 入口测试",
+      },
+    });
+    const replayResponse = await runtime.services.http.server.inject({
+      method: "GET",
+      url: "/api/replay?bot_id=bot-llm-online&after_seq=0&limit=10",
+    });
+
+    expect(messageResponse.statusCode).toBe(202);
+    expect(replayResponse.statusCode).toBe(200);
+    expect(replayResponse.json()).toMatchObject({
+      bot_id: "bot-llm-online",
+      after_seq: 0,
+      limit: 10,
+      events: [
+        {
+          seq: 1,
+          bot_id: "bot-llm-online",
+          type: "task.accepted",
+          payload: {
+            job_id: "job-online",
+            message_id: "msg-online-http",
+            epoch: 0,
+          },
+        },
+      ],
+    });
+    const replayAfterSeqResponse = await runtime.services.http.server.inject({
+      method: "GET",
+      url: "/api/replay?bot_id=bot-llm-online&after_seq=1&limit=10",
+    });
+
+    expect(replayAfterSeqResponse.json()).toMatchObject({
+      events: [],
+    });
 
     await runtime.close();
+  });
+
+  it("应在真实在线入口把 LLM（大语言模型） 失败摘要脱敏后再暴露到 status（状态接口）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const writes: string[] = [];
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-llm-error-online",
+      now: "2026-04-24T10:00:00.000Z",
+      env: {
+        LLM_BASE_URL: "http://127.0.0.1:8045/v1",
+        LLM_API_KEY: "sk-local-dev",
+        LLM_MODEL: "bl-auto",
+      },
+    });
+
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        llm: {
+          api_key: "sk-local-dev",
+          fetch: async () => {
+            throw new Error(
+              "upstream failed LLM_API_KEY=sk-local-dev postgres://user:pg-pass@localhost/db redis://:redis-pass@localhost EasyAuth密码=hunter2",
+            );
+          },
+          now: () => new Date("2026-04-24T10:00:00.000Z"),
+        },
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => undefined,
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => ({}),
+            connectClient: async () => undefined,
+            closeClient: async () => undefined,
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async () => ({ id: "job-online" }),
+              close: async () => undefined,
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => "http://127.0.0.1:0";
+              server.close = async () => originalClose();
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeEntrypointMineflayerBot([]);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        botWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+        conversationWorker: {
+          createWorker: ({ processor: capturedProcessor }) => {
+            processor = capturedProcessor;
+
+            return {
+              close: async () => undefined,
+            };
+          },
+        },
+      },
+      write: (message) => {
+        writes.push(message);
+      },
+    });
+
+    try {
+      if (processor === undefined) {
+        throw new Error("conversation processor must be captured");
+      }
+
+      await expect(
+        processor({
+          data: createConversationWorkerTask({
+            bot_id: "bot-llm-error-online",
+            message: {
+              bot_id: "bot-llm-error-online",
+              message_id: "msg-online-error",
+              content: "触发失败",
+              intent_epoch: 1,
+              snapshot_ts: 1_713_952_800_000,
+            },
+          }),
+        }),
+      ).rejects.toThrow("sk-local-dev");
+
+      const statusResponse = await runtime.services.http.server.inject({
+        method: "GET",
+        url: "/api/status?bot_id=bot-llm-error-online",
+      });
+      const statusBody = statusResponse.json();
+      const statusText = JSON.stringify(statusBody);
+
+      expect(statusResponse.statusCode).toBe(200);
+      expect(statusBody).toMatchObject({
+        bot: {
+          llm: {
+            stage: "chat",
+            message_id: "msg-online-error",
+            status: "error",
+            model: "bl-auto",
+            log_ref: "llm/2026-04-24/chat-msg-online-error.jsonl",
+            error_summary: expect.stringContaining("<redacted>"),
+          },
+        },
+      });
+      expect(statusText).toContain("upstream failed");
+      expect(statusText).not.toContain("sk-local-dev");
+      expect(statusText).not.toContain("pg-pass");
+      expect(statusText).not.toContain("redis-pass");
+      expect(statusText).not.toContain("hunter2");
+      expect(writes.join("\n")).not.toContain("sk-local-dev");
+    } finally {
+      await runtime.close();
+    }
   });
 
   it("应在真实在线入口把自然语言坐标任务接到 LLM（大语言模型） 分诊与规划，并入 goTo（前往坐标） 执行队列", async () => {
@@ -600,6 +812,22 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       message_id: "msg-online-plan",
       skill: "goTo",
       priority: "urgent",
+    });
+    const statusResponse = await runtime.services.http.server.inject({
+      method: "GET",
+      url: "/api/status?bot_id=bot-plan-online",
+    });
+
+    expect(statusResponse.json()).toMatchObject({
+      bot: {
+        llm: {
+          stage: "plan",
+          message_id: "msg-online-plan",
+          status: "ok",
+          model: "bl-auto",
+          log_ref: "llm/2026-04-24/plan-msg-online-plan.jsonl",
+        },
+      },
     });
 
     await runtime.close();

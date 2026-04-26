@@ -37,6 +37,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             model: "bl-auto",
             message_id: "msg-chat",
             log_ref: "llm/2026-04-24/chat-msg-chat.jsonl",
+            created_at: "2026-04-24T10:00:00.000Z",
             ok: true,
             lines: [],
           },
@@ -70,9 +71,11 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     expect(runtime.getEvents()).toContainEqual({
       type: "llm.chat.diagnostic",
       bot_id: "bot-cw",
+      stage: "chat",
       message_id: "msg-chat",
       model: "bl-auto",
       log_ref: "llm/2026-04-24/chat-msg-chat.jsonl",
+      created_at: "2026-04-24T10:00:00.000Z",
       ok: true,
     });
     expect(runtime.getEvents()).toContainEqual({
@@ -474,6 +477,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
               model: "bl-auto",
               message_id: "msg-chat-failed",
               log_ref: "llm/2026-04-24/chat-msg-chat-failed.jsonl",
+              created_at: "2026-04-24T10:00:00.000Z",
               ok: false,
               error_summary: "upstream overload",
               lines: Object.freeze([]),
@@ -504,9 +508,11 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     expect(runtime.getEvents()).toContainEqual({
       type: "llm.chat.diagnostic",
       bot_id: "bot-cw",
+      stage: "chat",
       message_id: "msg-chat-failed",
       model: "bl-auto",
       log_ref: "llm/2026-04-24/chat-msg-chat-failed.jsonl",
+      created_at: "2026-04-24T10:00:00.000Z",
       ok: false,
       error_summary: "upstream overload",
     });

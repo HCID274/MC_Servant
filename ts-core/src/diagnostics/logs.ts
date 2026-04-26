@@ -18,10 +18,14 @@ import {
   DIAGNOSTIC_LOG_CHANNELS,
   type DiagnosticLogChannel,
   type JsonlErrorSnapshot,
+  type LlmDiagnosticSummary,
   type LlmJsonlLine,
   type SandboxJsonlLine,
   type TaskJsonlLine,
 } from "./contracts.js";
+
+const LLM_ERROR_SUMMARY_MAX_LENGTH = 240;
+const REDACTED_SECRET = "<redacted>";
 
 /**
  * 校验数值是否为正数或零。
@@ -46,6 +50,67 @@ function assertJsonlErrorSnapshot(value: JsonlErrorSnapshot | undefined): void {
   if (value.error_code !== undefined) {
     assertNonEmptyString(value.error_code, "error.error_code");
   }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function redactKnownSensitiveValues(value: string, sensitiveValues: readonly string[]): string {
+  return sensitiveValues.reduce((current, sensitiveValue) => {
+    const normalized = sensitiveValue.trim();
+
+    if (normalized.length === 0) {
+      return current;
+    }
+
+    return current.replace(new RegExp(escapeRegExp(normalized), "g"), REDACTED_SECRET);
+  }, value);
+}
+
+function redactConnectionStringPasswords(value: string): string {
+  return value.replace(
+    /\b(postgres(?:ql)?|redis):\/\/([^@\s]+)@/gi,
+    (match: string, scheme: string, auth: string) => {
+      const passwordSeparatorIndex = auth.lastIndexOf(":");
+
+      if (passwordSeparatorIndex < 0) {
+        return match;
+      }
+
+      const username = auth.slice(0, passwordSeparatorIndex);
+
+      return `${scheme}://${username}:${REDACTED_SECRET}@`;
+    },
+  );
+}
+
+function redactNamedSecretValues(value: string): string {
+  return value.replace(
+    /\b(LLM_API_KEY|OPENAI_API_KEY|API_KEY|api_key|MC_EXTERNAL_AUTH_SECRET|MC_EXTERNAL_AUTH_PASSWORD|EasyAuth(?:\s*(?:password|密码))?|password|passwd|pwd|secret)\s*[:=]\s*["']?([^"',;\s]+)/gi,
+    (_match: string, key: string) => `${key}=${REDACTED_SECRET}`,
+  );
+}
+
+function redactLlmErrorSummary(
+  value: string,
+  options: { readonly sensitiveValues?: readonly string[] } = {},
+): string {
+  // 状态接口只需要定位线索，任何可疑密钥或连接串密码都必须先在诊断边界收口。
+  const redacted = redactNamedSecretValues(
+    redactConnectionStringPasswords(
+      redactKnownSensitiveValues(
+        value.replace(/\bsk-[A-Za-z0-9_-]{4,}\b/g, REDACTED_SECRET),
+        options.sensitiveValues ?? [],
+      ),
+    ),
+  );
+
+  if (redacted.length <= LLM_ERROR_SUMMARY_MAX_LENGTH) {
+    return redacted;
+  }
+
+  return `${redacted.slice(0, LLM_ERROR_SUMMARY_MAX_LENGTH)}...<truncated>`;
 }
 
 /**
@@ -307,4 +372,47 @@ export function createLlmLogLine<TLine extends LlmJsonlLine>(input: TLine): TLin
   }
 
   return cloneReadonlyValue(input);
+}
+
+/**
+ * 创建 LLM（大语言模型） 最近调用诊断摘要。
+ *
+ * 状态接口只暴露定位线索，不包含完整 prompt（提示词） 或 completion（补全） 内容。
+ *
+ * @param input 原始诊断摘要
+ * @param options 需要额外精确屏蔽的敏感值
+ */
+export function createLlmDiagnosticSummary(
+  input: LlmDiagnosticSummary,
+  options: { readonly sensitiveValues?: readonly string[] } = {},
+): LlmDiagnosticSummary {
+  assertNonEmptyString(input.stage, "stage");
+  assertNonEmptyString(input.message_id, "message_id");
+  assertNonEmptyString(input.model, "model");
+  assertNonEmptyString(input.log_ref, "log_ref");
+  assertNonEmptyString(input.created_at, "created_at");
+  assertDiagnosticStorageRef({
+    channel: "llm",
+    refField: "log_ref",
+    value: input.log_ref,
+  });
+
+  const errorSummary =
+    input.error_summary === undefined
+      ? undefined
+      : redactLlmErrorSummary(input.error_summary, options);
+
+  if (input.status === "error" && errorSummary !== undefined) {
+    assertNonEmptyString(errorSummary, "error_summary");
+  }
+
+  return cloneReadonlyValue({
+    stage: input.stage,
+    message_id: input.message_id,
+    status: input.status,
+    model: input.model,
+    log_ref: input.log_ref,
+    created_at: input.created_at,
+    ...(errorSummary === undefined ? {} : { error_summary: errorSummary }),
+  });
 }

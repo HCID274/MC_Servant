@@ -53,12 +53,16 @@ export type ConversationWorkerRuntimeEvent =
       readonly type: "llm.chat.diagnostic";
       /** 目标 Bot 标识。 */
       readonly bot_id: string;
+      /** 调用阶段。 */
+      readonly stage: ConversationLlmDiagnosticRecord["stage"];
       /** 原始消息标识。 */
       readonly message_id: string;
       /** 模型名。 */
       readonly model: string;
       /** 日志引用。 */
       readonly log_ref: string;
+      /** 创建时间。 */
+      readonly created_at: string;
       /** 是否成功。 */
       readonly ok: boolean;
       /** 失败摘要。 */
@@ -300,9 +304,11 @@ function appendLlmDiagnosticEvent(
     Object.freeze({
       type: "llm.chat.diagnostic",
       bot_id: botId,
+      stage: diagnostics.stage,
       message_id: diagnostics.message_id,
       model: diagnostics.model,
       log_ref: diagnostics.log_ref,
+      created_at: diagnostics.created_at,
       ok: diagnostics.ok,
       ...(diagnostics.error_summary === undefined
         ? {}

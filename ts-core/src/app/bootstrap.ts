@@ -25,6 +25,7 @@ import {
   createRedisRuntimeResource,
 } from "../db/index.js";
 import { createDiagnosticsCatalog } from "../diagnostics/index.js";
+import type { LlmDiagnosticSummary } from "../diagnostics/index.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
 import {
   API_ROUTE_DEFINITIONS,
@@ -33,10 +34,14 @@ import {
   type InterfaceServerDependencies,
   type InterfaceServerListenOptions,
   type InterfaceServerRuntime,
+  type RealtimeEventEnvelope,
+  type ReplayRequest,
   createHealthResponse,
   createInterfaceBotStatusSnapshot,
   createInterfaceServerRuntime,
   createMessageAcceptedResponse,
+  createReplayResponse,
+  createStatusResponse,
 } from "../interfaces/index.js";
 import {
   type ObservationRuntimeCache,
@@ -366,6 +371,18 @@ export interface AppRuntimeServiceDependencies {
   readonly http?: InterfaceServerDependencies;
   /** 每条消息入队时使用的时钟；默认读取当前系统时间。 */
   readonly now?: () => string;
+  /** 当前状态只读投影源。 */
+  readonly statusSnapshot?: () => InterfaceBotStatusSnapshot;
+  /** replay（补拉） 事件只读读取源。 */
+  readonly replayEvents?: (
+    request: ReplayRequest,
+  ) => readonly RealtimeEventEnvelope[] | Promise<readonly RealtimeEventEnvelope[]>;
+  /** 最近一次 LLM（大语言模型） 调用摘要源。 */
+  readonly latestLlmDiagnostic?: () => LlmDiagnosticSummary | null;
+  /** 追加运行中只读事件。 */
+  readonly appendRealtimeEvent?: (
+    event: Omit<RealtimeEventEnvelope, "seq">,
+  ) => void | Promise<void>;
 }
 
 /** 应用装配层创建出的服务运行时句柄。 */
@@ -851,6 +868,7 @@ export async function createAppRuntimeServices<TBotId extends string>(
       },
       dependencies.workers,
     );
+    const replayEvents = dependencies.replayEvents;
     created.http = createInterfaceServerRuntime(
       {
         bot_id: bootstrap.bot_id,
@@ -858,6 +876,16 @@ export async function createAppRuntimeServices<TBotId extends string>(
         default_status: createAppDefaultInterfaceStatusSnapshot(bootstrap, runtimeCore),
         listen: bootstrap.services.http.listen,
         handlers: {
+          status: async () =>
+            createStatusResponse({
+              bot:
+                dependencies.statusSnapshot?.() ??
+                createAppDefaultInterfaceStatusSnapshot(
+                  bootstrap,
+                  runtimeCore,
+                  dependencies.latestLlmDiagnostic?.() ?? null,
+                ),
+            }),
           message: async (request) => {
             if (typeof created.workers?.conversation.queue.add !== "function") {
               throw new Error("conversation queue does not support add");
@@ -878,13 +906,42 @@ export async function createAppRuntimeServices<TBotId extends string>(
               jobId: request.message_id,
             });
 
-            return createMessageAcceptedResponse({
+            const acceptedResponse = createMessageAcceptedResponse({
               botId: request.bot_id,
               jobId: String(job.id ?? request.message_id),
               messageId: request.message_id,
               queuedAt,
             });
+
+            await dependencies.appendRealtimeEvent?.({
+              bot_id: request.bot_id,
+              type: "task.accepted",
+              created_at: queuedAt,
+              payload: {
+                job_id: acceptedResponse.job_id,
+                message_id: request.message_id,
+                epoch: task.message.intent_epoch,
+              },
+            });
+
+            return acceptedResponse;
           },
+          ...(replayEvents === undefined
+            ? {}
+            : {
+                replay: async (request) =>
+                  createReplayResponse({
+                    request,
+                    state:
+                      dependencies.statusSnapshot?.() ??
+                      createAppDefaultInterfaceStatusSnapshot(
+                        bootstrap,
+                        runtimeCore,
+                        dependencies.latestLlmDiagnostic?.() ?? null,
+                      ),
+                    events: await replayEvents(request),
+                  }),
+              }),
         },
       },
       dependencies.http,
@@ -1326,8 +1383,16 @@ function createAppLlmContract(input: { env: DataConfigEnvironment }): AppLlmCont
 function createAppDefaultInterfaceStatusSnapshot<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
   runtimeCore?: AppRuntimeCoreResources<TBotId>,
+  latestLlmDiagnostic: LlmDiagnosticSummary | null = null,
 ): InterfaceBotStatusSnapshot {
   const actorSnapshot = runtimeCore?.actor.getSnapshot();
+  const transportSnapshot = actorSnapshot?.transport as
+    | {
+        readonly connected?: boolean;
+        readonly username?: string;
+        readonly world_ready?: boolean;
+      }
+    | undefined;
 
   return createInterfaceBotStatusSnapshot({
     bot_id: bootstrap.bot_id,
@@ -1335,6 +1400,18 @@ function createAppDefaultInterfaceStatusSnapshot<TBotId extends string>(
     intent_epoch: 0,
     last_event_seq: 0,
     updated_at: bootstrap.interfaces.health.timestamp,
+    ...(transportSnapshot === undefined
+      ? {}
+      : {
+          mineflayer: {
+            connected: transportSnapshot.connected ?? false,
+            world_ready: transportSnapshot.world_ready ?? false,
+            ...(transportSnapshot.username === undefined
+              ? {}
+              : { username: transportSnapshot.username }),
+          },
+        }),
+    llm: latestLlmDiagnostic,
   });
 }
 

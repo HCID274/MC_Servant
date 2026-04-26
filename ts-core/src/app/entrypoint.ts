@@ -15,6 +15,13 @@ import {
   createConversationLlmConfig,
   createMessageTriage,
 } from "../conversation/index.js";
+import { type LlmDiagnosticSummary, createLlmDiagnosticSummary } from "../diagnostics/index.js";
+import {
+  type InterfaceBotStatusSnapshot,
+  type RealtimeEventEnvelope,
+  createInterfaceBotStatusSnapshot,
+  createRealtimeEventEnvelope,
+} from "../interfaces/index.js";
 import {
   type BotWorkerRuntime,
   type BotWorkerRuntimeDependencies,
@@ -309,9 +316,30 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   let runtime: AppRuntimeCoreResources<TBotId> | undefined;
   let botWorker: BotWorkerRuntime | undefined;
   let conversationWorker: ConversationWorkerRuntime | undefined;
+  let latestLlmDiagnostic: LlmDiagnosticSummary | null = null;
+  const replayStore = createOnlineEventReplayStore(input.bootstrap.bot_id);
   const onlineLlmClient = createOnlineConversationLlmClient(
     input.bootstrap,
     input.dependencies?.llm,
+    (record) => {
+      const summary = createLlmDiagnosticSummary(
+        {
+          stage: record.stage,
+          message_id: record.message_id,
+          status: record.ok ? "ok" : "error",
+          model: record.model,
+          log_ref: record.log_ref,
+          created_at: record.created_at,
+          ...(record.error_summary === undefined ? {} : { error_summary: record.error_summary }),
+        },
+        {
+          sensitiveValues:
+            input.dependencies?.llm?.api_key === undefined ? [] : [input.dependencies.llm.api_key],
+        },
+      );
+
+      latestLlmDiagnostic = summary;
+    },
     input.write,
   );
   const onlineTriage =
@@ -331,11 +359,21 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     );
     input.write?.("TS Core infrastructure ready");
 
-    services = await createAppRuntimeServices(
-      input.bootstrap,
-      infrastructure,
-      input.dependencies?.services,
-    );
+    services = await createAppRuntimeServices(input.bootstrap, infrastructure, {
+      ...(input.dependencies?.services ?? {}),
+      statusSnapshot: () =>
+        createOnlineInterfaceStatusSnapshot({
+          bootstrap: input.bootstrap,
+          runtime,
+          botWorker,
+          conversationWorker,
+          latestLlmDiagnostic,
+          lastEventSeq: replayStore.getLastSeq(),
+        }),
+      replayEvents: input.dependencies?.services?.replayEvents ?? replayStore.read,
+      latestLlmDiagnostic: () => latestLlmDiagnostic,
+      appendRealtimeEvent: replayStore.append,
+    });
     const listenAddress = await services.http.listen();
     input.write?.(`TS Core HTTP ready: ${listenAddress}`);
 
@@ -543,6 +581,7 @@ function createOnlineConversationPlanner(
 function createOnlineConversationLlmClient<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
   dependencies: AppOnlineLlmDependencies | undefined,
+  onDiagnosticSummary: (record: ConversationLlmDiagnosticRecord) => void,
   write: ((message: string) => void) | undefined,
 ): ConversationLlmClient | undefined {
   if (!bootstrap.llm.enabled) {
@@ -552,11 +591,12 @@ function createOnlineConversationLlmClient<TBotId extends string>(
   if (dependencies?.api_key === undefined) {
     throw new Error("LLM_API_KEY must be injected for online runtime");
   }
+  const apiKey = dependencies.api_key;
 
   return createConversationLlmClient(
     createConversationLlmConfig({
       base_url: bootstrap.llm.base_url ?? "",
-      api_key: dependencies.api_key,
+      api_key: apiKey,
       model: bootstrap.llm.model ?? "",
       bot_name: bootstrap.bot_id,
       owner_name: "主人",
@@ -565,7 +605,8 @@ function createOnlineConversationLlmClient<TBotId extends string>(
     {
       ...dependencies,
       onDiagnostic: async (record) => {
-        write?.(renderLlmDiagnosticMessage(record));
+        onDiagnosticSummary(record);
+        write?.(renderLlmDiagnosticMessage(record, [apiKey]));
         await dependencies?.onDiagnostic?.(record);
       },
     },
@@ -578,12 +619,125 @@ function createOnlineConversationLlmClient<TBotId extends string>(
  * @param record 诊断记录
  * @returns 控制台输出文本
  */
-function renderLlmDiagnosticMessage(record: ConversationLlmDiagnosticRecord): string {
+function renderLlmDiagnosticMessage(
+  record: ConversationLlmDiagnosticRecord,
+  sensitiveValues: readonly string[] = [],
+): string {
+  const summary = createLlmDiagnosticSummary(
+    {
+      stage: record.stage,
+      message_id: record.message_id,
+      status: record.ok ? "ok" : "error",
+      model: record.model,
+      log_ref: record.log_ref,
+      created_at: record.created_at,
+      ...(record.error_summary === undefined ? {} : { error_summary: record.error_summary }),
+    },
+    { sensitiveValues },
+  );
   const base =
     `TS Core LLM ${record.stage} ${record.ok ? "ok" : "failed"}: ` +
     `model=${record.model} message_id=${record.message_id} log_ref=${record.log_ref}`;
 
-  return record.error_summary === undefined ? base : `${base} error=${record.error_summary}`;
+  return summary.error_summary === undefined ? base : `${base} error=${summary.error_summary}`;
+}
+
+/**
+ * 创建真实在线入口的进程内事件回放源。
+ *
+ * 当前阶段尚未接入 event_log（事件日志） repository（仓库 / 存储适配），因此使用注入式 append-only（只追加） 源承载手测回放。
+ */
+function createOnlineEventReplayStore<TBotId extends string>(
+  botId: TBotId,
+): {
+  readonly append: (event: Omit<RealtimeEventEnvelope, "seq">) => void;
+  readonly read: (request: {
+    readonly bot_id: string;
+    readonly after_seq: number;
+    readonly limit: number;
+  }) => readonly RealtimeEventEnvelope[];
+  readonly getLastSeq: () => number;
+} {
+  let seq = 0;
+  const events: RealtimeEventEnvelope[] = [];
+
+  return Object.freeze({
+    append(event): void {
+      if (event.bot_id !== botId) {
+        throw new Error("online replay event bot_id must match runtime bot");
+      }
+
+      seq += 1;
+      events.push(
+        createRealtimeEventEnvelope({
+          seq,
+          botId: event.bot_id,
+          type: event.type,
+          createdAt: event.created_at,
+          ...(event.session_id === undefined ? {} : { sessionId: event.session_id }),
+          ...(event.payload === undefined ? {} : { payload: event.payload }),
+        }),
+      );
+    },
+    read(request): readonly RealtimeEventEnvelope[] {
+      return Object.freeze(
+        events
+          .filter((event) => event.bot_id === request.bot_id && event.seq > request.after_seq)
+          .sort((left, right) => left.seq - right.seq)
+          .slice(0, request.limit),
+      );
+    },
+    getLastSeq(): number {
+      return seq;
+    },
+  });
+}
+
+/**
+ * 创建真实在线入口的只读状态投影。
+ *
+ * 该投影只读取 BotActor（机器人执行代理） 快照与本地装配状态，不暴露密钥、连接串或可写 Bot（机器人） 句柄。
+ */
+function createOnlineInterfaceStatusSnapshot<TBotId extends string>(input: {
+  readonly bootstrap: AppBootstrapContract<TBotId>;
+  readonly runtime: AppRuntimeCoreResources<TBotId> | undefined;
+  readonly botWorker: BotWorkerRuntime | undefined;
+  readonly conversationWorker: ConversationWorkerRuntime | undefined;
+  readonly latestLlmDiagnostic: LlmDiagnosticSummary | null;
+  readonly lastEventSeq: number;
+}): InterfaceBotStatusSnapshot {
+  const actorSnapshot = input.runtime?.actor.getSnapshot();
+  const transportSnapshot = actorSnapshot?.transport as
+    | {
+        readonly connected?: boolean;
+        readonly username?: string;
+        readonly world_ready?: boolean;
+      }
+    | undefined;
+
+  return createInterfaceBotStatusSnapshot({
+    bot_id: input.bootstrap.bot_id,
+    status: actorSnapshot?.status ?? input.bootstrap.runtime.initial_status,
+    intent_epoch: 0,
+    last_event_seq: input.lastEventSeq,
+    updated_at: new Date().toISOString(),
+    ...(transportSnapshot === undefined
+      ? {}
+      : {
+          mineflayer: {
+            connected: transportSnapshot.connected ?? false,
+            world_ready: transportSnapshot.world_ready ?? false,
+            ...(transportSnapshot.username === undefined
+              ? {}
+              : { username: transportSnapshot.username }),
+          },
+        }),
+    workers: {
+      conversation: input.conversationWorker !== undefined,
+      bot: input.botWorker !== undefined,
+    },
+    llm: input.latestLlmDiagnostic,
+  });
 }
 
 /**

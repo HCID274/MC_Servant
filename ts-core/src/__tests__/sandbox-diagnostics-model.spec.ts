@@ -14,6 +14,7 @@ import {
   TaskHistoryStatus,
   type TaskLifecycleEvent,
   createDiagnosticsCatalog,
+  createLlmDiagnosticSummary,
   createLlmLogLine,
   createLlmLogRef,
   createSandboxCodeJob,
@@ -144,6 +145,47 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(Object.isFrozen(taskStep.p ?? {})).toBe(true);
     expect(Object.isFrozen(sandboxLine.r ?? {})).toBe(true);
     expect(Object.isFrozen(llmLine.meta)).toBe(true);
+
+    const llmSummary = createLlmDiagnosticSummary({
+      stage: "triage",
+      message_id: "msg-001",
+      status: "error",
+      model: "bl-auto",
+      log_ref: "llm/2026-04-13/triage-msg-001.jsonl",
+      created_at: "2026-04-13T12:00:00.000Z",
+      error_summary: "upstream timeout",
+    });
+
+    expect(llmSummary).toEqual({
+      stage: "triage",
+      message_id: "msg-001",
+      status: "error",
+      model: "bl-auto",
+      log_ref: "llm/2026-04-13/triage-msg-001.jsonl",
+      created_at: "2026-04-13T12:00:00.000Z",
+      error_summary: "upstream timeout",
+    });
+    expect(Object.isFrozen(llmSummary)).toBe(true);
+
+    const redactedLlmSummary = createLlmDiagnosticSummary(
+      {
+        stage: "chat",
+        message_id: "msg-002",
+        status: "error",
+        model: "bl-auto",
+        log_ref: "llm/2026-04-13/chat-msg-002.jsonl",
+        created_at: "2026-04-13T12:00:01.000Z",
+        error_summary:
+          "LLM_API_KEY=sk-local-dev failed postgres://user:pg-pass@localhost/db redis://:redis-pass@localhost EasyAuth密码=hunter2",
+      },
+      { sensitiveValues: ["hunter2"] },
+    );
+
+    expect(redactedLlmSummary.error_summary).toContain("<redacted>");
+    expect(redactedLlmSummary.error_summary).not.toContain("sk-local-dev");
+    expect(redactedLlmSummary.error_summary).not.toContain("pg-pass");
+    expect(redactedLlmSummary.error_summary).not.toContain("redis-pass");
+    expect(redactedLlmSummary.error_summary).not.toContain("hunter2");
   });
 
   it("应让 tasks（任务执行） 摘要与运行时 started / terminal（已开始 / 终态） 生命周期对齐", () => {

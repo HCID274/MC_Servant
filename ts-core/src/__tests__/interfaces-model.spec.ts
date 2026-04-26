@@ -11,6 +11,7 @@ import {
   createExternalAuthState,
   createHealthResponse,
   createInterfaceExternalAuthSnapshot,
+  createLlmDiagnosticSummary,
   createMessageAcceptedResponse,
   createRealtimeEventEnvelope,
   createReplayRequest,
@@ -151,6 +152,23 @@ describe("interfaces 模块契约", () => {
         last_event_seq: 10,
         updated_at: "2026-04-13T12:00:03.000Z",
         active_task_id: "job-1",
+        mineflayer: {
+          connected: true,
+          world_ready: true,
+          username: "test_bot01",
+        },
+        workers: {
+          conversation: true,
+          bot: true,
+        },
+        llm: createLlmDiagnosticSummary({
+          stage: "plan",
+          message_id: "msg-1",
+          status: "ok",
+          model: "bl-auto",
+          log_ref: "llm/2026-04-13/plan-msg-1.jsonl",
+          created_at: "2026-04-13T12:00:03.000Z",
+        }),
       },
     });
     const replayRequest = createReplayRequest({
@@ -177,6 +195,25 @@ describe("interfaces 模块契约", () => {
     expect(normalizeReplayLimit(undefined)).toBe(50);
     expect(statusQuery.bot_id).toBe("bot-1");
     expect(statusResponse.bot.status).toBe(BotStatus.EXECUTING);
+    expect(statusResponse.bot.mineflayer).toEqual({
+      connected: true,
+      world_ready: true,
+      username: "test_bot01",
+    });
+    expect(statusResponse.bot.workers).toEqual({
+      conversation: true,
+      bot: true,
+    });
+    expect(statusResponse.bot.llm).toEqual({
+      stage: "plan",
+      message_id: "msg-1",
+      status: "ok",
+      model: "bl-auto",
+      log_ref: "llm/2026-04-13/plan-msg-1.jsonl",
+      created_at: "2026-04-13T12:00:03.000Z",
+    });
+    expect(JSON.stringify(statusResponse)).not.toContain("sk-");
+    expect(JSON.stringify(statusResponse)).not.toContain("hunter2");
     expect(health.service).toBe("ts-core");
     expect(Object.isFrozen(replayResponse.events)).toBe(true);
     expect(Object.isFrozen(replayResponse.events[0])).toBe(true);

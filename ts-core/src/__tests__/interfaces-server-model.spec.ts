@@ -22,6 +22,21 @@ describe("interfaces Fastify（接口网关） 服务器骨架", () => {
         host: "127.0.0.1",
         port: 3100,
       },
+      handlers: {
+        replay: (request) => ({
+          bot_id: request.bot_id,
+          after_seq: request.after_seq,
+          limit: request.limit,
+          state: {
+            bot_id: "bot-http",
+            status: "initializing",
+            intent_epoch: 0,
+            last_event_seq: 0,
+            updated_at: "2026-04-15T00:00:00.000Z",
+          },
+          events: [],
+        }),
+      },
     });
 
     const healthResponse = await runtime.server.inject({
@@ -211,6 +226,59 @@ describe("interfaces Fastify（接口网关） 服务器骨架", () => {
     expect(contentResponse.json()).toMatchObject({
       statusCode: 400,
       message: "content must be a non-empty string",
+    });
+
+    await runtime.close();
+  });
+
+  it("应拒绝非法 replay（补拉） 参数且未配置事件源时返回 503（服务不可用）", async () => {
+    const runtime = createInterfaceServerRuntime({
+      bot_id: "bot-http",
+      health: {
+        service: "ts-core",
+        status: "ok",
+        timestamp: "2026-04-15T00:00:00.000Z",
+      },
+      default_status: {
+        bot_id: "bot-http",
+        status: "initializing",
+        intent_epoch: 0,
+        last_event_seq: 0,
+        updated_at: "2026-04-15T00:00:00.000Z",
+      },
+      listen: {
+        host: "127.0.0.1",
+        port: 3100,
+      },
+    });
+
+    const invalidAfterSeqResponse = await runtime.server.inject({
+      method: "GET",
+      url: "/api/replay?bot_id=bot-http&after_seq=1abc&limit=3",
+    });
+    const invalidLimitResponse = await runtime.server.inject({
+      method: "GET",
+      url: "/api/replay?bot_id=bot-http&after_seq=0&limit=0",
+    });
+    const missingSourceResponse = await runtime.server.inject({
+      method: "GET",
+      url: "/api/replay?bot_id=bot-http&after_seq=0&limit=3",
+    });
+
+    expect(invalidAfterSeqResponse.statusCode).toBe(400);
+    expect(invalidAfterSeqResponse.json()).toMatchObject({
+      statusCode: 400,
+      message: "after_seq must be an integer",
+    });
+    expect(invalidLimitResponse.statusCode).toBe(400);
+    expect(invalidLimitResponse.json()).toMatchObject({
+      statusCode: 400,
+      message: "replay limit must be a positive integer",
+    });
+    expect(missingSourceResponse.statusCode).toBe(503);
+    expect(missingSourceResponse.json()).toMatchObject({
+      statusCode: 503,
+      message: "replay event source is not configured",
     });
 
     await runtime.close();

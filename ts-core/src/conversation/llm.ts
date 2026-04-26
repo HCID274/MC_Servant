@@ -6,7 +6,7 @@
  * 3. 诊断留痕：为闲聊阶段生成 `llm`（大语言模型） JSONL（结构化日志） 摘要，覆盖模型、成功与失败信息。
  */
 
-import type { JsonlErrorSnapshot, LlmJsonlLine } from "../diagnostics/contracts.js";
+import type { JsonlErrorSnapshot, LlmJsonlLine, LlmLogStage } from "../diagnostics/contracts.js";
 import { createLlmLogLine, createLlmLogRef } from "../diagnostics/logs.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
 import {
@@ -52,13 +52,15 @@ export interface ConversationLlmMessage {
 /** 闲聊调用的诊断摘要。 */
 export interface ConversationLlmDiagnosticRecord {
   /** 调用阶段。 */
-  readonly stage: "chat";
+  readonly stage: LlmLogStage;
   /** 模型名。 */
   readonly model: string;
   /** 原始消息标识。 */
   readonly message_id: string;
   /** 结构化日志引用。 */
   readonly log_ref: string;
+  /** 创建时间。 */
+  readonly created_at: string;
   /** 是否成功。 */
   readonly ok: boolean;
   /** 失败摘要。 */
@@ -389,15 +391,84 @@ export function createConversationLlmClient(
     async generateTriage(
       input: ConversationLlmTriageInput,
     ): Promise<ReturnType<typeof createMessageTriage>> {
+      const startedAt = now();
+      const startedAtMs = startedAt.getTime();
+      const messages = createConversationTriageMessages(input);
+      const logRef = createLlmLogRef({
+        date: startedAt.toISOString().slice(0, 10),
+        stage: "triage",
+        message_id: input.message_id,
+      });
+      const invocationLines = createLlmInvocationLines({
+        t: createUnixSeconds(startedAt),
+        stage: "triage",
+        model: config.model,
+        message_id: input.message_id,
+        messages,
+      });
+
       try {
         const payload = await requestChatCompletionPayload({
           fetchImpl,
           config,
-          messages: createConversationTriageMessages(input),
+          messages,
         });
+        const finishedAt = now();
+        const triage = parseConversationTriage(extractAssistantReply(payload));
 
-        return parseConversationTriage(extractAssistantReply(payload));
-      } catch {
+        await dependencies.onDiagnostic?.(
+          createConversationLlmDiagnosticRecord({
+            stage: "triage",
+            model: config.model,
+            message_id: input.message_id,
+            log_ref: logRef,
+            created_at: finishedAt.toISOString(),
+            ok: true,
+            lines: [
+              ...invocationLines,
+              createLlmLogLine({
+                t: createUnixSeconds(finishedAt),
+                meta: {
+                  input_tokens: payload.usage?.prompt_tokens ?? 0,
+                  output_tokens: payload.usage?.completion_tokens ?? 0,
+                  ms: Math.max(0, finishedAt.getTime() - startedAtMs),
+                  ok: true,
+                },
+              }),
+            ],
+          }),
+        );
+
+        return triage;
+      } catch (error) {
+        const finishedAt = now();
+        const errorSnapshot = createErrorSnapshot(error);
+
+        await dependencies.onDiagnostic?.(
+          createConversationLlmDiagnosticRecord({
+            stage: "triage",
+            model: config.model,
+            message_id: input.message_id,
+            log_ref: logRef,
+            created_at: finishedAt.toISOString(),
+            ok: false,
+            error_summary: errorSnapshot.message,
+            lines: [
+              ...invocationLines,
+              createLlmLogLine({
+                t: createUnixSeconds(finishedAt),
+                meta: {
+                  input_tokens: 0,
+                  output_tokens: 0,
+                  ms: Math.max(0, finishedAt.getTime() - startedAtMs),
+                  ok: false,
+                },
+                err: errorSnapshot,
+              }),
+            ],
+          }),
+        );
+
         return createMessageTriage({
           intent: "chat",
           priority: "normal",
@@ -419,19 +490,13 @@ export function createConversationLlmClient(
         message_id: input.message_id,
       });
       const invocationLines = Object.freeze([
-        createLlmLogLine({
+        ...createLlmInvocationLines({
           t: createUnixSeconds(startedAt),
           stage: "chat",
           model: config.model,
-          msg_id: input.message_id,
+          message_id: input.message_id,
+          messages,
         }),
-        ...messages.map((message) =>
-          createLlmLogLine({
-            t: createUnixSeconds(startedAt),
-            role: message.role,
-            content: message.content,
-          }),
-        ),
       ]);
 
       try {
@@ -448,6 +513,7 @@ export function createConversationLlmClient(
           model: config.model,
           message_id: input.message_id,
           log_ref: logRef,
+          created_at: finishedAt.toISOString(),
           ok: true,
           lines: [
             ...invocationLines,
@@ -478,6 +544,7 @@ export function createConversationLlmClient(
           model: config.model,
           message_id: input.message_id,
           log_ref: logRef,
+          created_at: finishedAt.toISOString(),
           ok: false,
           error_summary: errorSnapshot.message,
           lines: [
@@ -503,13 +570,86 @@ export function createConversationLlmClient(
       }
     },
     async generateSkillPlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult> {
-      const payload = await requestChatCompletionPayload({
-        fetchImpl,
-        config,
-        messages: createConversationPlanMessages(input),
+      const startedAt = now();
+      const startedAtMs = startedAt.getTime();
+      const messages = createConversationPlanMessages(input);
+      const logRef = createLlmLogRef({
+        date: startedAt.toISOString().slice(0, 10),
+        stage: "plan",
+        message_id: input.message_id,
+      });
+      const invocationLines = createLlmInvocationLines({
+        t: createUnixSeconds(startedAt),
+        stage: "plan",
+        model: config.model,
+        message_id: input.message_id,
+        messages,
       });
 
-      return parseConversationSkillPlan(extractAssistantReply(payload));
+      try {
+        const payload = await requestChatCompletionPayload({
+          fetchImpl,
+          config,
+          messages,
+        });
+        const plan = parseConversationSkillPlan(extractAssistantReply(payload));
+        const finishedAt = now();
+
+        await dependencies.onDiagnostic?.(
+          createConversationLlmDiagnosticRecord({
+            stage: "plan",
+            model: config.model,
+            message_id: input.message_id,
+            log_ref: logRef,
+            created_at: finishedAt.toISOString(),
+            ok: true,
+            lines: [
+              ...invocationLines,
+              createLlmLogLine({
+                t: createUnixSeconds(finishedAt),
+                meta: {
+                  input_tokens: payload.usage?.prompt_tokens ?? 0,
+                  output_tokens: payload.usage?.completion_tokens ?? 0,
+                  ms: Math.max(0, finishedAt.getTime() - startedAtMs),
+                  ok: true,
+                },
+              }),
+            ],
+          }),
+        );
+
+        return plan;
+      } catch (error) {
+        const finishedAt = now();
+        const errorSnapshot = createErrorSnapshot(error);
+
+        await dependencies.onDiagnostic?.(
+          createConversationLlmDiagnosticRecord({
+            stage: "plan",
+            model: config.model,
+            message_id: input.message_id,
+            log_ref: logRef,
+            created_at: finishedAt.toISOString(),
+            ok: false,
+            error_summary: errorSnapshot.message,
+            lines: [
+              ...invocationLines,
+              createLlmLogLine({
+                t: createUnixSeconds(finishedAt),
+                meta: {
+                  input_tokens: 0,
+                  output_tokens: 0,
+                  ms: Math.max(0, finishedAt.getTime() - startedAtMs),
+                  ok: false,
+                },
+                err: errorSnapshot,
+              }),
+            ],
+          }),
+        );
+
+        throw new ConversationLlmPlanError(errorSnapshot.message, { cause: error });
+      }
     },
   });
 }
@@ -527,6 +667,36 @@ function createConversationLlmDiagnosticRecord(
     ...input,
     lines: Object.freeze([...input.lines]),
   });
+}
+
+/**
+ * 创建 LLM（大语言模型） 调用头与 transcript（原始对话记录） 行。
+ *
+ * @param input 调用阶段、模型与消息列表
+ * @returns 只读 JSONL（结构化日志） 行集合
+ */
+function createLlmInvocationLines(input: {
+  t: number;
+  stage: LlmLogStage;
+  model: string;
+  message_id: string;
+  messages: readonly ConversationLlmMessage[];
+}): readonly LlmJsonlLine[] {
+  return Object.freeze([
+    createLlmLogLine({
+      t: input.t,
+      stage: input.stage,
+      model: input.model,
+      msg_id: input.message_id,
+    }),
+    ...input.messages.map((message) =>
+      createLlmLogLine({
+        t: input.t,
+        role: message.role,
+        content: message.content,
+      }),
+    ),
+  ]);
 }
 
 /**

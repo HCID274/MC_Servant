@@ -11,7 +11,7 @@
 ## 当前批次
 
 - 批次范围：`T-021` ~ `T-030`
-- 当前已完成任务：`T-021`、`T-022`、`T-023`、`T-024`、`T-025`
+- 当前已完成任务：`T-021`、`T-022`、`T-023`、`T-024`、`T-025`、`T-026`
 - 当前批次摘要：从 `T-021`（任务二十一） 起按"纵向上线切片"重排，把原 T-021（消息入队 + ConversationWorker stub） / 原 T-022（BotWorker 最小执行） / 原 T-023（真实连服 + EasyAuth + 端到端） 三任务合并为新的 `T-021`（最窄端到端 demo），把 MC（Minecraft，我的世界） 上线硬门槛前移到本批次第一个任务。后续任务沿 BotWorker → 实时层 → sandbox → 真实 LLM → BrainWorker → 部署文档 的顺序逐步加深。
 - 当前批次硬约束：`T-021`（任务二十一） 验收必须包含真实 MC 服务器手测（聊天截图 + 启动日志），不再做纯契约或纯占位任务。每个后续任务都必须给出可在 MC 中亲眼验证的新行为门槛。
 
@@ -149,4 +149,32 @@
 - 验收备注：
   - 新增测试覆盖三项真实技能分发、在线自然语言规划入队、非法规划失败、`collect`（捡拾） 半径与数量语义，以及既有 `chat`（闲聊） / `cancel`（取消） / `goTo`（前往坐标） 回归。
   - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 28 个测试文件、146 条测试通过。
+  - 本次审查未重复机械预检。
+
+### T-026 — 手测观测出口：status / replay / LLM 摘要
+
+- 审查状态：通过。
+- 核心文件：
+  - `ts-core/src/interfaces/contracts.ts`
+  - `ts-core/src/interfaces/server.ts`
+  - `ts-core/src/diagnostics/contracts.ts`
+  - `ts-core/src/diagnostics/logs.ts`
+  - `ts-core/src/app/bootstrap.ts`
+  - `ts-core/src/app/entrypoint.ts`
+  - `ts-core/src/workers/conversation-worker.ts`
+  - `ts-core/src/conversation/llm.ts`
+  - `ts-core/src/__tests__/interfaces-server-model.spec.ts`
+  - `ts-core/src/__tests__/interfaces-model.spec.ts`
+  - `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
+  - `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/sandbox-diagnostics-model.spec.ts`
+- 变更快照：
+  - `/api/status`（状态接口） 已扩展为只读状态投影，包含运行时状态、Mineflayer（Minecraft 协议客户端） `connected`（已连接） / `world_ready`（世界交互就绪） 摘要、Worker（工作线程） 装配状态与最近一次 `LLM`（大语言模型） 调用摘要。
+  - `/api/replay`（事件回放接口） 改为必须有真实或注入式事件源；未配置时返回 503（服务不可用），非法 `after_seq`（起始序号） / `limit`（数量限制） 在路由层拒绝，不再用空列表伪装真实查询成功。
+  - 在线入口 `startAppOnlineRuntime()`（真实在线启动入口） 提供进程内 append-only（只追加） 回放源，用于 MC（Minecraft，我的世界） 手测期间补拉 `task.accepted`（任务已接受） 等最小事件。
+  - `ConversationWorker`（对话工作线程） 与 OpenAI（开放人工智能） 兼容客户端的 `triage`（分诊） / `chat`（闲聊） / `plan`（规划） 成功与失败路径都会更新最近一次 `LLM`（大语言模型） 摘要；状态接口只暴露 `stage`（阶段）、`message_id`（消息标识）、`status`（状态）、`model`（模型）、`log_ref`（日志引用）、`created_at`（创建时间） 与可选 `error_summary`（错误摘要）。
+  - 打回修复后，`error_summary`（错误摘要） 在诊断摘要边界统一脱敏并截断，屏蔽 `sk-*` 密钥、`LLM_API_KEY`（大语言模型接口密钥）、EasyAuth（离线服认证模组） 密码、PostgreSQL（关系型数据库） / Redis（缓存） 连接串密码以及在线入口注入的 `api_key`（接口密钥）原文；控制台诊断输出同样复用脱敏逻辑。
+- 验收备注：
+  - 新增测试覆盖状态读取、事件回放参数校验、最近一次 `LLM`（大语言模型） 成功 / 失败摘要、脱敏边界与既有 `chat`（闲聊） / `cancel`（取消） / `goTo`（前往坐标） / `mine`（挖掘） / `collect`（捡拾） / `equip`（装备） 路径回归。
+  - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 28 个测试文件、148 条测试通过。
   - 本次审查未重复机械预检。
