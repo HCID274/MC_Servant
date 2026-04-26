@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { ExecPriority, TaskHistoryStatus, createSkillCallJob } from "../index.js";
+import {
+  ExecPriority,
+  TaskHistoryStatus,
+  createSandboxCodeJob,
+  createSkillCallJob,
+} from "../index.js";
 import {
   SKILL_DIRECTORY,
   createEquipSkillExecutionResult,
@@ -28,6 +33,9 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
               result: createGoToSkillExecutionResult(job.params),
               snapshot: {} as never,
             };
+          },
+          async executeSandboxCode() {
+            throw new Error("sandbox should not run");
           },
         },
         now: (() => {
@@ -93,6 +101,9 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
           async executeSkill() {
             throw new Error("path not found");
           },
+          async executeSandboxCode() {
+            throw new Error("sandbox should not run");
+          },
         },
         createWorker: ({ processor: capturedProcessor }) => {
           processor = capturedProcessor;
@@ -147,6 +158,9 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
               result: createGoToSkillExecutionResult(job.params),
               snapshot: {} as never,
             };
+          },
+          async executeSandboxCode() {
+            throw new Error("sandbox should not run");
           },
         },
         currentIntentEpoch: () => 2,
@@ -207,6 +221,9 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
               snapshot: {} as never,
             };
           },
+          async executeSandboxCode() {
+            throw new Error("sandbox should not run");
+          },
         },
         createWorker: ({ processor: capturedProcessor }) => {
           processor = capturedProcessor;
@@ -248,5 +265,80 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
         total_steps: 1,
       },
     ]);
+  });
+
+  it("应把 sandbox_code（沙箱代码） 任务交给 BotActor（机器人执行代理） 执行", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const executedMessages: string[] = [];
+    const runtime = createBotWorkerRuntime({
+      queue: {
+        name: "bot:bot-worker:exec",
+        connection: {},
+      },
+      dependencies: {
+        actor: {
+          async executeSkill() {
+            throw new Error("skill should not run");
+          },
+          async executeSandboxCode(job) {
+            executedMessages.push(job.message_id);
+
+            return {
+              result: {
+                status: TaskHistoryStatus.Completed,
+                job_id: job.message_id,
+                bot_id: "bot-worker",
+                intent_epoch: job.intent_epoch,
+                log_ref: "sandbox/2026-04-13/msg-worker-sandbox.jsonl",
+                phase_logs: [
+                  {
+                    t: 1,
+                    phase: "sandbox_complete",
+                    steps: 1,
+                    ms: 12,
+                  },
+                ],
+                step_results: [],
+                summary: {
+                  terminal_status: TaskHistoryStatus.Completed,
+                  total_steps: 1,
+                  duration_ms: 12,
+                },
+              },
+              snapshot: {} as never,
+            };
+          },
+        },
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+    const task = createBotWorkerTask({
+      bot_id: "bot-worker",
+      exec_job: createSandboxCodeJob({
+        message_id: "msg-worker-sandbox",
+        intent_epoch: 1,
+        snapshot_ts: 120,
+        priority: ExecPriority.Normal,
+        code: "await api.chat.say('hello')",
+      }),
+    });
+
+    await runtime.start();
+    await processor?.({ data: task });
+
+    expect(executedMessages).toEqual(["msg-worker-sandbox"]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.completed",
+      bot_id: "bot-worker",
+      message_id: "msg-worker-sandbox",
+      status: TaskHistoryStatus.Completed,
+      total_steps: 1,
+    });
   });
 });

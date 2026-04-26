@@ -11,6 +11,7 @@ import { PHASE1_SKILL_DEFINITIONS } from "../skills/index.js";
 import {
   SANDBOX_BOT_METHOD_NAMES,
   SANDBOX_CHAT_METHOD_NAMES,
+  SANDBOX_FACADE_SECTIONS,
   SANDBOX_KNOWLEDGE_METHOD_NAMES,
   SANDBOX_MEMORY_METHOD_NAMES,
   SANDBOX_OWNER_VALUE_NAMES,
@@ -19,9 +20,30 @@ import {
   type SandboxBotMethodName,
   type SandboxBotSkillBindings,
   type SandboxFacadeContract,
+  type SandboxFacadeSectionName,
   type SandboxMethodContract,
   type SandboxValueContract,
 } from "./contracts.js";
+
+/** Facade API（门面接口） 命名空间热队列条目。 */
+export interface SandboxFacadeHotNamespaceEntry {
+  /** 命名空间。 */
+  readonly namespace: SandboxFacadeSectionName;
+  /** 压缩签名文本。 */
+  readonly description: string;
+  /** 估算 token（令牌） 数。 */
+  readonly token_count: number;
+}
+
+/** Facade API（门面接口） 热队列裁剪结果。 */
+export interface SandboxFacadeHotNamespaceQueue {
+  /** 按最近使用顺序排列的命名空间，最旧在前、最新在后。 */
+  readonly entries: readonly SandboxFacadeHotNamespaceEntry[];
+  /** 当前总 token（令牌） 数。 */
+  readonly total_tokens: number;
+  /** token（令牌） 预算。 */
+  readonly budget_tokens: number;
+}
 
 /** 创建方法契约描述。 */
 function createMethodContract<TName extends string>(input: {
@@ -53,6 +75,51 @@ function createValueContract<TName extends string>(name: TName): SandboxValueCon
 const phase1SkillMetadata = new Map(
   PHASE1_SKILL_DEFINITIONS.map((definition) => [definition.name, definition.metadata]),
 );
+
+const facadeNamespaceDescriptions = Object.freeze({
+  bot: "bot(write): goTo(x,y,z), mine(blockName,count), collect(itemName,radius?), equip(itemName,destination?), cutTree(count)=unsupported",
+  chat: "chat(write): say(message), report(message); both write through BotActor controlled chat",
+  world:
+    "world(read): currently unavailable in minimal runtime sandbox; call describe('world') before relying on reads",
+  knowledge:
+    "knowledge(read): not exposed in minimal runtime sandbox; Minecraft facts must come from runtime data later",
+  memory: "memory(read): not exposed in minimal runtime sandbox; task memory retrieval is reserved",
+  owner:
+    "owner(read): position/name/online are unavailable unless a stable observation projection is wired",
+  task: "task(read): id, userMessage, intent",
+} as const satisfies Record<SandboxFacadeSectionName, string>);
+
+/** 判断给定字符串是否为 Facade API（门面接口） 命名空间。 */
+function isSandboxFacadeSectionName(value: string): value is SandboxFacadeSectionName {
+  return (SANDBOX_FACADE_SECTIONS as readonly string[]).includes(value);
+}
+
+/** 估算压缩描述文本的 token（令牌） 成本。 */
+function estimateDescriptionTokens(description: string): number {
+  return Math.max(1, Math.ceil(description.length / 4));
+}
+
+/** 冻结 Facade API（门面接口） 热队列结果。 */
+function freezeHotNamespaceQueue(input: {
+  entries: readonly SandboxFacadeHotNamespaceEntry[];
+  budgetTokens: number;
+}): SandboxFacadeHotNamespaceQueue {
+  const entries = Object.freeze(
+    input.entries.map((entry) =>
+      Object.freeze({
+        namespace: entry.namespace,
+        description: entry.description,
+        token_count: entry.token_count,
+      }),
+    ),
+  );
+
+  return Object.freeze({
+    entries,
+    total_tokens: entries.reduce((total, entry) => total + entry.token_count, 0),
+    budget_tokens: input.budgetTokens,
+  });
+}
 
 /** `bot`（动作） 分区与 Phase 1（第一阶段） 技能目录的精确绑定表。 */
 export const SANDBOX_BOT_SKILL_BINDINGS = Object.freeze({
@@ -212,5 +279,75 @@ export function createSandboxFacadeContract(): SandboxFacadeContract {
       userMessage: createValueContract(SANDBOX_TASK_VALUE_NAMES[1]),
       intent: createValueContract(SANDBOX_TASK_VALUE_NAMES[2]),
     }),
+  });
+}
+
+/**
+ * 创建 Facade API（门面接口） 渐进披露初始索引。
+ *
+ * 初始 prompt（提示词） 只暴露命名空间入口和 describe(namespace) 机制，避免一次性注入全量手册。
+ *
+ * @returns 压缩后的 Facade API 入口说明
+ */
+export function createSandboxFacadePromptIndex(): string {
+  return [
+    `Facade namespaces: ${SANDBOX_FACADE_SECTIONS.join(", ")}`,
+    "Use describe(namespace) to request one namespace signature before calling methods.",
+  ].join("\n");
+}
+
+/**
+ * 按命名空间描述 Facade API（门面接口） 压缩签名。
+ *
+ * @param namespace 目标命名空间
+ * @returns 可放入 prompt（提示词） 的压缩签名文本
+ */
+export function describeFacadeNamespace(namespace: SandboxFacadeSectionName): string {
+  return facadeNamespaceDescriptions[namespace];
+}
+
+/**
+ * 更新 Facade API（门面接口） 命名空间 LRU（最近最少使用） 热队列。
+ *
+ * 重复访问会刷新热度；裁剪按估算 token（令牌） 预算进行，而不是按条目数量。
+ *
+ * @param input 当前队列、访问命名空间和预算
+ * @returns 经过预算裁剪的热队列
+ */
+export function updateSandboxFacadeHotNamespaceQueue(input: {
+  queue?: SandboxFacadeHotNamespaceQueue;
+  namespace: SandboxFacadeSectionName;
+  budget_tokens: number;
+}): SandboxFacadeHotNamespaceQueue {
+  if (!Number.isInteger(input.budget_tokens) || input.budget_tokens <= 0) {
+    throw new Error("budget_tokens must be a positive integer");
+  }
+
+  if (!isSandboxFacadeSectionName(input.namespace)) {
+    throw new Error(`Unsupported facade namespace: ${input.namespace}`);
+  }
+
+  const existingEntries = input.queue?.entries ?? [];
+  const description = describeFacadeNamespace(input.namespace);
+  const nextEntry = Object.freeze({
+    namespace: input.namespace,
+    description,
+    token_count: estimateDescriptionTokens(description),
+  });
+  const nextEntries = [
+    ...existingEntries.filter((entry) => entry.namespace !== input.namespace),
+    nextEntry,
+  ];
+
+  while (
+    nextEntries.length > 0 &&
+    nextEntries.reduce((total, entry) => total + entry.token_count, 0) > input.budget_tokens
+  ) {
+    nextEntries.shift();
+  }
+
+  return freezeHotNamespaceQueue({
+    entries: nextEntries,
+    budgetTokens: input.budget_tokens,
   });
 }

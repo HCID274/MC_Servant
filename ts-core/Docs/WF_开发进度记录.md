@@ -11,9 +11,10 @@
 ## 当前批次
 
 - 批次范围：`T-021` ~ `T-030`
-- 当前已完成任务：`T-021`、`T-022`、`T-023`、`T-024`、`T-025`、`T-026`
-- 当前批次摘要：从 `T-021`（任务二十一） 起按"纵向上线切片"重排，把原 T-021（消息入队 + ConversationWorker stub） / 原 T-022（BotWorker 最小执行） / 原 T-023（真实连服 + EasyAuth + 端到端） 三任务合并为新的 `T-021`（最窄端到端 demo），把 MC（Minecraft，我的世界） 上线硬门槛前移到本批次第一个任务。后续任务沿 BotWorker → 实时层 → sandbox → 真实 LLM → BrainWorker → 部署文档 的顺序逐步加深。
-- 当前批次硬约束：`T-021`（任务二十一） 验收必须包含真实 MC 服务器手测（聊天截图 + 启动日志），不再做纯契约或纯占位任务。每个后续任务都必须给出可在 MC 中亲眼验证的新行为门槛。
+- 当前已完成任务：`T-021`、`T-022`、`T-023`、`T-024`、`T-025`、`T-026`、`T-027`
+- 当前活跃任务：`T-028`（任务二十八） 循环依赖治理。
+- 当前批次摘要：`T-021`（任务二十一） 到 `T-027`（任务二十七） 已完成 MC（Minecraft，我的世界） 上线、真实 LLM（大语言模型）、多技能、观测出口与 sandbox_code（沙箱代码） 真实执行链。自 `T-028`（任务二十八） 起，本批次最后三项改为架构治理：`T-028`（循环依赖治理）、`T-029`（超大文件拆分）、`T-030`（模式重构与收口）。
+- 当前批次硬约束：`T-021`（任务二十一） 到 `T-027`（任务二十七） 的可运行主干不得回归。`T-028`（任务二十八） 到 `T-030`（任务三十） 是架构止血任务，重点是依赖图、文件边界与可维护性，不要求新增 MC（Minecraft，我的世界） 可见行为；但必须保持现有 MC（Minecraft，我的世界） 行为测试与预检全绿。
 
 ---
 
@@ -177,4 +178,29 @@
 - 验收备注：
   - 新增测试覆盖状态读取、事件回放参数校验、最近一次 `LLM`（大语言模型） 成功 / 失败摘要、脱敏边界与既有 `chat`（闲聊） / `cancel`（取消） / `goTo`（前往坐标） / `mine`（挖掘） / `collect`（捡拾） / `equip`（装备） 路径回归。
   - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 28 个测试文件、148 条测试通过。
+  - 本次审查未重复机械预检。
+
+### T-027 — sandbox_code 真实执行链与 Facade 上下文治理
+
+- 审查状态：通过。
+- 核心文件：
+  - `ts-core/package.json`
+  - `ts-core/pnpm-lock.yaml`
+  - `ts-core/src/sandbox/execution.ts`
+  - `ts-core/src/sandbox/facade.ts`
+  - `ts-core/src/runtime/actor.ts`
+  - `ts-core/src/workers/bot-worker.ts`
+  - `ts-core/src/__tests__/sandbox-diagnostics-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-actor-model.spec.ts`
+  - `ts-core/src/__tests__/bot-worker-runtime-model.spec.ts`
+- 变更快照：
+  - 新增 `isolated-vm`（隔离虚拟机） 与 `esbuild`（转译器） 依赖，`sandbox_code`（沙箱代码） 执行管线包含静态预检、TypeScript（类型脚本） 转译、隔离执行、脚本 / 总超时、dispose（释放） 与结构化 `SandboxExecutionError`（沙箱执行错误） 结果。
+  - `BotActor`（机器人执行代理） 新增 `executeSandboxCode()`（执行沙箱代码） 单写者入口，复用 ready gate（就绪门控）、`world_ready`（世界交互就绪） 与 `EXECUTING`（执行中） / 终态流转；沙箱内 `api.bot.*`（机器人动作） 和 `api.chat.*`（聊天动作） 只能经 Facade（门面接口） 适配器进入受控执行。
+  - `BotWorker`（机器人工作线程） 已支持消费 `SandboxCodeJob`（沙箱代码任务），按沙箱执行结果发出 started（已开始） / completed（已完成） / failed（已失败） 生命周期动作，不再直接拒绝 `sandbox_code`（沙箱代码） 任务。
+  - Facade（门面接口） 最小可执行集覆盖 `goTo`（前往坐标） / `mine`（挖掘） / `collect`（捡拾） / `equip`（装备） / `chat.say`（聊天发送） / `chat.report`（聊天汇报）；`cutTree`（砍树） 当前显式失败为 `FacadeCallError`（门面调用错误），不伪成功。
+  - 新增渐进披露上下文治理：`createSandboxFacadePromptIndex()`（创建门面提示索引）、`describeFacadeNamespace()`（描述门面命名空间） 与按 token（文本配额） 预算裁剪的 LRU（最近最少使用） 热队列，避免默认把全量 Facade（门面接口） 手册注入 prompt（提示词）。
+  - 打回修复后，任意 Facade（门面） 写动作失败都会锁定沙箱失败终态，不能被沙箱代码 `try/catch`（异常捕获） 吞成 `completed`（已完成）；总超时会触发 `AbortSignal`（中断信号） 与终态标记，并等待已启动 Facade（门面） 调用在清理窗口内收束，防止失败返回后继续发起新的主进程副作用。
+- 验收备注：
+  - 新增测试覆盖 `chat.say`（聊天发送）、`bot.goTo`（前往坐标）、只读 `task`（任务） 查询、静态逃逸拦截、转译失败、脚本超时、Facade（门面） 失败、`cutTree`（砍树） 显式失败、LRU（最近最少使用） 裁剪，以及打回修复的“吞错伪成功”和“超时后延迟聊天副作用”回归。
+  - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 28 个测试文件、161 条测试通过。
   - 本次审查未重复机械预检。

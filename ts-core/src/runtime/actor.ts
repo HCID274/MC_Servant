@@ -1,8 +1,23 @@
+import { createSandboxLogRef } from "../diagnostics/logs.js";
 import type { ObservationRuntimeCache } from "../observation/runtime.js";
 import {
+  type SandboxExecutionResult,
+  type SandboxFacadeCallControl,
+  type SandboxFacadeExecutionAdapter,
+  createSandboxExecutionRequest,
+  executeSandboxCodeRequest,
+} from "../sandbox/index.js";
+import {
+  SKILL_DIRECTORY,
   type SkillExecutionDependencies,
   type SkillExecutionResult,
+  type SkillName,
+  type SkillParamsByName,
   executeSkillCallJob,
+  isCollectSkillParams,
+  isEquipSkillParams,
+  isGoToSkillParams,
+  isMineSkillParams,
 } from "../skills/index.js";
 import {
   BotStatus,
@@ -14,7 +29,7 @@ import {
 } from "./contracts.js";
 import type { RuntimeEventType } from "./events.js";
 import { resolveTransition } from "./state-machine.js";
-import type { SkillCallJob } from "./tasking.js";
+import type { SandboxCodeJob, SkillCallJob } from "./tasking.js";
 import type { MineflayerRuntimeTransport, MineflayerTransportSnapshot } from "./transport.js";
 
 /** BotActor（机器人执行代理） 最小运行时快照。 */
@@ -37,6 +52,8 @@ export interface BotActorRuntimeSnapshot<TBotId extends string = string> {
   readonly chat_writes: readonly BotActorChatWriteRecord[];
   /** 本轮由 BotActor（机器人执行代理） 单写者完成的技能执行记录。 */
   readonly skill_executions: readonly BotActorSkillExecutionRecord[];
+  /** 本轮由 BotActor（机器人执行代理） 单写者完成的沙箱执行记录。 */
+  readonly sandbox_executions: readonly BotActorSandboxExecutionRecord[];
 }
 
 /** BotActor（机器人执行代理） 聊天写入记录。 */
@@ -50,6 +67,14 @@ export type BotActorChatWriteRecord =
   | {
       /** 写入类型。 */
       readonly kind: "external_auth_login";
+    }
+  | {
+      /** 写入类型。 */
+      readonly kind: "sandbox_chat";
+      /** 原始消息标识。 */
+      readonly message_id: string;
+      /** 沙箱聊天方法。 */
+      readonly method: "say" | "report";
     };
 
 /** BotActor（机器人执行代理） 游戏聊天回复输入。 */
@@ -76,6 +101,24 @@ export interface BotActorSkillExecutionOutcome<TBotId extends string = string> {
   readonly snapshot: BotActorRuntimeSnapshot<TBotId>;
 }
 
+/** BotActor（机器人执行代理） 沙箱执行记录。 */
+export interface BotActorSandboxExecutionRecord {
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 沙箱执行终态。 */
+  readonly status: SandboxExecutionResult["status"];
+  /** 沙箱步骤数。 */
+  readonly total_steps: number;
+}
+
+/** BotActor（机器人执行代理） 沙箱执行输出。 */
+export interface BotActorSandboxExecutionOutcome<TBotId extends string = string> {
+  /** 沙箱执行结果。 */
+  readonly result: SandboxExecutionResult;
+  /** 执行后的运行时快照。 */
+  readonly snapshot: BotActorRuntimeSnapshot<TBotId>;
+}
+
 /** BotActor（机器人执行代理） 最小运行时句柄。 */
 export interface BotActorRuntime<TBotId extends string = string> {
   /** 目标 Bot 标识。 */
@@ -86,6 +129,8 @@ export interface BotActorRuntime<TBotId extends string = string> {
   broadcastReply(input: BotActorBroadcastReplyInput): Promise<BotActorRuntimeSnapshot<TBotId>>;
   /** 通过 BotActor（机器人执行代理） 单写者入口执行技能调用任务。 */
   executeSkill(job: SkillCallJob): Promise<BotActorSkillExecutionOutcome<TBotId>>;
+  /** 通过 BotActor（机器人执行代理） 单写者入口执行沙箱代码任务。 */
+  executeSandboxCode(job: SandboxCodeJob): Promise<BotActorSandboxExecutionOutcome<TBotId>>;
   /** 将 BotActor（机器人执行代理） 切换到 SHUTDOWN（关闭） 状态。 */
   shutdown(): Promise<BotActorRuntimeSnapshot<TBotId>>;
   /** 获取当前运行时快照。 */
@@ -117,6 +162,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   const emittedEvents: RuntimeEventType[] = [];
   const chatWrites: BotActorChatWriteRecord[] = [];
   const skillExecutions: BotActorSkillExecutionRecord[] = [];
+  const sandboxExecutions: BotActorSandboxExecutionRecord[] = [];
   const skillExecution = input.skillExecution ?? {
     goToMovement: input.transport,
     mine: input.transport.mine.bind(input.transport),
@@ -138,6 +184,83 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       emitted_events: Object.freeze([...emittedEvents]),
       chat_writes: Object.freeze([...chatWrites]),
       skill_executions: Object.freeze([...skillExecutions]),
+      sandbox_executions: Object.freeze([...sandboxExecutions]),
+    });
+
+  const createActorSandboxFacade = (job: SandboxCodeJob): SandboxFacadeExecutionAdapter =>
+    Object.freeze({
+      async executeBotSkill<TName extends SkillName>(
+        skill: TName,
+        params: Readonly<SkillParamsByName[TName]>,
+        control?: SandboxFacadeCallControl,
+      ): Promise<Readonly<Record<string, unknown>>> {
+        assertSandboxFacadeCallActive(control);
+
+        switch (skill) {
+          case SKILL_DIRECTORY.goTo:
+            if (!isGoToSkillParams(params)) {
+              throw new Error("sandbox goTo params are invalid");
+            }
+
+            return (await skillExecution.goToMovement.goTo(params)) as unknown as Readonly<
+              Record<string, unknown>
+            >;
+          case SKILL_DIRECTORY.mine:
+            if (!isMineSkillParams(params)) {
+              throw new Error("sandbox mine params are invalid");
+            }
+
+            return (await skillExecution.mine(params)) as unknown as Readonly<
+              Record<string, unknown>
+            >;
+          case SKILL_DIRECTORY.collect:
+            if (!isCollectSkillParams(params)) {
+              throw new Error("sandbox collect params are invalid");
+            }
+
+            return (await skillExecution.collect(params)) as unknown as Readonly<
+              Record<string, unknown>
+            >;
+          case SKILL_DIRECTORY.equip:
+            if (!isEquipSkillParams(params)) {
+              throw new Error("sandbox equip params are invalid");
+            }
+
+            return (await skillExecution.equip(params)) as unknown as Readonly<
+              Record<string, unknown>
+            >;
+          case SKILL_DIRECTORY.cutTree:
+            throw new Error("cutTree is not executable in the current runtime sandbox");
+        }
+
+        throw new Error(`Unsupported sandbox skill: ${String(skill)}`);
+      },
+      async writeChat(
+        method: "say" | "report",
+        params: Readonly<{ message: string }>,
+        control?: SandboxFacadeCallControl,
+      ): Promise<Readonly<Record<string, unknown>>> {
+        assertSandboxChatParams(params);
+        assertSandboxFacadeCallActive(control);
+
+        await runSerializedChatWrite(async () => {
+          assertSandboxFacadeCallActive(control);
+          await input.transport.chat(params.message);
+          emittedEvents.push("chat.reply");
+          chatWrites.push(
+            Object.freeze({
+              kind: "sandbox_chat" as const,
+              message_id: job.message_id,
+              method,
+            }),
+          );
+        });
+
+        return Object.freeze({
+          delivered: true,
+          method,
+        });
+      },
     });
 
   return Object.freeze({
@@ -254,6 +377,91 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         throw error;
       }
     },
+    async executeSandboxCode(
+      job: SandboxCodeJob,
+    ): Promise<BotActorSandboxExecutionOutcome<TBotId>> {
+      const transportSnapshot = input.transport.getSnapshot();
+      const readyGate = createRuntimeReadyGate({
+        status,
+        externalAuth,
+      });
+
+      if (!readyGate.ready) {
+        throw new Error("BotActor is not ready for executeSandboxCode");
+      }
+
+      if (!transportSnapshot.world_ready) {
+        throw new Error("BotActor world interaction is not ready for executeSandboxCode");
+      }
+
+      const startDecision = resolveTransition(status, {
+        type: "exec_job_pulled",
+        epoch_fresh: true,
+        snapshot_fresh: true,
+      });
+
+      if (!startDecision.accepted) {
+        throw new Error(`BotActor cannot execute sandbox code while ${status}`);
+      }
+
+      status = startDecision.to;
+      emittedEvents.push(...startDecision.emittedEvents);
+
+      try {
+        const sandboxResult = await executeSandboxCodeRequest({
+          request: createSandboxExecutionRequest({
+            job_id: job.message_id,
+            bot_id: input.botId,
+            intent_epoch: job.intent_epoch,
+            snapshot_ts: job.snapshot_ts,
+            code: job.code,
+            log_ref: createSandboxLogRef({
+              date: new Date(job.snapshot_ts).toISOString().slice(0, 10),
+              job_id: job.message_id,
+            }),
+          }),
+          task: {
+            id: job.message_id,
+            userMessage: job.code,
+            intent: "sandbox_code",
+          },
+          facade: createActorSandboxFacade(job),
+        });
+
+        const completedDecision = resolveTransition(status, {
+          type: sandboxResult.status === "completed" ? "task_completed" : "task_failed",
+        });
+
+        if (completedDecision.accepted) {
+          status = completedDecision.to;
+          emittedEvents.push(...completedDecision.emittedEvents);
+        }
+
+        sandboxExecutions.push(
+          Object.freeze({
+            message_id: job.message_id,
+            status: sandboxResult.status,
+            total_steps: sandboxResult.summary.total_steps,
+          }),
+        );
+
+        return Object.freeze({
+          result: sandboxResult,
+          snapshot: createSnapshot(),
+        });
+      } catch (error) {
+        const failedDecision = resolveTransition(status, {
+          type: "task_failed",
+        });
+
+        if (failedDecision.accepted) {
+          status = failedDecision.to;
+          emittedEvents.push(...failedDecision.emittedEvents);
+        }
+
+        throw error;
+      }
+    },
     async shutdown(): Promise<BotActorRuntimeSnapshot<TBotId>> {
       const shutdownDecision = resolveTransition(status, {
         type: "shutdown_requested",
@@ -337,5 +545,27 @@ function assertBroadcastReplyInput(input: BotActorBroadcastReplyInput): void {
 
   if (input.content.trim().length === 0) {
     throw new Error("content must be a non-empty string");
+  }
+}
+
+/**
+ * 校验沙箱聊天写入参数，确保空消息不会穿过 BotActor（机器人执行代理） 单写者边界。
+ */
+function assertSandboxChatParams(input: Readonly<{ message: string }>): void {
+  if (input.message.trim().length === 0) {
+    throw new Error("sandbox chat message must be a non-empty string");
+  }
+}
+
+/**
+ * 校验沙箱 Facade API（门面接口） 调用仍处在当前执行窗口内。
+ */
+function assertSandboxFacadeCallActive(control: SandboxFacadeCallControl | undefined): void {
+  if (control === undefined) {
+    return;
+  }
+
+  if (control.signal.aborted || Date.now() >= control.deadline_ms) {
+    throw new Error("sandbox Facade call is no longer active");
   }
 }

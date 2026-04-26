@@ -29,8 +29,10 @@
   "dependencies": {
     "bullmq": "^5.73.5",
     "drizzle-orm": "^0.45.2",
+    "esbuild": "^0.28.0",
     "fastify": "^5.8.5",
     "ioredis": "^5.8.2",
+    "isolated-vm": "^6.1.2",
     "mineflayer": "^4.37.0",
     "mineflayer-pathfinder": "^2.4.5",
     "pg": "^8.16.3"

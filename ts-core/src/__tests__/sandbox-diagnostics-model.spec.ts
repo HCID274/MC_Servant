@@ -25,6 +25,7 @@ import {
   createSandboxExecutionRequest,
   createSandboxExecutionSuccess,
   createSandboxFacadeContract,
+  createSandboxFacadePromptIndex,
   createSandboxLogLine,
   createSandboxLogRef,
   createSandboxResourceLimits,
@@ -34,6 +35,9 @@ import {
   createTaskLogRef,
   createTaskStartedLifecycleEvent,
   createTaskTerminalLifecycleEvent,
+  describeFacadeNamespace,
+  executeSandboxCodeRequest,
+  updateSandboxFacadeHotNamespaceQueue,
 } from "../index.js";
 
 const validBindings: typeof SANDBOX_BOT_SKILL_BINDINGS = SANDBOX_BOT_SKILL_BINDINGS;
@@ -60,6 +64,24 @@ const invalidAbortRecoverable: AbortError["recoverable"] = true;
 void invalidAbortRecoverable;
 
 describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
+  const createRuntimeSandboxRequest = (input: {
+    code: string;
+    messageId?: string;
+    resourceLimits?: Parameters<typeof createSandboxResourceLimits>[0];
+  }) =>
+    createSandboxExecutionRequest({
+      job_id: input.messageId ?? "T-027",
+      bot_id: "bot-027",
+      intent_epoch: 1,
+      snapshot_ts: 1_712_930_001,
+      code: input.code,
+      log_ref: createSandboxLogRef({
+        date: "2026-04-13",
+        job_id: input.messageId ?? "T-027",
+      }),
+      resource_limits: input.resourceLimits,
+    });
+
   it("应让 Facade API（门面接口） 写动作与 Phase 1（第一阶段） 技能目录精确对齐", () => {
     const facadeContract = createSandboxFacadeContract();
 
@@ -69,6 +91,280 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(facadeContract.bot.mine.aligned_skill).toBe("mine");
     expect(facadeContract.chat.report.emits_step).toBe(true);
     expect(SANDBOX_READONLY_SECTIONS).toEqual(["world", "knowledge", "memory", "owner", "task"]);
+  });
+
+  it("应提供渐进披露索引并按 namespace（命名空间） 描述 Facade API（门面接口）", () => {
+    const index = createSandboxFacadePromptIndex();
+    const botDescription = describeFacadeNamespace("bot");
+
+    expect(index).toContain("Facade namespaces");
+    expect(index).toContain("describe(namespace)");
+    expect(index).not.toContain("goTo(x,y,z)");
+    expect(botDescription).toContain("goTo");
+    expect(describeFacadeNamespace("task")).toContain("userMessage");
+  });
+
+  it("应按 token（令牌） 预算维护 LRU（最近最少使用） Facade API 热队列", () => {
+    const botBudget = Math.ceil(describeFacadeNamespace("bot").length / 4) + 1;
+    const chatBudget = Math.ceil(describeFacadeNamespace("chat").length / 4) + 1;
+    const bothBudget = botBudget + chatBudget + 4;
+    const withBot = updateSandboxFacadeHotNamespaceQueue({
+      namespace: "bot",
+      budget_tokens: bothBudget,
+    });
+    const withChat = updateSandboxFacadeHotNamespaceQueue({
+      queue: withBot,
+      namespace: "chat",
+      budget_tokens: bothBudget,
+    });
+    const refreshedBot = updateSandboxFacadeHotNamespaceQueue({
+      queue: withChat,
+      namespace: "bot",
+      budget_tokens: bothBudget,
+    });
+    const trimmed = updateSandboxFacadeHotNamespaceQueue({
+      queue: refreshedBot,
+      namespace: "task",
+      budget_tokens: chatBudget,
+    });
+
+    expect(withChat.entries.map((entry) => entry.namespace)).toEqual(["bot", "chat"]);
+    expect(refreshedBot.entries.map((entry) => entry.namespace)).toEqual(["chat", "bot"]);
+    expect(trimmed.total_tokens).toBeLessThanOrEqual(chatBudget);
+    expect(trimmed.entries.at(-1)?.namespace).toBe("task");
+    expect(() =>
+      updateSandboxFacadeHotNamespaceQueue({
+        namespace: "bot",
+        budget_tokens: 0,
+      }),
+    ).toThrow(/budget_tokens/);
+  });
+
+  it("应在 isolated-vm（隔离虚拟机） 内执行 chat.say（聊天输出） 并记录步骤", async () => {
+    const messages: string[] = [];
+    const result = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "await api.chat.say('hello sandbox')",
+      }),
+      facade: {
+        async executeBotSkill() {
+          throw new Error("skill should not run");
+        },
+        async writeChat(_method, params) {
+          messages.push(params.message);
+
+          return { delivered: true };
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Completed);
+    expect(messages).toEqual(["hello sandbox"]);
+    expect(result.step_results).toMatchObject([
+      {
+        action: "say",
+        status: "ok",
+        params: { message: "hello sandbox" },
+      },
+    ]);
+  });
+
+  it("应让只读 task（任务） 查询不产出步骤记录", async () => {
+    const result = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "if (api.task.id !== 'task-readonly') { throw new Error('bad task id') }\nif (typeof __sandboxHostCall !== 'undefined') { throw new Error('host leaked') }",
+        messageId: "task-readonly",
+      }),
+      task: {
+        id: "task-readonly",
+        userMessage: "读任务上下文",
+        intent: "sandbox_code",
+      },
+      facade: {
+        async executeBotSkill() {
+          throw new Error("skill should not run");
+        },
+        async writeChat() {
+          throw new Error("chat should not run");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Completed);
+    expect(result.step_results).toEqual([]);
+  });
+
+  it("应拒绝 process / require / import / fetch 等沙箱逃逸入口", async () => {
+    const forbiddenCases = [
+      { code: "process.env", violation: "process" },
+      { code: "require('fs')", violation: "require" },
+      { code: "import('node:fs')", violation: "import" },
+      { code: "globalThis.process", violation: "process" },
+      { code: "await fetch('https://example.com')", violation: "network" },
+    ] as const;
+
+    for (const forbiddenCase of forbiddenCases) {
+      const result = await executeSandboxCodeRequest({
+        request: createRuntimeSandboxRequest({
+          code: forbiddenCase.code,
+          messageId: `forbidden-${forbiddenCase.violation}`,
+        }),
+        facade: {
+          async executeBotSkill() {
+            throw new Error("skill should not run");
+          },
+          async writeChat() {
+            throw new Error("chat should not run");
+          },
+        },
+      });
+
+      expect(result.status).toBe(TaskHistoryStatus.Failed);
+      expect(result.error.name).toBe("StaticCheckError");
+      expect(result.phase_logs[0]).toMatchObject({
+        phase: "precheck",
+        ok: false,
+        violation: forbiddenCase.violation,
+      });
+    }
+  });
+
+  it("应把转译失败、脚本超时与 Facade（门面接口） 失败收口为结构化错误", async () => {
+    const facade = {
+      async executeBotSkill() {
+        throw new Error("facade boom");
+      },
+      async writeChat() {
+        throw new Error("chat boom");
+      },
+    };
+    const transpileFailure = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "const value: = 1",
+        messageId: "T-027-transpile",
+      }),
+      facade,
+    });
+    const timeoutFailure = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "while (true) {}",
+        messageId: "T-027-timeout",
+        resourceLimits: {
+          timeout_ms: 30,
+          script_timeout_ms: 10,
+        },
+      }),
+      facade,
+    });
+    const facadeFailure = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "await api.bot.goTo(1, 64, 1)",
+        messageId: "T-027-facade",
+      }),
+      facade,
+    });
+
+    expect(transpileFailure.status).toBe(TaskHistoryStatus.Failed);
+    expect(transpileFailure.error.name).toBe("TranspileError");
+    expect(timeoutFailure.status).toBe(TaskHistoryStatus.Failed);
+    expect(timeoutFailure.error.name).toBe("SandboxTimeoutError");
+    expect(facadeFailure.status).toBe(TaskHistoryStatus.Failed);
+    expect(facadeFailure.error.name).toBe("FacadeCallError");
+    expect(facadeFailure.step_results[0]?.error?.name).toBe("FacadeCallError");
+  });
+
+  it("应禁止沙箱代码吞掉 FacadeCallError（门面调用错误） 后伪装成功", async () => {
+    const messages: string[] = [];
+    const result = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "try { await api.bot.goTo(1, 64, 1) } catch { await api.chat.say('handled') }",
+        messageId: "T-027-facade-catch",
+      }),
+      facade: {
+        async executeBotSkill() {
+          throw new Error("goTo failed");
+        },
+        async writeChat(_method, params) {
+          messages.push(params.message);
+
+          return { delivered: true };
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Failed);
+    expect(result.error.name).toBe("FacadeCallError");
+    expect(messages).toEqual([]);
+    expect(result.step_results).toHaveLength(1);
+    expect(result.step_results[0]).toMatchObject({
+      action: "goTo",
+      status: "err",
+    });
+  });
+
+  it("应在总超时后阻止 Facade（门面接口） 调用继续产生聊天副作用", async () => {
+    const messages: string[] = [];
+    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const result = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "await api.chat.say('late side effect')",
+        messageId: "T-027-timeout-side-effect",
+        resourceLimits: {
+          timeout_ms: 30,
+          script_timeout_ms: 20,
+          abort_cleanup_timeout_ms: 120,
+        },
+      }),
+      facade: {
+        async executeBotSkill() {
+          throw new Error("skill should not run");
+        },
+        async writeChat(_method, params, control) {
+          await sleep(60);
+
+          if (control?.signal.aborted !== true) {
+            messages.push(params.message);
+          }
+
+          return { delivered: true };
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Failed);
+    expect(result.error.name).toBe("SandboxTimeoutError");
+    expect(messages).toEqual([]);
+
+    await sleep(80);
+
+    expect(messages).toEqual([]);
+  });
+
+  it("应把 cutTree（砍树） 显式拒绝为 FacadeCallError（门面调用错误）", async () => {
+    const result = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "await api.bot.cutTree({ count: 1 })",
+        messageId: "T-027-cut-tree",
+      }),
+      facade: {
+        async executeBotSkill() {
+          throw new Error("cutTree should be rejected before adapter");
+        },
+        async writeChat() {
+          throw new Error("chat should not run");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Failed);
+    expect(result.error.name).toBe("FacadeCallError");
+    expect(result.step_results[0]).toMatchObject({
+      action: "cutTree",
+      status: "err",
+      error: {
+        name: "FacadeCallError",
+      },
+    });
   });
 
   it("应集中表达 diagnostics（诊断） 通道目录、保留期与引用规则", () => {

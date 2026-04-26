@@ -7,13 +7,18 @@
  * 4. 错误转换：将原始的异常信息包装为符合契约的结构化 SandboxExecutionError。
  */
 
+import { transform } from "esbuild";
+import ivm from "isolated-vm";
+
 import type { SandboxJsonlLine } from "../diagnostics/contracts.js";
-import { assertDiagnosticStorageRef } from "../diagnostics/logs.js";
+import { assertDiagnosticStorageRef, createSandboxLogLine } from "../diagnostics/logs.js";
 import { ExecutionTaskKind } from "../domain/contracts.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import { TaskHistoryStatus } from "../runtime/tasking.js";
+import type { SkillName, SkillParamsByName } from "../skills/contracts.js";
 import {
   type AbortError,
+  type FacadeCallError,
   SANDBOX_ERROR_NAMES,
   SANDBOX_STEP_ACTION_NAMES,
   type SandboxExecutionError,
@@ -21,10 +26,72 @@ import {
   type SandboxExecutionInterrupted,
   type SandboxExecutionRequest,
   type SandboxExecutionResourceLimits,
+  type SandboxExecutionResult,
   type SandboxExecutionSuccess,
   type SandboxStepActionName,
+  type SandboxStepParamsByAction,
   type SandboxStepResult,
+  type StaticCheckError,
+  type TranspileError,
+  type UnhandledError,
 } from "./contracts.js";
+
+/** 沙箱 Facade API（门面接口） 写动作适配器。 */
+export interface SandboxFacadeExecutionAdapter {
+  /** 通过 BotActor（机器人执行代理） 单写者执行技能动作。 */
+  executeBotSkill<TName extends SkillName>(
+    skill: TName,
+    params: Readonly<SkillParamsByName[TName]>,
+    control?: SandboxFacadeCallControl,
+  ): Promise<Readonly<Record<string, unknown>>>;
+  /** 通过 BotActor（机器人执行代理） 单写者写入聊天。 */
+  writeChat(
+    method: "say" | "report",
+    params: Readonly<{ message: string }>,
+    control?: SandboxFacadeCallControl,
+  ): Promise<Readonly<Record<string, unknown>>>;
+}
+
+/** 单次 Facade API（门面接口） 调用的执行门控。 */
+export interface SandboxFacadeCallControl {
+  /** 沙箱执行进入终态后触发，用于阻止后续真实副作用。 */
+  readonly signal: AbortSignal;
+  /** 沙箱执行级截止时间。 */
+  readonly deadline_ms: number;
+}
+
+/** 沙箱执行时暴露给只读 task（任务） 分区的上下文。 */
+export interface SandboxExecutionTaskContext {
+  /** 任务标识。 */
+  readonly id: string;
+  /** 用户原始消息。 */
+  readonly userMessage: string;
+  /** 任务意图。 */
+  readonly intent: string;
+}
+
+type SandboxHostCallResult = Readonly<Record<string, unknown>>;
+
+interface SandboxExecutionControlState {
+  readonly abortController: AbortController;
+  readonly activeFacadeCalls: Set<Promise<void>>;
+  readonly deadlineMs: number;
+  terminalError: SandboxExecutionError | null;
+}
+
+const FORBIDDEN_SANDBOX_PATTERNS = Object.freeze([
+  { name: "import", pattern: /\bimport(?:\s|\()/ },
+  { name: "require", pattern: /\brequire\s*\(/ },
+  { name: "process", pattern: /\bprocess\b/ },
+  { name: "globalThis", pattern: /\bglobalThis\b/ },
+  { name: "eval", pattern: /\beval\s*\(/ },
+  { name: "Function", pattern: /\bFunction\s*\(/ },
+  { name: "filesystem", pattern: /\b(?:fs|node:fs)\b/ },
+  {
+    name: "network",
+    pattern: /\b(?:net|node:net|http|node:http|https|node:https|fetch|WebSocket)\b/,
+  },
+] as const);
 
 /** 断言数值是否为正整数。 */
 function assertPositiveInteger(value: number, fieldName: string): void {
@@ -420,4 +487,661 @@ export function createSandboxExecutionInterrupted(input: {
     },
     error: input.error,
   }) as SandboxExecutionInterrupted;
+}
+
+/**
+ * 对沙箱源码执行静态预检。
+ *
+ * 该检查只作为进入 isolated-vm（隔离虚拟机） 前的第一道硬边界，真正能力仍由 Facade API（门面接口） 注入控制。
+ *
+ * @param code 待执行源码
+ * @returns 通过时返回 null，否则返回结构化静态检查错误
+ */
+export function checkSandboxSourceStaticPolicy(code: string): StaticCheckError | null {
+  assertNonEmptyString(code, "code");
+
+  for (const forbidden of FORBIDDEN_SANDBOX_PATTERNS) {
+    if (forbidden.pattern.test(code)) {
+      return createSandboxError({
+        name: "StaticCheckError",
+        message: `Forbidden sandbox capability detected: ${forbidden.name}`,
+        recoverable: false,
+        violation: forbidden.name,
+      });
+    }
+  }
+
+  return null;
+}
+
+/**
+ * 在 isolated-vm（隔离虚拟机） 内执行 sandbox_code（沙箱代码）。
+ *
+ * @param input 沙箱请求、Facade 适配器与只读任务上下文
+ * @returns 标准化沙箱执行结果
+ */
+export async function executeSandboxCodeRequest(input: {
+  request: SandboxExecutionRequest;
+  facade: SandboxFacadeExecutionAdapter;
+  task?: Partial<SandboxExecutionTaskContext>;
+  now?: () => number;
+}): Promise<SandboxExecutionResult> {
+  const now = input.now ?? Date.now;
+  const startedAt = now();
+  const phaseLogs: SandboxJsonlLine[] = [];
+  const stepResults: SandboxStepResult[] = [];
+  let lastFacadeError: FacadeCallError | null = null;
+  const controlState: SandboxExecutionControlState = {
+    abortController: new AbortController(),
+    activeFacadeCalls: new Set<Promise<void>>(),
+    deadlineMs: startedAt + input.request.resource_limits.timeout_ms,
+    terminalError: null,
+  };
+
+  const pushPhaseLog = <TLine extends SandboxJsonlLine>(line: TLine): void => {
+    phaseLogs.push(createSandboxLogLine(line));
+  };
+
+  const finishFailure = (error: SandboxExecutionError): SandboxExecutionFailure =>
+    createSandboxExecutionFailure({
+      job_id: input.request.job_id,
+      bot_id: input.request.bot_id,
+      intent_epoch: input.request.intent_epoch,
+      log_ref: input.request.log_ref,
+      ...(input.request.code_ref !== undefined ? { code_ref: input.request.code_ref } : {}),
+      phase_logs: phaseLogs,
+      step_results: stepResults,
+      summary: {
+        total_steps: stepResults.length,
+        duration_ms: Math.max(0, now() - startedAt),
+      },
+      error,
+    });
+
+  const staticCheckError = checkSandboxSourceStaticPolicy(input.request.code);
+  pushPhaseLog({
+    t: now(),
+    phase: "precheck",
+    ok: staticCheckError === null,
+    ...(staticCheckError !== null ? { violation: staticCheckError.violation } : {}),
+  });
+  if (staticCheckError !== null) {
+    return finishFailure(staticCheckError);
+  }
+
+  const transpileStartedAt = now();
+  const transpiled = await transpileSandboxCode(input.request.code).catch((error: unknown) => {
+    const transpileError = createTranspileError(error);
+    pushPhaseLog({
+      t: now(),
+      phase: "transpile",
+      ok: false,
+      ms: Math.max(0, now() - transpileStartedAt),
+      err: toJsonlErrorSnapshot(transpileError),
+    });
+
+    return transpileError;
+  });
+
+  if (isSandboxExecutionError(transpiled)) {
+    return finishFailure(transpiled);
+  }
+
+  pushPhaseLog({
+    t: now(),
+    phase: "transpile",
+    ok: true,
+    ms: Math.max(0, now() - transpileStartedAt),
+  });
+
+  let isolate: ivm.Isolate | undefined;
+
+  try {
+    isolate = new ivm.Isolate({
+      memoryLimit: input.request.resource_limits.memory_limit_mb,
+    });
+    pushPhaseLog({
+      t: now(),
+      phase: "isolate_create",
+      mem_mb: input.request.resource_limits.memory_limit_mb,
+    });
+
+    const context = await isolate.createContext();
+    await context.global.set(
+      "__sandboxHostCall",
+      new ivm.Reference(async (method: string, args: readonly unknown[]) =>
+        handleSandboxHostCall({
+          method,
+          args,
+          facade: input.facade,
+          phaseLogs,
+          stepResults,
+          controlState,
+          resourceLimits: input.request.resource_limits,
+          setLastFacadeError: (error) => {
+            lastFacadeError = error;
+          },
+          now,
+        }),
+      ),
+    );
+
+    const taskContext = {
+      id: input.task?.id ?? input.request.job_id,
+      userMessage: input.task?.userMessage ?? "",
+      intent: input.task?.intent ?? "sandbox_code",
+    };
+
+    await context.eval(createSandboxBootstrapScript(taskContext), {
+      timeout: input.request.resource_limits.script_timeout_ms,
+    });
+
+    const script = await isolate.compileScript(transpiled);
+    await runSandboxScriptWithTimeout(
+      script.run(context, {
+        promise: true,
+        copy: true,
+        timeout: input.request.resource_limits.script_timeout_ms,
+      }),
+      input.request.resource_limits,
+      controlState,
+    );
+
+    const terminalFacadeError = lastFacadeError ?? findFacadeStepError(stepResults);
+    if (terminalFacadeError !== null) {
+      markSandboxTerminalError(controlState, terminalFacadeError);
+      pushPhaseLog({
+        t: now(),
+        phase: "sandbox_done",
+        steps: stepResults.length,
+        ms: Math.max(0, now() - startedAt),
+      });
+
+      return finishFailure(terminalFacadeError);
+    }
+
+    pushPhaseLog({
+      t: now(),
+      phase: "sandbox_complete",
+      steps: stepResults.length,
+      ms: Math.max(0, now() - startedAt),
+    });
+
+    return createSandboxExecutionSuccess({
+      job_id: input.request.job_id,
+      bot_id: input.request.bot_id,
+      intent_epoch: input.request.intent_epoch,
+      log_ref: input.request.log_ref,
+      ...(input.request.code_ref !== undefined ? { code_ref: input.request.code_ref } : {}),
+      phase_logs: phaseLogs,
+      step_results: stepResults,
+      summary: {
+        total_steps: stepResults.length,
+        duration_ms: Math.max(0, now() - startedAt),
+      },
+    });
+  } catch (error) {
+    const sandboxError =
+      lastFacadeError ??
+      controlState.terminalError ??
+      (isSandboxExecutionError(error)
+        ? error
+        : createRuntimeSandboxError(error, input.request.resource_limits));
+    markSandboxTerminalError(controlState, sandboxError);
+    await waitForActiveFacadeCalls(
+      controlState,
+      input.request.resource_limits.abort_cleanup_timeout_ms,
+    );
+    pushPhaseLog({
+      t: now(),
+      phase: "sandbox_done",
+      steps: stepResults.length,
+      ms: Math.max(0, now() - startedAt),
+    });
+
+    return finishFailure(sandboxError);
+  } finally {
+    isolate?.dispose();
+  }
+}
+
+async function transpileSandboxCode(code: string): Promise<string> {
+  const wrappedCode = `(async () => {\n${code}\n})()`;
+  const output = await transform(wrappedCode, {
+    loader: "ts",
+    format: "cjs",
+    target: "es2022",
+    sourcemap: false,
+  });
+
+  return output.code;
+}
+
+function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string {
+  const taskJson = JSON.stringify(task);
+
+  return `
+    const __sandboxHostCallRef = __sandboxHostCall;
+    delete globalThis.__sandboxHostCall;
+    const __sandboxCall = (method, args) =>
+      __sandboxHostCallRef.apply(undefined, [method, args], {
+        arguments: { copy: true },
+        result: { promise: true, copy: true }
+      });
+    globalThis.api = Object.freeze({
+      bot: Object.freeze({
+        goTo: (...args) => __sandboxCall("bot.goTo", args),
+        mine: (...args) => __sandboxCall("bot.mine", args),
+        collect: (...args) => __sandboxCall("bot.collect", args),
+        equip: (...args) => __sandboxCall("bot.equip", args),
+        cutTree: (...args) => __sandboxCall("bot.cutTree", args)
+      }),
+      chat: Object.freeze({
+        say: (...args) => __sandboxCall("chat.say", args),
+        report: (...args) => __sandboxCall("chat.report", args)
+      }),
+      task: Object.freeze(${taskJson})
+    });
+  `;
+}
+
+async function handleSandboxHostCall(input: {
+  method: string;
+  args: readonly unknown[];
+  facade: SandboxFacadeExecutionAdapter;
+  phaseLogs: SandboxJsonlLine[];
+  stepResults: SandboxStepResult[];
+  controlState: SandboxExecutionControlState;
+  resourceLimits: SandboxExecutionResourceLimits;
+  setLastFacadeError: (error: FacadeCallError) => void;
+  now: () => number;
+}): Promise<SandboxHostCallResult> {
+  const action = toSandboxStepActionName(input.method);
+  const params = normalizeSandboxCallParams(action, input.args);
+  const startedAt = input.now();
+
+  assertSandboxFacadeCallAllowed(input.controlState, input.resourceLimits, input.now());
+
+  input.phaseLogs.push(
+    createSandboxLogLine({
+      t: input.now(),
+      phase: "facade_call",
+      m: action,
+      p: params,
+    }),
+  );
+
+  try {
+    const control = createSandboxFacadeCallControl(input.controlState);
+    const result =
+      action === "say" || action === "report"
+        ? await trackSandboxFacadeCall(
+            input.controlState,
+            input.facade.writeChat(action, params as SandboxStepParamsByAction["say"], control),
+          )
+        : await trackSandboxFacadeCall(
+            input.controlState,
+            executeSandboxBotFacadeCall(input.facade, action, params, control),
+          );
+
+    if (input.controlState.terminalError !== null) {
+      throw input.controlState.terminalError;
+    }
+
+    const durationMs = Math.max(0, input.now() - startedAt);
+    const step = createSandboxStepResult({
+      step_index: input.stepResults.length,
+      action,
+      params,
+      status: "ok",
+      duration_ms: durationMs,
+      result,
+    });
+    input.stepResults.push(step);
+    input.phaseLogs.push(
+      createSandboxLogLine({
+        t: input.now(),
+        phase: "facade_result",
+        m: action,
+        s: "ok",
+        r: result,
+        ms: durationMs,
+      }),
+    );
+
+    return result;
+  } catch (error) {
+    if (
+      input.controlState.terminalError !== null &&
+      input.controlState.terminalError.name !== "FacadeCallError"
+    ) {
+      const terminalError = input.controlState.terminalError;
+      const durationMs = Math.max(0, input.now() - startedAt);
+      input.stepResults.push(
+        createSandboxStepResult({
+          step_index: input.stepResults.length,
+          action,
+          params,
+          status: "err",
+          duration_ms: durationMs,
+          error: terminalError,
+        }),
+      );
+      input.phaseLogs.push(
+        createSandboxLogLine({
+          t: input.now(),
+          phase: "facade_result",
+          m: action,
+          s: "err",
+          err: toJsonlErrorSnapshot(terminalError),
+          ms: durationMs,
+        }),
+      );
+
+      throw new Error(terminalError.message);
+    }
+
+    const facadeError = createFacadeCallError(action, params, error);
+    input.setLastFacadeError(facadeError);
+    markSandboxTerminalError(input.controlState, facadeError);
+    const durationMs = Math.max(0, input.now() - startedAt);
+    input.stepResults.push(
+      createSandboxStepResult({
+        step_index: input.stepResults.length,
+        action,
+        params,
+        status: "err",
+        duration_ms: durationMs,
+        error: facadeError,
+      }),
+    );
+    input.phaseLogs.push(
+      createSandboxLogLine({
+        t: input.now(),
+        phase: "facade_result",
+        m: action,
+        s: "err",
+        err: toJsonlErrorSnapshot(facadeError),
+        ms: durationMs,
+      }),
+    );
+
+    throw new Error(facadeError.message);
+  }
+}
+
+function toSandboxStepActionName(method: string): SandboxStepActionName {
+  const action =
+    method.startsWith("bot.") || method.startsWith("chat.")
+      ? method.slice(method.indexOf(".") + 1)
+      : method;
+
+  if (!isSandboxStepActionName(action)) {
+    throw new Error(`Unsupported Facade method: ${method}`);
+  }
+
+  return action;
+}
+
+function normalizeSandboxCallParams(
+  action: SandboxStepActionName,
+  args: readonly unknown[],
+): SandboxStepResult["params"] {
+  const first = args[0];
+
+  if (action === "goTo") {
+    if (args.length === 3) {
+      return { x: Number(args[0]), y: Number(args[1]), z: Number(args[2]) };
+    }
+
+    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["goTo"];
+  }
+
+  if (action === "mine") {
+    if (typeof first === "string") {
+      return { blockName: first, count: Number(args[1] ?? 1) };
+    }
+
+    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["mine"];
+  }
+
+  if (action === "collect") {
+    if (typeof first === "string") {
+      return {
+        itemName: first,
+        ...(args[1] !== undefined ? { radius: Number(args[1]) } : {}),
+      };
+    }
+
+    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["collect"];
+  }
+
+  if (action === "equip") {
+    if (typeof first === "string") {
+      return {
+        itemName: first,
+        ...(typeof args[1] === "string" ? { destination: args[1] } : {}),
+      } as SandboxStepParamsByAction["equip"];
+    }
+
+    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["equip"];
+  }
+
+  if (action === "cutTree") {
+    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["cutTree"];
+  }
+
+  if (typeof first !== "string" || first.trim().length === 0) {
+    return { message: "" };
+  }
+
+  return { message: first };
+}
+
+async function executeSandboxBotFacadeCall(
+  facade: SandboxFacadeExecutionAdapter,
+  action: Exclude<SandboxStepActionName, "say" | "report">,
+  params: SandboxStepResult["params"],
+  control: SandboxFacadeCallControl,
+): Promise<Readonly<Record<string, unknown>>> {
+  if (action === "cutTree") {
+    throw new Error("cutTree is not executable in the current runtime sandbox");
+  }
+
+  return facade.executeBotSkill(action, params as SkillParamsByName[typeof action], control);
+}
+
+function createSandboxFacadeCallControl(
+  state: SandboxExecutionControlState,
+): SandboxFacadeCallControl {
+  return Object.freeze({
+    signal: state.abortController.signal,
+    deadline_ms: state.deadlineMs,
+  });
+}
+
+function assertSandboxFacadeCallAllowed(
+  state: SandboxExecutionControlState,
+  limits: SandboxExecutionResourceLimits,
+  now: number,
+): void {
+  if (state.terminalError !== null) {
+    throw new Error(state.terminalError.message);
+  }
+
+  if (state.abortController.signal.aborted || now >= state.deadlineMs) {
+    const timeoutError = createSandboxTimeoutError(limits);
+    markSandboxTerminalError(state, timeoutError);
+    abortSandboxFacadeCalls(state, timeoutError);
+    throw new Error(timeoutError.message);
+  }
+}
+
+function markSandboxTerminalError(
+  state: SandboxExecutionControlState,
+  error: SandboxExecutionError,
+): void {
+  if (state.terminalError === null) {
+    state.terminalError = error;
+    abortSandboxFacadeCalls(state, error);
+  }
+}
+
+function abortSandboxFacadeCalls(
+  state: SandboxExecutionControlState,
+  error: SandboxExecutionError,
+): void {
+  if (!state.abortController.signal.aborted) {
+    state.abortController.abort(error);
+  }
+}
+
+async function trackSandboxFacadeCall<TValue>(
+  state: SandboxExecutionControlState,
+  call: Promise<TValue>,
+): Promise<TValue> {
+  const trackedCall = call.then(
+    () => undefined,
+    () => undefined,
+  );
+  state.activeFacadeCalls.add(trackedCall);
+
+  try {
+    return await call;
+  } finally {
+    state.activeFacadeCalls.delete(trackedCall);
+  }
+}
+
+async function waitForActiveFacadeCalls(
+  state: SandboxExecutionControlState,
+  cleanupTimeoutMs: number,
+): Promise<void> {
+  const activeCalls = [...state.activeFacadeCalls];
+
+  if (activeCalls.length === 0) {
+    return;
+  }
+
+  await Promise.race([
+    Promise.allSettled(activeCalls),
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, cleanupTimeoutMs);
+    }),
+  ]);
+}
+
+function findFacadeStepError(stepResults: readonly SandboxStepResult[]): FacadeCallError | null {
+  for (const stepResult of stepResults) {
+    if (stepResult.status === "err" && stepResult.error?.name === "FacadeCallError") {
+      return stepResult.error;
+    }
+  }
+
+  return null;
+}
+
+function createFacadeCallError(
+  action: SandboxStepActionName,
+  params: SandboxStepResult["params"],
+  error: unknown,
+): FacadeCallError {
+  return createSandboxError({
+    name: "FacadeCallError",
+    message: error instanceof Error ? error.message : String(error),
+    recoverable: true,
+    method: action,
+    params: params as Readonly<Record<string, unknown>>,
+    error_code: "facade_call_failed",
+  });
+}
+
+function createTranspileError(error: unknown): TranspileError {
+  return createSandboxError({
+    name: "TranspileError",
+    message: "Sandbox TypeScript transpile failed",
+    recoverable: false,
+    diagnostics: [error instanceof Error ? error.message : String(error)],
+  });
+}
+
+function createRuntimeSandboxError(
+  error: unknown,
+  limits: SandboxExecutionResourceLimits,
+): SandboxExecutionError {
+  if (error instanceof Error && /timed out|timeout/i.test(error.message)) {
+    return createSandboxTimeoutError(limits);
+  }
+
+  if (error instanceof Error && error.message.includes("Array buffer allocation failed")) {
+    return createSandboxError({
+      name: "SandboxOOMError",
+      message: error.message,
+      recoverable: false,
+      memory_limit_mb: limits.memory_limit_mb,
+    });
+  }
+
+  const unhandledError: UnhandledError = {
+    name: "UnhandledError",
+    message: error instanceof Error ? error.message : String(error),
+    recoverable: false,
+    ...(error instanceof Error && error.stack !== undefined ? { stack: error.stack } : {}),
+  };
+
+  return createSandboxError(unhandledError);
+}
+
+function createSandboxTimeoutError(limits: SandboxExecutionResourceLimits): SandboxExecutionError {
+  return createSandboxError({
+    name: "SandboxTimeoutError",
+    message: "Sandbox execution timed out",
+    recoverable: false,
+    timeout_ms: limits.timeout_ms,
+  });
+}
+
+function isSandboxExecutionError(value: unknown): value is SandboxExecutionError {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "name" in value &&
+    (SANDBOX_ERROR_NAMES as readonly string[]).includes(String(value.name))
+  );
+}
+
+function toJsonlErrorSnapshot(error: SandboxExecutionError): {
+  readonly name: string;
+  readonly message: string;
+  readonly error_code?: string;
+  readonly recoverable?: boolean;
+} {
+  return Object.freeze({
+    name: error.name,
+    message: error.message,
+    ...("error_code" in error ? { error_code: error.error_code } : {}),
+    recoverable: error.recoverable,
+  });
+}
+
+function runSandboxScriptWithTimeout<TValue>(
+  execution: Promise<TValue>,
+  limits: SandboxExecutionResourceLimits,
+  state: SandboxExecutionControlState,
+): Promise<TValue> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const timeoutError = createSandboxTimeoutError(limits);
+      markSandboxTerminalError(state, timeoutError);
+      abortSandboxFacadeCalls(state, timeoutError);
+      reject(timeoutError);
+    }, limits.timeout_ms);
+  });
+
+  return Promise.race([execution, timeout]).finally(() => {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+  });
 }

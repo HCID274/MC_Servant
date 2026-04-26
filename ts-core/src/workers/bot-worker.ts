@@ -106,7 +106,7 @@ export type CreateBotBullmqWorker = (input: {
 /** BotWorker（机器人工作线程） 依赖注入集合。 */
 export interface BotWorkerRuntimeDependencies {
   /** BotActor（机器人执行代理） 单写者入口。 */
-  readonly actor: Pick<BotActorRuntime, "executeSkill">;
+  readonly actor: Pick<BotActorRuntime, "executeSkill" | "executeSandboxCode">;
   /** 当前意图纪元，用于丢弃过期任务。 */
   readonly currentIntentEpoch?: () => number;
   /** 当前时钟，单位毫秒。 */
@@ -361,21 +361,59 @@ export function createBotWorkerRuntime(input: {
     );
 
     const startedAt = now();
+    let terminalFailureHandled = false;
 
     try {
-      if (task.exec_job.type !== ExecutionTaskKind.SkillCall) {
-        throw new Error("BotWorker currently supports only skill_call execution");
-      }
-
-      const outcome = await input.dependencies.actor.executeSkill(task.exec_job);
+      const outcome =
+        task.exec_job.type === ExecutionTaskKind.SkillCall
+          ? await input.dependencies.actor.executeSkill(task.exec_job)
+          : await input.dependencies.actor.executeSandboxCode(task.exec_job);
+      const executionResult = outcome.result;
       const durationMs = Math.max(0, now() - startedAt);
+
+      if ("status" in executionResult && executionResult.status === TaskHistoryStatus.Failed) {
+        const errorSnapshot = Object.freeze({
+          name: executionResult.error.name,
+          message: executionResult.error.message,
+          ...("error_code" in executionResult.error
+            ? { error_code: executionResult.error.error_code }
+            : {}),
+        });
+        await emitActions(
+          createBotWorkerActions({
+            task,
+            phase: "terminal",
+            status: TaskHistoryStatus.Failed,
+            total_steps: executionResult.summary.total_steps,
+            duration_ms: durationMs,
+            error: errorSnapshot,
+            last_step: executionResult.step_results.at(-1)?.action ?? "executeSandboxCode",
+          }),
+        );
+        events.push(
+          Object.freeze({
+            type: "task.failed" as const,
+            bot_id: task.bot_id,
+            message_id: task.exec_job.message_id,
+            status: TaskHistoryStatus.Failed,
+            error: errorSnapshot,
+          }),
+        );
+        terminalFailureHandled = true;
+        throw Object.assign(new Error(executionResult.error.message), {
+          name: executionResult.error.name,
+        });
+      }
 
       await emitActions(
         createBotWorkerActions({
           task,
           phase: "terminal",
           status: TaskHistoryStatus.Completed,
-          total_steps: outcome.result.total_steps,
+          total_steps:
+            "summary" in executionResult
+              ? executionResult.summary.total_steps
+              : executionResult.total_steps,
           duration_ms: durationMs,
         }),
       );
@@ -385,10 +423,17 @@ export function createBotWorkerRuntime(input: {
           bot_id: task.bot_id,
           message_id: task.exec_job.message_id,
           status: TaskHistoryStatus.Completed,
-          total_steps: outcome.result.total_steps,
+          total_steps:
+            "summary" in executionResult
+              ? executionResult.summary.total_steps
+              : executionResult.total_steps,
         }),
       );
     } catch (error) {
+      if (terminalFailureHandled) {
+        throw error;
+      }
+
       const errorSnapshot = createErrorSnapshot(error);
       const durationMs = Math.max(0, now() - startedAt);
 
@@ -400,7 +445,10 @@ export function createBotWorkerRuntime(input: {
           total_steps: 0,
           duration_ms: durationMs,
           error: errorSnapshot,
-          last_step: "executeSkill",
+          last_step:
+            task.exec_job.type === ExecutionTaskKind.SkillCall
+              ? "executeSkill"
+              : "executeSandboxCode",
         }),
       );
       events.push(

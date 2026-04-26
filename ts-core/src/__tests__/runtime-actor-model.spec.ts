@@ -10,6 +10,7 @@ import {
   createExternalAuthSecretBinding,
   createExternalAuthState,
   createMineflayerTransportDescriptor,
+  createSandboxCodeJob,
   createSkillCallJob,
 } from "../runtime/index.js";
 import {
@@ -477,5 +478,124 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
         skill: "equip",
       },
     ]);
+  });
+});
+
+describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
+  it("应通过 BotActor（机器人执行代理） 单写者执行 sandbox_code（沙箱代码） 聊天动作", async () => {
+    const written: string[] = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        chat: (text) => {
+          written.push(text);
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+    });
+
+    await actor.start();
+    const outcome = await actor.executeSandboxCode(
+      createSandboxCodeJob({
+        message_id: "msg-sandbox-chat",
+        intent_epoch: 1,
+        snapshot_ts: 1_712_930_001_000,
+        priority: ExecPriority.Normal,
+        code: "await api.chat.say('sandbox hello')",
+      }),
+    );
+
+    expect(outcome.result.status).toBe("completed");
+    expect(written).toEqual(["sandbox hello"]);
+    expect(outcome.result.step_results).toMatchObject([
+      {
+        action: "say",
+        status: "ok",
+      },
+    ]);
+    expect(outcome.snapshot.sandbox_executions).toEqual([
+      {
+        message_id: "msg-sandbox-chat",
+        status: "completed",
+        total_steps: 1,
+      },
+    ]);
+    expect(outcome.snapshot.chat_writes).toContainEqual({
+      kind: "sandbox_chat",
+      message_id: "msg-sandbox-chat",
+      method: "say",
+    });
+  });
+
+  it("应让 sandbox_code（沙箱代码） 的 bot.goTo（前往坐标） 复用真实技能执行边界", async () => {
+    const targets: Array<{ x: number; y: number; z: number }> = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        goTo: (params) => {
+          targets.push({ ...params });
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+    });
+
+    await actor.start();
+    const outcome = await actor.executeSandboxCode(
+      createSandboxCodeJob({
+        message_id: "msg-sandbox-goto",
+        intent_epoch: 1,
+        snapshot_ts: 1_712_930_002_000,
+        priority: ExecPriority.Normal,
+        code: "await api.bot.goTo(1, 64, 1)",
+      }),
+    );
+
+    expect(outcome.result.status).toBe("completed");
+    expect(targets).toEqual([{ x: 1, y: 64, z: 1 }]);
+    expect(outcome.result.step_results).toMatchObject([
+      {
+        action: "goTo",
+        status: "ok",
+        params: { x: 1, y: 64, z: 1 },
+      },
+    ]);
+  });
+
+  it("应在 world_ready（世界交互就绪） 未打开时拒绝 sandbox_code（沙箱代码） 且不写聊天", async () => {
+    const written: string[] = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        chat: (text) => {
+          written.push(text);
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+    });
+
+    await actor.start();
+    await expect(
+      actor.executeSandboxCode(
+        createSandboxCodeJob({
+          message_id: "msg-sandbox-not-ready",
+          intent_epoch: 1,
+          snapshot_ts: 1_712_930_003_000,
+          priority: ExecPriority.Normal,
+          code: "await api.chat.say('should not write')",
+        }),
+      ),
+    ).rejects.toThrow(/world interaction is not ready/);
+    expect(written).toEqual([]);
   });
 });
