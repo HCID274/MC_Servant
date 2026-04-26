@@ -22,9 +22,9 @@ import {
   vector,
 } from "drizzle-orm/pg-core";
 
-import type { MessageTriage } from "../domain/contracts.js";
-import type { TaskFailedErrorSnapshot, TaskStatusEventPayload } from "../runtime/events.js";
-import type { SkillCallJob } from "../runtime/tasking.js";
+import type { TaskFailedErrorSnapshot, TaskStatusEventPayload } from "../core-ports/events.js";
+import type { MessageTriage } from "../core-ports/foundation.js";
+import type { SkillCallJob } from "../core-ports/tasking.js";
 import {
   type BotConfigOverlay,
   CHAT_MESSAGE_ROLES,

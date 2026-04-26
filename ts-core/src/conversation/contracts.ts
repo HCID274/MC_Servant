@@ -7,15 +7,14 @@
  */
 
 import {
+  type BotStatus,
   type ConversationPriority,
+  type ExecPriority,
   ExecutionTaskKind,
   type MessageSource,
   type MessageTriage,
-} from "../domain/contracts.js";
-import type { BotStatus } from "../runtime/contracts.js";
-import type { ExecPriority } from "../runtime/tasking.js";
-import type { SandboxExecutionRequest } from "../sandbox/contracts.js";
-import type { SkillName, SkillParamsByName } from "../skills/contracts.js";
+} from "../core-ports/index.js";
+import type { SkillName, SkillParamsByName } from "../core-ports/skills.js";
 
 /** 对话历史允许的角色清单。 */
 export const CONVERSATION_HISTORY_ROLES = ["owner", "bot"] as const;
@@ -189,8 +188,8 @@ export interface ConversationSandboxCodePlanDraft {
   readonly type: ExecutionTaskKind.SandboxCode;
   /** 给主人的开场回复。 */
   readonly reply: string;
-  /** 复用沙箱执行请求中的源码字段。 */
-  readonly code: SandboxExecutionRequest["code"];
+  /** 待执行源码。 */
+  readonly code: string;
 }
 
 /** Stage 2（第二阶段） 规划产物联合。 */

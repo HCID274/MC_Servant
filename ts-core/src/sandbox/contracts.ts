@@ -7,10 +7,10 @@
  * 4. IO 契约：定义沙箱执行请求（ExecutionRequest）和聚合执行结果（ExecutionResult）的完整数据结构。
  */
 
+import type { ExecutionTaskKind } from "../core-ports/foundation.js";
+import type { SkillName, SkillParamsByName } from "../core-ports/skills.js";
+import type { TaskHistoryStatus } from "../core-ports/tasking.js";
 import type { SandboxJsonlLine, TaskLogStepStatus } from "../diagnostics/contracts.js";
-import type { ExecutionTaskKind } from "../domain/contracts.js";
-import type { TaskHistoryStatus } from "../runtime/tasking.js";
-import type { SkillName, SkillParamsByName } from "../skills/contracts.js";
 
 /** Facade API（门面接口） 顶层分区清单。 */
 export const SANDBOX_FACADE_SECTIONS = [

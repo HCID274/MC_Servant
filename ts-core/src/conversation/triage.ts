@@ -6,9 +6,9 @@
  * 3. 动态路由：根据分诊结果、当前系统执行状态（是否有活跃任务）决定对话的下一步走向（直接回复、取消中断、加入队列规划等）。
  */
 
-import { ConversationPriority, type MessageTriage } from "../domain/contracts.js";
+import { ConversationPriority, type MessageTriage } from "../core-ports/foundation.js";
+import { ExecPriority } from "../core-ports/tasking.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
-import { ExecPriority } from "../runtime/tasking.js";
 import { shouldSearchConversationMemory } from "./chat.js";
 import type {
   ConversationCancelRouteDecision,

@@ -1,7 +1,7 @@
 # 当前任务握手区
 
 【任务序号】: T-028
-【当前状态】: 待开发
+【当前状态】: 待审查
 
 ---
 
@@ -115,15 +115,15 @@
 ---
 
 ## Coder 自检清单
-- [ ] 任务序号核对为 `T-028`
-- [ ] 仅读取并修改白名单内文件
-- [ ] `core-ports`（核心端口层） 承载跨模块共享纯类型 / 枚举 / 载荷，未继续扩大 `domain`（领域层） 职责
-- [ ] 五类循环依赖均已消除，且不是仅靠忽略规则绕过
-- [ ] `runtime`（运行时） 不再值级依赖 `sandbox`（沙箱）、`diagnostics`（诊断）、`skills`（技能）、`observation`（观测）
-- [ ] `data`（数据层） 与 `diagnostics`（诊断） 不再依赖 `runtime/*`（运行时目录） 实现文件获取共享类型
-- [ ] `pre_review.sh`（评审前预检脚本） 已加入可重复执行的循环依赖检测
-- [ ] 未拆超大文件、未重构 `conversation/llm.ts`（对话大语言模型文件）、未改变业务语义
-- [ ] 执行 bash ts-core/scripts/pre_review.sh 全部通过
+- [x] 任务序号核对为 `T-028`
+- [x] 仅读取并修改白名单内文件
+- [x] `core-ports`（核心端口层） 承载跨模块共享纯类型 / 枚举 / 载荷，未继续扩大 `domain`（领域层） 职责
+- [x] 五类循环依赖均已消除，且不是仅靠忽略规则绕过
+- [x] `runtime`（运行时） 不再值级依赖 `sandbox`（沙箱）、`diagnostics`（诊断）、`skills`（技能）、`observation`（观测）
+- [x] `data`（数据层） 与 `diagnostics`（诊断） 不再依赖 `runtime/*`（运行时目录） 实现文件获取共享类型
+- [x] `pre_review.sh`（评审前预检脚本） 已加入可重复执行的循环依赖检测
+- [x] 未拆超大文件、未重构 `conversation/llm.ts`（对话大语言模型文件）、未改变业务语义
+- [x] 执行 bash ts-core/scripts/pre_review.sh 全部通过
 
 ---
 
@@ -135,7 +135,84 @@
 
 ## Coder 执行反馈（仅 Coder 填写）
 
-（待 Coder 填写）
+### T-028 执行反馈
+
+**任务序号**: T-028
+
+**修改文件**:
+- `ts-core/src/core-ports/foundation.ts`
+- `ts-core/src/core-ports/skills.ts`
+- `ts-core/src/core-ports/observation.ts`
+- `ts-core/src/core-ports/runtime.ts`
+- `ts-core/src/core-ports/tasking.ts`
+- `ts-core/src/core-ports/events.ts`
+- `ts-core/src/core-ports/sandbox.ts`
+- `ts-core/src/core-ports/index.ts`
+- `ts-core/src/domain/contracts.ts`
+- `ts-core/src/runtime/contracts.ts`
+- `ts-core/src/runtime/events.ts`
+- `ts-core/src/runtime/tasking.ts`
+- `ts-core/src/runtime/actor.ts`
+- `ts-core/src/runtime/transport.ts`
+- `ts-core/src/observation/contracts.ts`
+- `ts-core/src/observation/runtime.ts`
+- `ts-core/src/skills/contracts.ts`
+- `ts-core/src/skills/execution.ts`
+- `ts-core/src/sandbox/contracts.ts`
+- `ts-core/src/sandbox/execution.ts`
+- `ts-core/src/sandbox/facade.ts`
+- `ts-core/src/diagnostics/contracts.ts`
+- `ts-core/src/data/contracts.ts`
+- `ts-core/src/data/schema.ts`
+- `ts-core/src/interfaces/contracts.ts`
+- `ts-core/src/interfaces/realtime.ts`
+- `ts-core/src/conversation/contracts.ts`
+- `ts-core/src/conversation/planning.ts`
+- `ts-core/src/conversation/triage.ts`
+- `ts-core/src/conversation/llm.ts`
+- `ts-core/src/workers/contracts.ts`
+- `ts-core/src/workers/bot-worker.ts`
+- `ts-core/src/workers/conversation-worker.ts`
+- `ts-core/src/app/bootstrap.ts`
+- `ts-core/src/__tests__/runtime-actor-model.spec.ts`
+- `ts-core/package.json`
+- `ts-core/pnpm-lock.yaml`
+- `ts-core/scripts/pre_review.sh`
+
+**执行摘要**:
+- 新增 `core-ports`（核心端口层） 聚合入口，将基础消息 / 任务枚举、技能端口、观测快照与威胁评估、运行时中断、执行任务、运行时事件载荷、沙箱执行注入端口下沉到端口层。
+- `runtime/tasking.ts`、`skills/contracts.ts`、`observation/contracts.ts` 改为兼容重新导出，保留既有导入路径但不再承载跨模块共享实现。
+- `runtime/actor.ts` 不再直接导入 `sandbox`（沙箱）、`diagnostics`（诊断）、`skills`（技能）、`observation`（观测） 实现；sandbox_code（沙箱代码） 执行与日志引用由 `app/bootstrap.ts` 组合根通过 DI（依赖注入） 提供。
+- `data`（数据层） 与 `diagnostics`（诊断） 改为从 `core-ports`（核心端口层） 读取任务状态、运行时事件载荷与错误快照，不再依赖 `runtime/*`（运行时目录） 获取共享类型。
+- `pre_review.sh`（评审前预检脚本） 新增 `pnpm dep:cycles`，并在 `package.json` / `pnpm-lock.yaml` 固化 `madge`（依赖图工具）。
+
+**依赖方向摘要**:
+
+```text
+core-ports
+  -> 无业务模块依赖
+
+runtime / sandbox / skills / observation / diagnostics / data
+  -> core-ports
+
+app
+  -> runtime + sandbox + diagnostics
+  -> 在组合根注入 sandbox 执行能力给 BotActor
+
+forbidden:
+  core-ports -> domain/runtime/sandbox/skills/observation/diagnostics/data
+  runtime -> sandbox/diagnostics/skills/observation
+  data/diagnostics -> runtime/*
+```
+
+**预检输出摘要**:
+- `pnpm dep:cycles`: `✔ No circular dependency found!`
+- `pnpm typecheck`: 通过
+- `pnpm lint`: 通过
+- `pnpm test`: 28 个测试文件全部通过，161 条测试全部通过
+- `bash scripts/pre_review.sh`: `===== 预检全部通过 =====`
+
+**遗留疑问**: 无
 
 ---
 

@@ -6,7 +6,7 @@
  * 3. 契约复用：复用 runtime/events.ts 中的事件类型定义，保证内部逻辑与外部接口的一致性。
  */
 
-import type { RuntimeEventLogEntry, RuntimeEventType } from "../runtime/events.js";
+import type { RuntimeEventLogEntry, RuntimeEventType } from "../core-ports/events.js";
 
 /** 实时推送事件结构，用于统一 Socket.io（实时推送） 与 replay（补拉） 的事件载荷。 */
 export interface RealtimeEventEnvelope<TType extends RuntimeEventType = RuntimeEventType> {

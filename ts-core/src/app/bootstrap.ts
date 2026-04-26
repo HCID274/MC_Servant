@@ -24,7 +24,7 @@ import {
   createRedisKeyCatalog,
   createRedisRuntimeResource,
 } from "../db/index.js";
-import { createDiagnosticsCatalog } from "../diagnostics/index.js";
+import { createDiagnosticsCatalog, createSandboxLogRef } from "../diagnostics/index.js";
 import type { LlmDiagnosticSummary } from "../diagnostics/index.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
 import {
@@ -73,8 +73,10 @@ import {
 import {
   type SandboxExecutionResourceLimits,
   type SandboxFacadeContract,
+  createSandboxExecutionRequest,
   createSandboxFacadeContract,
   createSandboxResourceLimits,
+  executeSandboxCodeRequest,
 } from "../sandbox/index.js";
 import {
   type WorkerBullmqDependencies,
@@ -757,6 +759,16 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
       observation: created.observation,
       externalAuth,
       externalAuthPlan,
+      sandboxExecution: {
+        createLogRef: createSandboxLogRef,
+        createRequest: createSandboxExecutionRequest,
+        executeRequest: (sandboxInput) =>
+          executeSandboxCodeRequest({
+            request: sandboxInput.request,
+            facade: sandboxInput.facade,
+            task: sandboxInput.task,
+          }),
+      },
     });
     await created.actor.start();
 

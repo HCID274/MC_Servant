@@ -6,17 +6,17 @@
  * 3. 稳压处理：通过 freezeDiagnosticValue 确保日志数据的不可变性，并对其中的错误快照、参数等进行深层处理。
  */
 
-import { TASK_PROGRESS_STATUSES, type TaskProgressStatus } from "../data/contracts.js";
-import { JSONL_LOG_DIRECTORIES, type JsonlLogDirectory } from "../data/logs.js";
-import type { ExecutionTaskKind } from "../domain/contracts.js";
-import type { InterruptSource } from "../runtime/contracts.js";
 import type {
   TaskFailedErrorSnapshot,
   TaskLifecycleEvent,
   TaskLifecycleEventPayloadByStatus,
   TaskLifecycleEventTypeByStatus,
-} from "../runtime/events.js";
-import { TaskHistoryStatus, type TaskTerminalStatus } from "../runtime/tasking.js";
+} from "../core-ports/events.js";
+import type { ExecutionTaskKind } from "../core-ports/foundation.js";
+import type { InterruptSource } from "../core-ports/runtime.js";
+import { TaskHistoryStatus, type TaskTerminalStatus } from "../core-ports/tasking.js";
+import { TASK_PROGRESS_STATUSES, type TaskProgressStatus } from "../data/contracts.js";
+import { JSONL_LOG_DIRECTORIES, type JsonlLogDirectory } from "../data/logs.js";
 
 /** diagnostics（诊断） 模块支持的 JSONL（结构化日志） 通道清单。 */
 export const DIAGNOSTIC_LOG_CHANNELS = [...JSONL_LOG_DIRECTORIES] as const;

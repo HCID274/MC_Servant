@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-021` ~ `T-030`
-- 当前已完成任务：`T-021`、`T-022`、`T-023`、`T-024`、`T-025`、`T-026`、`T-027`
-- 当前活跃任务：`T-028`（任务二十八） 循环依赖治理。
+- 当前已完成任务：`T-021`、`T-022`、`T-023`、`T-024`、`T-025`、`T-026`、`T-027`、`T-028`
+- 当前活跃任务：`T-029`（任务二十九） 超大文件拆分。
 - 当前批次摘要：`T-021`（任务二十一） 到 `T-027`（任务二十七） 已完成 MC（Minecraft，我的世界） 上线、真实 LLM（大语言模型）、多技能、观测出口与 sandbox_code（沙箱代码） 真实执行链。自 `T-028`（任务二十八） 起，本批次最后三项改为架构治理：`T-028`（循环依赖治理）、`T-029`（超大文件拆分）、`T-030`（模式重构与收口）。
 - 当前批次硬约束：`T-021`（任务二十一） 到 `T-027`（任务二十七） 的可运行主干不得回归。`T-028`（任务二十八） 到 `T-030`（任务三十） 是架构止血任务，重点是依赖图、文件边界与可维护性，不要求新增 MC（Minecraft，我的世界） 可见行为；但必须保持现有 MC（Minecraft，我的世界） 行为测试与预检全绿。
 
@@ -204,3 +204,38 @@
   - 新增测试覆盖 `chat.say`（聊天发送）、`bot.goTo`（前往坐标）、只读 `task`（任务） 查询、静态逃逸拦截、转译失败、脚本超时、Facade（门面） 失败、`cutTree`（砍树） 显式失败、LRU（最近最少使用） 裁剪，以及打回修复的“吞错伪成功”和“超时后延迟聊天副作用”回归。
   - `bash ts-core/scripts/pre_review.sh` 由 Coder（编码代理） 回填为全部通过，摘要为 28 个测试文件、161 条测试通过。
   - 本次审查未重复机械预检。
+
+### T-028 — 循环依赖治理与 core-ports 下沉
+
+- 审查状态：通过。
+- 核心文件：
+  - `ts-core/src/core-ports/foundation.ts`
+  - `ts-core/src/core-ports/skills.ts`
+  - `ts-core/src/core-ports/observation.ts`
+  - `ts-core/src/core-ports/runtime.ts`
+  - `ts-core/src/core-ports/tasking.ts`
+  - `ts-core/src/core-ports/events.ts`
+  - `ts-core/src/core-ports/sandbox.ts`
+  - `ts-core/src/core-ports/index.ts`
+  - `ts-core/src/runtime/actor.ts`
+  - `ts-core/src/runtime/contracts.ts`
+  - `ts-core/src/runtime/events.ts`
+  - `ts-core/src/runtime/tasking.ts`
+  - `ts-core/src/skills/contracts.ts`
+  - `ts-core/src/observation/contracts.ts`
+  - `ts-core/src/diagnostics/contracts.ts`
+  - `ts-core/src/data/contracts.ts`
+  - `ts-core/src/data/schema.ts`
+  - `ts-core/src/app/bootstrap.ts`
+  - `ts-core/package.json`
+  - `ts-core/scripts/pre_review.sh`
+- 变更快照：
+  - 新增 `core-ports`（核心端口层），集中承载基础消息 / 任务枚举、技能端口、观测快照、威胁评估、运行时中断、执行任务、运行时事件载荷与沙箱执行注入端口。
+  - `runtime/tasking.ts`（运行时任务模型）、`skills/contracts.ts`（技能契约）、`observation/contracts.ts`（观测契约） 改为兼容重新导出，旧导入路径保留但共享契约来源已下沉。
+  - `runtime/actor.ts`（运行时执行代理） 不再直接依赖 `sandbox`（沙箱）、`diagnostics`（诊断）、`skills`（技能）、`observation`（观测） 实现；沙箱执行请求、沙箱执行器与日志引用工厂由 `app/bootstrap.ts`（应用引导） 通过 DI（依赖注入） 装配。
+  - `data`（数据层） 与 `diagnostics`（诊断） 已改为从 `core-ports`（核心端口层） 读取任务状态、运行时事件载荷与错误快照，不再从 `runtime/*`（运行时目录） 获取共享类型。
+  - `package.json`（包配置） 增加 `dep:cycles`（循环依赖检测） 脚本并引入 `madge`（依赖图工具）；`pre_review.sh`（评审前预检脚本） 已把循环检测纳入第一步。
+- 验收备注：
+  - Manager（管理代理） 复核 `pnpm dep:cycles`（循环依赖检测） 输出为 `No circular dependency found`（未发现循环依赖），并额外用独立脚本扫描模块图，未发现值级或类型级环。
+  - Manager（管理代理） 复核运行 `pnpm typecheck`（类型检查） 通过；其余机械项以 Coder（编码代理） 回填为准：`bash scripts/pre_review.sh` 通过，28 个测试文件、161 条测试通过。
+  - 残留说明：`sandbox`（沙箱） → `diagnostics`（诊断） → `data`（数据层） 是既有日志分层依赖，不构成本轮循环；`T-029`（任务二十九） 拆文件时继续压窄文件边界。

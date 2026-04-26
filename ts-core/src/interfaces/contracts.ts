@@ -7,11 +7,10 @@
  * 4. 安全校验：实现 Session 与 Bot ID 的绑定校验，防止跨 Bot 的非法操作。
  */
 
+import { type BotStatus, MessageSource } from "../core-ports/index.js";
 import type { LlmDiagnosticSummary } from "../diagnostics/contracts.js";
-import { MessageSource } from "../domain/contracts.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import {
-  type BotStatus,
   type ExternalAuthState,
   createExternalAuthPublicState,
   createRuntimeReadyGate,

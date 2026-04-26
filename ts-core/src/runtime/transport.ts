@@ -1,4 +1,3 @@
-import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import {
   type CollectSkillExecutionResult,
   type CollectSkillParams,
@@ -12,7 +11,8 @@ import {
   createEquipSkillExecutionResult,
   createGoToSkillExecutionResult,
   createMineSkillExecutionResult,
-} from "../skills/index.js";
+} from "../core-ports/skills.js";
+import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 
 /** Mineflayer（Minecraft 协议客户端） 传输连接状态清单。 */
 export const MINEFLAYER_TRANSPORT_STATES = [

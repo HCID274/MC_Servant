@@ -10,12 +10,16 @@
 import { transform } from "esbuild";
 import ivm from "isolated-vm";
 
+import { ExecutionTaskKind } from "../core-ports/foundation.js";
+import type {
+  SandboxFacadeCallControl,
+  SandboxFacadeExecutionAdapter,
+} from "../core-ports/sandbox.js";
+import type { SkillName, SkillParamsByName } from "../core-ports/skills.js";
+import { TaskHistoryStatus } from "../core-ports/tasking.js";
 import type { SandboxJsonlLine } from "../diagnostics/contracts.js";
 import { assertDiagnosticStorageRef, createSandboxLogLine } from "../diagnostics/logs.js";
-import { ExecutionTaskKind } from "../domain/contracts.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
-import { TaskHistoryStatus } from "../runtime/tasking.js";
-import type { SkillName, SkillParamsByName } from "../skills/contracts.js";
 import {
   type AbortError,
   type FacadeCallError,
@@ -36,29 +40,7 @@ import {
   type UnhandledError,
 } from "./contracts.js";
 
-/** 沙箱 Facade API（门面接口） 写动作适配器。 */
-export interface SandboxFacadeExecutionAdapter {
-  /** 通过 BotActor（机器人执行代理） 单写者执行技能动作。 */
-  executeBotSkill<TName extends SkillName>(
-    skill: TName,
-    params: Readonly<SkillParamsByName[TName]>,
-    control?: SandboxFacadeCallControl,
-  ): Promise<Readonly<Record<string, unknown>>>;
-  /** 通过 BotActor（机器人执行代理） 单写者写入聊天。 */
-  writeChat(
-    method: "say" | "report",
-    params: Readonly<{ message: string }>,
-    control?: SandboxFacadeCallControl,
-  ): Promise<Readonly<Record<string, unknown>>>;
-}
-
-/** 单次 Facade API（门面接口） 调用的执行门控。 */
-export interface SandboxFacadeCallControl {
-  /** 沙箱执行进入终态后触发，用于阻止后续真实副作用。 */
-  readonly signal: AbortSignal;
-  /** 沙箱执行级截止时间。 */
-  readonly deadline_ms: number;
-}
+export type { SandboxFacadeCallControl, SandboxFacadeExecutionAdapter };
 
 /** 沙箱执行时暴露给只读 task（任务） 分区的上下文。 */
 export interface SandboxExecutionTaskContext {

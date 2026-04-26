@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { createSandboxLogRef } from "../diagnostics/index.js";
 import { createObservationRuntimeCache } from "../observation/index.js";
 import {
   BotStatus,
@@ -13,6 +14,7 @@ import {
   createSandboxCodeJob,
   createSkillCallJob,
 } from "../runtime/index.js";
+import { createSandboxExecutionRequest, executeSandboxCodeRequest } from "../sandbox/index.js";
 import {
   SKILL_DIRECTORY,
   createCollectSkillExecutionResult,
@@ -20,6 +22,12 @@ import {
   createGoToSkillExecutionResult,
   createMineSkillExecutionResult,
 } from "../skills/index.js";
+
+const testSandboxExecution = Object.freeze({
+  createLogRef: createSandboxLogRef,
+  createRequest: createSandboxExecutionRequest,
+  executeRequest: executeSandboxCodeRequest,
+});
 
 function createFakeTransport(input?: {
   chat?: (text: string) => Promise<void> | void;
@@ -130,6 +138,7 @@ describe("BotActor（机器人执行代理） 单写聊天入口", () => {
       observation: createObservationRuntimeCache(),
       externalAuth,
       externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
     });
 
     await actor.start();
@@ -158,6 +167,7 @@ describe("BotActor（机器人执行代理） 单写聊天入口", () => {
       observation: createObservationRuntimeCache(),
       externalAuth,
       externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
     });
 
     await expect(
@@ -186,6 +196,7 @@ describe("BotActor（机器人执行代理） 单写聊天入口", () => {
       observation: createObservationRuntimeCache(),
       externalAuth,
       externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
     });
 
     await actor.start();
@@ -281,6 +292,7 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
       observation: createObservationRuntimeCache(),
       externalAuth,
       externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
     });
 
     await actor.start();
@@ -325,6 +337,7 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
       observation: createObservationRuntimeCache(),
       externalAuth,
       externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
     });
 
     await actor.start();
@@ -359,6 +372,7 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
       observation: createObservationRuntimeCache(),
       externalAuth,
       externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
     });
     const job = createSkillCallJob({
       message_id: "msg-goto-1",
@@ -496,6 +510,7 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
       observation: createObservationRuntimeCache(),
       externalAuth,
       externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
     });
 
     await actor.start();
@@ -545,6 +560,7 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
       observation: createObservationRuntimeCache(),
       externalAuth,
       externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
     });
 
     await actor.start();

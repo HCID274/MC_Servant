@@ -12,6 +12,7 @@
     "start": "node dist/src/main.js",
     "db:generate": "drizzle-kit generate --config drizzle.config.ts",
     "db:migrate": "tsx src/db/migrate.ts",
+    "dep:cycles": "madge --ts-config tsconfig.json --extensions ts src --circular",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "biome check package.json tsconfig.json biome.json drizzle.config.ts vitest.config.ts README.md src",
     "format": "biome format --write package.json tsconfig.json biome.json drizzle.config.ts vitest.config.ts README.md src",
@@ -22,6 +23,7 @@
     "@types/node": "^22.0.0",
     "@types/pg": "^8.15.5",
     "drizzle-kit": "^0.31.4",
+    "madge": "^8.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0",
     "vitest": "^3.0.0"

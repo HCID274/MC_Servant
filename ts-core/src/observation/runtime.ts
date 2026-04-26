@@ -1,4 +1,3 @@
-import type { MineflayerEventSource } from "../runtime/transport.js";
 import type {
   BridgeObservationInput,
   EnvironmentSnapshot,
@@ -13,6 +12,16 @@ import {
   createObservationReadBoundary,
   createThreatDetectorInput,
 } from "./snapshot.js";
+
+/** Mineflayer（Minecraft 协议客户端） 事件源最小接口；观测层只需要只读监听能力。 */
+export interface MineflayerObservationEventSource {
+  /** 注册持续事件监听器。 */
+  on(eventName: string, listener: (...args: readonly unknown[]) => void): unknown;
+  /** 移除事件监听器。 */
+  off?(eventName: string, listener: (...args: readonly unknown[]) => void): unknown;
+  /** 移除事件监听器。 */
+  removeListener?(eventName: string, listener: (...args: readonly unknown[]) => void): unknown;
+}
 
 /** observation（观测） 默认监听的 Mineflayer（Minecraft 协议客户端） 事件清单。 */
 export const OBSERVATION_MINEFLAYER_EVENT_NAMES = [
@@ -32,7 +41,7 @@ export type ObservationMineflayerEventName = (typeof OBSERVATION_MINEFLAYER_EVEN
 /** observation（观测） 运行时缓存的 Mineflayer（Minecraft 协议客户端） 事件绑定。 */
 export interface ObservationMineflayerEventBinding {
   /** 事件源。 */
-  readonly eventSource: MineflayerEventSource;
+  readonly eventSource: MineflayerObservationEventSource;
   /** 读取当前 Mineflayer（Minecraft 协议客户端） 只读输入的函数。 */
   readonly readObservationInput: (
     eventName: ObservationMineflayerEventName,
@@ -155,7 +164,7 @@ export function createObservationRuntimeCache(
  * 驱动兼容性：兼容 Node.js 原生 EventEmitter 与某些自定义驱动的事件移除接口（off vs removeListener）。
  */
 function removeObservationListener(
-  source: MineflayerEventSource,
+  source: MineflayerObservationEventSource,
   eventName: string,
   listener: (...args: readonly unknown[]) => void,
 ): void {

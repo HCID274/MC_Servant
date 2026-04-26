@@ -1,24 +1,20 @@
-import { createSandboxLogRef } from "../diagnostics/logs.js";
-import type { ObservationRuntimeCache } from "../observation/runtime.js";
-import {
-  type SandboxExecutionResult,
-  type SandboxFacadeCallControl,
-  type SandboxFacadeExecutionAdapter,
-  createSandboxExecutionRequest,
-  executeSandboxCodeRequest,
-} from "../sandbox/index.js";
+import type {
+  RuntimeSandboxExecutionDependencies,
+  RuntimeSandboxExecutionResult,
+  SandboxFacadeCallControl,
+  SandboxFacadeExecutionAdapter,
+} from "../core-ports/sandbox.js";
 import {
   SKILL_DIRECTORY,
   type SkillExecutionDependencies,
   type SkillExecutionResult,
   type SkillName,
   type SkillParamsByName,
-  executeSkillCallJob,
   isCollectSkillParams,
   isEquipSkillParams,
   isGoToSkillParams,
   isMineSkillParams,
-} from "../skills/index.js";
+} from "../core-ports/skills.js";
 import {
   BotStatus,
   type ExternalAuthExecutionPlan,
@@ -31,6 +27,12 @@ import type { RuntimeEventType } from "./events.js";
 import { resolveTransition } from "./state-machine.js";
 import type { SandboxCodeJob, SkillCallJob } from "./tasking.js";
 import type { MineflayerRuntimeTransport, MineflayerTransportSnapshot } from "./transport.js";
+
+/** BotActor（机器人执行代理） 只需要持有观测缓存引用，不直接依赖 observation（观测） 实现。 */
+export interface BotActorObservationRuntimeCachePort {
+  /** 获取当前观测快照；当前运行时只保留端口，不主动读取。 */
+  getSnapshot(): unknown;
+}
 
 /** BotActor（机器人执行代理） 最小运行时快照。 */
 export interface BotActorRuntimeSnapshot<TBotId extends string = string> {
@@ -106,7 +108,7 @@ export interface BotActorSandboxExecutionRecord {
   /** 原始消息标识。 */
   readonly message_id: string;
   /** 沙箱执行终态。 */
-  readonly status: SandboxExecutionResult["status"];
+  readonly status: RuntimeSandboxExecutionResult["status"];
   /** 沙箱步骤数。 */
   readonly total_steps: number;
 }
@@ -114,7 +116,7 @@ export interface BotActorSandboxExecutionRecord {
 /** BotActor（机器人执行代理） 沙箱执行输出。 */
 export interface BotActorSandboxExecutionOutcome<TBotId extends string = string> {
   /** 沙箱执行结果。 */
-  readonly result: SandboxExecutionResult;
+  readonly result: RuntimeSandboxExecutionResult;
   /** 执行后的运行时快照。 */
   readonly snapshot: BotActorRuntimeSnapshot<TBotId>;
 }
@@ -150,10 +152,11 @@ export interface BotActorRuntime<TBotId extends string = string> {
 export function createBotActorRuntime<TBotId extends string>(input: {
   botId: TBotId;
   transport: MineflayerRuntimeTransport<TBotId>;
-  observation: ObservationRuntimeCache;
+  observation: BotActorObservationRuntimeCachePort;
   externalAuth: ExternalAuthState;
   externalAuthPlan: ExternalAuthExecutionPlan;
   skillExecution?: SkillExecutionDependencies;
+  sandboxExecution?: RuntimeSandboxExecutionDependencies;
 }): BotActorRuntime<TBotId> {
   let status = BotStatus.INITIALIZING;
   let externalAuth = input.externalAuth;
@@ -340,10 +343,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       emittedEvents.push(...startDecision.emittedEvents);
 
       try {
-        const result = await executeSkillCallJob({
-          job,
-          dependencies: skillExecution,
-        });
+        const result = await executeActorSkillCallJob(job, skillExecution);
         const completedDecision = resolveTransition(status, {
           type: "task_completed",
         });
@@ -408,18 +408,24 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       emittedEvents.push(...startDecision.emittedEvents);
 
       try {
-        const sandboxResult = await executeSandboxCodeRequest({
-          request: createSandboxExecutionRequest({
+        if (input.sandboxExecution === undefined) {
+          throw new Error("BotActor sandbox execution dependency is not configured");
+        }
+
+        const request = input.sandboxExecution.createRequest({
+          job_id: job.message_id,
+          bot_id: input.botId,
+          intent_epoch: job.intent_epoch,
+          snapshot_ts: job.snapshot_ts,
+          code: job.code,
+          log_ref: input.sandboxExecution.createLogRef({
+            date: new Date(job.snapshot_ts).toISOString().slice(0, 10),
             job_id: job.message_id,
-            bot_id: input.botId,
-            intent_epoch: job.intent_epoch,
-            snapshot_ts: job.snapshot_ts,
-            code: job.code,
-            log_ref: createSandboxLogRef({
-              date: new Date(job.snapshot_ts).toISOString().slice(0, 10),
-              job_id: job.message_id,
-            }),
           }),
+        });
+
+        const sandboxResult = await input.sandboxExecution.executeRequest({
+          request,
           task: {
             id: job.message_id,
             userMessage: job.code,
@@ -567,5 +573,24 @@ function assertSandboxFacadeCallActive(control: SandboxFacadeCallControl | undef
 
   if (control.signal.aborted || Date.now() >= control.deadline_ms) {
     throw new Error("sandbox Facade call is no longer active");
+  }
+}
+
+/** 通过注入的技能执行依赖分发 skill_call（技能调用），避免 runtime（运行时） 依赖 skills（技能） 实现模块。 */
+async function executeActorSkillCallJob(
+  job: SkillCallJob,
+  dependencies: SkillExecutionDependencies,
+): Promise<SkillExecutionResult> {
+  switch (job.skill) {
+    case SKILL_DIRECTORY.goTo:
+      return dependencies.goToMovement.goTo(job.params);
+    case SKILL_DIRECTORY.mine:
+      return dependencies.mine(job.params);
+    case SKILL_DIRECTORY.collect:
+      return dependencies.collect(job.params);
+    case SKILL_DIRECTORY.equip:
+      return dependencies.equip(job.params);
+    case SKILL_DIRECTORY.cutTree:
+      throw new Error("cutTree is not executable in the current runtime");
   }
 }

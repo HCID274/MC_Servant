@@ -6,11 +6,16 @@
  * 3. 跨层对接：负责将对话层的规划产物（PlanDraft）转换为执行层可直接消费的任务对象（ExecJob）。
  */
 
-import { ExecutionTaskKind } from "../domain/contracts.js";
+import { ExecutionTaskKind } from "../core-ports/foundation.js";
+import type { SkillCallInput } from "../core-ports/skills.js";
+import type {
+  ExecJob,
+  ExecPriority,
+  SkillCallJob,
+  SkillCallJobInput,
+} from "../core-ports/tasking.js";
+import { createSandboxCodeJob, createSkillCallJob } from "../core-ports/tasking.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
-import type { ExecJob, ExecPriority, SkillCallJob, SkillCallJobInput } from "../runtime/tasking.js";
-import { createSandboxCodeJob, createSkillCallJob } from "../runtime/tasking.js";
-import type { SkillCallInput } from "../skills/contracts.js";
 import { ensureReplyEndsWithMeow } from "./chat.js";
 import type {
   ConversationPlanDraft,

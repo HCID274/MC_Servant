@@ -7,7 +7,7 @@
  * 4. 技能对齐：确保沙箱内的 `bot` 分区方法与 Phase 1 技能元数据严格对齐。
  */
 
-import { PHASE1_SKILL_DEFINITIONS } from "../skills/index.js";
+import { PHASE1_SKILL_DEFINITIONS } from "../core-ports/skills.js";
 import {
   SANDBOX_BOT_METHOD_NAMES,
   SANDBOX_CHAT_METHOD_NAMES,

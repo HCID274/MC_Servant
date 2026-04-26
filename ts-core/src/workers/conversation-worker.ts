@@ -21,10 +21,10 @@ import {
 } from "../conversation/llm.js";
 import { createExecJobFromPlan } from "../conversation/planning.js";
 import { createConversationRouteDecision, createMessageTriage } from "../conversation/triage.js";
+import { ConversationPriority, type MessageTriage } from "../core-ports/foundation.js";
+import type { SkillName } from "../core-ports/skills.js";
+import { ExecPriority, TaskHistoryStatus } from "../core-ports/tasking.js";
 import type { RedisClientLike } from "../db/index.js";
-import { ConversationPriority, type MessageTriage } from "../domain/contracts.js";
-import { ExecPriority, TaskHistoryStatus } from "../runtime/tasking.js";
-import type { SkillName } from "../skills/index.js";
 import { createBullmqPhysicalQueueName } from "./bullmq.js";
 import {
   type BotWorkerTask,

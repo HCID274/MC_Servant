@@ -17,8 +17,14 @@ import type {
   ConversationRouteDecision,
   ConversationTemplateReply,
 } from "../conversation/contracts.js";
+import type { InterruptSignal } from "../core-ports/runtime.js";
+import {
+  type ExecJob,
+  type TaskDiscardReason,
+  TaskHistoryStatus,
+  type TaskTerminalStatus,
+} from "../core-ports/tasking.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
-import type { InterruptSignal } from "../runtime/contracts.js";
 import {
   type TaskFailedErrorSnapshot,
   type TaskLifecycleEvent,
@@ -27,12 +33,6 @@ import {
   createTaskStartedLifecycleEvent,
   createTaskTerminalLifecycleEvent,
 } from "../runtime/events.js";
-import {
-  type ExecJob,
-  type TaskDiscardReason,
-  TaskHistoryStatus,
-  type TaskTerminalStatus,
-} from "../runtime/tasking.js";
 import {
   type BrainQueueName,
   type ExecQueueName,

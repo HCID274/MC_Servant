@@ -7,11 +7,16 @@
 
 import { Worker, type WorkerOptions } from "bullmq";
 
-import type { RedisClientLike } from "../db/index.js";
-import { ExecutionTaskKind } from "../domain/contracts.js";
-import { assertNonEmptyString } from "../domain/invariants.js";
-import type { BotActorRuntime } from "../runtime/actor.js";
-import type { TaskFailedErrorSnapshot } from "../runtime/events.js";
+import type { TaskFailedErrorSnapshot } from "../core-ports/events.js";
+import { ExecutionTaskKind } from "../core-ports/foundation.js";
+import {
+  SKILL_DIRECTORY,
+  isCollectSkillParams,
+  isCutTreeSkillParams,
+  isEquipSkillParams,
+  isGoToSkillParams,
+  isMineSkillParams,
+} from "../core-ports/skills.js";
 import {
   type ExecJob,
   ExecPriority,
@@ -20,15 +25,10 @@ import {
   TaskHistoryStatus,
   createSandboxCodeJob,
   createSkillCallJob,
-} from "../runtime/tasking.js";
-import {
-  SKILL_DIRECTORY,
-  isCollectSkillParams,
-  isCutTreeSkillParams,
-  isEquipSkillParams,
-  isGoToSkillParams,
-  isMineSkillParams,
-} from "../skills/index.js";
+} from "../core-ports/tasking.js";
+import type { RedisClientLike } from "../db/index.js";
+import { assertNonEmptyString } from "../domain/invariants.js";
+import type { BotActorRuntime } from "../runtime/actor.js";
 import { createBullmqPhysicalQueueName } from "./bullmq.js";
 import {
   type BotWorkerAction,

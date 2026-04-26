@@ -6,16 +6,16 @@
  * 3. 诊断留痕：为闲聊阶段生成 `llm`（大语言模型） JSONL（结构化日志） 摘要，覆盖模型、成功与失败信息。
  */
 
-import type { JsonlErrorSnapshot, LlmJsonlLine, LlmLogStage } from "../diagnostics/contracts.js";
-import { createLlmLogLine, createLlmLogRef } from "../diagnostics/logs.js";
-import { assertNonEmptyString } from "../domain/invariants.js";
 import {
   SKILL_DIRECTORY,
   isCollectSkillParams,
   isEquipSkillParams,
   isGoToSkillParams,
   isMineSkillParams,
-} from "../skills/contracts.js";
+} from "../core-ports/skills.js";
+import type { JsonlErrorSnapshot, LlmJsonlLine, LlmLogStage } from "../diagnostics/contracts.js";
+import { createLlmLogLine, createLlmLogRef } from "../diagnostics/logs.js";
+import { assertNonEmptyString } from "../domain/invariants.js";
 import type {
   ConversationHistoryTurn,
   ConversationReplyMode,

@@ -7,61 +7,18 @@
  * 4. 骨架装配：提供 RuntimeScaffold 用于初始化运行时的基本参数、支持的任务类型及中断模板。
  */
 
-import { type ExecutionTaskEnvelope, ExecutionTaskKind } from "../domain/contracts.js";
+import { ExecutionTaskKind } from "../core-ports/foundation.js";
+import {
+  BotStatus,
+  type InterruptSignal,
+  type InterruptSource,
+  type RuntimeTaskEnvelope,
+  type ThreatAssessment,
+} from "../core-ports/index.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
-import type { ReflexInterruptSource, ThreatAssessment } from "../observation/contracts.js";
 
-export type { ThreatAssessment } from "../observation/contracts.js";
-
-/** Bot 状态枚举，用于描述 BotActor 在运行时内的最小状态集合。 */
-export enum BotStatus {
-  INITIALIZING = "initializing",
-  IDLE = "idle",
-  EXECUTING = "executing",
-  REFLEXING = "reflexing",
-  DEAD = "dead",
-  SHUTDOWN = "shutdown",
-}
-
-/** 中断来源判别联合，用于区分 control、reflex、triage 与 system 四类来源。 */
-export type InterruptSource =
-  | {
-      /** 控制类中断。 */
-      type: "control";
-      /** 控制命令。 */
-      command: "interrupt" | "cancel";
-    }
-  | ReflexInterruptSource
-  | {
-      /** 分诊类中断。 */
-      type: "triage";
-      /** 意图纪元。 */
-      intent_epoch: number;
-    }
-  | {
-      /** 系统类中断。 */
-      type: "system";
-      /** 系统原因。 */
-      cause: "death" | "shutdown" | "stalled";
-    };
-
-/** 中断信号结构，用于统一描述运行时收到的中断请求。 */
-export interface InterruptSignal {
-  /** 中断请求来源。 */
-  source: InterruptSource;
-  /** 中断原因。 */
-  reason: string;
-  /** 中断扩展载荷。 */
-  payload?: Readonly<Record<string, unknown>>;
-}
-
-/** 运行时任务包结构，用于在 BotActor 边界内补齐执行态字段。 */
-export interface RuntimeTaskEnvelope extends ExecutionTaskEnvelope {
-  /** 任务进入运行时前看到的 Bot 状态。 */
-  status: BotStatus;
-  /** 任务是否允许被中断。 */
-  interruptible: boolean;
-}
+export { BotStatus, type InterruptSignal, type InterruptSource, type RuntimeTaskEnvelope };
+export type { ThreatAssessment } from "../core-ports/index.js";
 
 /** 外部认证受控入口清单。 */
 export const EXTERNAL_AUTH_ENTRYPOINTS = ["none", "game_chat_command"] as const;

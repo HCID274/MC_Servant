@@ -9,13 +9,16 @@ cd "$(dirname "$0")/.."
 
 echo "===== 预检开始 ====="
 
-echo "--- [1/3] TypeScript 类型检查 ---"
+echo "--- [1/4] 循环依赖检测 ---"
+pnpm dep:cycles
+
+echo "--- [2/4] TypeScript 类型检查 ---"
 pnpm typecheck
 
-echo "--- [2/3] Biome lint ---"
+echo "--- [3/4] Biome lint ---"
 pnpm lint
 
-echo "--- [3/3] Vitest 测试 ---"
+echo "--- [4/4] Vitest 测试 ---"
 pnpm test
 
 echo "===== 预检全部通过 ====="

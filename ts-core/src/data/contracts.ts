@@ -7,7 +7,6 @@
  * 4. 辅助校验：为持久化标识符、时间戳、日志引用等提供严格的类型检查与断言。
  */
 
-import { ExecutionTaskKind, MessageSource } from "../domain/contracts.js";
 import {
   RUNTIME_EVENT_TYPES,
   type RuntimeEventLogEntry,
@@ -16,13 +15,14 @@ import {
   type TaskLifecycleEvent,
   type TaskLifecycleEventPayloadByStatus,
   type TaskLifecycleEventTypeByStatus,
-} from "../runtime/events.js";
+} from "../core-ports/events.js";
+import { ExecutionTaskKind, MessageSource } from "../core-ports/foundation.js";
 import {
   type ExecJob,
   type InterruptedTaskRecord,
   TaskHistoryStatus,
   type TaskTerminalStatus,
-} from "../runtime/tasking.js";
+} from "../core-ports/tasking.js";
 import {
   DEFAULT_LOGS_BASE_DIR,
   EVENT_LOG_RETENTION_DAYS,
