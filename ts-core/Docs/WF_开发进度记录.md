@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-031` ~ `T-040`
-- 当前已完成任务：`T-031`、`T-032`、`T-033`
-- 当前活跃任务：`T-034`（任务三十四） 网页轻面板状态 / 消息 / 事件同步接口。
+- 当前已完成任务：`T-031`、`T-032`、`T-033`、`T-034`
+- 当前活跃任务：`T-035`（任务三十五） sandbox_code（沙箱代码） 经验沉淀钩子与诊断摘要。
 - 当前批次摘要：上一批次 `T-021`（任务二十一） 到 `T-030`（任务三十） 已完成 MC（Minecraft，我的世界） 上线闭环、真实 LLM（大语言模型） 接入、多技能、观测出口、sandbox_code（沙箱代码） 与架构治理。新批次默认继续沿可运行主干推进对话智能增强。
 - 当前批次硬约束：不得回退 `T-021` 到 `T-030` 已形成的真实在线路径、单写者路径、无循环依赖图、OpenAI（开放人工智能） 兼容配置边界与 sandbox_code（沙箱代码） 执行安全边界。
 
@@ -106,3 +106,23 @@
   - 通过。T-033（任务三十三） 已补齐 Level 1（一级） 任务摘要链路和 memory（记忆）读取端口，本轮未触碰 LLM（大语言模型） 调用链路或 Prompt（提示词），因此不需要真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
 - **验证记录**:
   - Manager（管理代理）复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、177 条测试全部通过。
+
+### T-034（已完成）
+
+- **任务主题**: 网页轻面板状态 / 消息 / 事件同步接口。
+- **审查时间**: 2026-04-26T22:15:40+09:00
+- **核心文件**:
+  - `src/app/entrypoint.ts`
+  - `src/__tests__/app-entrypoint-model.spec.ts`
+- **变更快照**:
+  - `startAppOnlineRuntime()`（启动真实在线运行时） 新增统一 `appendOnlineRealtimeEvent`（在线实时事件追加器），将进程内 replay store（补拉事件存储） 与用户注入的 `appendRealtimeEvent`（追加实时事件汇点） 组合调用，避免覆盖外部注入逻辑。
+  - `ConversationWorker`（对话工作线程） 的广播回复在调用用户自定义 `broadcastReplySink`（广播回复汇点） 和 BotActor（机器人执行代理） 聊天广播后，追加 `chat.reply`（聊天回复） 到 replay（补拉）事件流。
+  - `BotWorker`（机器人工作线程） 的 `emit_task_lifecycle`（发射任务生命周期） 动作转换为 `task.started`（任务已开始） / `task.discarded`（任务已丢弃） / `task.completed`（任务已完成） / `task.failed`（任务已失败） / `task.interrupted`（任务已中断） 事件；`enqueue_brain`（入摘要队列） 明确不伪装成 runtime（运行时） 事件。
+  - 在线入口组合调用用户注入的 `actionSink`（动作汇点） 与 `broadcastReplySink`（广播回复汇点），并让 `/api/status`（状态接口） 的 `last_event_seq`（最后事件序号） 随 replay store（补拉事件存储） 更新。
+  - 测试覆盖 worker（工作线程）动作转换、回复事件不可变载荷、自定义汇点组合、状态事件序号更新、`/api/replay`（补拉接口）读取 accepted（已接受） / reply（回复） / task（任务）事件。
+- **审查结论**:
+  - 通过。T-034（任务三十四） 已补齐网页轻面板后端最小同步闭环，未新增公开路由、依赖、WebSocket（全双工网页通信协议） 或 Socket.io（实时通信库） 物理服务。
+  - 因本轮触碰 online entrypoint（在线入口装配），Manager（管理代理） 按长期规则补跑真实 OpenAI（开放人工智能） 兼容 API（应用程序接口） 最小验收；本地网关返回 `200`，输出包含 `OK`。
+- **验证记录**:
+  - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、179 条测试全部通过。
+  - Manager（管理代理） 真实 API（应用程序接口） 验收命令摘要：`POST http://127.0.0.1:8045/v1/chat/completions`，`model`（模型）=`bl-auto`，输入为 T-034 online entrypoint smoke（在线入口冒烟） 消息；结果 `status=200`，`duration_ms=1815`，关键输出包含 `OK`。

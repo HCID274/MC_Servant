@@ -10,11 +10,14 @@ import {
   createAppExternalAuthSecretFromEnvironment,
   createAppStartupSummary,
   createOnlineConversationActorStateProjectionProvider,
+  createRealtimeEventFromBotWorkerAction,
+  createRealtimeEventFromConversationReply,
   renderAppStartupSummary,
   runAppEntrypoint,
   startAppOnlineRuntime,
 } from "../app/index.js";
 import type { AppRuntimeCoreResources } from "../app/index.js";
+import { ExecPriority, TaskHistoryStatus, createSandboxCodeJob } from "../core-ports/tasking.js";
 import {
   BotStatus,
   createExternalAuthExecutionPlan,
@@ -23,7 +26,11 @@ import {
   createRuntimeReadyGate,
 } from "../runtime/index.js";
 import type { MineflayerBotHandle } from "../runtime/transport.js";
-import { createConversationWorkerTask } from "../workers/contracts.js";
+import {
+  createBotWorkerActions,
+  createBotWorkerTask,
+  createConversationWorkerTask,
+} from "../workers/contracts.js";
 
 class FakeEntrypointMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-online";
@@ -108,6 +115,108 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(rendered).toContain("io_boundary.mode: bootstrap_only");
     expect(rendered).toContain("load_config");
     expect(rendered).toContain("interrupt_runtime");
+  });
+
+  it("应把 worker（工作线程） 输出动作转换为只读 replay（补拉）事件", () => {
+    const task = createBotWorkerTask({
+      bot_id: "bot-realtime-action",
+      exec_job: createSandboxCodeJob({
+        message_id: "msg-realtime-action",
+        intent_epoch: 1,
+        snapshot_ts: 100,
+        priority: ExecPriority.Normal,
+        code: "return true",
+      }),
+    });
+    const startedAction = createBotWorkerActions({ task, phase: "started" })[0];
+    const discardedAction = createBotWorkerActions({
+      task,
+      phase: "discarded",
+      discard_reason: "intent_epoch_stale",
+      current_epoch: 2,
+    })[0];
+    const completedActions = createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Completed,
+      total_steps: 1,
+      duration_ms: 10,
+    });
+    const failedAction = createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Failed,
+      total_steps: 1,
+      duration_ms: 12,
+      error: {
+        name: "Error",
+        message: "boom",
+      },
+    })[0];
+    const interruptedAction = createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Interrupted,
+      total_steps: 1,
+      duration_ms: 13,
+      interrupt_source: {
+        type: "triage",
+        intent_epoch: 3,
+      },
+      reason: "cancel",
+    })[0];
+    const replyEvent = createRealtimeEventFromConversationReply({
+      botId: "bot-realtime-action",
+      messageId: "msg-realtime-action",
+      content: "收到喵~",
+      createdAt: "2026-04-25T00:00:00.000Z",
+    });
+
+    const converted = [
+      startedAction,
+      discardedAction,
+      completedActions[0],
+      failedAction,
+      interruptedAction,
+    ].map((action) =>
+      createRealtimeEventFromBotWorkerAction({
+        action,
+        createdAt: "2026-04-25T00:00:00.000Z",
+      }),
+    );
+
+    expect(converted.map((event) => event?.type)).toEqual([
+      "task.started",
+      "task.discarded",
+      "task.completed",
+      "task.failed",
+      "task.interrupted",
+    ]);
+    expect(converted[2]).toMatchObject({
+      bot_id: "bot-realtime-action",
+      payload: {
+        job_id: "msg-realtime-action",
+        status: "completed",
+        message_id: "msg-realtime-action",
+        total_steps: 1,
+      },
+    });
+    expect(
+      createRealtimeEventFromBotWorkerAction({
+        action: completedActions[1],
+        createdAt: "2026-04-25T00:00:00.000Z",
+      }),
+    ).toBeNull();
+    expect(replyEvent).toEqual({
+      bot_id: "bot-realtime-action",
+      type: "chat.reply",
+      created_at: "2026-04-25T00:00:00.000Z",
+      payload: {
+        message_id: "msg-realtime-action",
+        content: "收到喵~",
+      },
+    });
+    expect(Object.isFrozen(replyEvent.payload)).toBe(true);
   });
 
   it("应确保脚本、容器命令与根导出入口边界保持一致", () => {
@@ -272,6 +381,135 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       "redis.close",
       "postgres.close",
     ]);
+  });
+
+  it("应在真实在线入口组合 BotWorker（机器人工作线程） actionSink（动作汇点） 并写入 replay（补拉）", async () => {
+    const customActions: string[] = [];
+    let botProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-worker-replay-online",
+      now: "2026-04-25T00:00:00.000Z",
+    });
+
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => undefined,
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => ({}),
+            connectClient: async () => undefined,
+            closeClient: async () => undefined,
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async () => ({ id: "job-online" }),
+              close: async () => undefined,
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => "http://127.0.0.1:0";
+              server.close = async () => originalClose();
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeEntrypointMineflayerBot([]);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        botWorker: {
+          currentIntentEpoch: () => 2,
+          actionSink: async (action) => {
+            customActions.push(action.type);
+          },
+          createWorker: ({ processor: capturedProcessor }) => {
+            botProcessor = capturedProcessor;
+
+            return {
+              close: async () => undefined,
+            };
+          },
+        },
+        conversationWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+      },
+    });
+
+    await botProcessor?.({
+      data: createBotWorkerTask({
+        bot_id: "bot-worker-replay-online",
+        exec_job: createSandboxCodeJob({
+          message_id: "msg-stale-task",
+          intent_epoch: 1,
+          snapshot_ts: 100,
+          priority: ExecPriority.Normal,
+          code: "return true",
+        }),
+      }),
+    });
+
+    const replayResponse = await runtime.services.http.server.inject({
+      method: "GET",
+      url: "/api/replay?bot_id=bot-worker-replay-online&after_seq=0&limit=10",
+    });
+    const statusResponse = await runtime.services.http.server.inject({
+      method: "GET",
+      url: "/api/status?bot_id=bot-worker-replay-online",
+    });
+
+    expect(customActions).toEqual(["emit_task_lifecycle"]);
+    expect(replayResponse.json()).toMatchObject({
+      events: [
+        {
+          seq: 1,
+          bot_id: "bot-worker-replay-online",
+          type: "task.discarded",
+          payload: {
+            job_id: "msg-stale-task",
+            status: "discarded",
+            message_id: "msg-stale-task",
+            discard_reason: "intent_epoch_stale",
+            current_epoch: 2,
+          },
+        },
+      ],
+    });
+    expect(statusResponse.json()).toMatchObject({
+      bot: {
+        last_event_seq: 1,
+        workers: {
+          conversation: true,
+          bot: true,
+        },
+      },
+    });
+
+    await runtime.close();
   });
 
   it("应在真实在线入口把闲聊消息接到 OpenAI（开放人工智能） 兼容 LLM（大语言模型） 并写回聊天", async () => {
@@ -453,6 +691,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       bot: {
         bot_id: "bot-llm-online",
         status: "idle",
+        last_event_seq: 1,
         mineflayer: {
           connected: true,
           world_ready: true,
@@ -493,9 +732,21 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       bot_id: "bot-llm-online",
       after_seq: 0,
       limit: 10,
+      state: {
+        last_event_seq: 2,
+      },
       events: [
         {
           seq: 1,
+          bot_id: "bot-llm-online",
+          type: "chat.reply",
+          payload: {
+            message_id: "msg-online-chat",
+            content: "当然可以，我在这里喵~",
+          },
+        },
+        {
+          seq: 2,
           bot_id: "bot-llm-online",
           type: "task.accepted",
           payload: {
@@ -508,7 +759,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
     const replayAfterSeqResponse = await runtime.services.http.server.inject({
       method: "GET",
-      url: "/api/replay?bot_id=bot-llm-online&after_seq=1&limit=10",
+      url: "/api/replay?bot_id=bot-llm-online&after_seq=2&limit=10",
     });
 
     expect(replayAfterSeqResponse.json()).toMatchObject({
@@ -1307,6 +1558,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const llmRequests: Array<{ url: string; body: unknown }> = [];
     const interrupts: unknown[] = [];
     const chats: string[] = [];
+    const customBroadcasts: unknown[] = [];
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const bootstrap = createAppBootstrapContract({
       botId: "bot-cancel-online",
@@ -1400,6 +1652,9 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           }),
         },
         conversationWorker: {
+          broadcastReplySink: async (reply) => {
+            customBroadcasts.push(reply);
+          },
           interruptRuntimeSink: async ({ signal }) => {
             interrupts.push(signal);
           },
@@ -1437,6 +1692,12 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         reason: "cancel",
       },
     ]);
+    expect(customBroadcasts).toEqual([
+      {
+        message_id: "msg-online-cancel",
+        content: "好的，已经停下来了喵~",
+      },
+    ]);
     expect(chats).toEqual(["chat:好的，已经停下来了喵~"]);
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "chat.reply",
@@ -1449,6 +1710,24 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       bot_id: "bot-cancel-online",
       message_id: "msg-online-cancel",
       reason: "online_explicit_cancel",
+    });
+    const replayResponse = await runtime.services.http.server.inject({
+      method: "GET",
+      url: "/api/replay?bot_id=bot-cancel-online&after_seq=0&limit=10",
+    });
+
+    expect(replayResponse.json()).toMatchObject({
+      events: [
+        {
+          seq: 1,
+          bot_id: "bot-cancel-online",
+          type: "chat.reply",
+          payload: {
+            message_id: "msg-online-cancel",
+            content: "好的，已经停下来了喵~",
+          },
+        },
+      ],
     });
 
     await runtime.close();

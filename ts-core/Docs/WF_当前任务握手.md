@@ -1,6 +1,6 @@
 # 当前任务握手区
 
-【任务序号】: T-034
+【任务序号】: T-035
 【当前状态】: 待开发
 
 ---
@@ -8,105 +8,88 @@
 ## Manager 任务指令
 
 **任务目标**:
-在 `interfaces`（接口层） + `realtime`（实时事件模型） + `app`（应用装配） 边界内补齐网页轻面板所需的最小状态 / 消息 / 事件同步闭环：复用现有 `/api/status`（状态接口）、`/api/message`（消息接口）、`/api/replay`（补拉接口） 和 `RealtimeEventEnvelope`（实时事件信封），让网页端能提交一条消息、看到 accepted（已接受）回执、通过 replay（补拉）读取后续 chat.reply（聊天回复）与 task.*（任务生命周期）事件，并从 status（状态）读取当前 Bot（机器人） / worker（工作线程） / LLM（大语言模型）摘要。本轮只做后端接口与可测试同步模型，不做前端页面，不新增 WebSocket（全双工网页通信协议）或 Socket.io（实时通信库）物理服务。
+在 `sandbox`（沙箱） + `diagnostics`（诊断） + `workers`（工作线程） 边界内补齐 sandbox_code（沙箱代码） 成败经验沉淀的最小钩子：当 BotWorker（机器人工作线程） 执行 sandbox_code（沙箱代码） 任务进入 completed（已完成） / failed（已失败） / interrupted（已中断） 终态时，产出一个可持久化、可测试、已脱敏的 sandbox experience（沙箱经验）动作或记录草案，供后续 T-036/T-037 之后再接入记忆检索或数据库。本轮只做确定性契约、纯转换和 worker（工作线程）动作出口，不做向量检索闭环，不改 LLM（大语言模型） Prompt（提示词），不新增数据库迁移。
 
 **上下文说明**:
-1. T-031（任务三十一） 已让 chat_reply（闲聊回复） 读取 BotActor（机器人执行代理） 只读状态投影。
-2. T-032（任务三十二） 已让 composite triage（复合分诊） 支持 `cancel → reply → action`（取消 → 回复 → 动作）有序派发。
-3. T-033（任务三十三） 已补齐 BrainWorker（摘要工作线程）最小摘要运行时和 memory（记忆）读取端口，但尚未要求把 BrainWorker（摘要工作线程）接入在线 app（应用）启动链。
-4. 当前 `interfaces`（接口层） 已有四条 HTTP（超文本传输协议）路由和 `RealtimeEventEnvelope`（实时事件信封）；`startAppOnlineRuntime()`（启动真实在线运行时） 只有 message accepted（消息已接受）事件会进入进程内 replay store（补拉事件存储），conversation（对话）广播回复和 BotWorker（机器人工作线程）生命周期还没有稳定进入 replay（补拉）视图。
-5. 本轮不触碰 LLM（大语言模型） Prompt（提示词）、解析器、模型配置或 OpenAI（开放人工智能）兼容客户端；若 Coder（编码代理）意外修改这些链路，则必须回填真实 LLM（大语言模型） API（应用程序接口）验收。
+1. T-033（任务三十三） 已补齐 BrainWorker（摘要工作线程） 的任务摘要写入运行时和 memory（记忆）读取端口，但该摘要是通用任务级摘要，不专门保留 sandbox_code（沙箱代码） 的代码轨迹与失败形态。
+2. T-034（任务三十四） 已让网页轻面板通过 replay（补拉）看到 accepted（已接受）、chat.reply（聊天回复） 与 task.*（任务生命周期）事件。
+3. 当前 sandbox（沙箱） 与 diagnostics（诊断） 已有执行结果、phase_logs（阶段日志）、log_ref（日志引用）、code_ref（代码引用）等契约；BotWorker（机器人工作线程） 已能区分 skill_call（技能调用） 与 sandbox_code（沙箱代码） 执行结果。
+4. 本轮不是重启 sandbox_code（沙箱代码） LLM（大语言模型） 规划，不改 plan prompt（规划提示词） 的“不要输出 sandbox_code”约束；只是为未来经验蒸馏预留最小、低耦合、可测试的采集出口。
+5. 若 Coder（编码代理） 意外触碰 LLM（大语言模型） 调用链路、Prompt（提示词）、解析器、对话路由或 online entrypoint（在线入口装配），反馈区必须按长期规则回填真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
 
 **输入文件白名单（Coder 仅限读取以下文件）**:
-1. `AGENTS.md` — 第 2 节《用户强约束》；第 5 节《ts-core 工具链与工程基线》；第 9 节《编码规范》
+1. `AGENTS.md` — 第 2 节《用户强约束》；第 3 节《Minecraft 事实来源约束》；第 5 节《ts-core 工具链与工程基线》；第 9 节《编码规范》
 2. `ts-core/agent.md` — 全文件
-3. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏的约束》；第 3.1 节《队列划分》；第 3.2 节《全链路数据流》；第 15 节《模块划分》；第 16.1 节《命名约定》
-4. `ts-core/Docs/02_RUNTIME_SPEC.md` — 第 5 节《BotWorker 执行循环》；第 10 节《错误分类》
-5. `ts-core/Docs/04_CONVERSATION_SPEC.md` — 第 2 节《消息入口》；第 8 节《任务历史索引系统》（只读理解）
-6. `ts-core/Docs/05_DATA_SPEC.md` — 第 4 节《JSONL 日志规格》；第 7 节《BrainWorker 数据写入流》（只读理解，不改数据层）
-7. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》；第 5 节《状态流转》；第 6.1 节《正常开发循环》
-8. `ts-core/Docs/WF_需求变更索引.md` — `2026-04-26 — 真实 LLM API 验收成为长期规则`
-9. `ts-core/Docs/WF_开发进度记录.md` — `T-031`（任务三十一） 到 `T-033`（任务三十三）记录
-10. `ts-core/Docs/WF_任务阶段压缩记录.md` — `批次 T-021 ~ T-030`
-11. `ts-core/scripts/pre_review.sh` — 全文件（只读）
-12. `ts-core/package.json` — 全文件（只读；不得新增依赖）
-13. `ts-core/tsconfig.json` — 全文件（只读）
-14. `ts-core/src/core-ports/events.ts` — 全文件（只读优先；仅允许事件载荷类型确有必要时适配）
-15. `ts-core/src/core-ports/foundation.ts` — 全文件（只读）
-16. `ts-core/src/core-ports/tasking.ts` — 全文件（只读）
-17. `ts-core/src/interfaces/contracts.ts` — 全文件
-18. `ts-core/src/interfaces/api.ts` — 全文件
-19. `ts-core/src/interfaces/realtime.ts` — 全文件
-20. `ts-core/src/interfaces/server.ts` — 全文件
-21. `ts-core/src/interfaces/errors.ts` — 全文件（只读优先）
-22. `ts-core/src/interfaces/index.ts` — 全文件（仅允许导出适配）
-23. `ts-core/src/app/bootstrap/types.ts` — 全文件
-24. `ts-core/src/app/bootstrap/directories.ts` — 全文件
-25. `ts-core/src/app/bootstrap/services.ts` — 全文件
-26. `ts-core/src/app/bootstrap/index.ts` — 全文件（仅允许导出适配）
-27. `ts-core/src/app/entrypoint.ts` — 全文件
-28. `ts-core/src/app/index.ts` — 全文件（仅允许导出适配）
-29. `ts-core/src/workers/contracts.ts` — 全文件（只读优先；仅允许 action（动作）类型适配）
-30. `ts-core/src/workers/conversation-worker/types.ts` — 全文件（只读）
-31. `ts-core/src/workers/bot-worker.ts` — 全文件（只读）
-32. `ts-core/src/workers/brain-worker.ts` — 全文件（只读）
-33. `ts-core/src/workers/index.ts` — 全文件（只读优先）
-34. `ts-core/src/runtime/events.ts` — 全文件（只读优先；优先复用已有生命周期事件工厂）
-35. `ts-core/src/__tests__/interfaces-model.spec.ts` — 全文件
-36. `ts-core/src/__tests__/interfaces-server-model.spec.ts` — 全文件
-37. `ts-core/src/__tests__/interfaces-message-queue-model.spec.ts` — 全文件
-38. `ts-core/src/__tests__/app-entrypoint-model.spec.ts` — 全文件
-39. `ts-core/src/__tests__/app-smoke-model.spec.ts` — 全文件
-40. `ts-core/src/__tests__/bot-worker-runtime-model.spec.ts` — 全文件（只读优先；仅允许回归断言适配）
-41. `ts-core/src/__tests__/*.spec.ts` — 其他测试文件（仅允许因公共类型、导出或编译失败导致的最小适配）
+3. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏的约束》；第 6 节《沙箱隔离边界》；第 15 节《模块划分》；第 16.1 节《命名约定》
+4. `ts-core/Docs/03_SANDBOX_SPEC.md` — 第 1 节《沙箱的核心定位》；第 3 节《代码转译流程》；第 4 节《Facade API 完整类型定义》；错误处理与日志相关小节
+5. `ts-core/Docs/05_DATA_SPEC.md` — 第 4 节《JSONL 日志规格》；第 4.3 节《沙箱执行日志格式》；第 7 节《BrainWorker 数据写入流》（只读理解）
+6. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》；第 5 节《状态流转》；第 6.1 节《正常开发循环》
+7. `ts-core/Docs/WF_需求变更索引.md` — `2026-04-24 — Sandbox 上下文成本治理` 与 `2026-04-26 — 真实 LLM API 验收成为长期规则`
+8. `ts-core/Docs/WF_开发进度记录.md` — `T-033`（任务三十三） 与 `T-034`（任务三十四）记录
+9. `ts-core/scripts/pre_review.sh` — 全文件（只读）
+10. `ts-core/package.json` — 全文件（只读；不得新增依赖）
+11. `ts-core/tsconfig.json` — 全文件（只读）
+12. `ts-core/src/core-ports/foundation.ts` — 全文件（只读）
+13. `ts-core/src/core-ports/tasking.ts` — 全文件（只读优先；仅允许 sandbox_code（沙箱代码） 经验字段确需对齐时最小适配）
+14. `ts-core/src/core-ports/events.ts` — 全文件（只读）
+15. `ts-core/src/domain/invariants.ts` — 全文件（只读优先；优先复用既有断言 / 克隆工具）
+16. `ts-core/src/sandbox/contracts.ts` — 全文件
+17. `ts-core/src/sandbox/execution.ts` — 全文件（只读优先；仅允许为经验摘要补只读 helper（辅助函数））
+18. `ts-core/src/sandbox/facade.ts` — 全文件（只读）
+19. `ts-core/src/sandbox/index.ts` — 全文件（仅允许导出适配）
+20. `ts-core/src/diagnostics/contracts.ts` — 全文件
+21. `ts-core/src/diagnostics/logs.ts` — 全文件
+22. `ts-core/src/diagnostics/index.ts` — 全文件（仅允许导出适配）
+23. `ts-core/src/workers/contracts.ts` — 全文件
+24. `ts-core/src/workers/bot-worker.ts` — 全文件
+25. `ts-core/src/workers/index.ts` — 全文件（仅允许导出适配）
+26. `ts-core/src/data/contracts/task-history.ts` — 全文件（只读优先；仅允许复用 / 对齐 T-033（任务三十三） 摘要契约时最小适配）
+27. `ts-core/src/__tests__/sandbox-diagnostics-model.spec.ts` — 全文件
+28. `ts-core/src/__tests__/bot-worker-runtime-model.spec.ts` — 全文件
+29. `ts-core/src/__tests__/conversation-workers-model.spec.ts` — 全文件（只读优先；仅允许因 worker（工作线程）动作联合变化导致的最小适配）
+30. `ts-core/src/__tests__/data-model.spec.ts` — 全文件（只读优先）
+31. `ts-core/src/__tests__/*.spec.ts` — 其他测试文件（仅允许因公共类型、导出或编译失败导致的最小适配）
 
 **核心逻辑要求**:
 
-1. **接口协议边界**:
-   - 复用现有 `/api/status`（状态接口）、`/api/message`（消息接口）、`/api/replay`（补拉接口），不得新增公开路由、不得更名、不得改变现有成功状态码语义。
-   - 不新增 Socket.io（实时通信库）、WebSocket（全双工网页通信协议） 或前端依赖；本轮的实时同步以 replay（补拉） + `RealtimeEventEnvelope`（实时事件信封）为准。
-   - `API_ROUTE_DEFINITIONS`（接口路由定义）与 Fastify（接口网关）注册结果必须保持一致。
+1. **经验契约边界**:
+   - 新增的 sandbox experience（沙箱经验）必须是纯契约 / 纯工厂 / 可注入动作，不得直接写 PostgreSQL（关系型数据库）、Redis（缓存）、JSONL（结构化日志）文件或向量库。
+   - 经验记录至少包含 `bot_id`（机器人标识）、`message_id`（消息标识）、`intent_epoch`（意图纪元）、sandbox_code（沙箱代码） 执行终态、步骤数、耗时、`log_ref`（日志引用） / `code_ref`（代码引用） 中可用字段、错误分类摘要和可检索的短摘要。
+   - 原始 code（代码） 不得无界透出；如需要保留，必须使用有上限的 `code_preview`（代码预览） 或 `code_hash`（代码哈希） / `code_ref`（代码引用） 组合，避免未来 replay（补拉） 或日志接口泄露大段代码。
 
-2. **轻面板状态模型**:
-   - `/api/status`（状态接口）必须稳定返回 Bot（机器人）状态、`intent_epoch`（意图纪元）、`last_event_seq`（最后事件序号）、Mineflayer（Minecraft 协议客户端）只读连接摘要、worker（工作线程）装配摘要和最近一次 LLM（大语言模型）诊断摘要。
-   - 状态投影只能读取已有只读快照或注入式 provider（提供器），不得暴露 Mineflayer（Minecraft 协议客户端） Bot（机器人）句柄、Redis（缓存）连接、PostgreSQL（关系型数据库）连接或密钥。
-   - 若需要扩展 worker（工作线程）摘要字段，应保持向后兼容，现有 `conversation`（对话工作线程） / `bot`（机器人工作线程）字段不能改名。
+2. **BotWorker（机器人工作线程） 钩子**:
+   - 只有 `exec_job.type === "sandbox_code"`（执行任务类型为沙箱代码） 时产出 sandbox experience（沙箱经验）动作；skill_call（技能调用） 不能误产出经验。
+   - completed（已完成）、failed（已失败）、interrupted（已中断） 都必须覆盖；discarded（已丢弃） 与 started（已开始） 不写经验。
+   - 保留现有 `emit_task_lifecycle`（发射任务生命周期） 与 `enqueue_brain`（入摘要队列） 动作语义，不得删除或改名；若新增动作类型，应保持向后兼容并更新必要测试。
 
-3. **消息与事件同步闭环**:
-   - `/api/message`（消息接口）提交成功后继续返回 `202`（已接受） 与 `MessageAcceptedResponse`（消息已接受响应），并把 accepted（已接受）事件写入 replay store（补拉事件存储）。
-   - `ConversationWorker`（对话工作线程）广播回复时，在线入口必须把可脱敏的 `chat.reply`（聊天回复）事件追加到 replay store（补拉事件存储），网页端通过 `/api/replay`（补拉接口）可看到回复内容或回复摘要。
-   - `BotWorker`（机器人工作线程）发出的 started（已开始） / discarded（已丢弃） / completed（已完成） / failed（已失败） / interrupted（已中断）生命周期动作必须能转换为 replay（补拉）事件；不得把 `enqueue_brain`（入摘要队列）伪装成 runtime（运行时）事件。
-   - 如果用户注入了自定义 actionSink（动作汇点） 或 broadcastReplySink（广播回复汇点），在线入口必须组合调用，不能静默覆盖用户注入逻辑。
+3. **脱敏与不可变**:
+   - 经验记录、动作载荷和测试可见输出必须深克隆 / 冻结，调用方不能修改内部缓存或复用对象。
+   - 错误摘要不得包含 API key（接口密钥）、密码、连接串、完整 Prompt（提示词） 或宿主机敏感路径；如复用 diagnostics（诊断） 的脱敏工具，应补覆盖密钥样例。
+   - 经验短摘要应稳定、确定性，便于后续检索测试；不得依赖当前时间以外的随机值。
 
-4. **事件顺序与隔离**:
-   - replay store（补拉事件存储） 继续保持单进程 append-only（只追加）模型，事件 `seq`（序号）单调递增，`/api/replay`（补拉接口）按 `after_seq`（起始序号）与 `limit`（数量上限）稳定返回。
-   - 返回给接口层的事件必须深克隆 / 冻结，防止测试或调用方修改内部事件缓存。
-   - 事件载荷不得包含 API key（接口密钥）、密码、连接串、完整 LLM（大语言模型） Prompt（提示词）或 Mineflayer（Minecraft 协议客户端）可写对象。
-
-5. **架构边界**:
-   - `interfaces`（接口层）只能处理协议对象、状态投影和事件信封；不得直接 import（导入） BotActor（机器人执行代理）实现、Mineflayer（Minecraft 协议客户端）适配器或数据库实现。
-   - `app`（应用装配）可以组合现有 worker（工作线程）汇点和 replay store（补拉事件存储），但不得改变资源启动顺序和关闭顺序。
-   - 本轮不接真实持久化 event_log（事件日志） repository（存储适配），不接 BrainWorker（摘要工作线程）真实在线启动，不改 LLM（大语言模型） Prompt（提示词）。
+4. **架构边界**:
+   - sandbox（沙箱） / diagnostics（诊断） 可以定义经验契约与摘要转换；workers（工作线程） 只负责在已有 actionSink（动作汇点） 上发出动作，不直接依赖数据库实现。
+   - 不改 conversation（对话） LLM（大语言模型） prompt（提示词） 和 parser（解析器），不重新打开 sandbox_code（沙箱代码） 在线规划入口。
+   - 不新增依赖，不新增公开 HTTP（超文本传输协议） 路由，不新增 WebSocket（全双工网页通信协议） 或 Socket.io（实时通信库） 服务。
 
 **验收标准**:
 
-1. `GET /api/status`（状态接口）、`POST /api/message`（消息接口）、`GET /api/replay`（补拉接口）在 Fastify（接口网关）测试中形成“提交消息 → accepted（已接受）事件 → reply（回复）事件 / task（任务）事件补拉 → 状态 last_event_seq（最后事件序号）更新”的最小闭环。
-2. 在线入口的 conversation（对话）广播回复与 BotWorker（机器人工作线程）生命周期动作会写入 replay store（补拉事件存储），且不会覆盖用户注入的汇点。
-3. replay（补拉）事件按 `seq`（序号）递增、按 `bot_id`（机器人标识）隔离、按 `limit`（数量上限）截断，并保持不可变输出。
-4. 不新增依赖，不新增公开路由，不触碰 LLM（大语言模型） Prompt（提示词） / 解析 / 配置；若实际触碰，反馈区必须包含真实 OpenAI（开放人工智能）兼容 API（应用程序接口）调用结果。
-5. 新增 / 更新测试覆盖状态接口、消息接口、补拉接口、在线入口汇点组合、事件脱敏 / 不可变和回归点；`bash ts-core/scripts/pre_review.sh` 全部通过。
+1. sandbox_code（沙箱代码） 成功、失败、中断三类终态都能生成稳定 sandbox experience（沙箱经验）动作 / 草案；skill_call（技能调用） 不生成。
+2. BotWorker（机器人工作线程） 测试能证明生命周期动作、BrainWorker（摘要工作线程） 入队动作与 sandbox experience（沙箱经验）动作可以共存，且顺序明确、类型兼容。
+3. 经验载荷经过脱敏、长度限制与不可变处理；测试覆盖密钥 / 密码样例不会泄露。
+4. 不触碰 LLM（大语言模型） Prompt（提示词） / 解析 / 配置 / online entrypoint（在线入口装配）；若实际触碰，反馈区必须包含真实 OpenAI（开放人工智能）兼容 API（应用程序接口）调用结果。
+5. `bash ts-core/scripts/pre_review.sh` 全部通过。
 
 ---
 
 ## Coder 自检清单
-- [ ] 任务序号核对为 `T-034`
+- [ ] 任务序号核对为 `T-035`
 - [ ] 仅读取并修改白名单内文件
-- [ ] 未新增公开路由、未新增依赖、未新增 WebSocket（全双工网页通信协议） / Socket.io（实时通信库） 物理服务
-- [ ] `/api/status`（状态接口） / `/api/message`（消息接口） / `/api/replay`（补拉接口） 语义保持兼容
-- [ ] conversation（对话）广播回复与 BotWorker（机器人工作线程）生命周期动作均能进入 replay（补拉）事件流
-- [ ] 自定义 actionSink（动作汇点） / broadcastReplySink（广播回复汇点） 未被静默覆盖
-- [ ] replay（补拉）事件按 `bot_id`（机器人标识）隔离、按 `seq`（序号）排序、输出不可变
-- [ ] 未触碰 LLM（大语言模型） Prompt（提示词） / 解析 / 配置；若触碰，反馈区包含真实 OpenAI（开放人工智能）兼容 API（应用程序接口）调用结果
+- [ ] 未新增依赖、未新增公开路由、未新增数据库迁移
+- [ ] sandbox_code（沙箱代码） completed（已完成） / failed（已失败） / interrupted（已中断） 经验动作均有测试
+- [ ] skill_call（技能调用） 与 discarded（已丢弃） / started（已开始） 不误写经验
+- [ ] 经验载荷脱敏、长度限制、深冻结 / 不可变输出均有测试
+- [ ] 未触碰 LLM（大语言模型） Prompt（提示词） / 解析 / 配置 / online entrypoint（在线入口装配）；若触碰，反馈区包含真实 OpenAI（开放人工智能）兼容 API（应用程序接口）调用结果
 - [ ] 执行 `bash ts-core/scripts/pre_review.sh` 全部通过
 
 ---
@@ -125,8 +108,9 @@
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
 
-- **T-035**: 在 `conversation`（对话） + `sandbox`（沙箱） + `diagnostics`（诊断） 内补最小经验沉淀钩子，只记录 sandbox_code（沙箱代码） 成败轨迹，不做向量检索闭环。
 - **T-036**: 在 `conversation`（对话） + `workers`（工作线程） + `app`（应用装配） 内把 T-033（任务三十三） 的 memory（记忆）读取端口注入 chat（闲聊） / plan（规划） LLM（大语言模型）路径，并按真实 LLM（大语言模型）规则验收。
+- **T-037**: 优先排入 `minecraft-data`（MC 事实包） 集成，补齐 MC（Minecraft，我的世界） 常识本地确定性查询，降低 LLM（大语言模型） 幻觉风险。
+- **T-038 / T-039 候选**: BotActor（机器人执行代理） 脊髓反射动作硬编码；JAR（自定义服务端插件） 桥接通信落地。T-039（任务三十九） 派发前必须先与用户确认 JAR（自定义服务端插件）端发包能力。
 
 ---
 

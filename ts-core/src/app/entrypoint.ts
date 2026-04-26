@@ -24,6 +24,7 @@ import {
   createRealtimeEventEnvelope,
 } from "../interfaces/index.js";
 import {
+  type BotWorkerAction,
   type BotWorkerRuntime,
   type BotWorkerRuntimeDependencies,
   type ConversationWorkerRuntime,
@@ -118,7 +119,7 @@ export interface AppOnlineLlmDependencies extends ConversationLlmDependencies {
 /** 真实在线启动入口依赖注入集合。 */
 export interface AppOnlineEntrypointDependencies extends AppProcessRuntimeDependencies {
   /** ConversationWorker（对话工作线程） 依赖注入。 */
-  readonly conversationWorker?: Omit<ConversationWorkerRuntimeDependencies, "broadcastReplySink">;
+  readonly conversationWorker?: Partial<ConversationWorkerRuntimeDependencies>;
   /** BotWorker（机器人工作线程） 依赖注入。 */
   readonly botWorker?: Omit<BotWorkerRuntimeDependencies, "actor">;
   /** LLM（大语言模型） 依赖注入。 */
@@ -319,6 +320,13 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   let conversationWorker: ConversationWorkerRuntime | undefined;
   let latestLlmDiagnostic: LlmDiagnosticSummary | null = null;
   const replayStore = createOnlineEventReplayStore(input.bootstrap.bot_id);
+  const userAppendRealtimeEvent = input.dependencies?.services?.appendRealtimeEvent;
+  const appendOnlineRealtimeEvent = async (
+    event: Omit<RealtimeEventEnvelope, "seq">,
+  ): Promise<void> => {
+    replayStore.append(event);
+    await userAppendRealtimeEvent?.(event);
+  };
   const onlineLlmClient = createOnlineConversationLlmClient(
     input.bootstrap,
     input.dependencies?.llm,
@@ -373,7 +381,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         }),
       replayEvents: input.dependencies?.services?.replayEvents ?? replayStore.read,
       latestLlmDiagnostic: () => latestLlmDiagnostic,
-      appendRealtimeEvent: replayStore.append,
+      appendRealtimeEvent: appendOnlineRealtimeEvent,
     });
     const listenAddress = await services.http.listen();
     input.write?.(`TS Core HTTP ready: ${listenAddress}`);
@@ -396,6 +404,18 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       dependencies: {
         ...(input.dependencies?.botWorker ?? {}),
         actor: createdRuntime.actor,
+        actionSink: async (action) => {
+          await input.dependencies?.botWorker?.actionSink?.(action);
+
+          const realtimeEvent = createRealtimeEventFromBotWorkerAction({
+            action,
+            createdAt: new Date().toISOString(),
+          });
+
+          if (realtimeEvent !== null) {
+            await appendOnlineRealtimeEvent(realtimeEvent);
+          }
+        },
       },
     });
     await botWorker.start();
@@ -414,7 +434,16 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         interruptRuntimeSink,
         actorStateProjectionProvider,
         broadcastReplySink: async (reply) => {
+          await input.dependencies?.conversationWorker?.broadcastReplySink?.(reply);
           await createdRuntime.actor.broadcastReply(reply);
+          await appendOnlineRealtimeEvent(
+            createRealtimeEventFromConversationReply({
+              botId: input.bootstrap.bot_id,
+              messageId: reply.message_id,
+              content: reply.content,
+              createdAt: new Date().toISOString(),
+            }),
+          );
         },
         enqueueExecTaskSink: async ({ task, priority }) => {
           if (typeof services?.workers.bot.queue.add !== "function") {
@@ -669,6 +698,47 @@ function renderLlmDiagnosticMessage(
     `model=${record.model} message_id=${record.message_id} log_ref=${record.log_ref}`;
 
   return summary.error_summary === undefined ? base : `${base} error=${summary.error_summary}`;
+}
+
+/** 从 ConversationWorker（对话工作线程） 广播回复构造 replay（补拉） 事件。 */
+export function createRealtimeEventFromConversationReply(input: {
+  /** 目标 Bot 标识。 */
+  readonly botId: string;
+  /** 原始消息标识。 */
+  readonly messageId: string;
+  /** 回复内容。 */
+  readonly content: string;
+  /** 事件创建时间。 */
+  readonly createdAt: string;
+}): Omit<RealtimeEventEnvelope<"chat.reply">, "seq"> {
+  return Object.freeze({
+    bot_id: input.botId,
+    type: "chat.reply",
+    created_at: input.createdAt,
+    payload: Object.freeze({
+      message_id: input.messageId,
+      content: input.content,
+    }),
+  });
+}
+
+/** 从 BotWorker（机器人工作线程） 动作构造 replay（补拉） 事件；摘要入队动作不会暴露为运行时事件。 */
+export function createRealtimeEventFromBotWorkerAction(input: {
+  /** BotWorker（机器人工作线程） 输出动作。 */
+  readonly action: BotWorkerAction;
+  /** 事件创建时间。 */
+  readonly createdAt: string;
+}): Omit<RealtimeEventEnvelope, "seq"> | null {
+  if (input.action.type !== "emit_task_lifecycle") {
+    return null;
+  }
+
+  return Object.freeze({
+    bot_id: input.action.bot_id,
+    type: input.action.lifecycle.event_type,
+    created_at: input.createdAt,
+    payload: input.action.lifecycle.payload as unknown as Readonly<Record<string, unknown>>,
+  });
 }
 
 /**
