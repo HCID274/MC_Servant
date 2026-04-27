@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-031` ~ `T-040`
-- 当前已完成任务：`T-031`、`T-032`、`T-033`、`T-034`、`T-035`、`T-036`、`T-037`、`T-038`
-- 当前活跃任务：`T-039`（任务三十九） 已解锁并正式派发为 T-Fabric-Bridge-01（Fabric 服务端桥接第一步）：`plugin/`（服务端插件源码）切换为 Fabric Loom（Fabric 构建插件）工程基线、最小可加载 mod（模组）与 `ServerBridgeTransport`（服务端桥接传输）接口骨架。
+- 当前已完成任务：`T-031`、`T-032`、`T-033`、`T-034`、`T-035`、`T-036`、`T-037`、`T-038`、`T-039`
+- 当前活跃任务：`T-040`（任务四十） 待派发为 T-Fabric-Bridge-02（Fabric 服务端桥接第二步）：OkHttp（网络客户端）真实连接、握手、心跳与本地 WebSocket（全双工通信协议）联调脚本。
 - 当前批次摘要：上一批次 `T-021`（任务二十一） 到 `T-030`（任务三十） 已完成 MC（Minecraft，我的世界） 上线闭环、真实 LLM（大语言模型） 接入、多技能、观测出口、sandbox_code（沙箱代码） 与架构治理。新批次默认继续沿可运行主干推进对话智能增强。
 - 当前批次硬约束：不得回退 `T-021` 到 `T-030` 已形成的真实在线路径、单写者路径、无循环依赖图、OpenAI（开放人工智能） 兼容配置边界与 sandbox_code（沙箱代码） 执行安全边界。
 
@@ -232,3 +232,38 @@
   - Manager（管理代理） 复跑 `git diff --check` 与 `git diff --cached --check`：通过。
   - Manager（管理代理） 复核 `pnpm list --depth 0`：依赖清单无 T-038（任务三十八） 新增项。
   - Manager（管理代理） 额外验证：反射返回 `IDLE`（空闲） 后，旧技能 Promise（异步承诺） 未释放前新技能仍被门控拒绝，事件序列包含 `task.interrupted`（任务已中断）、`reflex.triggered`（反射触发） 与 `reflex.done`（反射完成）。
+
+### T-039（已完成）
+
+- **任务主题**: T-Fabric-Bridge-01（Fabric 服务端桥接第一步） 工程基线、最小可加载 Fabric mod（Fabric 模组）与 `ServerBridgeTransport`（服务端桥接传输）接口骨架。
+- **审查时间**: 2026-04-27T14:33:30+09:00
+- **核心文件**:
+  - `plugin/settings.gradle`
+  - `plugin/build.gradle`
+  - `plugin/gradle.properties`
+  - `plugin/gradlew`
+  - `plugin/gradlew.bat`
+  - `plugin/gradle/wrapper/gradle-wrapper.jar`
+  - `plugin/gradle/wrapper/gradle-wrapper.properties`
+  - `plugin/src/main/resources/fabric.mod.json`
+  - `plugin/src/main/java/com/mcservant/MCServantMod.java`
+  - `plugin/src/main/java/com/mcservant/bridge/ServerBridgeTransport.java`
+  - `plugin/src/main/java/com/mcservant/bridge/ServerBridgeConfig.java`
+  - `plugin/src/main/java/com/mcservant/bridge/OkHttpServerBridgeTransport.java`
+  - `plugin/README.md`
+  - `plugin/BUILD.md`
+- **变更快照**:
+  - `plugin/`（服务端插件源码） 已从历史 Paper（服务端插件平台） / Maven（构建工具） 工程切换为 Gradle（构建工具） + Fabric Loom（Fabric 构建插件） 工程，目标版本对齐 MC（Minecraft，我的世界） `1.20.4`、Fabric Loader（Fabric 加载器） `0.15.7`、Fabric API（Fabric 应用程序接口） `0.97.3+1.20.4`。
+  - 新增最小服务端 Fabric mod（Fabric 模组）入口 `MCServantMod`（模组入口），通过 `fabric.mod.json`（模组元信息） 声明服务端入口、依赖和 Java（编程语言）17 要求。
+  - 新增 `ServerBridgeTransport`（服务端桥接传输）接口、`ServerBridgeConfig`（服务端桥接配置） 与 `OkHttpServerBridgeTransport`（OkHttp 桥接传输）骨架，业务入口只依赖接口，不把 OkHttp（网络客户端）细节泄漏到上层。
+  - 删除旧 Paper（服务端插件平台）入口、Bukkit（服务端接口）事件、CommandAPI（命令接口库）、DecentHolograms（全息插件）、AuthMe（认证插件）强绑定和旧 Maven（构建工具）构建入口。
+  - 打回修复后补齐 Gradle Wrapper（Gradle 包装脚本）8.7；再次打回修复后，最终 mod jar（模组产物） 已显式嵌入 OkHttp（网络客户端）、Okio（输入输出库） 与 Kotlin stdlib（Kotlin 标准库）运行时依赖。
+- **审查结论**:
+  - 通过。T-039（任务三十九） 已满足“最小可加载 Fabric mod（Fabric 模组）”口径，前两次打回项均闭合。
+  - 本轮未修改 TS Core（TypeScript 单核心）源码，未新增 MC（Minecraft，我的世界）事实硬编码，未触碰 LLM（大语言模型）链路，因此不需要真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
+- **验证记录**:
+  - Manager（管理代理） 复跑 `cd plugin && ./gradlew build --no-daemon`：通过，Loom（Fabric 构建插件）解析为 `1.6.12`，`BUILD SUCCESSFUL in 35s`。
+  - Manager（管理代理） 复跑 `cd plugin && ./gradlew dependencies --configuration include --no-daemon`：通过，`include`（嵌入配置）包含 OkHttp（网络客户端）4.12.0、Okio（输入输出库）3.6.0、Kotlin stdlib（Kotlin 标准库）1.9.10 相关依赖。
+  - Manager（管理代理） 复核 `plugin/build/libs/mcservant-0.4.0.jar`：`META-INF/jars/` 包含 `okhttp-4.12.0.jar`、`okio-jvm-3.6.0.jar`、`kotlin-stdlib-1.9.10.jar`、`kotlin-stdlib-common-1.9.10.jar`、`kotlin-stdlib-jdk7-1.9.10.jar`、`kotlin-stdlib-jdk8-1.9.10.jar`。
+  - Manager（管理代理） 复跑 `git diff --check -- plugin ts-core/Docs/WF_当前任务握手.md`：通过。
+  - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、191 条测试全部通过。

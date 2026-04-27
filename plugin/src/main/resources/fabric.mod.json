@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "mcservant",
+  "version": "${version}",
+  "name": "MCServant",
+  "description": "TS Core 服务端桥接 Fabric mod —— 提供 mod 到 TS Core 单核心的外部桥接传输骨架",
+  "authors": [
+    "LHQ"
+  ],
+  "license": "All-Rights-Reserved",
+  "environment": "server",
+  "entrypoints": {
+    "server": [
+      "com.mcservant.MCServantMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "fabric-api": "*",
+    "minecraft": "~1.20.4",
+    "java": ">=17"
+  },
+  "suggests": {
+    "fabric-permissions-api-v0": "*"
+  }
+}

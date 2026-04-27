@@ -1,0 +1,71 @@
+plugins {
+    id 'fabric-loom' version '1.6-SNAPSHOT'
+    id 'java'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        name = 'Fabric'
+        url = 'https://maven.fabricmc.net/'
+    }
+    maven {
+        name = 'Lucko'
+        url = 'https://repo.lucko.me/'
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+    // Fabric API（事件 / 命令 / 网络等）
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    // 权限（LuckPerms 软依赖；自动回退原版 op 等级判定）
+    modImplementation "me.lucko:fabric-permissions-api:${project.fabric_permissions_api_version}"
+
+    // OkHttp（网络客户端）：mod（模组）-> TS Core（TypeScript 单核心） 外部 WebSocket（全双工通信协议）。
+    // Loom（Fabric 构建插件） include（嵌入） 不递归嵌入传递依赖，因此运行时必需的
+    // Okio（输入输出库） / Kotlin stdlib（Kotlin 标准库） 也必须显式纳入最终 mod jar（模组产物）。
+    implementation "com.squareup.okhttp3:okhttp:${project.okhttp_version}"
+    include "com.squareup.okhttp3:okhttp:${project.okhttp_version}"
+    include "com.squareup.okio:okio:${project.okio_version}"
+    include "com.squareup.okio:okio-jvm:${project.okio_version}"
+    include "org.jetbrains.kotlin:kotlin-stdlib:${project.kotlin_version}"
+    include "org.jetbrains.kotlin:kotlin-stdlib-common:${project.kotlin_version}"
+    include "org.jetbrains.kotlin:kotlin-stdlib-jdk7:${project.kotlin_version}"
+    include "org.jetbrains.kotlin:kotlin-stdlib-jdk8:${project.kotlin_version}"
+}
+
+processResources {
+    inputs.property 'version', project.version
+
+    filesMatching('fabric.mod.json') {
+        expand 'version': project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+jar {
+    from('LICENSE') {
+        rename { "${it}_${project.archives_base_name}" }
+    }
+}
