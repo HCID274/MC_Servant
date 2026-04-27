@@ -117,3 +117,89 @@ export interface WorldModelRefreshBoundary {
   /** 请求刷新资源缓存。 */
   refresh(request: WorldModelRefreshRequest): Promise<never>;
 }
+
+/** Minecraft（我的世界）方块事实快照，用于封装 minecraft-data 的只读方块基础字段。 */
+export interface MinecraftBlockFact {
+  /** 数字标识。 */
+  readonly id: number;
+  /** 标准英文名称。 */
+  readonly name: string;
+  /** 展示名称。 */
+  readonly display_name: string;
+  /** 堆叠数量上限。 */
+  readonly stack_size: number;
+  /** 硬度；不存在时为 null。 */
+  readonly hardness: number | null;
+  /** 爆炸抗性；不存在时为 null。 */
+  readonly resistance: number | null;
+  /** 是否可被挖掘。 */
+  readonly diggable: boolean;
+  /** 材质分类；不存在时为 null。 */
+  readonly material: string | null;
+  /** 是否透明。 */
+  readonly transparent: boolean;
+  /** 发光等级。 */
+  readonly emit_light: number;
+  /** 滤光等级。 */
+  readonly filter_light: number;
+  /** 默认状态标识；不存在时为 null。 */
+  readonly default_state: number | null;
+  /** 最小状态标识；不存在时为 null。 */
+  readonly min_state_id: number | null;
+  /** 最大状态标识；不存在时为 null。 */
+  readonly max_state_id: number | null;
+  /** 掉落物数字标识列表。 */
+  readonly drops: readonly number[];
+  /** 碰撞盒类型；不存在时为 null。 */
+  readonly bounding_box: string | null;
+}
+
+/** Minecraft（我的世界）物品事实快照，用于封装 minecraft-data 的只读物品基础字段。 */
+export interface MinecraftItemFact {
+  /** 数字标识。 */
+  readonly id: number;
+  /** 标准英文名称。 */
+  readonly name: string;
+  /** 展示名称。 */
+  readonly display_name: string;
+  /** 堆叠数量上限。 */
+  readonly stack_size: number;
+}
+
+/** Minecraft（我的世界）配方产出快照。 */
+export interface MinecraftRecipeResultFact {
+  /** 产出物品数字标识。 */
+  readonly id: number;
+  /** 产出物品标准英文名称。 */
+  readonly name: string;
+  /** 产出数量。 */
+  readonly count: number;
+}
+
+/** Minecraft（我的世界）配方事实快照，用于只读表达 minecraft-data 中的基础配方结构。 */
+export interface MinecraftRecipeFact {
+  /** 产出物品。 */
+  readonly result: MinecraftRecipeResultFact;
+  /** 无形配方原料数字标识列表。 */
+  readonly ingredients: readonly number[];
+  /** 有形配方输入形状。 */
+  readonly in_shape: readonly (readonly number[])[];
+  /** 有形配方额外输出形状。 */
+  readonly out_shape: readonly (readonly number[])[];
+}
+
+/** Minecraft（我的世界）事实查询端口，用于按版本查询本地 minecraft-data 注册表。 */
+export interface MinecraftFactsQueryPort {
+  /** 已绑定的 Minecraft（我的世界）版本。 */
+  readonly version: string;
+  /** 按标准名称查询方块。 */
+  getBlockByName(name: string): MinecraftBlockFact | null;
+  /** 按数字标识查询方块。 */
+  getBlockById(id: number): MinecraftBlockFact | null;
+  /** 按标准名称查询物品。 */
+  getItemByName(name: string): MinecraftItemFact | null;
+  /** 按数字标识查询物品。 */
+  getItemById(id: number): MinecraftItemFact | null;
+  /** 按产出物品标准名称查询配方。 */
+  queryRecipesByResultName(resultItemName: string): readonly MinecraftRecipeFact[];
+}

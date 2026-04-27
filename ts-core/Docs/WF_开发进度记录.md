@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-031` ~ `T-040`
-- 当前已完成任务：`T-031`、`T-032`、`T-033`、`T-034`、`T-035`、`T-036`
-- 当前活跃任务：`T-037`（任务三十七） `minecraft-data`（MC 事实包） 集成。
+- 当前已完成任务：`T-031`、`T-032`、`T-033`、`T-034`、`T-035`、`T-036`、`T-037`
+- 当前活跃任务：`T-038`（任务三十八） BotActor（机器人执行代理） 脊髓反射动作硬编码。
 - 当前批次摘要：上一批次 `T-021`（任务二十一） 到 `T-030`（任务三十） 已完成 MC（Minecraft，我的世界） 上线闭环、真实 LLM（大语言模型） 接入、多技能、观测出口、sandbox_code（沙箱代码） 与架构治理。新批次默认继续沿可运行主干推进对话智能增强。
 - 当前批次硬约束：不得回退 `T-021` 到 `T-030` 已形成的真实在线路径、单写者路径、无循环依赖图、OpenAI（开放人工智能） 兼容配置边界与 sandbox_code（沙箱代码） 执行安全边界。
 
@@ -179,3 +179,31 @@
   - Manager（管理代理） 复跑 `cd ts-core && pnpm vitest run src/__tests__/conversation-worker-runtime-model.spec.ts src/__tests__/conversation-llm-planning-model.spec.ts src/__tests__/app-entrypoint-model.spec.ts`：3 个测试文件、35 条测试通过。
   - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、183 条测试全部通过。
   - Manager（管理代理） 真实 API（应用程序接口） 验收命令摘要：通过项目 `createConversationLlmClient()`（创建对话大语言模型客户端） 请求 `http://127.0.0.1:8045/v1`，`model`（模型）=`bl-auto`。chat（闲聊） 输出 `ok=true`，关键回复包含“当然记得”；plan（规划） 输出 `type=skill_call`、`skill=goTo`、`params={x:395,y:207,z:180}`。
+
+### T-037（已完成）
+
+- **任务主题**: `minecraft-data`（MC 事实包） 集成。
+- **审查时间**: 2026-04-27T11:03:30+09:00
+- **核心文件**:
+  - `package.json`
+  - `pnpm-lock.yaml`
+  - `src/world-model/contracts.ts`
+  - `src/world-model/minecraft-data.ts`
+  - `src/world-model/index.ts`
+  - `src/__tests__/observation-world-model.spec.ts`
+  - `src/__tests__/scaffold.spec.ts`
+- **变更快照**:
+  - 新增运行时依赖 `minecraft-data`（MC 事实包），未新增其他依赖或服务。
+  - `world-model/`（世界模型） 新增 `createMinecraftDataFactsPort()`（创建 MC 事实查询端口），通过显式 Minecraft（我的世界）版本加载版本化 registry（注册表），无效版本抛出清晰错误。
+  - 新增 `MinecraftBlockFact`（MC 方块事实）、`MinecraftItemFact`（MC 物品事实）、`MinecraftRecipeFact`（MC 配方事实） 与 `MinecraftFactsQueryPort`（MC 事实查询端口）契约，支持 block（方块） / item（物品） 按 name（名称） 与 id（标识） 查询，以及 recipe（配方） 按 result item name（产出物品名称） 查询。
+  - 查询未命中时 block（方块） / item（物品） 返回 `null`，recipe（配方） 返回空数组；非法输入和非法版本才抛错。
+  - 查询输出通过克隆与冻结返回只读快照，不暴露 `minecraft-data`（MC 事实包） 原始可变对象引用。
+  - `worldModelModuleBoundary`（世界模型模块边界） 与根入口导出已补齐；未接入 planner（规划器）、Prompt（提示词）、对话路由、数据库或网络服务。
+- **审查结论**:
+  - 通过。T-037（任务三十七） 已闭合“MC 常识 = 本地确定性 API（应用程序接口）查询”的最小通路，事实来源来自 `minecraft-data`（MC 事实包） registry（注册表）。
+  - 本轮未触碰 LLM（大语言模型） 调用链路、Prompt（提示词）、parser（解析器） 或 online entrypoint（在线入口装配）的 T-037（任务三十七）新增差异，因此不需要真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
+- **验证记录**:
+  - Manager（管理代理） 复跑 `cd ts-core && pnpm vitest run src/__tests__/observation-world-model.spec.ts src/__tests__/scaffold.spec.ts`：2 个测试文件、16 条测试通过。
+  - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、185 条测试全部通过。
+  - Manager（管理代理） 复跑 `git diff --check` 与 `git diff --cached --check`：通过。
+  - Manager（管理代理） 复核 `pnpm list minecraft-data --depth 0`：生产依赖仅新增 `minecraft-data@3.109.1`（MC 事实包）。

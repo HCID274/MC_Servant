@@ -4,6 +4,7 @@
  * 1. 资源建模：定义资源画像和资源簇，将散乱的方块观测提升为结构化的资源认知。
  * 2. 空间查询：提供针对环境资源的只读查询契约，支持按距离、密度和价值评估最优资源点。
  * 3. 读写分离：显式拆分 Query（查询）与 Refresh（刷新）边界，确保认知的演进可控。
+ * 4. MC 事实：通过 minecraft-data 提供版本化、只读、确定性的 Minecraft 事实查询端口。
  */
 
 import type { ModuleBoundary } from "../domain/contracts.js";
@@ -13,10 +14,12 @@ export const worldModelModuleBoundary = {
   moduleName: "world-model",
   responsibilities: [
     "提供资源画像、资源簇与候选块的只读查询契约",
+    "提供基于 minecraft-data 的版本化 MC 事实查询端口",
     "显式拆分 query 与 refresh 边界",
   ],
   placeholderExports: [
     "worldModelModuleBoundary",
+    "createMinecraftDataFactsPort",
     "createWorldModelQueryBoundary",
     "createWorldModelRefreshBoundary",
     "queryBestResourceCluster",
@@ -24,4 +27,5 @@ export const worldModelModuleBoundary = {
 } satisfies ModuleBoundary;
 
 export * from "./contracts.js";
+export * from "./minecraft-data.js";
 export * from "./query.js";

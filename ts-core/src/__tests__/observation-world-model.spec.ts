@@ -1,3 +1,5 @@
+import { createRequire } from "node:module";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -6,6 +8,7 @@ import {
   ThreatRuleId,
   assessThreat,
   createEnvironmentSnapshot,
+  createMinecraftDataFactsPort,
   createObservationReadBoundary,
   createReflexInterruptSource,
   createThreatDetectorInput,
@@ -15,6 +18,73 @@ import {
   selectBestClusterCandidate,
 } from "../index.js";
 import type { InterruptSignal } from "../runtime/contracts.js";
+
+interface MinecraftDataTestRegistry {
+  readonly blocks: Readonly<
+    Record<
+      string,
+      | {
+          readonly id: number;
+          readonly name: string;
+          readonly displayName: string;
+          readonly drops?: readonly number[];
+        }
+      | undefined
+    >
+  >;
+  readonly blocksByName: Readonly<
+    Record<
+      string,
+      | {
+          readonly id: number;
+          readonly name: string;
+          readonly displayName: string;
+          readonly drops?: readonly number[];
+        }
+      | undefined
+    >
+  >;
+  readonly items: Readonly<
+    Record<
+      string,
+      | {
+          readonly id: number;
+          readonly name: string;
+          readonly displayName: string;
+        }
+      | undefined
+    >
+  >;
+  readonly itemsByName: Readonly<
+    Record<
+      string,
+      | {
+          readonly id: number;
+          readonly name: string;
+          readonly displayName: string;
+        }
+      | undefined
+    >
+  >;
+  readonly recipes: Readonly<
+    Record<
+      string,
+      | readonly {
+          readonly result: {
+            readonly id: number;
+            readonly count?: number;
+          };
+          readonly ingredients?: readonly number[];
+        }[]
+      | undefined
+    >
+  >;
+}
+
+const require = createRequire(import.meta.url);
+const loadMinecraftData = require("minecraft-data") as (
+  version: string,
+) => MinecraftDataTestRegistry | null;
 
 describe("observation 与 world-model 契约", () => {
   it("应合并 Mineflayer 与 Bridge 的双数据源快照字段", () => {
@@ -438,5 +508,93 @@ describe("observation 与 world-model 契约", () => {
         reason: "manual",
       }),
     ).rejects.toThrow("World-model refresh is intentionally not implemented in Phase 1");
+  });
+
+  it("应通过 minecraft-data 提供版本化只读 MC 事实查询", () => {
+    const minecraftVersion = "1.20.4";
+    const registry = loadMinecraftData(minecraftVersion);
+
+    if (!registry) {
+      throw new Error("Expected minecraft-data registry for test version");
+    }
+
+    const factsPort = createMinecraftDataFactsPort(minecraftVersion);
+    const registryBlock = registry.blocksByName.oak_log;
+    const registryItem = registry.itemsByName.oak_planks;
+
+    if (!registryBlock || !registryItem) {
+      throw new Error("Expected registry records for world-model fact tests");
+    }
+
+    const blockByName = factsPort.getBlockByName(registryBlock.name);
+    const blockById = factsPort.getBlockById(registryBlock.id);
+    const itemByName = factsPort.getItemByName(registryItem.name);
+    const itemById = factsPort.getItemById(registryItem.id);
+    const recipes = factsPort.queryRecipesByResultName(registryItem.name);
+    const registryRecipes = registry.recipes[String(registryItem.id)] ?? [];
+
+    if (!blockByName || !blockById || !itemByName || !itemById) {
+      throw new Error("Expected block and item facts");
+    }
+
+    expect(factsPort.version).toBe(minecraftVersion);
+    expect(blockByName).toMatchObject({
+      id: registryBlock.id,
+      name: registryBlock.name,
+      display_name: registryBlock.displayName,
+    });
+    expect(blockById).toEqual(blockByName);
+    expect(itemByName).toMatchObject({
+      id: registryItem.id,
+      name: registryItem.name,
+      display_name: registryItem.displayName,
+    });
+    expect(itemById).toEqual(itemByName);
+    expect(recipes.length).toBe(registryRecipes.length);
+    expect(recipes[0]?.result).toEqual({
+      id: registryItem.id,
+      name: registryItem.name,
+      count: registryRecipes[0]?.result.count ?? 1,
+    });
+    expect(recipes[0]?.ingredients).toEqual(registryRecipes[0]?.ingredients ?? []);
+
+    expect(Object.isFrozen(factsPort)).toBe(true);
+    expect(Object.isFrozen(blockByName)).toBe(true);
+    expect(Object.isFrozen(blockByName.drops)).toBe(true);
+    expect(Object.isFrozen(itemByName)).toBe(true);
+    expect(Object.isFrozen(recipes)).toBe(true);
+    expect(Object.isFrozen(recipes[0])).toBe(true);
+    expect(Object.isFrozen(recipes[0]?.result)).toBe(true);
+    expect(Object.isFrozen(recipes[0]?.ingredients)).toBe(true);
+    expect(Reflect.set(blockByName as object, "name", "polluted")).toBe(false);
+    expect(Reflect.set(blockByName.drops as object, "0", 999)).toBe(false);
+    expect(Reflect.set(recipes[0]?.result as object, "count", 999)).toBe(false);
+
+    const blockAfterMutationAttempt = factsPort.getBlockByName(registryBlock.name);
+    const recipesAfterMutationAttempt = factsPort.queryRecipesByResultName(registryItem.name);
+
+    expect(blockAfterMutationAttempt?.name).toBe(registryBlock.name);
+    expect(blockAfterMutationAttempt?.drops).toEqual(registryBlock.drops ?? []);
+    expect(recipesAfterMutationAttempt[0]?.result.count).toBe(
+      registryRecipes[0]?.result.count ?? 1,
+    );
+  });
+
+  it("应拒绝无效 minecraft-data 版本与非法输入，并对未命中返回空结果", () => {
+    const factsPort = createMinecraftDataFactsPort("1.20.4");
+
+    expect(() => createMinecraftDataFactsPort("not-a-minecraft-version")).toThrow(
+      "Unsupported Minecraft data version: not-a-minecraft-version",
+    );
+    expect(() => createMinecraftDataFactsPort("   ")).toThrow(
+      "minecraftVersion must be a non-empty string",
+    );
+    expect(() => factsPort.getBlockByName("")).toThrow("blockName must be a non-empty string");
+    expect(() => factsPort.getItemByName("   ")).toThrow("itemName must be a non-empty string");
+    expect(() => factsPort.getBlockById(-1)).toThrow("blockId must be a non-negative integer");
+    expect(() => factsPort.getItemById(1.2)).toThrow("itemId must be a non-negative integer");
+    expect(factsPort.getBlockByName("ts_core_missing_block")).toBeNull();
+    expect(factsPort.getItemByName("ts_core_missing_item")).toBeNull();
+    expect(factsPort.queryRecipesByResultName("ts_core_missing_item")).toEqual([]);
   });
 });

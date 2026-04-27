@@ -26,6 +26,9 @@ importers:
       isolated-vm:
         specifier: ^6.1.2
         version: 6.1.2
+      minecraft-data:
+        specifier: ^3.109.1
+        version: 3.109.1
       mineflayer:
         specifier: ^4.37.0
         version: 4.37.0
@@ -1708,8 +1711,8 @@ packages:
     resolution: {integrity: sha512-OqbOk5oEQeAZ8WXWydlu9HJjz9WVdEIvamMCcXmuqUYjTknH/sqsWvhQ3vgwKFRR1HpjvNBKQ37nbJgYzGqGcg==}
     engines: {node: '>=6'}
 
-  minecraft-data@3.109.0:
-    resolution: {integrity: sha512-WdeFQAogj0pX30dXMm2mYBd7x1DlKs7LCs8qtFGZ+S+IhnCh0DgHNSGd8dgL7wFxS6I9eJaF8zdGksdUi2PwYg==}
+  minecraft-data@3.109.1:
+    resolution: {integrity: sha512-6LPSWJg7WwgRAnHMs3RB3lEtz6/1ORgR/HuvbFxJCmcj8Q/4GNRDS6oh/8UIAFjh8xFJUrKMe901L9UtnldlaA==}
 
   minecraft-folder-path@1.2.0:
     resolution: {integrity: sha512-qaUSbKWoOsH9brn0JQuBhxNAzTDMwrOXorwuRxdJKKKDYvZhtml+6GVCUrY5HRiEsieBEjCUnhVpDuQiKsiFaw==}
@@ -3673,7 +3676,7 @@ snapshots:
 
   mimic-fn@2.1.0: {}
 
-  minecraft-data@3.109.0: {}
+  minecraft-data@3.109.1: {}
 
   minecraft-folder-path@1.2.0: {}
 
@@ -3686,7 +3689,7 @@ snapshots:
       debug: 4.4.3
       endian-toggle: 0.0.0
       lodash.merge: 4.6.2
-      minecraft-data: 3.109.0
+      minecraft-data: 3.109.1
       minecraft-folder-path: 1.2.0
       node-fetch: 2.7.0
       node-rsa: 0.4.2
@@ -3704,7 +3707,7 @@ snapshots:
 
   mineflayer-pathfinder@2.4.5:
     dependencies:
-      minecraft-data: 3.109.0
+      minecraft-data: 3.109.1
       prismarine-block: 1.23.0
       prismarine-entity: 2.6.0
       prismarine-item: 1.18.0
@@ -3716,7 +3719,7 @@ snapshots:
 
   mineflayer@4.37.0:
     dependencies:
-      minecraft-data: 3.109.0
+      minecraft-data: 3.109.1
       minecraft-protocol: 1.66.0
       prismarine-biome: 1.4.0(prismarine-registry@1.12.0)
       prismarine-block: 1.23.0
@@ -3965,7 +3968,7 @@ snapshots:
 
   prismarine-block@1.23.0:
     dependencies:
-      minecraft-data: 3.109.0
+      minecraft-data: 3.109.1
       prismarine-biome: 1.4.0(prismarine-registry@1.12.0)
       prismarine-chat: 1.13.0
       prismarine-item: 1.18.0
@@ -4016,7 +4019,7 @@ snapshots:
 
   prismarine-physics@1.11.0:
     dependencies:
-      minecraft-data: 3.109.0
+      minecraft-data: 3.109.1
       prismarine-nbt: 2.8.0
       vec3: 0.1.10
 
@@ -4034,7 +4037,7 @@ snapshots:
 
   prismarine-registry@1.12.0:
     dependencies:
-      minecraft-data: 3.109.0
+      minecraft-data: 3.109.1
       prismarine-block: 1.23.0
       prismarine-nbt: 2.8.0
     transitivePeerDependencies:

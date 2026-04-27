@@ -31,6 +31,7 @@ import {
   createInterfaceServerRuntime,
   createMessageQueueName,
   createMessageTriage,
+  createMinecraftDataFactsPort,
   createMineflayerRuntimeTransport,
   createMineflayerTransportDescriptor,
   createObservationRuntimeCache,
@@ -120,6 +121,7 @@ describe("TS Core 工程骨架", () => {
 
     expect(snapshot.snapshot_version).toBe("root-export");
     expect(worldModel.queryClusters("oak_log")).toEqual([]);
+    expect(createMinecraftDataFactsPort("1.20.4").getBlockByName("oak_log")?.name).toBe("oak_log");
   });
 
   it("应从根入口导出 interfaces（接口层） 的最小纯契约", () => {
