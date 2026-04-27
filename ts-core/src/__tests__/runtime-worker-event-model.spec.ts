@@ -90,6 +90,7 @@ describe("runtime（运行时） 生命周期事件与 worker（工作线程） 
     expect(terminalActions.map((action) => action.type)).toEqual([
       "emit_task_lifecycle",
       "enqueue_brain",
+      "persist_sandbox_experience",
     ]);
     const terminalLifecycle = terminalActions[0];
     if (terminalLifecycle?.type !== "emit_task_lifecycle") {
@@ -104,6 +105,13 @@ describe("runtime（运行时） 生命周期事件与 worker（工作线程） 
         (terminalLifecycle.lifecycle.payload as { interrupt_source: object }).interrupt_source,
       ),
     ).toBe(true);
+    expect(terminalActions[2]).toMatchObject({
+      type: "persist_sandbox_experience",
+      experience: {
+        message_id: "msg-terminal",
+        status: TaskHistoryStatus.Interrupted,
+      },
+    });
   });
 
   it("应能从根导出直接创建任务生命周期 event_log（事件日志） 条目", () => {

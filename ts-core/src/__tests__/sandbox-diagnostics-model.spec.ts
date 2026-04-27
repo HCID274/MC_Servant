@@ -24,6 +24,7 @@ import {
   createSandboxExecutionInterrupted,
   createSandboxExecutionRequest,
   createSandboxExecutionSuccess,
+  createSandboxExperienceDraft,
   createSandboxFacadeContract,
   createSandboxFacadePromptIndex,
   createSandboxLogLine,
@@ -656,5 +657,54 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         reason: "owner_interrupt",
       } as unknown as AbortError),
     ).toThrow(/recoverable must be false/);
+  });
+
+  it("应创建已脱敏、限长且只读的 sandbox experience（沙箱经验）草案", () => {
+    const draft = createSandboxExperienceDraft({
+      bot_id: "bot-035",
+      message_id: "msg-sandbox-exp",
+      intent_epoch: 7,
+      status: TaskHistoryStatus.Failed,
+      total_steps: 2,
+      duration_ms: 3456,
+      log_ref: "sandbox/2026-04-26/msg-sandbox-exp.jsonl",
+      code_ref: "sandbox/2026-04-26/msg-sandbox-exp.code.ts",
+      code: String.raw`await api.chat.say('LLM_API_KEY=sk-local-dev password=hunter2 file=/home/hcid274/code/MC_WSL_servant/.env win=C:\Users\hcid274\.ts-core\.env')`,
+      error: {
+        name: "FacadeCallError",
+        message: String.raw`failed with sk-local-dev postgres://user:pg-pass@localhost/db EasyAuth密码=hunter2 at /Users/dev/MC_WSL_servant/.env and C:\Users\dev\AppData\Local\ts-core\.env`,
+        error_code: "path_not_found",
+        recoverable: false,
+      },
+      sensitiveValues: ["hunter2"],
+    });
+
+    expect(draft.status).toBe(TaskHistoryStatus.Failed);
+    expect(draft.code_hash).toMatch(/^sha256:/);
+    expect(draft.code_preview?.length ?? 0).toBeLessThanOrEqual(240);
+    expect(draft.summary.length).toBeLessThanOrEqual(240);
+    expect(JSON.stringify(draft)).not.toContain("sk-local-dev");
+    expect(JSON.stringify(draft)).not.toContain("pg-pass");
+    expect(JSON.stringify(draft)).not.toContain("hunter2");
+    expect(JSON.stringify(draft)).not.toContain("/home/hcid274/code/MC_WSL_servant/.env");
+    expect(JSON.stringify(draft)).not.toContain("/Users/dev/MC_WSL_servant/.env");
+    expect(JSON.stringify(draft)).not.toContain(String.raw`C:\Users\hcid274\.ts-core\.env`);
+    expect(JSON.stringify(draft)).not.toContain(
+      String.raw`C:\Users\dev\AppData\Local\ts-core\.env`,
+    );
+    expect(JSON.stringify(draft)).toContain("<redacted-path>");
+    expect(Object.isFrozen(draft)).toBe(true);
+    expect(Object.isFrozen(draft.error ?? {})).toBe(true);
+
+    expect(() =>
+      createSandboxExperienceDraft({
+        bot_id: "bot-035",
+        message_id: "msg-sandbox-exp-bad",
+        intent_epoch: 7,
+        status: TaskHistoryStatus.Failed,
+        total_steps: 0,
+        duration_ms: 1,
+      }),
+    ).toThrow(/requires error/);
   });
 });

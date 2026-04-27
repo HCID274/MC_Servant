@@ -534,3 +534,43 @@ export type DiagnosticsJsonlLine<TAction extends string = string> =
   | TaskJsonlLine<TAction>
   | SandboxJsonlLine
   | LlmJsonlLine;
+
+/** sandbox experience（沙箱经验） 的错误摘要结构。 */
+export interface SandboxExperienceErrorSummary {
+  /** 错误分类名。 */
+  readonly name: string;
+  /** 已脱敏的错误消息。 */
+  readonly message: string;
+  /** 可选错误码。 */
+  readonly error_code?: string;
+  /** 是否可恢复。 */
+  readonly recoverable?: boolean;
+}
+
+/** sandbox experience（沙箱经验） 草案结构，供后续持久化或检索接入。 */
+export interface SandboxExperienceDraft {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 意图纪元。 */
+  readonly intent_epoch: number;
+  /** 沙箱执行终态。 */
+  readonly status: TaskTerminalStatus;
+  /** 总步骤数。 */
+  readonly total_steps: number;
+  /** 总耗时。 */
+  readonly duration_ms: number;
+  /** 指向 sandbox（沙箱执行） JSONL（结构化日志） 的引用。 */
+  readonly log_ref?: string;
+  /** 指向 sandbox（沙箱执行） 原始代码文件的引用。 */
+  readonly code_ref?: string;
+  /** 沙箱源码哈希，用于后续去重与检索。 */
+  readonly code_hash?: string;
+  /** 有长度上限且已脱敏的源码预览。 */
+  readonly code_preview?: string;
+  /** 失败或中断时的错误摘要。 */
+  readonly error?: SandboxExperienceErrorSummary;
+  /** 稳定、可检索的短摘要。 */
+  readonly summary: string;
+}

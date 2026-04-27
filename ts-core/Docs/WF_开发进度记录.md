@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-031` ~ `T-040`
-- 当前已完成任务：`T-031`、`T-032`、`T-033`、`T-034`
-- 当前活跃任务：`T-035`（任务三十五） sandbox_code（沙箱代码） 经验沉淀钩子与诊断摘要。
+- 当前已完成任务：`T-031`、`T-032`、`T-033`、`T-034`、`T-035`
+- 当前活跃任务：`T-036`（任务三十六） memory（记忆）上下文注入 chat（闲聊） / plan（规划） LLM（大语言模型）路径。
 - 当前批次摘要：上一批次 `T-021`（任务二十一） 到 `T-030`（任务三十） 已完成 MC（Minecraft，我的世界） 上线闭环、真实 LLM（大语言模型） 接入、多技能、观测出口、sandbox_code（沙箱代码） 与架构治理。新批次默认继续沿可运行主干推进对话智能增强。
 - 当前批次硬约束：不得回退 `T-021` 到 `T-030` 已形成的真实在线路径、单写者路径、无循环依赖图、OpenAI（开放人工智能） 兼容配置边界与 sandbox_code（沙箱代码） 执行安全边界。
 
@@ -126,3 +126,29 @@
 - **验证记录**:
   - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、179 条测试全部通过。
   - Manager（管理代理） 真实 API（应用程序接口） 验收命令摘要：`POST http://127.0.0.1:8045/v1/chat/completions`，`model`（模型）=`bl-auto`，输入为 T-034 online entrypoint smoke（在线入口冒烟） 消息；结果 `status=200`，`duration_ms=1815`，关键输出包含 `OK`。
+
+### T-035（已完成）
+
+- **任务主题**: sandbox_code（沙箱代码） 经验沉淀钩子与诊断摘要。
+- **审查时间**: 2026-04-26T22:46:48+09:00
+- **核心文件**:
+  - `src/diagnostics/contracts.ts`
+  - `src/diagnostics/logs.ts`
+  - `src/workers/contracts.ts`
+  - `src/workers/bot-worker.ts`
+  - `src/__tests__/sandbox-diagnostics-model.spec.ts`
+  - `src/__tests__/bot-worker-runtime-model.spec.ts`
+  - `src/__tests__/runtime-worker-event-model.spec.ts`
+- **变更快照**:
+  - diagnostics（诊断）新增 `SandboxExperienceDraft`（沙箱经验草案） 与 `createSandboxExperienceDraft()`（创建沙箱经验草案），记录 `bot_id`（机器人标识）、`message_id`（消息标识）、`intent_epoch`（意图纪元）、终态、步骤数、耗时、`log_ref`（日志引用） / `code_ref`（代码引用）、`code_hash`（代码哈希） / 限长 `code_preview`（代码预览）、错误摘要与稳定短摘要。
+  - `createSandboxExperienceDraft()`（创建沙箱经验草案） 只做纯转换，不写 PostgreSQL（关系型数据库）、Redis（缓存）、JSONL（结构化日志） 或向量库；输出通过深克隆 / 深冻结保持不可变。
+  - diagnostics（诊断）脱敏逻辑覆盖 `sk-*` API key（接口密钥）、命名密码、连接串密码、注入敏感值，以及 `/home/...`、`/Users/...`、`C:\Users\...` 等宿主机敏感路径。
+  - `BotWorkerAction`（机器人工作线程动作） 新增向后兼容的 `persist_sandbox_experience`（持久化沙箱经验）动作；仅 `sandbox_code`（沙箱代码） 的 `completed`（已完成） / `failed`（已失败） / `interrupted`（已中断） 终态追加，`skill_call`（技能调用）、`started`（已开始） 与 `discarded`（已丢弃） 不生成。
+  - `BotWorker`（机器人工作线程） 在保留 `emit_task_lifecycle`（发射任务生命周期） 与 `enqueue_brain`（入摘要队列） 语义和顺序的基础上追加经验动作，供后续持久化层或检索层接入。
+- **审查结论**:
+  - 通过。T-035（任务三十五） 已补齐 sandbox_code（沙箱代码） 终态经验采集出口，未引入数据库写入、公开路由、新依赖或 LLM（大语言模型） Prompt（提示词） 变化。
+  - 首轮打回项“宿主机敏感路径未脱敏”已修复；用户确认 `01_ARCHITECTURE.md`（架构文档） 为用户自行改动，作为本轮审查豁免，不纳入 T-035（任务三十五） 代码结论。
+- **验证记录**:
+  - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、181 条测试全部通过。
+  - Manager（管理代理） 复跑 `git diff --check -- ':!ts-core/Docs/01_ARCHITECTURE.md'`：通过；排除项为用户豁免文档改动。
+  - 本轮未触碰 LLM（大语言模型） Prompt（提示词） / parser（解析器） / 配置 / online entrypoint（在线入口装配），不需要真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。

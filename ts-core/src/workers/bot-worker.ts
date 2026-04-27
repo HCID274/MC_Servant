@@ -293,6 +293,22 @@ function createErrorSnapshot(error: unknown): TaskFailedErrorSnapshot {
   });
 }
 
+/** 从运行时沙箱结果中提取可选存储引用，兼容当前 BotActor（机器人执行代理） 结果裁剪。 */
+function getSandboxResultRefs(result: unknown): {
+  readonly log_ref?: string;
+  readonly code_ref?: string;
+} {
+  if (result === null || typeof result !== "object") {
+    return {};
+  }
+
+  const candidate = result as { readonly log_ref?: unknown; readonly code_ref?: unknown };
+  return Object.freeze({
+    ...(typeof candidate.log_ref === "string" ? { log_ref: candidate.log_ref } : {}),
+    ...(typeof candidate.code_ref === "string" ? { code_ref: candidate.code_ref } : {}),
+  });
+}
+
 /**
  * 创建 BotWorker 真实运行时。
  *
@@ -388,6 +404,10 @@ export function createBotWorkerRuntime(input: {
             duration_ms: durationMs,
             error: errorSnapshot,
             last_step: executionResult.step_results.at(-1)?.action ?? "executeSandboxCode",
+            sandbox_result: Object.freeze({
+              ...getSandboxResultRefs(executionResult),
+              error: executionResult.error,
+            }),
           }),
         );
         events.push(
@@ -415,6 +435,11 @@ export function createBotWorkerRuntime(input: {
               ? executionResult.summary.total_steps
               : executionResult.total_steps,
           duration_ms: durationMs,
+          ...(task.exec_job.type === ExecutionTaskKind.SandboxCode
+            ? {
+                sandbox_result: getSandboxResultRefs(executionResult),
+              }
+            : {}),
         }),
       );
       events.push(

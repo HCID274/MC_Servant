@@ -36,6 +36,8 @@ TS Core 是一套以 TypeScript 为唯一执行核心的 Minecraft Bot Agent 系
 
 ```
 ┌─────────────────────────────────────────────────────────┐
+│  ⓪ 组合根         src/app/（应用装配，不参与业务执行）   │
+├─────────────────────────────────────────────────────────┤
 │  ① 运行时基座     Node.js + TypeScript (strict)         │
 ├─────────────────────────────────────────────────────────┤
 │  ② API 网关       Fastify + Zod                         │
@@ -52,7 +54,16 @@ TS Core 是一套以 TypeScript 为唯一执行核心的 Minecraft Bot Agent 系
 │  ⑦ 持久化         PostgreSQL + Drizzle ORM              │
 │                   + pgvector + JSONL 冷存储              │
 └─────────────────────────────────────────────────────────┘
+
+横切基础层（不属于上述纵向分层，被多层单向依赖）：
+  ▸ src/domain/      共享类型、不变量、只读辅助（与业务流程无关）
+  ▸ src/core-ports/  跨模块共享端口契约（打断 runtime ↔ skills/observation/diagnostics/data 循环）
 ```
+
+**组合根 `src/app/` 与横切层 `src/core-ports/` 的定位（v0.3 修订，2026-04-26 由代码反向审计追认）**：
+
+- `src/app/`（应用装配）不属于七层纵向分层中的任何一层，而是位于纵向分层之上的**组合根**。它的唯一职责是装配 `interfaces` / `workers` / `runtime` / `db` / `data` / `sandbox` / `diagnostics` 的公开契约，集中管理依赖注入、启停顺序与失败逆序清理，不承载任何业务执行逻辑。其他模块**禁止反向依赖** `src/app/`。
+- `src/core-ports/`（核心端口层）与 `src/domain/`（领域） 一样，是被多模块单向依赖的**横切基础契约层**：沉淀跨模块共享的端口类型（如 `BotActorRuntimePort`、`SkillName`、`ExecutionTaskKind`、`SandboxBotMethodName` 等），让上层模块面向端口编程而非面向具体实现。`core-ports` 不得反向 import `runtime`（运行时）、`skills`（技能）、`observation`（观测）、`diagnostics`（诊断）、`data`（数据层） 的实现文件。该层于 T-028 引入，用于打断 `runtime` ↔ `skills`/`observation`/`diagnostics`/`data` 间的循环依赖；当前 `pre_review.sh`（评审前预检脚本）经 `madge`（依赖图工具） 守门，全仓零循环。
 
 `src/domain/`（领域） 不属于新的第八个业务执行层，而是跨上述七层复用的**横切基础契约层**：只沉淀核心类型、基础不变量校验、通用只读辅助等与业务流程无关的公共边界。其他模块可以单向依赖 `domain`，但 `domain` 不得反向 import（导入） `runtime`（运行时）、`interfaces`（接口边界）、`app`（应用装配）、`db`（数据库） 等上层实现，从而维持依赖方向清晰与模块解耦。
 
@@ -641,6 +652,8 @@ Phase 1 全本地部署。
 | `workers/` | ConversationWorker、BotWorker、BrainWorker 入口 | 每个 Worker 只消费自己的队列 |
 | `db/` | Drizzle schema、migrations、PG 连接池 | 不承载业务逻辑 |
 | `data/` | resource_profiles、词汇映射、配置 | 不承载 MC 事实真源 |
+| `core-ports/` | 跨模块共享端口契约（v0.3 追认，T-028 引入） | 横切层，禁止反向 import `runtime` / `skills` / `observation` / `diagnostics` / `data` 实现 |
+| `app/` | 组合根：装配 `interfaces` / `workers` / `runtime` / `db` / `data` / `sandbox` / `diagnostics`，集中管理依赖注入与启停顺序（v0.3 追认） | 不承载业务执行逻辑；其他模块禁止反向依赖 `app/` |
 
 **模块解耦原则**：模块间只通过队列、事件和类型接口通信，不允许直接 import 其他模块的内部实现。方便未来再设计、再修改、重构。
 
@@ -648,33 +661,124 @@ Phase 1 全本地部署。
 
 ## 16. 目录结构
 
+> v0.3 修订（2026-04-26）：本节按代码反向审计同步至当前实际目录组织，反映 T-028（`core-ports/` 引入）与 T-029（超大文件拆分）后的两层视图。barrel 入口（如 `runtime/transport.ts` 1 行 re-export `transport/index.js`）仅作向后兼容用途，不在树中重复列出。
+
 ```
 ts-core/
 ├── src/
-│   ├── runtime/          # BotActor, state machine, reflex rules, abort protocol
-│   ├── conversation/     # intent analysis, triage, reply generation, code planning
-│   ├── skills/           # goTo, mine, cutTree, collect, equip
-│   ├── observation/      # snapshot cache, threat detection, event listeners
-│   ├── world-model/      # minecraft-data queries, resource profiles, cluster
-│   ├── interfaces/
-│   │   ├── api/          # Fastify routes
-│   │   ├── realtime/     # Socket.io push
-│   │   ├── game-chat/    # Mineflayer chat adapter
-│   │   └── server-bridge/# JAR plugin communication
-│   ├── domain/           # shared invariants, readonly helpers, core contracts
-│   ├── diagnostics/      # JSONL logger, LLM transcript, run events
-│   ├── sandbox/          # isolated-vm integration, Facade API types, esbuild
-│   ├── workers/          # ConversationWorker, BotWorker, BrainWorker entries
-│   ├── db/               # Drizzle schema, migrations, PG connection
-│   └── data/             # resource profiles, vocab mapping, config
-├── logs/                 # JSONL runtime logs (gitignored)
-├── scripts/              # CLI tools (tail-log, etc.)
+│   ├── app/                          # 组合根（v0.3 追认；不属于七层之内）
+│   │   ├── bootstrap/                # 装配子职责：config / env / resources / services / ...
+│   │   │   ├── config.ts
+│   │   │   ├── env.ts
+│   │   │   ├── directories.ts
+│   │   │   ├── external-auth.ts
+│   │   │   ├── process.ts
+│   │   │   ├── resources.ts
+│   │   │   ├── runtime-core.ts
+│   │   │   ├── services.ts
+│   │   │   ├── contract.ts
+│   │   │   └── types.ts
+│   │   ├── contracts.ts
+│   │   ├── entrypoint.ts             # 在线运行时启动入口（含 startAppOnlineRuntime）
+│   │   └── smoke.ts                  # 无 MC 冒烟装配
+│   ├── core-ports/                   # 横切端口层（v0.3 追认；T-028 引入）
+│   │   ├── foundation.ts             # 基础共享类型
+│   │   ├── runtime.ts                # 运行时端口（BotActor、broadcast、interrupt）
+│   │   ├── skills.ts                 # 技能名 / 技能参数端口
+│   │   ├── observation.ts            # 观测端口
+│   │   ├── tasking.ts                # exec 任务 / 优先级端口
+│   │   ├── events.ts                 # 跨模块事件端口
+│   │   └── sandbox.ts                # 沙箱端口
+│   ├── domain/                       # 横切领域基础（共享不变量、只读辅助）
+│   ├── runtime/                      # BotActor、状态机、中断协议、反射规则
+│   │   ├── actor.ts
+│   │   ├── state-machine.ts
+│   │   ├── contracts.ts
+│   │   ├── events.ts
+│   │   ├── tasking.ts
+│   │   └── transport/                # Mineflayer 适配按职责拆分
+│   │       ├── lifecycle.ts
+│   │       ├── pathfinder.ts
+│   │       ├── go-to.ts
+│   │       ├── mine.ts
+│   │       ├── collect.ts
+│   │       ├── equip.ts
+│   │       ├── naming.ts
+│   │       ├── runtime.ts
+│   │       └── types.ts
+│   ├── conversation/                 # 意图分析 / 分诊 / 回复 / 规划
+│   │   ├── contracts.ts
+│   │   ├── triage.ts                 # 含 ConversationCompositeTriage（T-032）
+│   │   ├── chat.ts
+│   │   ├── planning.ts
+│   │   └── llm/                      # LLM 客户端 / 配置 / 解析 / 模板
+│   │       ├── client.ts
+│   │       ├── config.ts
+│   │       ├── http.ts
+│   │       ├── stage.ts              # executeStage 三段调用模板
+│   │       ├── messages.ts
+│   │       ├── parsers.ts
+│   │       ├── types.ts
+│   │       ├── errors.ts
+│   │       ├── diagnostics.ts
+│   │       ├── skill-plan-table.ts
+│   │       └── prompts/              # Prompt 模板独立组织
+│   │           ├── triage.ts
+│   │           ├── chat.ts
+│   │           └── plan.ts
+│   ├── skills/                       # goTo / mine / cutTree / collect / equip 参数模型
+│   ├── observation/                  # 快照缓存、威胁评估
+│   ├── world-model/                  # MC 常识查询（minecraft-data 集成待 T-037）
+│   ├── interfaces/                   # API / 实时推送 / 游戏聊天 / 服务端桥接
+│   │   ├── api.ts                    # Fastify 路由
+│   │   ├── realtime.ts               # Socket.io 推送契约（实现待 T-034）
+│   │   ├── server.ts
+│   │   ├── contracts.ts
+│   │   ├── errors.ts
+│   │   ├── game-chat/                # Mineflayer chat 适配
+│   │   └── server-bridge/            # JAR 插件通信（实际通信待 T-039）
+│   ├── diagnostics/                  # JSONL 日志、LLM transcript、run events
+│   ├── sandbox/                      # isolated-vm + Facade API + esbuild
+│   ├── workers/                      # ConversationWorker / BotWorker / BrainWorker
+│   │   ├── bot-worker.ts
+│   │   ├── brain-worker.ts           # T-033 引入
+│   │   ├── bullmq.ts
+│   │   ├── queues.ts
+│   │   ├── contracts.ts
+│   │   └── conversation-worker/
+│   │       ├── runtime.ts
+│   │       ├── helpers.ts
+│   │       ├── events.ts
+│   │       ├── types.ts
+│   │       └── handlers/
+│   │           ├── chat-reply.ts
+│   │           ├── plan-exec.ts
+│   │           └── cancel-interrupt.ts
+│   ├── db/                           # Drizzle schema、migrations、PG / Redis 连接
+│   ├── data/                         # 数据契约
+│   │   └── contracts/                # T-029 拆分：tables / event-log / persistence / ...
+│   │       ├── tables.ts
+│   │       ├── event-log.ts
+│   │       ├── persistence.ts
+│   │       ├── task-history.ts
+│   │       ├── config.ts
+│   │       ├── config-types.ts
+│   │       └── utils.ts
+│   ├── __tests__/                    # 28 个 spec 文件（按模块/契约组织）
+│   ├── index.ts
+│   └── main.ts                       # 进程可执行入口
+├── logs/                             # JSONL runtime logs (gitignored)
+├── scripts/                          # CLI tools，含 pre_review.sh
 ├── package.json
 ├── tsconfig.json
-└── biome.json
+├── biome.json
+├── drizzle.config.ts
+└── vitest.config.ts
 ```
 
-其中 `domain/`（领域） 作为横切基础层，只承载可被多模块复用的核心类型、基础校验和只读辅助，不直接承载业务流程、队列装配或外部 I/O（输入输出） 逻辑。
+其中 `domain/`（领域） 与 `core-ports/`（核心端口） 作为横切基础层，只承载可被多模块复用的核心类型、基础校验、只读辅助与跨模块端口契约，不直接承载业务流程、队列装配或外部 I/O（输入输出） 逻辑。`app/`（应用装配） 作为组合根，集中处理依赖装配与生命周期，不承载业务执行。
+
+**barrel 兼容入口约定**：当一级模块文件被拆入子目录后（如 `runtime/transport/`、`conversation/llm/`、`workers/conversation-worker/`、`app/bootstrap/`、`data/contracts/`），保留同名 1 行 `.ts` 文件作为 `export * from "./xxx/index.js"` 的兼容入口，使外部 import 路径不破坏。**新代码应直接 import 子目录入口**，barrel 入口仅用于过渡兼容。
 
 ### 16.1 命名约定
 

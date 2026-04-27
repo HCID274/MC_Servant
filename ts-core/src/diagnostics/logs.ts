@@ -6,6 +6,9 @@
  * 3. 稳压校验：在 createTaskLogLine 等工厂函数中对输入载荷进行运行时校验，确保日志行的质量和类型安全。
  */
 
+import { createHash } from "node:crypto";
+
+import { TaskHistoryStatus, type TaskTerminalStatus } from "../core-ports/tasking.js";
 import {
   JSONL_DIRECTORY_POLICIES,
   type JsonlDirectoryPolicy,
@@ -20,12 +23,17 @@ import {
   type JsonlErrorSnapshot,
   type LlmDiagnosticSummary,
   type LlmJsonlLine,
+  type SandboxExperienceDraft,
+  type SandboxExperienceErrorSummary,
   type SandboxJsonlLine,
   type TaskJsonlLine,
 } from "./contracts.js";
 
 const LLM_ERROR_SUMMARY_MAX_LENGTH = 240;
+const SANDBOX_EXPERIENCE_SUMMARY_MAX_LENGTH = 240;
+const SANDBOX_CODE_PREVIEW_MAX_LENGTH = 240;
 const REDACTED_SECRET = "<redacted>";
+const REDACTED_HOST_PATH = "<redacted-path>";
 
 /**
  * 校验数值是否为正数或零。
@@ -92,16 +100,49 @@ function redactNamedSecretValues(value: string): string {
   );
 }
 
-function redactLlmErrorSummary(
+function redactHostSensitivePaths(value: string): string {
+  const unixPathPrefixes = [
+    "home",
+    "Users",
+    "root",
+    "workspace",
+    "workspaces",
+    "mnt",
+    "tmp",
+    "var",
+    "opt",
+    "private",
+    "Volumes",
+  ].join("|");
+  const pathEndPattern = "[^\\s\"'`,;)\\]}]+";
+  const unixAbsolutePathPattern = new RegExp(
+    `(^|[\\s"'(=:\\[{])(/(?:${unixPathPrefixes})/${pathEndPattern})`,
+    "g",
+  );
+  const windowsAbsolutePathPattern =
+    /(^|[\s"'(=:\[{])([A-Za-z]:[\\/](?:Users[\\/])?[^\s"'`,;)\]}]+)/g;
+
+  return value
+    .replace(unixAbsolutePathPattern, (_match: string, prefix: string) => {
+      return `${prefix}${REDACTED_HOST_PATH}`;
+    })
+    .replace(windowsAbsolutePathPattern, (_match: string, prefix: string) => {
+      return `${prefix}${REDACTED_HOST_PATH}`;
+    });
+}
+
+function redactSensitiveDiagnosticText(
   value: string,
   options: { readonly sensitiveValues?: readonly string[] } = {},
 ): string {
   // 状态接口只需要定位线索，任何可疑密钥或连接串密码都必须先在诊断边界收口。
-  const redacted = redactNamedSecretValues(
-    redactConnectionStringPasswords(
-      redactKnownSensitiveValues(
-        value.replace(/\bsk-[A-Za-z0-9_-]{4,}\b/g, REDACTED_SECRET),
-        options.sensitiveValues ?? [],
+  const redacted = redactHostSensitivePaths(
+    redactNamedSecretValues(
+      redactConnectionStringPasswords(
+        redactKnownSensitiveValues(
+          value.replace(/\bsk-[A-Za-z0-9_-]{4,}\b/g, REDACTED_SECRET),
+          options.sensitiveValues ?? [],
+        ),
       ),
     ),
   );
@@ -111,6 +152,75 @@ function redactLlmErrorSummary(
   }
 
   return `${redacted.slice(0, LLM_ERROR_SUMMARY_MAX_LENGTH)}...<truncated>`;
+}
+
+function truncateDiagnosticText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, maxLength - 14))}...<truncated>`;
+}
+
+function assertSandboxExperienceStatus(status: TaskTerminalStatus): void {
+  if (
+    status !== TaskHistoryStatus.Completed &&
+    status !== TaskHistoryStatus.Failed &&
+    status !== TaskHistoryStatus.Interrupted
+  ) {
+    throw new Error("sandbox experience status must be completed, failed, or interrupted");
+  }
+}
+
+function createCodeHash(code: string): string {
+  return `sha256:${createHash("sha256").update(code).digest("hex")}`;
+}
+
+function createSandboxExperienceErrorSummary(input: {
+  error: {
+    readonly name?: string;
+    readonly message: string;
+    readonly error_code?: string;
+    readonly recoverable?: boolean;
+  };
+  sensitiveValues?: readonly string[];
+}): SandboxExperienceErrorSummary {
+  const name = input.error.name ?? "Error";
+  assertNonEmptyString(name, "error.name");
+  assertNonEmptyString(input.error.message, "error.message");
+
+  const message = redactSensitiveDiagnosticText(input.error.message, {
+    ...(input.sensitiveValues === undefined ? {} : { sensitiveValues: input.sensitiveValues }),
+  });
+  assertNonEmptyString(message, "error.message");
+
+  return cloneReadonlyValue({
+    name,
+    message,
+    ...(input.error.error_code === undefined ? {} : { error_code: input.error.error_code }),
+    ...(input.error.recoverable === undefined ? {} : { recoverable: input.error.recoverable }),
+  });
+}
+
+function createSandboxExperienceSummary(input: {
+  status: TaskTerminalStatus;
+  total_steps: number;
+  duration_ms: number;
+  log_ref?: string;
+  code_ref?: string;
+  error?: SandboxExperienceErrorSummary;
+}): string {
+  const base = `sandbox_code ${input.status}: steps=${input.total_steps}, ms=${input.duration_ms}`;
+  const refs = [input.log_ref, input.code_ref].filter(
+    (value): value is string => value !== undefined,
+  );
+  const errorText =
+    input.error === undefined ? undefined : `error=${input.error.name}: ${input.error.message}`;
+  const summary = [base, refs.length > 0 ? `refs=${refs.join(",")}` : undefined, errorText]
+    .filter((value): value is string => value !== undefined && value.trim().length > 0)
+    .join("; ");
+
+  return truncateDiagnosticText(summary, SANDBOX_EXPERIENCE_SUMMARY_MAX_LENGTH);
 }
 
 /**
@@ -400,7 +510,7 @@ export function createLlmDiagnosticSummary(
   const errorSummary =
     input.error_summary === undefined
       ? undefined
-      : redactLlmErrorSummary(input.error_summary, options);
+      : redactSensitiveDiagnosticText(input.error_summary, options);
 
   if (input.status === "error" && errorSummary !== undefined) {
     assertNonEmptyString(errorSummary, "error_summary");
@@ -414,5 +524,104 @@ export function createLlmDiagnosticSummary(
     log_ref: input.log_ref,
     created_at: input.created_at,
     ...(errorSummary === undefined ? {} : { error_summary: errorSummary }),
+  });
+}
+
+/**
+ * 创建 sandbox experience（沙箱经验） 草案。
+ *
+ * 该工厂只做确定性契约转换，不写数据库、不写 JSONL（结构化日志）文件；输出已脱敏、限长并深冻结。
+ *
+ * @param input 沙箱终态上下文与可选源码 / 错误信息
+ * @returns 可交给后续持久化层的沙箱经验草案
+ */
+export function createSandboxExperienceDraft(input: {
+  bot_id: string;
+  message_id: string;
+  intent_epoch: number;
+  status: TaskTerminalStatus;
+  total_steps: number;
+  duration_ms: number;
+  log_ref?: string;
+  code_ref?: string;
+  code?: string;
+  error?: {
+    readonly name?: string;
+    readonly message: string;
+    readonly error_code?: string;
+    readonly recoverable?: boolean;
+  };
+  sensitiveValues?: readonly string[];
+}): SandboxExperienceDraft {
+  assertNonEmptyString(input.bot_id, "bot_id");
+  assertNonEmptyString(input.message_id, "message_id");
+  assertPositiveNumber(input.intent_epoch, "intent_epoch");
+  assertSandboxExperienceStatus(input.status);
+  assertPositiveNumber(input.total_steps, "total_steps");
+  assertPositiveNumber(input.duration_ms, "duration_ms");
+
+  if (input.log_ref !== undefined) {
+    assertDiagnosticStorageRef({
+      channel: "sandbox",
+      refField: "log_ref",
+      value: input.log_ref,
+    });
+  }
+
+  if (input.code_ref !== undefined) {
+    assertDiagnosticStorageRef({
+      channel: "sandbox",
+      refField: "code_ref",
+      value: input.code_ref,
+    });
+  }
+
+  if (input.status === TaskHistoryStatus.Failed && input.error === undefined) {
+    throw new Error("failed sandbox experience requires error");
+  }
+
+  const error =
+    input.error === undefined
+      ? undefined
+      : createSandboxExperienceErrorSummary({
+          error: input.error,
+          ...(input.sensitiveValues === undefined
+            ? {}
+            : { sensitiveValues: input.sensitiveValues }),
+        });
+  const codeHash = input.code === undefined ? undefined : createCodeHash(input.code);
+  const codePreview =
+    input.code === undefined
+      ? undefined
+      : truncateDiagnosticText(
+          redactSensitiveDiagnosticText(input.code, {
+            ...(input.sensitiveValues === undefined
+              ? {}
+              : { sensitiveValues: input.sensitiveValues }),
+          }),
+          SANDBOX_CODE_PREVIEW_MAX_LENGTH,
+        );
+  const summary = createSandboxExperienceSummary({
+    status: input.status,
+    total_steps: input.total_steps,
+    duration_ms: input.duration_ms,
+    ...(input.log_ref === undefined ? {} : { log_ref: input.log_ref }),
+    ...(input.code_ref === undefined ? {} : { code_ref: input.code_ref }),
+    ...(error === undefined ? {} : { error }),
+  });
+
+  return cloneReadonlyValue({
+    bot_id: input.bot_id,
+    message_id: input.message_id,
+    intent_epoch: input.intent_epoch,
+    status: input.status,
+    total_steps: input.total_steps,
+    duration_ms: input.duration_ms,
+    ...(input.log_ref === undefined ? {} : { log_ref: input.log_ref }),
+    ...(input.code_ref === undefined ? {} : { code_ref: input.code_ref }),
+    ...(codeHash === undefined ? {} : { code_hash: codeHash }),
+    ...(codePreview === undefined ? {} : { code_preview: codePreview }),
+    ...(error === undefined ? {} : { error }),
+    summary,
   });
 }

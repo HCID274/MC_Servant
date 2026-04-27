@@ -24,6 +24,8 @@ import {
   TaskHistoryStatus,
   type TaskTerminalStatus,
 } from "../core-ports/tasking.js";
+import type { SandboxExperienceDraft } from "../diagnostics/contracts.js";
+import { createSandboxExperienceDraft } from "../diagnostics/logs.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
 import {
   type TaskFailedErrorSnapshot,
@@ -210,12 +212,21 @@ export interface EnqueueBrainAction {
   readonly task: BrainWorkerTask;
 }
 
+/** BotWorker（机器人工作线程） 产出的 sandbox experience（沙箱经验） 动作。 */
+export interface PersistSandboxExperienceAction {
+  /** 动作类型。 */
+  readonly type: "persist_sandbox_experience";
+  /** 已脱敏、可持久化的沙箱经验草案。 */
+  readonly experience: SandboxExperienceDraft;
+}
+
 /** BotWorker（机器人工作线程） 输出动作联合。 */
 export type BotWorkerAction =
   | EmitTaskStartedAction
   | EmitTaskDiscardedAction
   | EmitTaskTerminalAction
-  | EnqueueBrainAction;
+  | EnqueueBrainAction
+  | PersistSandboxExperienceAction;
 
 /** BrainWorker（摘要工作线程） 产出的摘要持久化动作。 */
 export interface PersistTaskSummaryAction {
@@ -461,6 +472,10 @@ export function createBotWorkerActions(
         status: TaskHistoryStatus.Completed;
         total_steps: number;
         duration_ms: number;
+        sandbox_result?: {
+          readonly log_ref?: string;
+          readonly code_ref?: string;
+        };
       }
     | {
         task: BotWorkerTask;
@@ -470,6 +485,16 @@ export function createBotWorkerActions(
         duration_ms: number;
         error: TaskFailedErrorSnapshot;
         last_step?: string;
+        sandbox_result?: {
+          readonly log_ref?: string;
+          readonly code_ref?: string;
+          readonly error?: {
+            readonly name?: string;
+            readonly message: string;
+            readonly error_code?: string;
+            readonly recoverable?: boolean;
+          };
+        };
       }
     | {
         task: BotWorkerTask;
@@ -479,6 +504,16 @@ export function createBotWorkerActions(
         duration_ms: number;
         interrupt_source: InterruptSignal["source"];
         reason: string;
+        sandbox_result?: {
+          readonly log_ref?: string;
+          readonly code_ref?: string;
+          readonly error?: {
+            readonly name?: string;
+            readonly message: string;
+            readonly error_code?: string;
+            readonly recoverable?: boolean;
+          };
+        };
       },
 ): readonly BotWorkerAction[] {
   switch (input.phase) {
@@ -544,7 +579,7 @@ export function createBotWorkerActions(
         }
       })();
 
-      return Object.freeze([
+      const actions: BotWorkerAction[] = [
         Object.freeze({
           type: "emit_task_lifecycle",
           bot_id: input.task.bot_id,
@@ -559,7 +594,43 @@ export function createBotWorkerActions(
             status: input.status,
           }),
         }),
-      ]);
+      ];
+
+      if (input.task.exec_job.type === "sandbox_code") {
+        actions.push(
+          Object.freeze({
+            type: "persist_sandbox_experience",
+            experience: createSandboxExperienceDraft({
+              bot_id: input.task.bot_id,
+              message_id: input.task.exec_job.message_id,
+              intent_epoch: input.task.exec_job.intent_epoch,
+              status: input.status,
+              total_steps: input.total_steps,
+              duration_ms: input.duration_ms,
+              ...(input.sandbox_result?.log_ref === undefined
+                ? {}
+                : { log_ref: input.sandbox_result.log_ref }),
+              ...(input.sandbox_result?.code_ref === undefined
+                ? {}
+                : { code_ref: input.sandbox_result.code_ref }),
+              code: input.task.exec_job.code,
+              ...("error" in input
+                ? { error: input.sandbox_result?.error ?? input.error }
+                : input.status === TaskHistoryStatus.Interrupted
+                  ? {
+                      error: input.sandbox_result?.error ?? {
+                        name: "AbortError",
+                        message: input.reason,
+                        recoverable: false,
+                      },
+                    }
+                  : {}),
+            }),
+          }),
+        );
+      }
+
+      return Object.freeze(actions);
     }
   }
 }
