@@ -516,6 +516,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const events: string[] = [];
     const writes: string[] = [];
     const llmRequests: Array<{ url: string; body: unknown }> = [];
+    const memoryProviderCalls: unknown[] = [];
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const bootstrap = createAppBootstrapContract({
       botId: "bot-llm-online",
@@ -623,6 +624,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           }),
         },
         conversationWorker: {
+          memoryContextProvider: (input) => {
+            memoryProviderCalls.push(input);
+
+            return "历史：主人上次让 Bot 去过矿洞入口。";
+          },
           createWorker: ({ processor: capturedProcessor }) => {
             processor = capturedProcessor;
 
@@ -643,7 +649,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         message: {
           bot_id: "bot-llm-online",
           message_id: "msg-online-chat",
-          content: "陪我聊聊天",
+          content: "你还记得上次的矿洞吗",
           intent_epoch: 1,
           snapshot_ts: 1_713_952_800_000,
         },
@@ -675,6 +681,19 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const chatRequestBody = llmRequests[1]?.body as {
       messages?: Array<{ role: string; content: string }>;
     };
+    expect(memoryProviderCalls).toEqual([
+      expect.objectContaining({
+        bot_id: "bot-llm-online",
+        message_id: "msg-online-chat",
+        intent_epoch: 1,
+        message_content: "你还记得上次的矿洞吗",
+        route_kind: "chat_reply",
+        query_reason: "composite_reply",
+      }),
+    ]);
+    expect(chatRequestBody.messages?.[0]?.content).toContain(
+      "记忆摘要：历史：主人上次让 Bot 去过矿洞入口。",
+    );
     expect(chatRequestBody.messages?.[0]?.content).toContain("当前状态摘要：当前状态：idle");
     expect(chatRequestBody.messages?.[0]?.content).toContain("世界交互：已就绪");
     expect(events).toContain("chat:当然可以，我在这里喵~");
@@ -964,6 +983,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
   it("应在真实在线入口把自然语言坐标任务接到 LLM（大语言模型） 分诊与规划，并入 goTo（前往坐标） 执行队列", async () => {
     const llmRequests: Array<{ url: string; body: unknown }> = [];
     const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];
+    const memoryProviderCalls: unknown[] = [];
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const bootstrap = createAppBootstrapContract({
       botId: "bot-plan-online",
@@ -1071,6 +1091,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           }),
         },
         conversationWorker: {
+          memoryContextProvider: (input) => {
+            memoryProviderCalls.push(input);
+
+            return "历史：主人上次要求到点后汇报坐标。";
+          },
           createWorker: ({ processor: capturedProcessor }) => {
             processor = capturedProcessor;
 
@@ -1096,6 +1121,22 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     expect(llmRequests).toHaveLength(2);
+    expect(memoryProviderCalls).toEqual([
+      expect.objectContaining({
+        bot_id: "bot-plan-online",
+        message_id: "msg-online-plan",
+        intent_epoch: 3,
+        message_content: "请去坐标 x=10 y=64 z=-5",
+        route_kind: "plan_exec",
+        query_reason: "主人给了明确坐标移动指令",
+      }),
+    ]);
+    const planRequestBody = llmRequests[1]?.body as {
+      messages?: Array<{ role: string; content: string }>;
+    };
+    expect(planRequestBody.messages?.[1]?.content).toContain(
+      "记忆摘要：历史：主人上次要求到点后汇报坐标。",
+    );
     expect(queueAdds).toEqual([
       {
         name: "bot:bot-plan-online:exec",

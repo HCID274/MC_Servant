@@ -6,7 +6,13 @@ import type {
 import { createExecJobFromPlan } from "../../../conversation/planning.js";
 import { TaskHistoryStatus } from "../../../core-ports/tasking.js";
 import { type ConversationWorkerTask, createBotWorkerTask } from "../../contracts.js";
-import { createPlanningFailureReply, toBullmqPriority } from "../helpers.js";
+import {
+  CONVERSATION_WORKER_MEMORY_CONTEXT_CHAR_BUDGET,
+  CONVERSATION_WORKER_MEMORY_CONTEXT_LIMIT,
+  createPlanningFailureReply,
+  normalizeMemoryContext,
+  toBullmqPriority,
+} from "../helpers.js";
 import type {
   ConversationWorkerRuntimeDependencies,
   ConversationWorkerRuntimeEvent,
@@ -32,10 +38,12 @@ export async function handlePlanExecRoute(input: {
 
   let plan: ConversationPlanDraft;
   try {
+    const memoryContext = await readMemoryContext(input);
     plan = await input.dependencies.planner({
       task: input.task,
       triage: input.route.triage,
       route: input.route,
+      ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
     });
   } catch {
     await pushPlanningFailure(input, "planner_failed", plannerFailureReply.reply);
@@ -110,6 +118,37 @@ export async function handlePlanExecRoute(input: {
       priority: execJob.priority,
     }),
   );
+}
+
+/** 按规划类 route（路由） 读取 memory（记忆）；provider（提供器） 失败时降级为空上下文。 */
+async function readMemoryContext(input: {
+  readonly task: ConversationWorkerTask;
+  readonly route: Extract<
+    ConversationRouteDecision,
+    { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
+  >;
+  readonly dependencies: ConversationWorkerRuntimeDependencies;
+}): Promise<string | undefined> {
+  if (input.dependencies.memoryContextProvider === undefined) {
+    return undefined;
+  }
+
+  try {
+    return normalizeMemoryContext(
+      await input.dependencies.memoryContextProvider({
+        bot_id: input.task.bot_id,
+        message_id: input.task.message.message_id,
+        intent_epoch: input.task.message.intent_epoch,
+        message_content: input.task.message.content,
+        route_kind: input.route.kind,
+        query_reason: input.route.triage.reason,
+        limit: CONVERSATION_WORKER_MEMORY_CONTEXT_LIMIT,
+        char_budget: CONVERSATION_WORKER_MEMORY_CONTEXT_CHAR_BUDGET,
+      }),
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 /** 记录规划失败并广播模板回复。 */

@@ -126,6 +126,8 @@ export type ConversationWorkerReplyGenerator = (input: {
   readonly route: ConversationRouteDecision;
   /** 可选 BotActor（机器人执行代理） 当前状态短摘要。 */
   readonly state_context?: string;
+  /** 可选记忆摘要。 */
+  readonly memory_context?: string;
 }) => string | ConversationGeneratedReply | Promise<string | ConversationGeneratedReply>;
 
 /** ConversationWorker（对话工作线程） 状态投影提供器。 */
@@ -138,6 +140,31 @@ export type ConversationActorStateProjectionProvider = (input: {
   | undefined
   | Promise<BotActorStateProjection | null | undefined>;
 
+/** ConversationWorker（对话工作线程） memory（记忆）读取输入。 */
+export interface ConversationMemoryContextProviderInput {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 意图纪元。 */
+  readonly intent_epoch: number;
+  /** 主人原始消息文本。 */
+  readonly message_content: string;
+  /** 当前路由类型。 */
+  readonly route_kind: ConversationRouteDecision["kind"];
+  /** 查询原因。 */
+  readonly query_reason: string;
+  /** 建议最大条数。 */
+  readonly limit: number;
+  /** 建议字符预算。 */
+  readonly char_budget: number;
+}
+
+/** ConversationWorker（对话工作线程） 可注入 memory（记忆）上下文提供器。 */
+export type ConversationMemoryContextProvider = (
+  input: ConversationMemoryContextProviderInput,
+) => string | null | undefined | Promise<string | null | undefined>;
+
 /** ConversationWorker（对话工作线程） 最小规划依赖。 */
 export type ConversationWorkerPlanner = (input: {
   /** Worker 输入任务。 */
@@ -149,6 +176,8 @@ export type ConversationWorkerPlanner = (input: {
     ConversationRouteDecision,
     { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
   >;
+  /** 可选记忆摘要。 */
+  readonly memory_context?: string;
 }) => ConversationPlanDraft | Promise<ConversationPlanDraft>;
 
 /** ConversationWorker（对话工作线程） BullMQ（任务队列） Worker 最小能力。 */
@@ -175,6 +204,8 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly replyGenerator?: ConversationWorkerReplyGenerator;
   /** BotActor（机器人执行代理） 只读状态投影提供器，仅 chat_reply（闲聊回复） 分支读取。 */
   readonly actorStateProjectionProvider?: ConversationActorStateProjectionProvider;
+  /** memory（记忆）上下文提供器；仅按路由信号读取，失败时降级为空上下文。 */
+  readonly memoryContextProvider?: ConversationMemoryContextProvider;
   /** 最小规划函数，成功时返回可执行规划草案。 */
   readonly planner?: ConversationWorkerPlanner;
   /** 广播回复汇点，真实路径指向 BotActor.broadcastReply。 */

@@ -286,6 +286,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       snapshot_context:
         "online_runtime: single skill world interaction planning; executable skills: goTo, mine, collect, equip",
       triage_reason: "主人给了明确坐标移动指令",
+      memory_context: "历史：主人上次要求抵达坐标后先回报状态。",
     });
 
     expect(result).toEqual({
@@ -309,10 +310,18 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
             snapshot_context:
               "online_runtime: single skill world interaction planning; executable skills: goTo, mine, collect, equip",
             triage_reason: "主人给了明确坐标移动指令",
+            memory_context: "历史：主人上次要求抵达坐标后先回报状态。",
           }),
         },
       },
     ]);
+    const requestBody = capturedRequests[0]?.body as {
+      messages?: Array<{ role: string; content: string }>;
+    };
+    expect(requestBody.messages?.[1]?.content).toContain(
+      "记忆摘要：历史：主人上次要求抵达坐标后先回报状态。",
+    );
+    expect(requestBody.messages?.[0]?.content).toContain("不要输出 sandbox_code");
   });
 
   it("单技能规划 prompt（提示词） 不应再把“三个坐标”写成通用失败条件", () => {

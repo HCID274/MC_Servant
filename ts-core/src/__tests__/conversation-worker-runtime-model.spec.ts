@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import { createConversationCompositeTriage, createMessageTriage } from "../conversation/index.js";
 import { ConversationLlmChatError } from "../conversation/llm.js";
 import { BotStatus, createBotActorStateProjection } from "../core-ports/index.js";
+import { TaskHistoryStatus } from "../core-ports/tasking.js";
+import { createTaskSummaryDraft } from "../data/index.js";
 import { ConversationPriority } from "../domain/contracts.js";
 import { createConversationWorkerTask } from "../workers/contracts.js";
 import { createConversationWorkerRuntime } from "../workers/conversation-worker.js";
+import { createConversationWorkerMemoryContext } from "../workers/conversation-worker/helpers.js";
 
 describe("ConversationWorker（对话工作线程） 真实运行时", () => {
   it("应消费 chat（闲聊） 消息并通过 BotActor（机器人执行代理） sink（汇点） 广播回复", async () => {
@@ -160,6 +163,113 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
 
     expect(stateContexts).toEqual([undefined]);
+  });
+
+  it("应只在 chat（闲聊） 路由需要 memory（记忆） 时读取并注入 memory_context（记忆上下文）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const memoryCalls: unknown[] = [];
+    const memoryContexts: Array<string | undefined> = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createMessageTriage({
+            intent: "chat",
+            priority: "normal",
+            reason: "unit_chat_memory",
+          }),
+        memoryContextProvider: (input) => {
+          memoryCalls.push(input);
+
+          return createConversationWorkerMemoryContext({
+            results: [
+              {
+                summary: createTaskSummaryDraft({
+                  task_id: "msg-memory-older",
+                  bot_id: "bot-cw",
+                  message_id: "msg-memory-older",
+                  intent: "旧矿洞探索",
+                  status: TaskHistoryStatus.Completed,
+                  summary: "主人上次让 Bot 标记了矿洞入口。",
+                  created_at: "2026-04-25T00:00:00.000Z",
+                }),
+                score: 0.4,
+              },
+              {
+                summary: createTaskSummaryDraft({
+                  task_id: "msg-memory-newer",
+                  bot_id: "bot-cw",
+                  message_id: "msg-memory-newer",
+                  intent: "矿洞返回",
+                  status: TaskHistoryStatus.Interrupted,
+                  summary: "Bot 因取消指令中断返回。",
+                  created_at: "2026-04-26T00:00:00.000Z",
+                }),
+                score: 0.9,
+              },
+            ],
+            limit: 1,
+            char_budget: 120,
+          });
+        },
+        replyGenerator: (input) => {
+          memoryContexts.push(input.memory_context);
+
+          return "记得";
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-chat-memory",
+          content: "你还记得上次的矿洞吗",
+          intent_epoch: 9,
+          snapshot_ts: 108,
+        },
+      }),
+    });
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-chat-no-memory",
+          content: "今天你好呀",
+          intent_epoch: 10,
+          snapshot_ts: 109,
+        },
+      }),
+    });
+
+    expect(memoryCalls).toEqual([
+      expect.objectContaining({
+        bot_id: "bot-cw",
+        message_id: "msg-chat-memory",
+        intent_epoch: 9,
+        message_content: "你还记得上次的矿洞吗",
+        route_kind: "chat_reply",
+        query_reason: "unit_chat_memory",
+        limit: 5,
+        char_budget: 800,
+      }),
+    ]);
+    expect(memoryContexts).toEqual(["[interrupted] 矿洞返回: Bot 因取消指令中断返回。", undefined]);
   });
 
   it("应只记录 cancel（取消） 路径，不写入 Mineflayer（Minecraft 协议客户端） 聊天", async () => {
@@ -393,6 +503,79 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       message_id: "msg-goto",
       skill: "goTo",
       priority: "urgent",
+    });
+  });
+
+  it("应在 plan（规划） 路径读取 memory（记忆） 并在 provider（提供器） 失败时降级为空上下文", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const memoryContexts: Array<string | undefined> = [];
+    let callCount = 0;
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createMessageTriage({
+            intent: "task",
+            priority: ConversationPriority.Normal,
+            reason: "unit_plan_memory",
+          }),
+        memoryContextProvider: () => {
+          callCount += 1;
+
+          if (callCount === 2) {
+            throw new Error("memory backend unavailable");
+          }
+
+          return "历史：主人之前要求先装备镐子。";
+        },
+        planner: async (input) => {
+          memoryContexts.push(input.memory_context);
+
+          return {
+            type: "skill_call",
+            reply: "收到，我去挖石头",
+            skill: "mine",
+            params: { blockName: "stone", count: 1 },
+          };
+        },
+        broadcastReplySink: async () => undefined,
+        enqueueExecTaskSink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    for (const messageId of ["msg-plan-memory", "msg-plan-memory-fallback"]) {
+      await processor?.({
+        data: createConversationWorkerTask({
+          bot_id: "bot-cw",
+          message: {
+            bot_id: "bot-cw",
+            message_id: messageId,
+            content: "去挖一块石头",
+            intent_epoch: 11,
+            snapshot_ts: 110,
+          },
+        }),
+      });
+    }
+
+    expect(memoryContexts).toEqual(["历史：主人之前要求先装备镐子。", undefined]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.accepted",
+      bot_id: "bot-cw",
+      message_id: "msg-plan-memory-fallback",
+      skill: "mine",
+      priority: "normal",
     });
   });
 

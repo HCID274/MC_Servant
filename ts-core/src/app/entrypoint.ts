@@ -601,10 +601,11 @@ function createOnlineConversationReplyGenerator(
     return undefined;
   }
 
-  return async ({ task, state_context }) =>
+  return async ({ task, state_context, memory_context }) =>
     llm.generateChatReply({
       message_id: task.message.message_id,
       message: task.message.content,
+      ...(memory_context === undefined ? {} : { memory_context }),
       ...(state_context === undefined ? {} : { state_context }),
     });
 }
@@ -621,13 +622,14 @@ function createOnlineConversationPlanner(
     return undefined;
   }
 
-  return async ({ task, route }) =>
+  return async ({ task, route, memory_context }) =>
     llm.generateSkillPlan({
       message_id: task.message.message_id,
       message: task.message.content,
       snapshot_context:
         "online_runtime: single skill world interaction planning; executable skills: goTo, mine, collect, equip",
       triage_reason: route.triage.reason,
+      ...(memory_context === undefined ? {} : { memory_context }),
     });
 }
 

@@ -1,6 +1,6 @@
 # 当前任务握手区
 
-【任务序号】: T-036
+【任务序号】: T-037
 【当前状态】: 待开发
 
 ---
@@ -8,98 +8,83 @@
 ## Manager 任务指令
 
 **任务目标**:
-在 `conversation`（对话） + `workers`（工作线程） + `app`（应用装配） 边界内，把 T-033（任务三十三） 已建立的 memory（记忆）读取端口接入 chat（闲聊） / plan（规划） LLM（大语言模型）输入路径：当对话路由声明需要 memory search（记忆检索） 或进入 plan（规划） 路径时，ConversationWorker（对话工作线程） 通过可注入 provider（提供器）读取任务摘要上下文，并将稳定、限长的 `memory_context`（记忆上下文） 注入 `generateChatReply()`（生成闲聊回复） 与 `generateSkillPlan()`（生成技能规划）。本轮只做注入链路、降级策略和在线入口装配，不做数据库查询实现、不做向量检索算法、不引入新依赖。
+在 `world-model/`（世界模型） 边界内正式接入 `minecraft-data`（MC 事实包），提供一个可测试、可注入、只读的 Minecraft（我的世界）事实查询端口，用于按版本查询 block（方块）、item（物品） 与 recipe（配方） 基础事实。本轮目标是补齐“MC 常识 = 本地确定性 API（应用程序接口）查询”的主通路，不接入 LLM（大语言模型） Prompt（提示词），不改 planner（规划器）决策，不做中文词汇映射，不新增数据库或网络服务。
 
 **上下文说明**:
-1. T-033（任务三十三） 已在 `data/contracts/task-history.ts`（任务历史契约） 中提供 `TaskMemorySearchResult`（任务记忆检索结果） 与 `createMemoryContextFromTaskSummaries()`（由任务摘要创建记忆上下文）。
-2. 当前 LLM（大语言模型） 类型和消息构造已存在 `memory_context`（记忆上下文） 字段，但真实 ConversationWorker（对话工作线程） 与 online entrypoint（在线入口装配） 尚未把 memory（记忆）读取端口接进来。
-3. T-031（任务三十一） 已把 `state_context`（状态上下文） 注入 chat（闲聊）路径；本轮需要让 memory（记忆） 与 state（状态） 并存，且 provider（提供器）失败时降级为无记忆调用。
-4. T-032（任务三十二） 已让 route（路由） 暴露 `needs_memory_search`（需要记忆检索） 与 `requires_planning`（需要规划） 信号；本轮应复用这些信号，不重新定义意图分类。
-5. 本轮会触碰 LLM（大语言模型） 输入消息与 online entrypoint（在线入口装配），必须按长期规则提供真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收结果。
+1. 用户审计补登的 Phase 1（第一阶段） 缺口中，T-缺-A 已明确要求优先做 `minecraft-data`（MC 事实包） 集成。
+2. `world-model/`（世界模型） 当前已有 query（查询） / refresh（刷新） 边界与资源 cluster（资源簇） 查询，但尚未引入 `minecraft-data`（MC 事实包）。
+3. `AGENTS.md`（仓库规则） 明确禁止在代码或 Prompt（提示词） 中写死 Minecraft（我的世界）领域事实；本轮必须把事实来源限制为 `minecraft-data`（MC 事实包） 包自身。
+4. 本轮允许新增运行时依赖 `minecraft-data`（MC 事实包），并更新 `package.json`（依赖清单） 与 `pnpm-lock.yaml`（依赖锁文件）。除此之外不得新增依赖。
+5. 本轮不触碰 LLM（大语言模型） 调用链路、Prompt（提示词）、parser（解析器）、对话路由或 online entrypoint（在线入口装配）。如实现中发现必须触碰这些路径，先停止并在反馈区说明原因，等待 Manager（管理代理） 重新派发。
 
 **输入文件白名单（Coder 仅限读取以下文件）**:
-1. `AGENTS.md` — 第 0.2 节《真实 LLM API 验收规则》；第 2 节《用户强约束》；第 5 节《ts-core 工具链与工程基线》；第 9 节《编码规范》
+1. `AGENTS.md` — 第 3 节《Minecraft 事实来源约束》；第 5 节《ts-core 工具链与工程基线》；第 9 节《编码规范》
 2. `ts-core/agent.md` — 全文件
-3. `ts-core/Docs/01_ARCHITECTURE.md` — 第 1 节《五条不可破坏的约束》；第 15 节《模块划分》；第 16.1 节《命名约定》
-4. `ts-core/Docs/04_CONVERSATION_SPEC.md` — 对话路由、Prompt（提示词） 与 LLM（大语言模型） 输入相关小节
-5. `ts-core/Docs/05_DATA_SPEC.md` — task_summaries（任务摘要） / BrainWorker（摘要工作线程） 数据写入与读取意图相关小节
-6. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent》；第 5 节《状态流转》；第 6.1 节《正常开发循环》
-7. `ts-core/Docs/WF_需求变更索引.md` — `2026-04-24 — Triage 架构演进备案`、`2026-04-24 — Sandbox 上下文成本治理`、`2026-04-26 — 真实 LLM API 验收成为长期规则`
-8. `ts-core/Docs/WF_开发进度记录.md` — `T-031`（任务三十一）、`T-032`（任务三十二）、`T-033`（任务三十三）、`T-035`（任务三十五）记录
-9. `ts-core/scripts/pre_review.sh` — 全文件（只读）
-10. `ts-core/package.json` — 全文件（只读；不得新增依赖）
-11. `ts-core/tsconfig.json` — 全文件（只读）
-12. `ts-core/src/data/contracts/task-history.ts` — 全文件（优先复用既有 memory（记忆）工厂；只允许最小类型补充）
-13. `ts-core/src/data/index.ts`、`ts-core/src/data/contracts.ts`、`ts-core/src/data/contracts/index.ts` — 仅允许导出适配
-14. `ts-core/src/conversation/contracts.ts` — 全文件
-15. `ts-core/src/conversation/triage.ts` — 全文件（只读优先；仅允许因 route（路由） memory（记忆）信号缺口做最小修正）
-16. `ts-core/src/conversation/chat.ts` — 全文件
-17. `ts-core/src/conversation/planning.ts` — 全文件
-18. `ts-core/src/conversation/llm/types.ts` — 全文件
-19. `ts-core/src/conversation/llm/messages.ts` — 全文件
-20. `ts-core/src/conversation/llm/client.ts` — 全文件
-21. `ts-core/src/conversation/llm/prompts/chat.ts` — 全文件
-22. `ts-core/src/conversation/llm/prompts/plan.ts` — 全文件
-23. `ts-core/src/conversation/llm/index.ts`、`ts-core/src/conversation/llm.ts`、`ts-core/src/conversation/index.ts` — 仅允许导出适配
-24. `ts-core/src/workers/conversation-worker/types.ts` — 全文件
-25. `ts-core/src/workers/conversation-worker/runtime.ts` — 全文件
-26. `ts-core/src/workers/conversation-worker/helpers.ts` — 全文件
-27. `ts-core/src/workers/conversation-worker/handlers/chat-reply.ts` — 全文件
-28. `ts-core/src/workers/conversation-worker/handlers/plan-exec.ts` — 全文件
-29. `ts-core/src/workers/conversation-worker/index.ts`、`ts-core/src/workers/conversation-worker.ts`、`ts-core/src/workers/index.ts` — 仅允许导出适配
-30. `ts-core/src/app/entrypoint.ts` — 全文件（仅允许接线 memory（记忆） provider（提供器） 与真实 LLM（大语言模型）装配，不做大拆分）
-31. `ts-core/src/app/bootstrap/types.ts`、`ts-core/src/app/bootstrap/services.ts`、`ts-core/src/app/index.ts` — 仅允许因 online entrypoint（在线入口装配） 类型需要做最小适配
-32. `ts-core/src/__tests__/conversation-workers-model.spec.ts` — 全文件
-33. `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts` — 全文件
-34. `ts-core/src/__tests__/conversation-llm-runtime-model.spec.ts` — 全文件
-35. `ts-core/src/__tests__/conversation-llm-planning-model.spec.ts` — 全文件
-36. `ts-core/src/__tests__/app-entrypoint-model.spec.ts` — 全文件
-37. `ts-core/src/__tests__/data-model.spec.ts` — 全文件（只读优先；仅允许 memory（记忆）上下文工厂测试补充）
-38. `ts-core/src/__tests__/*.spec.ts` — 其他测试文件（仅允许因公共类型、导出或编译失败导致的最小适配）
+3. `ts-core/Docs/01_ARCHITECTURE.md` — 第 12 节 MC（Minecraft，我的世界） 事实来源相关内容；第 15 节《模块划分》；第 18 节 Phase 1（第一阶段） 任务表
+4. `ts-core/Docs/09_AGENT_WORKFLOW.md` — 第 4.2 节《Coder Agent（编码代理）》；第 5 节《状态流转》；第 6.1 节《正常开发循环》
+5. `ts-core/Docs/WF_需求变更索引.md` — 与 Minecraft（我的世界） 事实来源、MVP（最小可运行闭环） 优先级相关条目
+6. `ts-core/Docs/WF_开发进度记录.md` — 当前批次记录，尤其 T-031（任务三十一） 至 T-036（任务三十六）
+7. `ts-core/scripts/pre_review.sh` — 全文件（只读）
+8. `ts-core/package.json` — 允许仅为新增 `minecraft-data`（MC 事实包） 依赖修改
+9. `ts-core/pnpm-lock.yaml` — 允许因 `pnpm add minecraft-data`（添加依赖） 自动更新
+10. `ts-core/tsconfig.json`、`ts-core/biome.json`、`ts-core/vitest.config.ts` — 只读
+11. `ts-core/src/world-model/contracts.ts` — 全文件
+12. `ts-core/src/world-model/query.ts` — 全文件
+13. `ts-core/src/world-model/index.ts` — 全文件
+14. `ts-core/src/index.ts` — 仅允许导出适配
+15. `ts-core/src/domain/contracts.ts`、`ts-core/src/domain/invariants.ts` — 只读优先；仅允许因 world-model（世界模型） 导出类型需要做最小适配
+16. `ts-core/src/core-ports/skills.ts`、`ts-core/src/core-ports/observation.ts` — 只读，仅用于理解已有 block（方块） / item（物品） 命名边界
+17. `ts-core/src/__tests__/observation-world-model.spec.ts` — 允许补充 `minecraft-data`（MC 事实包） 查询测试
+18. `ts-core/src/__tests__/scaffold.spec.ts` — 仅允许因根导出变化做最小适配
+19. `ts-core/src/__tests__/*.spec.ts` — 其他测试文件仅允许因公共导出或编译失败做最小适配
 
 **核心逻辑要求**:
 
-1. **memory provider（记忆提供器）边界**:
-   - 新增或扩展的 provider（提供器）必须是可注入端口；ConversationWorker（对话工作线程） 不得直接访问 PostgreSQL（关系型数据库）、Redis（缓存）、JSONL（结构化日志）文件或向量库。
-   - provider（提供器） 输入至少包含 `bot_id`（机器人标识）、`message_id`（消息标识）、`intent_epoch`（意图纪元）、原始消息文本、route kind（路由类型） 与查询原因；输出应为已限长的 `memory_context`（记忆上下文） 字符串或空值。
-   - 复用 `createMemoryContextFromTaskSummaries()`（由任务摘要创建记忆上下文） 的排序、limit（数量上限） 与 char_budget（字符预算）语义；不要另写一套不一致的排序规则。
+1. **事实来源边界**:
+   - 代码不得手写 Minecraft（我的世界）配方、掉落、工具等级、方块组、硬度、可挖掘规则等事实表。
+   - 所有 block（方块）、item（物品）、recipe（配方） 等事实必须来自 `minecraft-data`（MC 事实包） 的版本化 registry（注册表）。
+   - 测试不得通过复制大段事实表来证明正确性；应验证封装结果与 `minecraft-data`（MC 事实包） registry（注册表）一致，或验证结构、不可变性、错误边界与版本选择行为。
 
-2. **chat（闲聊） / plan（规划） 注入规则**:
-   - `chat_reply`（闲聊回复） 仅在 route（路由） 的 `needs_memory_search === true`（需要记忆检索） 时读取 memory（记忆）；无 provider（提供器）、provider（提供器）返回空、provider（提供器）失败时降级为当前无记忆闲聊，不影响回复。
-   - `plan_exec`（规划执行） 与 `modify_interrupt_then_plan`（修改后规划） 必须尝试读取 memory（记忆），并把结果注入 `generateSkillPlan()`（生成技能规划）的 `memory_context`（记忆上下文）。
-   - memory（记忆） 与 `state_context`（状态上下文） 必须能同时存在；chat（闲聊） Prompt（提示词） 中两者应保持区分，不合并成一段含混文本。
-   - plan（规划） Prompt（提示词） 不得重新允许 `sandbox_code`（沙箱代码） 在线规划；仍只允许当前在线技能集合。
+2. **版本化查询端口**:
+   - 新增的查询端口必须显式接收 Minecraft（我的世界）版本，或通过一个清晰的 factory（工厂函数） 固定版本后再查询；不得在模块加载时隐式绑定某个版本。
+   - 无效版本必须产生清晰错误，不允许静默 fallback（回退） 到其他版本。
+   - 输出对象应为只读快照，不暴露可变的 `minecraft-data`（MC 事实包） 原始对象引用。
 
-3. **降级与安全**:
-   - provider（提供器）异常不得导致 chat（闲聊）路径失败；plan（规划）路径 provider（提供器）异常也应降级为无记忆规划，除非原 planner（规划器）自身失败。
-   - memory_context（记忆上下文） 注入前必须非空检查，并受字符预算限制；不得把未限长的历史日志、原始 code（代码）、完整 Prompt（提示词） 或敏感配置塞进 LLM（大语言模型）输入。
-   - 不新增依赖、不新增数据库迁移、不新增公开 HTTP（超文本传输协议） 路由，不新增 WebSocket（全双工网页通信协议） 或 Socket.io（实时通信库） 服务。
+3. **最小事实能力**:
+   - 至少提供 block（方块） 按 name（名称） 与 numeric id（数字标识） 查询。
+   - 至少提供 item（物品） 按 name（名称） 与 numeric id（数字标识） 查询。
+   - 至少提供 recipe（配方） 按 result item name（产出物品名称） 查询的只读结果；本轮只封装事实，不做规划推理或自动合成步骤。
+   - 查询未命中时返回 `null`（空结果） 或空数组，不抛业务异常；只有版本错误、输入非法等边界错误才抛出。
 
-4. **在线入口接线**:
-   - `startAppOnlineRuntime()`（启动真实在线运行时） 可接受外部注入的 memory provider（记忆提供器），并把它传给 ConversationWorker（对话工作线程）。
-   - 没有 memory provider（记忆提供器） 时，在线入口行为必须与 T-035（任务三十五） 前保持一致。
-   - 不借本轮重构 `entrypoint.ts`（入口文件） 大文件；代码债 D-1 已记账，后续独立治理。
+4. **world-model（世界模型） 集成方式**:
+   - 新增能力优先落在 `world-model/`（世界模型） 内，可新建小文件，例如 `minecraft-data.ts`（MC 事实包适配） 或 `facts.ts`（事实查询），但不得把实现塞进 god file（巨型文件）。
+   - `worldModelModuleBoundary`（世界模型模块边界） 的职责 / `placeholderExports`（占位导出） 应更新到能反映事实查询已存在。
+   - 根入口导出可以补齐，但不要让 app（应用装配）、conversation（对话） 或 runtime（运行时） 依赖它。
+
+5. **范围禁止**:
+   - 不修改 LLM（大语言模型） Prompt（提示词）、message（消息）构造、parser（解析器）、triage（分诊）、planner（规划器） 或 online entrypoint（在线入口装配）。
+   - 不新增数据库迁移、PostgreSQL（关系型数据库） 查询、Redis（缓存） 查询、JSONL（结构化日志） 读取、HTTP（超文本传输协议） 路由、WebSocket（全双工通信协议） 或 Socket.io（实时通信库） 服务。
+   - 不新增中文词汇映射；中文到标准 id（标识） 翻译后续独立任务处理。
 
 **验收标准**:
 
-1. 单元测试证明 chat（闲聊） 在 `needs_memory_search=true`（需要记忆检索） 时读取 memory（记忆）并注入 `memory_context`（记忆上下文），`needs_memory_search=false`（不需要记忆检索） 时不读取。
-2. 单元测试证明 plan（规划） 路径读取 memory（记忆）并传给 `generateSkillPlan()`（生成技能规划），同时 planner（规划器）失败 / provider（提供器）失败的降级行为清晰。
-3. LLM（大语言模型） message（消息）构造测试覆盖 memory（记忆） + state（状态） 并存、字符预算生效、Prompt（提示词） 未重新开放 sandbox_code（沙箱代码） 规划。
-4. online entrypoint（在线入口装配） 测试覆盖 memory provider（记忆提供器） 注入和未注入两种路径；不破坏 replay（补拉） / task lifecycle（任务生命周期） / broadcast reply（广播回复） 既有行为。
-5. 因本任务触碰 LLM（大语言模型） 输入链路和 online entrypoint（在线入口装配），反馈区必须包含真实 OpenAI（开放人工智能）兼容 API（应用程序接口）调用命令、输入摘要、关键输出和通过判断；若 Coder（编码代理）环境不可达，必须提供最短人工手测步骤。
+1. `package.json`（依赖清单） 与 `pnpm-lock.yaml`（依赖锁文件） 只新增 `minecraft-data`（MC 事实包） 所需变更，无其他依赖漂移。
+2. 单元测试覆盖有效版本创建查询端口、无效版本错误、block（方块） name（名称） / id（标识） 查询、item（物品） name（名称） / id（标识） 查询、recipe（配方） result（产出） 查询、未命中返回空结果。
+3. 单元测试证明输出为不可变快照，调用方修改返回对象不会污染后续查询结果。
+4. `world-model/`（世界模型） 导出与根入口导出保持可用；既有 resource cluster（资源簇） 查询测试不回退。
+5. 未触碰 LLM（大语言模型） / Prompt（提示词） / parser（解析器） / online entrypoint（在线入口装配） 时，不要求真实 OpenAI（开放人工智能）兼容 API（应用程序接口） 验收；如实际触碰，必须按长期规则补充真实 API（应用程序接口） 结果。
 6. `bash ts-core/scripts/pre_review.sh` 全部通过。
 
 ---
 
 ## Coder 自检清单
-- [ ] 任务序号核对为 `T-036`
+- [ ] 任务序号核对为 `T-037`
 - [ ] 仅读取并修改白名单内文件
-- [ ] 未新增依赖、未新增公开路由、未新增数据库迁移
-- [ ] memory provider（记忆提供器） 为可注入端口，ConversationWorker（对话工作线程） 不直接访问数据库 / 缓存 / 文件 / 向量库
-- [ ] chat（闲聊） 与 plan（规划） 路径均覆盖 memory_context（记忆上下文） 注入与 provider（提供器）失败降级测试
-- [ ] LLM（大语言模型） Prompt（提示词） / message（消息）测试确认 memory（记忆） 与 state（状态） 并存，且 plan（规划） 未重新开放 sandbox_code（沙箱代码）
-- [ ] online entrypoint（在线入口装配） 测试覆盖 memory provider（记忆提供器） 注入与缺省行为
-- [ ] 真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收结果已回填；若不可达，已回填最短人工手测步骤
+- [ ] 除 `minecraft-data`（MC 事实包） 外未新增依赖
+- [ ] 未在代码、Prompt（提示词） 或测试中复制 Minecraft（我的世界）事实表
+- [ ] block（方块） / item（物品） / recipe（配方） 查询均来自 `minecraft-data`（MC 事实包） registry（注册表）
+- [ ] 无效版本、未命中、不可变快照测试已覆盖
+- [ ] 未触碰 LLM（大语言模型） / Prompt（提示词） / parser（解析器） / online entrypoint（在线入口装配）；若触碰，已回填真实 API（应用程序接口） 验收
 - [ ] 执行 `bash ts-core/scripts/pre_review.sh` 全部通过
 
 ---
@@ -112,15 +97,15 @@
 
 ## Coder 执行反馈（仅 Coder 填写）
 
-（待 Coder 填写）
+（待 Coder 回填）
 
 ---
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
 
-- **T-037**: 优先排入 `minecraft-data`（MC 事实包） 集成，补齐 MC（Minecraft，我的世界） 常识本地确定性查询，降低 LLM（大语言模型） 幻觉风险。
 - **T-038**: BotActor（机器人执行代理） 脊髓反射动作硬编码，基于 observation（观测） 威胁等级进入 `REFLEXING`（反射中） 并执行最低风险避险动作。
 - **T-039**: JAR（自定义服务端插件） 桥接通信落地；派发前必须先与用户确认 JAR（自定义服务端插件）端是否已具备发包能力。
+- **T-040**: PostgreSQL（关系型数据库） / vector（向量） memory provider（记忆提供器） 最小真实读适配，承接 T-033（任务三十三） 与 T-036（任务三十六） 的端口。
 
 ---
 
@@ -128,9 +113,9 @@
 
 下列三项是 `01_ARCHITECTURE.md`（架构文档） 第 18 节 Phase 1（第一阶段） 必做表与第 12 / 4.2 / 2 节明确承诺、但截至当前批次仍需排期的盲区。Manager（管理代理） 在排定 `T-037`（任务三十七） 及之后任务前，必须先把它们纳入候选，不得再被新增对话能力优先级覆盖；本节由用户审计追加，Manager（管理代理） 不得在轮换批次时静默删除，如需重排请保留本节并显式更新候选编号。
 
-- **T-缺-A（候选 T-037）：`minecraft-data`（MC 事实包） 集成**
+- **T-缺-A（当前 T-037）：`minecraft-data`（MC 事实包） 集成**
   - 缺口现状：`world-model/`（世界模型） 模块壳完整，但 `package.json`（依赖清单） 与 `src/` 全仓均未引入 `minecraft-data`（MC 事实 npm 包）。文档第 12.1 节承诺的“MC 常识 = 本地确定性 API（应用程序接口）查询”事实上未通路；目前所有 MC（Minecraft，我的世界）事实仍依赖 LLM（大语言模型）回忆，存在幻觉风险。
-  - 排期建议：复杂度最低、阻塞面最广，建议优先。
+  - 排期状态：已作为 T-037（任务三十七） 派发。
 
 - **T-缺-B（候选 T-038）：脊髓反射动作硬编码到 BotActor（机器人执行代理）**
   - 缺口现状：`observation/`（观测） 已能产出 `threat_level`（威胁等级） 并向 BotActor（机器人执行代理） 发中断信号，`runtime/state-machine.ts`（状态机） 已有 `REFLEXING`（反射中） 状态，但文档承诺的反射动作仍未在 BotActor（机器人执行代理） 内硬编码执行。

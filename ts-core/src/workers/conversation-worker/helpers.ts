@@ -7,11 +7,18 @@ import { ConversationPriority } from "../../core-ports/foundation.js";
 import type { MessageTriage } from "../../core-ports/foundation.js";
 import type { BotActorStateProjection } from "../../core-ports/runtime.js";
 import { ExecPriority } from "../../core-ports/tasking.js";
+import {
+  type TaskMemorySearchResult,
+  createMemoryContextFromTaskSummaries,
+} from "../../data/contracts/task-history.js";
 import type { RedisClientLike } from "../../db/index.js";
 import { createBullmqPhysicalQueueName } from "../bullmq.js";
 import { type ConversationWorkerTask, createConversationWorkerTask } from "../contracts.js";
 import type { MessageQueueName } from "../queues.js";
 import type { ConversationBullmqWorkerLike } from "./types.js";
+
+const DEFAULT_WORKER_MEMORY_CONTEXT_LIMIT = 5;
+const DEFAULT_WORKER_MEMORY_CONTEXT_CHAR_BUDGET = 800;
 
 export function createDefaultConversationWorker(input: {
   queueName: MessageQueueName;
@@ -99,4 +106,44 @@ export function createConversationStateContextFromProjection(
   }
 
   return summary.length > 240 ? `${summary.slice(0, 240)}...` : summary;
+}
+
+/** ConversationWorker（对话工作线程） memory（记忆）上下文默认限制。 */
+export const CONVERSATION_WORKER_MEMORY_CONTEXT_LIMIT = DEFAULT_WORKER_MEMORY_CONTEXT_LIMIT;
+
+/** ConversationWorker（对话工作线程） memory（记忆）上下文默认字符预算。 */
+export const CONVERSATION_WORKER_MEMORY_CONTEXT_CHAR_BUDGET =
+  DEFAULT_WORKER_MEMORY_CONTEXT_CHAR_BUDGET;
+
+/** 复用 data（数据）层排序与预算语义构造 worker（工作线程） memory（记忆）上下文。 */
+export function createConversationWorkerMemoryContext(input: {
+  /** 检索结果。 */
+  readonly results: readonly TaskMemorySearchResult[];
+  /** 最大条数。 */
+  readonly limit?: number;
+  /** 最大字符预算。 */
+  readonly char_budget?: number;
+}): string | undefined {
+  const context = createMemoryContextFromTaskSummaries({
+    results: input.results,
+    limit: input.limit ?? CONVERSATION_WORKER_MEMORY_CONTEXT_LIMIT,
+    char_budget: input.char_budget ?? CONVERSATION_WORKER_MEMORY_CONTEXT_CHAR_BUDGET,
+  }).trim();
+
+  return context.length === 0 ? undefined : context;
+}
+
+/** 归一化 provider（提供器） 返回的 memory_context（记忆上下文），避免未限长文本进入 LLM（大语言模型）。 */
+export function normalizeMemoryContext(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+
+  if (trimmed === undefined || trimmed.length === 0) {
+    return undefined;
+  }
+
+  if (trimmed.length > CONVERSATION_WORKER_MEMORY_CONTEXT_CHAR_BUDGET) {
+    return `${trimmed.slice(0, CONVERSATION_WORKER_MEMORY_CONTEXT_CHAR_BUDGET - 1)}…`;
+  }
+
+  return trimmed;
 }

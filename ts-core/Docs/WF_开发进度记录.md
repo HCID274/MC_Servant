@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-031` ~ `T-040`
-- 当前已完成任务：`T-031`、`T-032`、`T-033`、`T-034`、`T-035`
-- 当前活跃任务：`T-036`（任务三十六） memory（记忆）上下文注入 chat（闲聊） / plan（规划） LLM（大语言模型）路径。
+- 当前已完成任务：`T-031`、`T-032`、`T-033`、`T-034`、`T-035`、`T-036`
+- 当前活跃任务：`T-037`（任务三十七） `minecraft-data`（MC 事实包） 集成。
 - 当前批次摘要：上一批次 `T-021`（任务二十一） 到 `T-030`（任务三十） 已完成 MC（Minecraft，我的世界） 上线闭环、真实 LLM（大语言模型） 接入、多技能、观测出口、sandbox_code（沙箱代码） 与架构治理。新批次默认继续沿可运行主干推进对话智能增强。
 - 当前批次硬约束：不得回退 `T-021` 到 `T-030` 已形成的真实在线路径、单写者路径、无循环依赖图、OpenAI（开放人工智能） 兼容配置边界与 sandbox_code（沙箱代码） 执行安全边界。
 
@@ -152,3 +152,30 @@
   - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、181 条测试全部通过。
   - Manager（管理代理） 复跑 `git diff --check -- ':!ts-core/Docs/01_ARCHITECTURE.md'`：通过；排除项为用户豁免文档改动。
   - 本轮未触碰 LLM（大语言模型） Prompt（提示词） / parser（解析器） / 配置 / online entrypoint（在线入口装配），不需要真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
+
+### T-036（已完成）
+
+- **任务主题**: memory（记忆）上下文注入 chat（闲聊） / plan（规划） LLM（大语言模型）路径。
+- **审查时间**: 2026-04-27T10:36:30+09:00
+- **核心文件**:
+  - `src/workers/conversation-worker/types.ts`
+  - `src/workers/conversation-worker/helpers.ts`
+  - `src/workers/conversation-worker/handlers/chat-reply.ts`
+  - `src/workers/conversation-worker/handlers/plan-exec.ts`
+  - `src/app/entrypoint.ts`
+  - `src/__tests__/conversation-worker-runtime-model.spec.ts`
+  - `src/__tests__/conversation-llm-planning-model.spec.ts`
+  - `src/__tests__/app-entrypoint-model.spec.ts`
+- **变更快照**:
+  - `ConversationWorker`（对话工作线程） 新增 `ConversationMemoryContextProvider`（对话记忆上下文提供器） 可注入端口，输入包含 `bot_id`（机器人标识）、`message_id`（消息标识）、`intent_epoch`（意图纪元）、原始消息、route kind（路由类型）、查询原因、limit（数量上限） 与 char_budget（字符预算）。
+  - `chat_reply`（闲聊回复） 仅在 `needs_memory_search=true`（需要记忆检索） 时读取 memory（记忆）；无 provider（提供器）、空返回或异常均降级为无记忆闲聊，并保持 `state_context`（状态上下文） 与 `memory_context`（记忆上下文） 分离注入。
+  - `plan_exec`（规划执行） 与 `modify_interrupt_then_plan`（修改后规划） 在 planner（规划器） 前尝试读取 memory（记忆），provider（提供器）失败降级为无记忆规划，planner（规划器）自身失败语义不变。
+  - 新增 `createConversationWorkerMemoryContext()`（创建对话工作线程记忆上下文） 与 `normalizeMemoryContext()`（归一化记忆上下文），复用 T-033（任务三十三） `createMemoryContextFromTaskSummaries()`（由任务摘要创建记忆上下文） 的排序、limit（数量上限） 和 char_budget（字符预算）语义，并对 provider（提供器）输出做非空与限长兜底。
+  - `startAppOnlineRuntime()`（启动真实在线运行时） 继续通过 `conversationWorker`（对话工作线程） 依赖注入面接收 memory provider（记忆提供器），并把 `memory_context`（记忆上下文） 传入在线 `generateChatReply()`（生成闲聊回复） 与 `generateSkillPlan()`（生成技能规划）。
+- **审查结论**:
+  - 通过。T-036（任务三十六） 已闭合 memory（记忆）读取端口到 chat（闲聊） / plan（规划） LLM（大语言模型）输入链路，未新增数据库查询、向量检索算法、公开路由或额外服务。
+  - Coder（编码代理） 已回填真实 OpenAI（开放人工智能） 兼容 API（应用程序接口） 验收；Manager（管理代理） 复跑真实调用，chat（闲聊） 与 plan（规划） 均可达且携带 `memory_context`（记忆上下文）。
+- **验证记录**:
+  - Manager（管理代理） 复跑 `cd ts-core && pnpm vitest run src/__tests__/conversation-worker-runtime-model.spec.ts src/__tests__/conversation-llm-planning-model.spec.ts src/__tests__/app-entrypoint-model.spec.ts`：3 个测试文件、35 条测试通过。
+  - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、183 条测试全部通过。
+  - Manager（管理代理） 真实 API（应用程序接口） 验收命令摘要：通过项目 `createConversationLlmClient()`（创建对话大语言模型客户端） 请求 `http://127.0.0.1:8045/v1`，`model`（模型）=`bl-auto`。chat（闲聊） 输出 `ok=true`，关键回复包含“当然记得”；plan（规划） 输出 `type=skill_call`、`skill=goTo`、`params={x:395,y:207,z:180}`。
