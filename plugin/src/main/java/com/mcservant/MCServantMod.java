@@ -5,15 +5,15 @@ import com.mcservant.bridge.ServerBridgeConfig;
 import com.mcservant.bridge.ServerBridgeTransport;
 import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * MCServant Fabric mod 入口（服务端 only）。
  *
- * <p>本类仅承载 T-039 范围：声明 mod 已加载、装配 ServerBridgeTransport 骨架、
- * 在服务端启动 / 停止时输出可观测日志。真实握手 / 心跳 / `/svs` 命令体系由
- * 后续 T-Fabric-Bridge-02 / 03 任务实现。
+ * <p>本类负责声明 mod 已加载、装配 ServerBridgeTransport、在服务端启动 / 停止时
+ * 控制桥接传输生命周期。OkHttp 细节只在传输实现类中出现。
  */
 public final class MCServantMod implements DedicatedServerModInitializer {
 
@@ -26,17 +26,22 @@ public final class MCServantMod implements DedicatedServerModInitializer {
 
     @Override
     public void onInitializeServer() {
-        LOGGER.info("[MCServant] Fabric mod 已加载 — 服务端桥接骨架就绪 (T-039 基线)");
+        LOGGER.info("[MCServant] Fabric mod 已加载 — 服务端桥接就绪 (T-040)");
 
-        ServerBridgeConfig config = ServerBridgeConfig.localDevDefaults();
+        ServerBridgeConfig config = ServerBridgeConfig.fromRuntimeEnvironment(MOD_ID, resolveModVersion());
         transport = new OkHttpServerBridgeTransport(config);
 
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             if (config.enabled()) {
-                LOGGER.info("[MCServant] 桥接已启用 — 目标地址 {}", config.url());
+                LOGGER.info(
+                        "[MCServant] 桥接已启用 — 目标地址 {}, tokenConfigured={}, placeholderToken={}",
+                        config.url(),
+                        !config.accessToken().isBlank(),
+                        config.usesPlaceholderToken()
+                );
                 transport.connect();
             } else {
-                LOGGER.info("[MCServant] 桥接默认禁用 — 仅加载骨架，未发起真实连接");
+                LOGGER.info("[MCServant] 桥接默认禁用 — 未发起真实连接");
             }
         });
 
@@ -49,5 +54,12 @@ public final class MCServantMod implements DedicatedServerModInitializer {
     /** 只读访问当前桥接传输实例（在 onInitializeServer 之后非空） */
     public static ServerBridgeTransport transport() {
         return transport;
+    }
+
+    private static String resolveModVersion() {
+        return FabricLoader.getInstance()
+                .getModContainer(MOD_ID)
+                .map(container -> container.getMetadata().getVersion().getFriendlyString())
+                .orElse("unknown");
     }
 }

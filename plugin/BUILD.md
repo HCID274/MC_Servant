@@ -40,8 +40,55 @@ cp plugin/build/libs/mcservant-0.4.0.jar /path/to/server/mods/
 重启 Fabric 服务端（不能 `/reload`，Fabric 不支持热重载 mod）。日志应出现：
 
 ```
-[MCServant] Fabric mod 已加载 — 服务端桥接骨架就绪 (T-039 基线)
+[MCServant] Fabric mod 已加载 — 服务端桥接就绪 (T-040)
 ```
+
+## 本地 WebSocket 联调
+
+桥接默认 `enabled=false`（禁用），未显式配置时不会连接 TS Core（TypeScript 单核心）或本地假服务。先在仓库根目录启动本地 WebSocket（全双工通信协议）调试服务：
+
+```bash
+python3 plugin/scripts/ws-debug-server.py
+```
+
+脚本默认监听：
+
+```
+ws://127.0.0.1:8765/ws/server-bridge
+```
+
+再启动 Fabric（模组加载器）服务端，并通过 system property（系统属性）启用桥接：
+
+```bash
+java \
+  -Dmcservant.bridge.enabled=true \
+  -Dmcservant.bridge.url=ws://127.0.0.1:8765/ws/server-bridge \
+  -Dmcservant.bridge.accessToken=local-dev-token \
+  -Dmcservant.bridge.heartbeatSeconds=2 \
+  -Dmcservant.bridge.instanceId=local-fabric-01 \
+  -jar fabric-server-launch.jar nogui
+```
+
+也可以用 environment variable（环境变量）覆盖：
+
+```bash
+MCSERVANT_BRIDGE_ENABLED=true \
+MCSERVANT_BRIDGE_URL=ws://127.0.0.1:8765/ws/server-bridge \
+MCSERVANT_BRIDGE_ACCESS_TOKEN=local-dev-token \
+MCSERVANT_BRIDGE_HEARTBEAT_SECONDS=2 \
+MCSERVANT_BRIDGE_INSTANCE_ID=local-fabric-01 \
+java -jar fabric-server-launch.jar nogui
+```
+
+预期调试服务输出包含：
+
+```text
+[bridge-debug] authorization_present=True
+[bridge-debug] frame type=hello body={...}
+[bridge-debug] frame type=heartbeat body={...}
+```
+
+`access token`（访问令牌）不会出现在 mod（模组）普通日志、联调脚本输出或 JSON（结构化文本）消息体中；脚本只打印是否收到 `Authorization`（授权）请求头。
 
 ## 服务器侧前置依赖
 
@@ -57,7 +104,10 @@ cp plugin/build/libs/mcservant-0.4.0.jar /path/to/server/mods/
 - **`./gradlew` 提示找不到 wrapper jar**：确认 `plugin/gradle/wrapper/gradle-wrapper.jar` 已随仓库同步。
 - **`Could not resolve net.fabricmc.fabric-api:fabric-api`**：检查 Maven 镜像 / 网络代理；`build.gradle` 已声明 `https://maven.fabricmc.net/`。
 - **运行时 `NoClassDefFoundError: okhttp3/...` / `okio/...` / `kotlin/...`**：确认构建产物为 Loom（Fabric 构建插件） `include`（嵌入） 处理后的 `mcservant-*.jar`，而不是 `dev` jar（开发产物）；OkHttp（网络客户端）、Okio（输入输出库） 与 Kotlin stdlib（Kotlin 标准库） 运行时依赖应同时嵌入。
+- **未看到联调服务连接**：确认启动 Fabric（模组加载器）服务端时已显式设置 `mcservant.bridge.enabled=true` 或 `MCSERVANT_BRIDGE_ENABLED=true`，默认禁用策略不会自动连接。
+- **只看到 hello（握手）没有 heartbeat（心跳）**：把 `mcservant.bridge.heartbeatSeconds` 或 `MCSERVANT_BRIDGE_HEARTBEAT_SECONDS` 临时设为 `2`，等待至少一个心跳周期。
+- **连接失败或握手失败**：先确认 `python3 plugin/scripts/ws-debug-server.py` 已监听目标地址，再检查 `mcservant.bridge.url` / `MCSERVANT_BRIDGE_URL` 是否与脚本输出一致。
 
 ---
 
-*最后更新：2026-04-27（T-039 Fabric 工程基线落地）*
+*最后更新：2026-04-27（T-040 Fabric bridge 本地联调落地）*

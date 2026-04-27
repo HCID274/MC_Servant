@@ -1,27 +1,29 @@
 # 当前任务握手区
 
-【任务序号】: T-040
+【任务序号】: T-041
 【当前状态】: 待开发
 
 ---
 
 ## 任务目标
 
-T-040（任务四十） 启动 T-Fabric-Bridge-02（Fabric 服务端桥接第二步）：在 T-039（任务三十九） 已完成的 Fabric mod（Fabric 模组）工程基线上，补齐 OkHttp（网络客户端）真实 WebSocket（全双工通信协议）连接、应用层 handshake（握手）、heartbeat（心跳）与本地联调脚本。
+T-041（任务四十一） 改为模块级集成任务：完成 Server Bridge（服务端桥接）双端最小闭环，把 TS Core（TypeScript 单核心）端 `/ws/server-bridge`（服务端桥接 WebSocket）接收、Fabric（模组加载器）端 `/svs`（游戏命令）最小命令、协议帧、token（令牌）校验、`ack/error`（确认 / 错误）响应与本地联调一次性交付。
 
-本任务只推进 `plugin/`（服务端插件源码）侧桥接传输可联调能力，不实现 TS Core（TypeScript 单核心）正式 `server-bridge`（服务端桥接）接收服务，不实现 `/svs`（游戏命令）体系，不把 Java（编程语言）侧 OkHttp（网络客户端）细节泄漏到 TS Core（TypeScript 单核心）代码。
+目标验收口径：本地启动 TS Core（TypeScript 单核心）接收端后，Fabric mod（Fabric 模组）能连接、完成 `hello`（握手）与 `heartbeat`（心跳）；在游戏内执行 `/svs <内容>`（服务端女仆命令） 后，TS Core（TypeScript 单核心）能收到 `player_message`（玩家消息）帧并写入 replay（补拉）事件流。
+
+本任务不做 EasyAuth（离线服认证模组）只读状态适配，不做复杂重连 / 版本协商策略，不要求接入真实 LLM（大语言模型）回复，也不得让 Server Bridge（服务端桥接）事件绕过 conversation（对话） / workers（工作线程） / BotActor（机器人执行代理）单写者路径直接驱动 Bot（机器人）。
 
 ---
 
 ## 上下文说明
 
-- T-039（任务三十九） 已通过：`plugin/`（服务端插件源码） 已从 Paper（服务端插件平台） / Maven（构建工具）切换为 Fabric Loom（Fabric 构建插件）工程，最终 `mcservant-0.4.0.jar`（模组产物） 能构建，并已嵌入 OkHttp（网络客户端）、Okio（输入输出库） 与 Kotlin stdlib（Kotlin 标准库）运行时依赖。
+- T-039（任务三十九） 已完成 Fabric mod（Fabric 模组）工程基线，T-040（任务四十） 已完成 Fabric mod（Fabric 模组）侧 OkHttp（网络客户端） WebSocket（全双工通信协议）连接、应用层 `hello`（握手）与 `heartbeat`（心跳）。
 - `01_ARCHITECTURE.md`（架构文档）第 2.6.1 节已锁定：
   - mod（模组）到 TS Core（TypeScript 单核心）的外部通信使用 OkHttp（网络客户端） WebSocket（全双工通信协议）。
-  - OkHttp（网络客户端）必须封装在 `ServerBridgeTransport`（服务端桥接传输）接口之后。
+  - TS Core（TypeScript 单核心）侧只共享 JSON（结构化文本）协议形态，不得出现 Java（编程语言） / OkHttp（网络客户端）实现细节。
   - `fabric-networking-api-v1`（Fabric 内部网络接口）只允许用于 MC（Minecraft，我的世界）客户端 ↔ MC 服务端 packet（数据包），严禁用于 mod（模组） ↔ TS Core（TypeScript 单核心）外部进程通信。
-- 本任务的联调脚本只承担本地假服务端职责，用于验证 Fabric mod（Fabric 模组）侧发送的握手 / 心跳帧格式与连接生命周期；它不是 TS Core（TypeScript 单核心）正式实现。
-- 本任务不触碰 LLM（大语言模型）链路，因此不需要真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
+- 现有 `interfaces/server-bridge/contracts.ts`（服务端桥接契约） 已声明 `runtime_effect: "observe_only"`（运行时影响：仅观测）。本任务可以新增 `player_message`（玩家消息）帧，但默认仍只进入 replay（补拉）事件流；是否转入真实对话主线由后续任务单独授权。
+- 本任务不触碰 LLM（大语言模型）调用链路、Prompt（提示词）、parser（解析器） 或 online entrypoint（在线入口装配）的 LLM（大语言模型）部分，因此不需要真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收；但必须做真实本地 WebSocket（全双工通信协议） I/O（输入输出）联调测试。
 
 ---
 
@@ -31,70 +33,111 @@ Coder（编码代理） 本轮允许读取：
 
 - `ts-core/agent.md`
 - `ts-core/Docs/WF_当前任务握手.md`
+- `ts-core/Docs/WF_需求变更索引.md`
 - `ts-core/Docs/01_ARCHITECTURE.md` 第 2.6.1 节
-- `ts-core/src/interfaces/server-bridge/contracts.ts`（只读参考现有 TS Core（TypeScript 单核心）桥接事件边界，不允许修改）
-- `plugin/settings.gradle`
+- `ts-core/src/interfaces/server-bridge/contracts.ts`
+- `ts-core/src/interfaces/server-bridge/index.ts`
+- `ts-core/src/interfaces/server.ts`
+- `ts-core/src/interfaces/realtime.ts`
+- `ts-core/src/interfaces/api.ts`
+- `ts-core/src/interfaces/errors.ts`
+- `ts-core/src/interfaces/index.ts`
+- `ts-core/src/app/bootstrap/services.ts`
+- `ts-core/src/app/bootstrap/types.ts`
+- `ts-core/src/app/entrypoint.ts`
+- `ts-core/src/__tests__/interfaces-server-model.spec.ts`
+- `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
 - `plugin/build.gradle`
 - `plugin/gradle.properties`
 - `plugin/src/main/resources/fabric.mod.json`
 - `plugin/src/main/java/com/mcservant/MCServantMod.java`
 - `plugin/src/main/java/com/mcservant/bridge/**`
+- `plugin/scripts/ws-debug-server.py`
 - `plugin/README.md`
 - `plugin/BUILD.md`
 
 Coder（编码代理） 本轮允许新增 / 修改：
 
+- `ts-core/src/interfaces/server-bridge/**`
+- `ts-core/src/interfaces/server.ts`
+- `ts-core/src/interfaces/index.ts`
+- `ts-core/src/app/bootstrap/services.ts`
+- `ts-core/src/app/bootstrap/types.ts`
+- `ts-core/src/app/entrypoint.ts`（仅允许把 server-bridge（服务端桥接）接收端接入 replay（补拉）事件流；不得改 LLM（大语言模型）链路）
+- `ts-core/src/__tests__/interfaces-server-bridge-model.spec.ts`（可新增）
+- `ts-core/src/__tests__/interfaces-server-model.spec.ts`
+- `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
+- `ts-core/package.json` 与 `ts-core/pnpm-lock.yaml`（仅当必须新增 `@fastify/websocket`（Fastify WebSocket 插件） 或等价最小 WebSocket（全双工通信协议）依赖；不得顺手升级无关依赖）
 - `plugin/src/main/java/com/mcservant/MCServantMod.java`
 - `plugin/src/main/java/com/mcservant/bridge/**`
-- `plugin/src/main/resources/fabric.mod.json`（仅当需要补说明性元信息；不得引入无关依赖）
-- `plugin/build.gradle`、`plugin/gradle.properties`（仅当测试或脚本确需补最小依赖 / 版本字段）
-- `plugin/src/test/java/com/mcservant/bridge/**`（可选，用于 Java（编程语言）侧纯逻辑测试）
-- `plugin/scripts/**`（允许新增本地 WebSocket（全双工通信协议）联调脚本）
+- `plugin/src/main/java/com/mcservant/command/**`（可新增）
+- `plugin/src/main/resources/fabric.mod.json`（仅当命令或依赖声明需要最小调整）
+- `plugin/src/test/java/com/mcservant/**`（可选）
 - `plugin/README.md`
 - `plugin/BUILD.md`
+- `ts-core/README.md`（可选，仅补最短本地联调说明）
 - `ts-core/Docs/WF_当前任务握手.md`（仅 Coder（编码代理）反馈区回填）
 
 禁止修改：
 
-- `ts-core/src/**`
-- `ts-core/package.json`
-- `ts-core/pnpm-lock.yaml`
-- `AGENTS.md`
 - `backend/**`
 - `docs/legacy-*.md`
+- `AGENTS.md`
+- `ts-core/src/runtime/**`
+- `ts-core/src/workers/**`
+- `ts-core/src/conversation/**`
+- `ts-core/src/skills/**`
+- `ts-core/src/sandbox/**`
 - 任何真实密钥、生产地址或个人本地路径。
 
 ---
 
 ## 核心逻辑要求
 
-1. `OkHttpServerBridgeTransport`（OkHttp 桥接传输）必须在 WebSocket（全双工通信协议） `onOpen`（打开）后发送明确的应用层 `hello`（握手）JSON（结构化文本）帧，至少包含协议版本、mod（模组）标识、mod 版本、连接时间戳和本地实例标识；不得把 access token（访问令牌）写入消息体或日志。
-2. 传输层必须实现应用层 heartbeat（心跳）帧或等价可观测心跳机制；OkHttp（网络客户端）底层 `pingInterval`（探活间隔）可以保留，但不能替代协议层可审计心跳。heartbeat（心跳）失败或连接失败时必须进入清晰状态并输出脱敏日志。
-3. 新增本地 WebSocket（全双工通信协议）联调脚本，能接收连接、打印收到的 `hello`（握手）和 `heartbeat`（心跳）帧，并可向 mod（模组）返回最小 `ack`（确认）帧；脚本必须不依赖真实 TS Core（TypeScript 单核心）服务。
-4. 桥接配置必须支持本地开发覆盖：至少能通过 system property（系统属性）或 environment variable（环境变量）启用桥接、覆盖 URL（地址）、access token（访问令牌）和 heartbeat interval（心跳间隔）；默认仍必须 `enabled=false`（禁用），避免未配置时误连。
-5. 业务入口仍只能依赖 `ServerBridgeTransport`（服务端桥接传输）接口；不得在 `MCServantMod`（模组入口）之外扩散 OkHttp（网络客户端）具体类型，不得引入 `fabric-networking-api-v1`（Fabric 内部网络接口）做外部通信。
+1. TS Core（TypeScript 单核心）端在 `interfaces/server-bridge`（服务端桥接接口）内定义协议模型与解析函数，至少覆盖：
+   - `hello`（握手）：`protocol_version`（协议版本）、`mod_id`（模组标识）、`mod_version`（模组版本）、`connected_at`（连接时间）、`instance_id`（实例标识）。
+   - `heartbeat`（心跳）：`protocol_version`（协议版本）、`instance_id`（实例标识）、`sequence`（序号）、`timestamp`（时间戳）、`state`（状态）。
+   - `player_message`（玩家消息）：`protocol_version`（协议版本）、`instance_id`（实例标识）、`message_id`（消息标识）、`player_uuid`（玩家 UUID）、`player_name`（玩家名）、`content`（内容）、`timestamp`（时间戳）。
+   - `ack`（确认） / `error`（错误）响应：返回 `type`、`ack_type`（确认类型）或错误码、`timestamp`（时间戳），不得回显 token（令牌）。
+2. TS Core（TypeScript 单核心）端在 Fastify（接口网关）接入 `/ws/server-bridge`（服务端桥接 WebSocket）端点：
+   - 支持 `Authorization: Bearer <token>`（授权头）校验。
+   - token（令牌）从本地配置 / 依赖注入进入，不得硬写真实值；测试可用 `local-dev-token`（本地开发令牌）。
+   - 缺失或错误 token（令牌）必须被拒绝，且不得写入 replay（补拉）事件。
+3. 成功解析的 `hello`（握手）、`heartbeat`（心跳）与 `player_message`（玩家消息）必须转换为 `ServerBridgeEventEnvelope`（服务端桥接事件信封） 或等价 replay（补拉）事件，并通过现有 `appendRealtimeEvent`（追加实时事件）路径进入 replay（补拉）事件流；事件必须保持 `runtime_effect: "observe_only"`（运行时影响：仅观测）。
+4. Fabric mod（Fabric 模组）端新增 `/svs <message>`（服务端女仆命令）最小命令：
+   - 使用 Fabric API（Fabric 应用程序接口） / Brigadier（命令库）命令注册，不引入 CommandAPI（命令接口库） 或 Paper（服务端插件平台）依赖。
+   - 权限检查使用已有 `fabric-permissions-api`（Fabric 权限接口） 或原版 op（管理员）等级回退；普通玩家无权限时返回明确提示。
+   - 命令将玩家输入封装为 `player_message`（玩家消息）帧，经 `ServerBridgeTransport`（服务端桥接传输）发送，不直接调用 TS Core（TypeScript 单核心） HTTP（超文本传输协议）接口。
+5. 双端协议字段必须稳定、脱敏且可审计：
+   - access token（访问令牌）只允许出现在 WebSocket（全双工通信协议）请求头中，不得进入 JSON（结构化文本）帧、日志、异常摘要或 replay（补拉）事件。
+   - 无效 JSON（结构化文本）、未知 `type`（类型）、协议版本不匹配、字段缺失或字段类型错误必须返回明确 `error`（错误）帧或关闭连接，不得抛出未捕获异常，不得污染 replay（补拉）事件。
+6. 本任务不得让 `player_message`（玩家消息）直接进入 conversation（对话）队列、exec（执行）队列或 BotActor（机器人执行代理）写入口；本轮只证明 Fabric（模组加载器）命令能通过 Server Bridge（服务端桥接）到达 TS Core（TypeScript 单核心）观测流。
+7. 文档必须给出最短本地联调步骤：启动 TS Core（TypeScript 单核心）接收端、配置 Fabric mod（Fabric 模组）桥接参数、启动 Fabric（模组加载器）服务端、执行 `/svs hello`（服务端女仆命令）、查看 replay（补拉）事件。
 
 ---
 
 ## 验收标准
 
-1. `cd plugin && ./gradlew build --no-daemon` 必须通过，最终 mod jar（模组产物） 仍包含 OkHttp（网络客户端）运行时依赖闭包。
-2. 本地联调脚本可启动，并有文档化命令能观察到 `hello`（握手）与至少一次 `heartbeat`（心跳）帧；如果当前环境无法加载真实 Fabric（模组加载器）服务端，必须提供最短人工手测步骤和预期日志。
-3. access token（访问令牌）不得出现在普通日志、联调输出或异常摘要中；日志只能显示脱敏值或是否已配置。
-4. `ServerBridgeTransport`（服务端桥接传输）接口边界保持稳定，OkHttp（网络客户端）细节不泄漏到 TS Core（TypeScript 单核心）源码；本任务不得修改 `ts-core/src/**`。
-5. `plugin/README.md` 与 `plugin/BUILD.md` 必须同步说明桥接启用方式、本地联调脚本用法、默认禁用策略和故障排查命令。
+1. `bash ts-core/scripts/pre_review.sh` 必须全部通过；如果新增依赖，`ts-core/package.json` 与 `ts-core/pnpm-lock.yaml` 必须一致，且不得升级无关依赖。
+2. `cd plugin && ./gradlew build --no-daemon` 必须通过，最终 mod jar（模组产物） 仍包含 OkHttp（网络客户端）、Okio（输入输出库） 与 Kotlin stdlib（Kotlin 标准库）运行时依赖闭包。
+3. TS Core（TypeScript 单核心）本地 WebSocket（全双工通信协议）集成测试必须覆盖：正确 token（令牌）连接 `/ws/server-bridge`，发送 `hello`（握手）、`heartbeat`（心跳）、`player_message`（玩家消息）后收到 `ack`（确认），并能从 replay（补拉）事件源读到对应 `server_bridge.*`（服务端桥接）事件。
+4. 错误 token（令牌）或缺失 token（令牌）必须被拒绝，且 replay（补拉）事件源无新增事件；日志、错误响应、测试快照中不得出现 token（令牌）原文。
+5. 无效帧测试必须覆盖至少三类：非法 JSON（结构化文本）、未知 `type`（类型）、缺失必填字段；三者都不得导致进程崩溃或写入 replay（补拉）。
+6. Fabric mod（Fabric 模组）侧必须有最小命令注册测试或可复核实现，证明 `/svs <message>`（服务端女仆命令） 会调用 `ServerBridgeTransport.send()`（发送）发出 `player_message`（玩家消息）帧，并在未连接时给出明确失败提示。
+7. 文档必须包含最短人工手测清单与预期日志；如果当前环境没有真实 Fabric（模组加载器）服务端，Coder（编码代理）必须在反馈区明确说明未做现场加载，并给出用户可执行步骤。
 
 ---
 
 ## Coder 自检清单
 
-- [ ] 已核对任务序号为 T-040（任务四十），并确认不是继续修改 T-039（任务三十九）。
-- [ ] 已读取 `01_ARCHITECTURE.md`（架构文档）第 2.6.1 节，确认 OkHttp（网络客户端）必须封装在 `ServerBridgeTransport`（服务端桥接传输）之后。
-- [ ] 已实现 `hello`（握手）与 heartbeat（心跳）帧，并保证 access token（访问令牌）不进入消息体或普通日志。
-- [ ] 已提供本地 WebSocket（全双工通信协议）联调脚本和最短运行说明。
-- [ ] 已确认默认配置仍为 `enabled=false`（禁用），只有显式本地配置才发起连接。
+- [ ] 已核对任务序号为 T-041（任务四十一），并确认本轮是合并后的 Server Bridge（服务端桥接）双端最小闭环，不是旧窄版 TS Core（TypeScript 单核心）接收端任务。
+- [ ] 已读取 `01_ARCHITECTURE.md`（架构文档）第 2.6.1 节，确认 TS Core（TypeScript 单核心）侧只共享 JSON（结构化文本）协议形态，不引入 Java（编程语言） / OkHttp（网络客户端）细节。
+- [ ] 已实现 `/ws/server-bridge`（服务端桥接 WebSocket）接收端、token（令牌）校验、`hello`（握手） / `heartbeat`（心跳） / `player_message`（玩家消息）解析、`ack`（确认） / `error`（错误）响应。
+- [ ] 已实现 Fabric mod（Fabric 模组） `/svs <message>`（服务端女仆命令）最小命令、权限检查和 `player_message`（玩家消息）发送。
+- [ ] 已确认 server-bridge（服务端桥接）事件只进入 replay（补拉）或实时观测流，不进入 conversation（对话）队列、exec（执行）队列或 BotActor（机器人执行代理）写入口。
+- [ ] 已覆盖正确 token（令牌）、错误 token（令牌）、非法 JSON（结构化文本）、未知类型、缺失字段、未连接命令发送失败测试。
+- [ ] 已确认本任务未触碰 LLM（大语言模型）链路，因此无需真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
 - [ ] 已执行 `cd plugin && ./gradlew build --no-daemon` 并记录结果。
-- [ ] 已检查最终 mod jar（模组产物） 的 `META-INF/jars/` 仍包含 OkHttp（网络客户端）、Okio（输入输出库） 与 Kotlin stdlib（Kotlin 标准库）运行时依赖。
 - [ ] 执行 bash ts-core/scripts/pre_review.sh 全部通过。
 
 ---
@@ -107,14 +150,12 @@ Coder（编码代理） 本轮允许新增 / 修改：
 
 ## Coder 执行反馈（仅 Coder 填写）
 
-【回填序号】: T-040（任务四十）
-
-（待 Coder（编码代理） 填写）
+待填写。
 
 ---
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
 
-- **T-041**: T-Fabric-Bridge-03（Fabric 服务端桥接第三步） TS Core（TypeScript 单核心）端 `server-bridge`（服务端桥接） WebSocket（全双工通信协议）接收骨架、token（令牌）校验、协议解析与 replay（补拉）事件接入。
-- **T-042**: T-Fabric-Bridge-04（Fabric 服务端桥接第四步） Fabric（模组加载器）端 `/svs`（游戏命令）命令体系、权限检查、玩家消息帧发送与 TS Core（TypeScript 单核心）接收端联调。
-- **T-043**: T-Fabric-Bridge-05（Fabric 服务端桥接第五步） EasyAuth（离线服认证模组）只读状态适配、端到端 MC（Minecraft，我的世界）服务器实测与部署手册收口。
+- **T-042**: EasyAuth（离线服认证模组）只读状态适配、机器人登录状态手测口径、端到端 MC（Minecraft，我的世界）服务器实测。
+- **T-043**: Server Bridge（服务端桥接）稳定性补强：双端重连、心跳超时、版本协商、断线诊断与部署文档收口。
+- **T-044**: 将 `player_message`（玩家消息） 从 observe_only（仅观测）灰度接入 conversation（对话）主线，形成 `/svs`（服务端女仆命令）到 LLM（大语言模型）回复的可控闭环。

@@ -108,3 +108,37 @@
   - 下一批次默认从 `T-031`（任务三十一） 开始，先做 `chat_reply`（闲聊回复） 注入 BotActor（机器人执行代理） 状态只读投影，再推进 composite output（复合输出）。
 - **详细明细归档**:
   - `WF_开发进度明细归档/T-021_至_T-030.md`
+
+---
+
+## 批次 T-031 ~ T-040
+
+- **阶段主题**: 对话智能增强、记忆与状态注入、MC（Minecraft，我的世界）事实源、反射动作、Fabric（模组加载器）服务端桥接基线。
+- **覆盖模块**:
+  - `conversation`（对话）
+  - `workers`（工作线程）
+  - `runtime`（运行时）
+  - `interfaces`（接口层）
+  - `world-model`（世界模型）
+  - `diagnostics`（诊断）
+  - `data`（数据）
+  - `app`（应用装配）
+  - `plugin`（服务端插件源码）
+- **阶段压缩摘要**:
+  - `T-031` 将 BotActor（机器人执行代理） 当前状态只读投影注入 `chat_reply`（闲聊回复） LLM（大语言模型）输入，执行中闲聊可感知当前任务，并保留动作执行门控。
+  - `T-032` 将 triage（分诊） 从单 intent（单意图）升级为 composite output（复合输出），按 `cancel → reply → action`（取消 → 回复 → 动作） 有序派发，兼容旧单意图结构。
+  - `T-033` 建立 BrainWorker（摘要工作线程） 最小任务摘要写入链路与 memory（记忆）检索端口，只读历史、只写摘要。
+  - `T-034` 补齐网页轻面板后端最小同步闭环，把聊天回复与任务生命周期事件写入 replay（补拉）事件流。
+  - `T-035` 新增 sandbox_code（沙箱代码） 经验沉淀钩子与诊断摘要，统一脱敏 API key（接口密钥）、密码、连接串和宿主机敏感路径。
+  - `T-036` 把 memory（记忆）上下文注入 chat（闲聊） / plan（规划） LLM（大语言模型）路径，provider（提供器）失败时降级为无记忆调用。
+  - `T-037` 接入 `minecraft-data`（MC 事实包） 作为 MC（Minecraft，我的世界）事实查询真源，禁止自维护事实 JSON（结构化文本） 取代运行时 registry（注册表）。
+  - `T-038` 在 BotActor（机器人执行代理） 单写者边界内落地有限脊髓反射动作，反射中断会阻止旧任务伪装完成。
+  - `T-039` 将 `plugin/`（服务端插件源码） 从 Paper（服务端插件平台） / Maven（构建工具） 重写为 Fabric Loom（Fabric 构建插件）工程，产物可构建且嵌入 OkHttp（网络客户端）运行时依赖闭包。
+  - `T-040` 在 Fabric mod（Fabric 模组）侧补齐 OkHttp（网络客户端）真实 WebSocket（全双工通信协议）连接、应用层 `hello`（握手）、`heartbeat`（心跳）与本地联调脚本。
+- **阶段结果**:
+  - 对话层已经具备状态感知、复合分诊、记忆注入、真实 LLM（大语言模型）验收口径与可观测 replay（补拉）出口。
+  - 世界事实查询已回到 `minecraft-data`（MC 事实包） 与运行时事实源，不再鼓励在 Prompt（提示词） 或代码中硬编码 MC（Minecraft，我的世界）领域事实。
+  - Fabric（模组加载器）服务器侧桥接已从不可加载的旧 Paper（服务端插件平台）工程迁移为可构建 Fabric mod（Fabric 模组），并具备本地 WebSocket（全双工通信协议）握手 / 心跳联调能力。
+  - 下一批次从 `T-041`（任务四十一）开始转入 TS Core（TypeScript 单核心）端 `server-bridge`（服务端桥接）接收骨架与 Fabric（模组加载器）命令链路联调。
+- **详细明细归档**:
+  - `WF_开发进度明细归档/T-031_至_T-040.md`
