@@ -136,6 +136,27 @@ TS Core 与 MC Server 之间存在**双通道**信息架构：
 
 observation 模块融合两路数据源写入缓存快照。核心约束不变：observation 仍然是纯读、纯写缓存的，不触发任何 Bot 写操作。
 
+#### 2.6.1 Server Bridge 平台与依赖选型（v0.4 修订，2026-04-27 由 T-039 决策追加）
+
+历史上 `plugin/`（服务端插件源码） 以 Paper API（`io.papermc.paper:paper-api`） 为目标，依赖 `commandapi-paper-shade`、`decentholograms`、`authme` 等 Paper / Bukkit 生态库；但当前生产 MC（Minecraft，我的世界） 服务器已全面迁移到 Fabric（模组加载器），跑的是 `fabric-loader` + `fabric-api` + `easyauth`，**Paper 插件无法被 Fabric 服务器加载**。
+
+T-039（任务三十九） 已确认走 **方案 Y（捆绑串行）**：把 `plugin/` 全面重写为 Fabric mod，并与 TS Core（TypeScript 单核心） 端 `server-bridge`（服务端桥接） 通信落地一起在同一批次完成。下表为已锁定的依赖选型，作为未来 T-Fabric-Bridge 系列任务派发的硬约束：
+
+| 需求 | 锁定选型 | 理由 |
+|------|---------|------|
+| Mod Loader（模组加载器） | **Fabric Loader** 0.15.x+ | Fabric 唯一加载器 |
+| 构建插件 | **Fabric Loom**（Gradle 插件） | Fabric 官方构建链；不再使用 Maven |
+| 事件 / 生命周期 / 服务端命令 | **Fabric API** `0.97.3+1.20.4` + Brigadier + `fabric-command-api-v2` | 与生产 `mods/` 已装版本对齐；不引入 CommandAPI |
+| 外部 WebSocket 客户端（→ TS Core） | **OkHttp** | 当前 mod ↔ TS Core 同机 localhost；选 OkHttp 是为未来跨机部署（如 TS Core 迁出 Fukuoka 主机）保留连接池 / 自动重连 / 网络抖动韧性能力，避免后续返工 |
+| JSON | **Gson** | 已在 MC 类路径，零额外依赖；安全口碑显著优于 fastjson2；在握手 / 心跳 / observation patch（观测补丁） 等结构化低频负载下性能远过剩 |
+| 权限 | **`fabric-permissions-api`**（LuckPerms 软依赖） | lucko 出品社区事实标准；`Permissions.check(src, perm, 4)` 自动回退原版 op 等级判定；`fabric.mod.json`（模组元信息） 不把 LuckPerms 写为强依赖 |
+| 全息 / 文字显示 | **MC 1.20.4 原生 `text_display` 实体** | 1.19.4+ 原生支持；不引入 DecentHolograms 等第三方全息库 |
+| MC 内部网络包 | **`fabric-networking-api-v1`** | ⚠️ 仅用于 MC 客户端 ↔ MC 服务端发自定义 payload；**严禁** 误用为 mod ↔ TS Core 外部进程通信通道（这是 Fabric 新人最常见误用之一，T-Fabric-Bridge 派发文档必须显式警告） |
+
+**Transport 隔离约束**：mod 端 OkHttp 客户端必须封装在一个明确的 `ServerBridgeTransport`（服务端桥接传输） 接口后面，未来如需切换到 `java.net.http.WebSocket`、原生 Netty 或其他实现，业务代码不需要修改。这是文档第 15 节"模块解耦原则"在 mod 端的对应实现。
+
+**TS Core 端对接约束**：`interfaces/server-bridge/`（服务端桥接接口） 当前仅有 `contracts.ts`（契约） + `index.ts`（导出）；T-Fabric-Bridge 系列任务对接时，TS Core 端只增加协议契约 / 接收端骨架 / 解析适配，**禁止把 OkHttp 或任何 Java 侧细节渗漏到 TS Core 代码**。两端共享的只有 JSON 协议形态。
+
 **⑦ 持久化 — PostgreSQL + Drizzle ORM + pgvector + JSONL**
 
 PG 是唯一业务真理源。Drizzle ORM 提供轻量 SQL 生成，无性能黑盒。pgvector 作为 PG 原生插件提供向量检索能力。高频执行日志走 JSONL 本地文件追加，PG 只存摘要索引和文件指针（字段命名为 `log_ref`，不绑死本地路径语义）。
