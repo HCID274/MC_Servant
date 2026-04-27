@@ -11,9 +11,9 @@
 ## 当前批次
 
 - 批次范围：`T-041` ~ `T-050`
-- 当前已完成任务：`T-041` ~ `T-043`
-- 当前活跃任务：`T-044`（任务四十四） `/svs`（服务端女仆命令）接入 conversation（对话）主线：把 Server Bridge（服务端桥接）玩家消息灰度转入 `msg:{botId}`（消息队列），形成 `/svs` → LLM（大语言模型）回复 → MC（Minecraft，我的世界）聊天的可控闭环。
-- 当前批次摘要：上一批次 `T-031`（任务三十一） 到 `T-040`（任务四十） 已完成对话智能增强、记忆与状态注入、MC（Minecraft，我的世界）事实源、反射动作，以及 Fabric（模组加载器）端服务端桥接基线。新批次默认沿 Fabric mod（Fabric 模组） ↔ TS Core（TypeScript 单核心）真实通信链路推进；任务切分按模块批量合并，同一 Server Bridge（服务端桥接）模块内的稳定性项不再拆成多个小任务。
+- 当前已完成任务：`T-041` ~ `T-044`
+- 当前活跃任务：`T-045`（任务四十五） Phase 1（第一阶段）基础动作模块批量收口：集中完成 `/svs`（服务端女仆命令）自然语言到 `goTo`（前往坐标）/ `collect`（捡拾）/ `mine`（挖掘）/ `equip`（装备） 等低风险技能执行的在线闭环。
+- 当前批次摘要：上一批次 `T-031`（任务三十一） 到 `T-040`（任务四十） 已完成对话智能增强、记忆与状态注入、MC（Minecraft，我的世界）事实源、反射动作，以及 Fabric（模组加载器）端服务端桥接基线。新批次默认沿 Fabric mod（Fabric 模组） ↔ TS Core（TypeScript 单核心）真实通信链路推进；任务切分按模块批量合并，同一模块 / 同一上下文 / 同一目标闭环内的相关工作不再拆成多个小任务，以降低握手成本。
 - 当前批次硬约束：不得破坏 BotActor（机器人执行代理）单写者边界；server-bridge（服务端桥接）入口默认 `observe_only`（仅观测），不得绕过 game-chat（游戏聊天） / conversation（对话）队列直接写 Bot（机器人）；不得把 Java（编程语言）或 OkHttp（网络客户端）实现细节渗入 TS Core（TypeScript 单核心）。
 
 ---
@@ -100,3 +100,24 @@
   - `bash ts-core/scripts/pre_review.sh` 通过：循环依赖 161 个文件无循环，TypeScript（类型检查）通过，Biome（代码检查）通过，Vitest（测试）30 个测试文件 / 204 条测试全部通过。
   - `cd plugin && ./gradlew build --no-daemon` 通过，`BUILD SUCCESSFUL in 26s`。
   - 本任务未触碰 LLM（大语言模型）链路、Prompt（提示词）、parser（解析器）或 conversation（对话）路由，无需真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
+
+### T-044 — `/svs`（服务端女仆命令）接入 conversation（对话）主线
+
+- 状态：已完成（2026-04-27）
+- 核心文件：
+  - `ts-core/src/app/bootstrap/env.ts`
+  - `ts-core/src/app/entrypoint.ts`
+  - `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
+  - `ts-core/README.md`
+  - `plugin/README.md`
+  - `plugin/BUILD.md`
+- 变更快照：
+  - 新增 `SERVER_BRIDGE_CONVERSATION_ENABLED`（服务端桥接对话启用）配置，默认 `false`，保持 T-043（任务四十三） 的 `observe_only`（仅观测） replay（补拉）行为。
+  - 显式启用后，仅 `player_message`（玩家消息）会被转换为 `createConversationWorkerTask()`（创建对话工作线程任务）并入 `msg:{botId}`（消息队列）；`hello`（握手）、`heartbeat`（心跳）和 lifecycle（生命周期）诊断不会入对话队列。
+  - 入队 `jobId`（任务标识）使用 `message_id`（消息标识），并追加 `task.accepted`（任务已接受） replay（补拉）诊断，便于从 `/api/replay`（补拉接口）确认 `/svs` 已进入主链路。
+  - 回复出口继续复用 ConversationWorker（对话工作线程）既有 `broadcastReplySink`（广播回复汇点）到 BotActor（机器人执行代理）`broadcastReply()`（广播回复）；Server Bridge（服务端桥接）层没有直接调用 Mineflayer（Minecraft 协议客户端）聊天出口。
+  - 在线入口集成测试覆盖默认未启用不入队、启用后 `/svs` 普通闲聊入队并写回聊天、显式 cancel（取消）不触发额外 LLM（大语言模型）调用且仍发中断和模板回执。
+- 审查与验证：
+  - `git diff --check` 通过。
+  - Manager（管理代理）真实 LLM（大语言模型）复验通过：`POST http://127.0.0.1:8045/v1/chat/completions`，`api_key`（接口密钥）=`sk-local-dev`，`model`（模型）=`bl-auto`，返回内容 `T-044 LLM 复验通过。`，实际上游模型为 `qwen3-max-2026-01-23`。
+  - `bash ts-core/scripts/pre_review.sh` 通过：循环依赖 161 个文件无循环，TypeScript（类型检查）通过，Biome（代码检查）通过，Vitest（测试）30 个测试文件 / 205 条测试全部通过。

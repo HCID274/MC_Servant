@@ -10,7 +10,7 @@
 - WebSocket（全双工通信协议） 打开后发送应用层 `hello`（握手）帧，并按配置周期发送 `heartbeat`（心跳）帧；`access token`（访问令牌） 只进入 `Authorization`（授权）请求头，不进入消息体或普通日志。
 - 注册 `/svs <message>`（服务端女仆命令）：将玩家原始消息封装为 `player_message`（玩家消息）协议帧并通过 `ServerBridgeTransport` 发送；权限优先用 `fabric-permissions-api`（节点 `mcservant.svs.use`），缺席时回退原版 op level 2。
 
-T-041（任务四十一） 已交付 mod ↔ TS Core 双端最小闭环（含 `/svs` 与 TS Core `/ws/server-bridge` 接收端）；T-042（任务四十二） 已让 TS Core 默认 `pnpm start`（启动命令） 可通过 `SERVER_BRIDGE_ACCESS_TOKEN`（服务端桥接访问令牌） 直接启用接收端，并复用 EasyAuth（离线服认证模组） `/login <secret>`（登录命令） 在线手测口径。稳定性补强与 LLM（大语言模型） 主线接入留给 T-043 / T-044。
+T-041（任务四十一） 已交付 mod ↔ TS Core 双端最小闭环（含 `/svs` 与 TS Core `/ws/server-bridge` 接收端）；T-042（任务四十二） 已让 TS Core 默认 `pnpm start`（启动命令） 可通过 `SERVER_BRIDGE_ACCESS_TOKEN`（服务端桥接访问令牌） 直接启用接收端，并复用 EasyAuth（离线服认证模组） `/login <secret>`（登录命令） 在线手测口径；T-043（任务四十三） 已补强重连、心跳超时、协议诊断；T-044（任务四十四） 起 TS Core 可通过 `SERVER_BRIDGE_CONVERSATION_ENABLED=true`（服务端桥接对话启用） 把 `/svs` 玩家消息接入 LLM（大语言模型） 对话主线。
 
 ## 🔧 技术栈
 
@@ -66,12 +66,12 @@ java \
 
 假服务日志应能看到 `hello`（握手）和至少一次 `heartbeat`（心跳）帧，并对每帧返回最小 `ack`（确认）帧。脚本只打印 `Authorization`（授权）是否存在，不打印 `access token`（访问令牌）值。
 
-如需对接真实 TS Core 接收端：在 TS Core 侧设置 `SERVER_BRIDGE_ACCESS_TOKEN=<local-bridge-token>` 并运行 `pnpm build && pnpm start`，再将 `mcservant.bridge.url` 指向 TS Core 启动后暴露的 `ws://<host>:<port>/ws/server-bridge`，`mcservant.bridge.accessToken` 与 TS Core 注入的 token（令牌） 必须完全一致。TS Core 重启或网络短断时，mod（模组） 会进入 `RECONNECTING`（重连中） 并按退避配置自动重连。
+如需对接真实 TS Core 接收端：在 TS Core 侧设置 `SERVER_BRIDGE_ACCESS_TOKEN=<local-bridge-token>` 并运行 `pnpm build && pnpm start`，再将 `mcservant.bridge.url` 指向 TS Core 启动后暴露的 `ws://<host>:<port>/ws/server-bridge`，`mcservant.bridge.accessToken` 与 TS Core 注入的 token（令牌） 必须完全一致。默认只写 replay（补拉） 观测事件；若 TS Core 侧额外设置 `SERVER_BRIDGE_CONVERSATION_ENABLED=true` 与 `LLM_*`（大语言模型配置），游戏内 `/svs hello` 会触发 ConversationWorker（对话工作线程） 并由 BotActor（机器人执行代理） 写回聊天。TS Core 重启或网络短断时，mod（模组） 会进入 `RECONNECTING`（重连中） 并按退避配置自动重连。
 
 ## 🎮 `/svs` 命令最短手测
 
 1. 在游戏内以 op 身份（或被 `mcservant.svs.use` 授权的玩家）执行 `/svs hello`。
-2. 桥接已连接：聊天框收到灰色提示 `[svs] 已转发到 TS Core`，TS Core 侧 `/api/replay` 出现 `server_bridge.player_message` 事件。
+2. 桥接已连接：聊天框收到灰色提示 `[svs] 已转发到 TS Core`，TS Core 侧 `/api/replay` 出现 `server_bridge.player_message` 事件；若 TS Core 启用 `SERVER_BRIDGE_CONVERSATION_ENABLED=true`，随后应出现 `task.accepted`（任务已接受） 与 `chat.reply`（聊天回复），并在游戏聊天中看到 Bot（机器人） 回复。
 3. 桥接未连接：聊天框收到红色错误 `[svs] 桥接未连接，TS Core 无法接收消息`，无任何帧外发，无 replay（补拉） 事件写入。
 4. 桥接正在重连：聊天框收到红色错误 `[svs] 桥接正在重连 TS Core，稍后重试`。
 5. token（令牌）错误：聊天框收到红色错误 `[svs] 桥接 token 配置错误，TS Core 拒绝连接`，普通日志不会打印 token（令牌）明文。

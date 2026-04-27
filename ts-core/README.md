@@ -4,7 +4,7 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
 当前仓库已经提供一个最小本地在线入口：`src/main.ts`（可执行入口） 会启动真实 Redis（缓存） / PostgreSQL（关系型数据库） / BullMQ（任务队列） / Fastify（接口网关） / Mineflayer（Minecraft 协议客户端），并通过 ConversationWorker（对话工作线程） 把 `POST /api/message`（消息提交接口） 的文本回复写入 Minecraft（我的世界） 聊天频道。若已配置 `LLM_BASE_URL`（大语言模型基础地址） / `LLM_API_KEY`（接口密钥） / `LLM_MODEL`（模型名），普通闲聊会走一次真实 OpenAI（开放人工智能） 兼容 `chat.completions`（对话补全） 调用。
 
-同时，默认入口已经支持通过 `SERVER_BRIDGE_*`（服务端桥接） 环境变量启用 `/ws/server-bridge`（服务端桥接 WebSocket），用于 Fabric mod（Fabric 模组） `/svs`（服务端女仆命令） 到 TS Core（TypeScript 单核心） `/api/replay`（补拉接口） 的实服烟测。仓库也提供可被后续消息链路复用的真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源工厂、BullMQ（任务队列） 三队列运行时工厂、Fastify（接口网关） 服务器骨架，以及 Drizzle（数据库工具） migration（迁移） 执行入口。
+同时，默认入口已经支持通过 `SERVER_BRIDGE_*`（服务端桥接） 环境变量启用 `/ws/server-bridge`（服务端桥接 WebSocket），用于 Fabric mod（Fabric 模组） `/svs`（服务端女仆命令） 到 TS Core（TypeScript 单核心） `/api/replay`（补拉接口） 的实服烟测；显式设置 `SERVER_BRIDGE_CONVERSATION_ENABLED=true`（服务端桥接对话启用） 后，`/svs` 玩家消息会进入 ConversationWorker（对话工作线程） 主链路并通过 BotActor（机器人执行代理） 写回 MC（Minecraft，我的世界） 聊天。仓库也提供可被后续消息链路复用的真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源工厂、BullMQ（任务队列） 三队列运行时工厂、Fastify（接口网关） 服务器骨架，以及 Drizzle（数据库工具） migration（迁移） 执行入口。
 
 ## 开发命令
 
@@ -44,15 +44,16 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
 默认会读取 `TS_CORE_BOT_ID`（机器人标识），未设置时回退到 `local-bot`。
 
-## Server Bridge（服务端桥接） 长期运行联调（T-043）
+## Server Bridge（服务端桥接） 长期运行联调（T-044）
 
 - TS Core 端在 `interfaces/server-bridge`（服务端桥接接口） 内提供 `registerServerBridgeWsRoute`（路由注册），可挂在已有 Fastify（接口网关） 实例上，端点固定为 `/ws/server-bridge`。
 - token（令牌） 必须由调用方注入；缺失或不匹配的 `Authorization: Bearer`（授权头） 请求会在握手阶段被 401 拒绝，不会进入消息处理流程，也不会写入 replay（补拉） 事件。
 - 默认 `src/main.ts`（可执行入口） 已支持环境变量装配：设置 `SERVER_BRIDGE_ACCESS_TOKEN`（访问令牌） 后自动启用；设置 `SERVER_BRIDGE_ENABLED=false`（禁用） 后强制关闭；设置 `SERVER_BRIDGE_ENABLED=true`（启用） 但缺少 token（令牌） 会启动失败。
 - 可选 `SERVER_BRIDGE_PATH`（服务端桥接路径） 默认是 `/ws/server-bridge`。
 - 可选 `SERVER_BRIDGE_HEARTBEAT_TIMEOUT_MS`（心跳超时毫秒数） 默认是 `90000`，超时后会关闭连接并写入 `server_bridge.heartbeat_timeout`（服务端桥接心跳超时） 与 `server_bridge.disconnected`（服务端桥接断开） 诊断事件。
-- 启动入口 `startAppOnlineRuntime` 仍支持 `dependencies.serverBridge` 注入：传入 `{ accessToken: "...", path?: "...", heartbeatTimeoutMs?: 90000, enabled?: true|false }` 后，hello / heartbeat / player_message 帧会按 `server_bridge.<type>` 写入 `/api/replay`（补拉接口）；任何 `access token`（访问令牌） 都不会出现在 ack（确认） / error（错误） 帧、replay（补拉） 事件或日志中。
-- mod 端 `/svs <message>` 与 TS Core 端联调步骤：mod 启动时配置 `mcservant.bridge.url=ws://<ts-core-host>:<port>/ws/server-bridge` 与 `mcservant.bridge.accessToken=<同 TS Core 注入值>`；游戏内执行 `/svs hello` 后，TS Core `/api/replay` 应出现 `server_bridge.player_message` 事件。
+- 可选 `SERVER_BRIDGE_CONVERSATION_ENABLED`（服务端桥接对话启用） 默认是 `false`：默认只写 `server_bridge.player_message`（服务端桥接玩家消息） 到 replay（补拉）；显式 `true` 时只把 `player_message`（玩家消息） 入 `msg:{botId}`（消息队列），`hello`（握手）/ `heartbeat`（心跳）/ lifecycle（生命周期） 诊断不会入队。
+- 启动入口 `startAppOnlineRuntime` 仍支持 `dependencies.serverBridge` 注入：传入 `{ accessToken: "...", path?: "...", heartbeatTimeoutMs?: 90000, conversationEnabled?: true|false, enabled?: true|false }` 后，hello / heartbeat / player_message 帧会按 `server_bridge.<type>` 写入 `/api/replay`（补拉接口）；`conversationEnabled=true` 时额外写入 `task.accepted`（任务已接受） 诊断并进入 ConversationWorker（对话工作线程）。任何 `access token`（访问令牌） 都不会出现在 ack（确认） / error（错误） 帧、replay（补拉） 事件或日志中。
+- mod 端 `/svs <message>` 与 TS Core 端联调步骤：mod 启动时配置 `mcservant.bridge.url=ws://<ts-core-host>:<port>/ws/server-bridge` 与 `mcservant.bridge.accessToken=<同 TS Core 注入值>`；游戏内执行 `/svs hello` 后，默认 TS Core `/api/replay` 应出现 `server_bridge.player_message` 事件；若同时启用 `SERVER_BRIDGE_CONVERSATION_ENABLED=true` 与 `LLM_*`（大语言模型配置），还应出现 `task.accepted`（任务已接受） 与 `chat.reply`（聊天回复），且游戏内能看到 Bot（机器人） 回复。
 - 协议策略：连接后必须先收到 `hello`（握手），再接受 `heartbeat`（心跳） 与 `player_message`（玩家消息）；重复 `hello`（握手）会返回 `duplicate_hello`（重复握手），重复 `message_id`（消息标识）会返回 `duplicate_message_id`（重复消息标识），协议版本不匹配会返回 `protocol_version_mismatch`（协议版本不匹配） 并关闭连接。
 
 ## MC 实服烟测：Server Bridge（服务端桥接） + EasyAuth（离线服认证模组）
@@ -76,6 +77,10 @@ MC_EXTERNAL_AUTH_SECRET=<bot-easyauth-password>
 SERVER_BRIDGE_ACCESS_TOKEN=<local-bridge-token>
 SERVER_BRIDGE_PATH=/ws/server-bridge
 SERVER_BRIDGE_HEARTBEAT_TIMEOUT_MS=90000
+SERVER_BRIDGE_CONVERSATION_ENABLED=true
+LLM_BASE_URL=http://127.0.0.1:8045/v1
+LLM_API_KEY=sk-local-dev
+LLM_MODEL=bl-auto
 ```
 
 Fabric mod（Fabric 模组） 启动参数清单：
@@ -100,7 +105,7 @@ java \
 4. 观察 MC（Minecraft，我的世界） 服务端日志：bot（机器人） 应上线；如果 EasyAuth（离线服认证模组） 要求登录，TS Core 会通过 BotActor（机器人执行代理） 单写者路径发送 `/login <secret>`（登录命令），公开状态只显示 `/login <redacted>`（脱敏登录命令）。
 5. 在游戏内用有权限的玩家执行 `/svs hello`。
 6. 查询状态：`curl "http://127.0.0.1:3000/api/status?bot_id=local-bot"`。
-7. 查询补拉事件：`curl "http://127.0.0.1:3000/api/replay?bot_id=local-bot&after_seq=0&limit=10"`，预期出现 `server_bridge.player_message`（服务端桥接玩家消息） 事件，payload（载荷） 中包含 `content:"hello"` 且 `runtime_effect:"observe_only"`（仅观测）。
+7. 查询补拉事件：`curl "http://127.0.0.1:3000/api/replay?bot_id=local-bot&after_seq=0&limit=10"`，未设置 `SERVER_BRIDGE_CONVERSATION_ENABLED=true` 时预期只出现 `server_bridge.player_message`（服务端桥接玩家消息） 事件；启用后预期还会出现 `task.accepted`（任务已接受） 与 `chat.reply`（聊天回复），payload（载荷） 中包含 `content:"hello"` 且原始桥接事件仍保留 `runtime_effect:"observe_only"`（仅观测）。
 
 常见失败排查：
 

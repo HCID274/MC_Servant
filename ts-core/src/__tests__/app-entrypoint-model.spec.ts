@@ -553,6 +553,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
   });
 
   it("应在真实在线入口装配 server-bridge WebSocket 并写入 /api/replay", async () => {
+    const queueAdds: Array<{ queue: string; jobId: unknown }> = [];
     const serverBridge = createAppServerBridgeConfigFromEnvironment({
       env: {
         SERVER_BRIDGE_ACCESS_TOKEN: "local-dev-token",
@@ -593,7 +594,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           workers: {
             createQueue: ({ name }) => ({
               name,
-              add: async () => ({ id: "job-online" }),
+              add: async (_jobName, _data, options) => {
+                queueAdds.push({ queue: name, jobId: options?.jobId });
+
+                return { id: "job-online" };
+              },
               close: async () => undefined,
             }),
           },
@@ -745,6 +750,265 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         ],
       });
       expect(replayText).not.toContain("local-dev-token");
+      expect(queueAdds).toEqual([]);
+    } finally {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.close();
+        await waitForWsClose(socket);
+      } else if (socket.readyState === WebSocket.CONNECTING) {
+        socket.terminate();
+      }
+      await runtime.close();
+    }
+  });
+
+  it("应在显式启用后把 /svs 玩家消息接入 ConversationWorker 并经 BotActor 写回聊天", async () => {
+    const chats: string[] = [];
+    const llmRequests: Array<{ url: string; body: unknown }> = [];
+    const interrupts: unknown[] = [];
+    const queueAdds: Array<{ queue: string; jobName: string; jobId: unknown; data: unknown }> = [];
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const serverBridge = createAppServerBridgeConfigFromEnvironment({
+      env: {
+        SERVER_BRIDGE_ACCESS_TOKEN: "local-dev-token",
+        SERVER_BRIDGE_CONVERSATION_ENABLED: "true",
+      },
+    });
+
+    if (serverBridge === undefined) {
+      throw new Error("test server bridge config must be enabled");
+    }
+
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-bridge-conversation",
+      now: "2026-04-27T00:00:00.000Z",
+      env: {
+        LLM_BASE_URL: "http://127.0.0.1:8045/v1",
+        LLM_API_KEY: "sk-local-dev",
+        LLM_MODEL: "bl-auto",
+      },
+    });
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        llm: {
+          api_key: "sk-local-dev",
+          fetch: async (url, init) => {
+            llmRequests.push({
+              url: String(url),
+              body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+            });
+            const requestBody =
+              init?.body === undefined
+                ? undefined
+                : (JSON.parse(String(init.body)) as {
+                    messages?: Array<{ role: string; content: string }>;
+                  });
+            const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
+            const assistantContent = userMessage.includes("Bot 状态：")
+              ? '{"intent":"chat","priority":"normal","reason":"svs_chat"}'
+              : "你好呀";
+
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: assistantContent,
+                    },
+                  },
+                ],
+              }),
+              {
+                status: 200,
+                headers: {
+                  "content-type": "application/json",
+                },
+              },
+            );
+          },
+          now: () => new Date("2026-04-27T00:00:10.000Z"),
+        },
+        serverBridge: {
+          ...serverBridge,
+          now: () => "2026-04-27T00:00:10.000Z",
+          eventIdFactory: () => "server-bridge-conversation-event",
+        },
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => undefined,
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => ({}),
+            connectClient: async () => undefined,
+            closeClient: async () => undefined,
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async (jobName, data, options) => {
+                queueAdds.push({ queue: name, jobName, jobId: options?.jobId, data });
+                if (name === "msg:bot-bridge-conversation") {
+                  setTimeout(() => {
+                    void processor?.({ data });
+                  }, 0);
+                }
+
+                return { id: String(options?.jobId ?? "job-online") };
+              },
+              close: async () => undefined,
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalListen = server.listen.bind(server);
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => originalListen({ host: "127.0.0.1", port: 0 });
+              server.close = async () => originalClose();
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeEntrypointMineflayerBot(chats);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        botWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+        conversationWorker: {
+          interruptRuntimeSink: async ({ signal }) => {
+            interrupts.push(signal);
+          },
+          createWorker: ({ processor: capturedProcessor }) => {
+            processor = capturedProcessor;
+
+            return {
+              close: async () => undefined,
+            };
+          },
+        },
+      },
+    });
+    const socket = new WebSocket(
+      `${runtime.listen_address.replace(/^http/, "ws")}/ws/server-bridge`,
+      {
+        headers: {
+          Authorization: "Bearer local-dev-token",
+        },
+      },
+    );
+
+    try {
+      await waitForWsOpen(socket);
+      socket.send(
+        JSON.stringify({
+          type: "hello",
+          protocol_version: SERVER_BRIDGE_PROTOCOL_VERSION,
+          mod_id: "mcservant",
+          mod_version: "0.4.0",
+          connected_at: "2026-04-27T00:00:01.000Z",
+          instance_id: "local-fabric-01",
+        }),
+      );
+      expect(JSON.parse(await readNextWsText(socket))).toMatchObject({
+        type: "ack",
+        ack_type: "hello",
+      });
+
+      socket.send(
+        JSON.stringify({
+          type: "player_message",
+          protocol_version: SERVER_BRIDGE_PROTOCOL_VERSION,
+          instance_id: "local-fabric-01",
+          message_id: "msg-svs-chat",
+          player_uuid: "00000000-0000-0000-0000-000000000001",
+          player_name: "Steve",
+          content: "你好",
+          timestamp: "2026-04-27T00:00:03.000Z",
+        }),
+      );
+      expect(JSON.parse(await readNextWsText(socket))).toMatchObject({
+        type: "ack",
+        ack_type: "player_message",
+      });
+      await expect.poll(() => chats).toContain("chat:你好呀喵~");
+
+      socket.send(
+        JSON.stringify({
+          type: "player_message",
+          protocol_version: SERVER_BRIDGE_PROTOCOL_VERSION,
+          instance_id: "local-fabric-01",
+          message_id: "msg-svs-cancel",
+          player_uuid: "00000000-0000-0000-0000-000000000001",
+          player_name: "Steve",
+          content: "取消",
+          timestamp: "2026-04-27T00:00:04.000Z",
+        }),
+      );
+      expect(JSON.parse(await readNextWsText(socket))).toMatchObject({
+        type: "ack",
+        ack_type: "player_message",
+      });
+      await expect.poll(() => chats).toContain("chat:好的，已经停下来了喵~");
+      const replayResponse = await runtime.services.http.server.inject({
+        method: "GET",
+        url: "/api/replay?bot_id=bot-bridge-conversation&after_seq=0&limit=20",
+      });
+      const replayBody = replayResponse.json();
+
+      expect(queueAdds.map((item) => [item.queue, item.jobName, item.jobId])).toEqual([
+        ["msg:bot-bridge-conversation", "conversation", "msg-svs-chat"],
+        ["msg:bot-bridge-conversation", "conversation", "msg-svs-cancel"],
+      ]);
+      expect(llmRequests).toHaveLength(2);
+      expect(interrupts).toEqual([
+        {
+          source: {
+            type: "triage",
+            intent_epoch: 0,
+          },
+          reason: "cancel",
+        },
+      ]);
+      expect(replayBody.events.map((event: { type: string }) => event.type)).toEqual([
+        "server_bridge.connected",
+        "server_bridge.hello",
+        "server_bridge.player_message",
+        "task.accepted",
+        "chat.reply",
+        "server_bridge.player_message",
+        "task.accepted",
+        "chat.reply",
+      ]);
+      expect(replayBody.events).toContainEqual(
+        expect.objectContaining({
+          type: "task.accepted",
+          payload: expect.objectContaining({
+            job_id: "msg-svs-chat",
+            message_id: "msg-svs-chat",
+            source: "server_bridge",
+          }),
+        }),
+      );
     } finally {
       if (socket.readyState === WebSocket.OPEN) {
         socket.close();
@@ -769,8 +1033,21 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     ).toEqual({
       enabled: true,
       accessToken: "local-dev-token",
+      conversationEnabled: false,
       path: "/ws/custom-bridge",
       heartbeatTimeoutMs: 120_000,
+    });
+    expect(
+      createAppServerBridgeConfigFromEnvironment({
+        env: {
+          SERVER_BRIDGE_ACCESS_TOKEN: "local-dev-token",
+          SERVER_BRIDGE_CONVERSATION_ENABLED: "true",
+        },
+      }),
+    ).toEqual({
+      enabled: true,
+      accessToken: "local-dev-token",
+      conversationEnabled: true,
     });
     expect(
       createAppServerBridgeConfigFromEnvironment({

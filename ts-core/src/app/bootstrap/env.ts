@@ -7,6 +7,8 @@ export interface AppServerBridgeEnvironmentConfig {
   readonly enabled: true;
   /** 注入到 WebSocket（全双工通信协议） 握手校验中的访问令牌。 */
   readonly accessToken: string;
+  /** 是否把 player_message（玩家消息） 接入 conversation（对话）主线。 */
+  readonly conversationEnabled: boolean;
   /** 可选监听路径，默认由路由层使用 /ws/server-bridge。 */
   readonly path?: string;
   /** 可选心跳超时毫秒数，默认由路由层使用 90 秒。 */
@@ -125,6 +127,8 @@ export function createAppServerBridgeConfigFromEnvironment(input: {
   const heartbeatTimeoutMs = readOptionalInteger(input.env, "SERVER_BRIDGE_HEARTBEAT_TIMEOUT_MS", {
     min: 1,
   });
+  const conversationEnabled =
+    readOptionalBoolean(input.env, "SERVER_BRIDGE_CONVERSATION_ENABLED") ?? false;
 
   if (enabled === false) {
     return undefined;
@@ -147,6 +151,7 @@ export function createAppServerBridgeConfigFromEnvironment(input: {
   return Object.freeze({
     enabled: true,
     accessToken,
+    conversationEnabled,
     ...(path === undefined ? {} : { path }),
     ...(heartbeatTimeoutMs === undefined ? {} : { heartbeatTimeoutMs }),
   });

@@ -98,9 +98,11 @@ T-042 起默认 `pnpm start`（启动命令） 可通过 `SERVER_BRIDGE_ACCESS_T
 无需 `ws-debug-server.py`：TS Core 侧 `SERVER_BRIDGE_ACCESS_TOKEN` 与 mod 端 `mcservant.bridge.accessToken` 必须完全一致，
 mod 启动后即可看到 `hello` / `heartbeat` 进入 `/api/replay` 的 `server_bridge.*` 事件流。
 TS Core（TypeScript 单核心）重启或网络短断时，mod（模组） 会自动进入 `RECONNECTING`（重连中） 状态并按退避配置重试；token（令牌）错误会进入 `AUTH_FAILED`（鉴权失败），协议版本错误会进入 `PROTOCOL_INCOMPATIBLE`（协议不兼容），两者都不会刷屏重试。
+T-044 起 TS Core 侧额外设置 `SERVER_BRIDGE_CONVERSATION_ENABLED=true`（服务端桥接对话启用） 与 `LLM_*`（大语言模型配置） 后，
+`player_message`（玩家消息） 会进入 `msg:{botId}`（消息队列） 并由 ConversationWorker（对话工作线程） 生成回复；未设置时仍保持 observe-only（仅观测） 行为。
 
 游戏内执行 `/svs hello`（op 或 `mcservant.svs.use` 权限）后，TS Core 侧 `/api/replay`
-应出现 `server_bridge.player_message` 事件；脚本侧若仍接 `ws-debug-server.py`，
+默认应出现 `server_bridge.player_message` 事件；启用 conversation（对话） 后还应出现 `task.accepted`（任务已接受） 与 `chat.reply`（聊天回复）。脚本侧若仍接 `ws-debug-server.py`，
 会看到 `[bridge-debug] frame type=player_message body={...}` 输出。
 
 `access token`（访问令牌）不会出现在 mod（模组）普通日志、联调脚本输出或 JSON（结构化文本）消息体中；脚本只打印是否收到 `Authorization`（授权）请求头。
@@ -128,4 +130,4 @@ TS Core（TypeScript 单核心）重启或网络短断时，mod（模组） 会�
 
 ---
 
-*最后更新：2026-04-27（T-043 Server Bridge 稳定性补强：重连、超时、协议诊断）*
+*最后更新：2026-04-27（T-044 Server Bridge 对话主线接入说明）*

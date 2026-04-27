@@ -22,11 +22,13 @@ import {
   type InterfaceBotStatusSnapshot,
   type RealtimeEventEnvelope,
   type ServerBridgeEventEnvelope,
+  type ServerBridgePlayerMessageFrame,
   type ServerBridgeWsRouteOptions,
   createInterfaceBotStatusSnapshot,
   createRealtimeEventEnvelope,
   registerServerBridgeWsRoute,
 } from "../interfaces/index.js";
+import { createConversationWorkerTask } from "../workers/contracts.js";
 import {
   type BotWorkerAction,
   type BotWorkerRuntime,
@@ -138,6 +140,8 @@ export interface AppServerBridgeDependencies {
   readonly enabled?: boolean;
   /** 期望的 access token；与 mod 端 Authorization Bearer 必须完全一致。 */
   readonly accessToken: string;
+  /** 是否把 player_message（玩家消息） 显式接入 conversation（对话）队列。 */
+  readonly conversationEnabled?: boolean;
   /** 监听路径；默认 /ws/server-bridge。 */
   readonly path?: string;
   /** 时钟覆盖。 */
@@ -407,11 +411,45 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       latestLlmDiagnostic: () => latestLlmDiagnostic,
       appendRealtimeEvent: appendOnlineRealtimeEvent,
     });
+    const onlineServices = services;
     await registerOnlineServerBridgeRoute({
-      server: services.http.server,
+      server: onlineServices.http.server,
       botId: input.bootstrap.bot_id,
       dependencies: input.dependencies?.serverBridge,
       appendRealtimeEvent: appendOnlineRealtimeEvent,
+      enqueueConversationTask: async ({ frame, receivedAt }) => {
+        const task = createConversationWorkerTask({
+          bot_id: input.bootstrap.bot_id,
+          message: {
+            bot_id: input.bootstrap.bot_id,
+            message_id: frame.message_id,
+            content: frame.content,
+            intent_epoch: 0,
+            snapshot_ts: parseServerBridgeTimestamp(receivedAt),
+          },
+        });
+
+        const addConversationTask = onlineServices.workers.conversation.queue.add;
+
+        if (typeof addConversationTask !== "function") {
+          throw new Error("conversation queue does not support add");
+        }
+
+        await addConversationTask("conversation", task, {
+          jobId: frame.message_id,
+        });
+        await appendOnlineRealtimeEvent({
+          bot_id: input.bootstrap.bot_id,
+          type: "task.accepted",
+          created_at: receivedAt,
+          payload: Object.freeze({
+            job_id: frame.message_id,
+            message_id: frame.message_id,
+            epoch: task.message.intent_epoch,
+            source: "server_bridge",
+          }),
+        });
+      },
     });
     const listenAddress = await services.http.listen();
     input.write?.(`TS Core HTTP ready: ${listenAddress}`);
@@ -886,6 +924,10 @@ async function registerOnlineServerBridgeRoute<TBotId extends string>(input: {
   readonly botId: TBotId;
   readonly dependencies: AppServerBridgeDependencies | undefined;
   readonly appendRealtimeEvent: (event: Omit<RealtimeEventEnvelope, "seq">) => Promise<void>;
+  readonly enqueueConversationTask: (input: {
+    readonly frame: ServerBridgePlayerMessageFrame;
+    readonly receivedAt: string;
+  }) => Promise<void>;
 }): Promise<void> {
   const dependencies = input.dependencies;
   if (dependencies === undefined) {
@@ -921,17 +963,30 @@ async function registerOnlineServerBridgeRoute<TBotId extends string>(input: {
       });
     },
     onEvent: async ({ frame, envelope, received_at }) => {
-      void frame;
       await appendServerBridgeEnvelope({
         botId: input.botId,
         envelope,
         receivedAt: received_at,
         appendRealtimeEvent: input.appendRealtimeEvent,
       });
+      if (dependencies.conversationEnabled === true && frame.type === "player_message") {
+        await input.enqueueConversationTask({ frame, receivedAt: received_at });
+      }
     },
   };
 
   await registerServerBridgeWsRoute(input.server, baseOptions);
+}
+
+/** 将 Server Bridge（服务端桥接） 接收时间转换为 Worker（工作线程） 快照时间。 */
+function parseServerBridgeTimestamp(receivedAt: string): number {
+  const timestamp = Date.parse(receivedAt);
+
+  if (!Number.isFinite(timestamp)) {
+    throw new Error("server-bridge received_at must be a valid timestamp");
+  }
+
+  return timestamp;
 }
 
 /** 将 Server Bridge（服务端桥接）事件统一写入在线 replay（补拉）流。 */
