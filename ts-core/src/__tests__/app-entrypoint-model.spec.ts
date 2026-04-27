@@ -6,6 +6,7 @@ import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 
+import { createAppServerBridgeConfigFromEnvironment } from "../app/bootstrap/env.js";
 import {
   createAppBootstrapContract,
   createAppExternalAuthSecretFromEnvironment,
@@ -391,6 +392,21 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     ]);
     expect(bootstrap.auth.state.status).toBe("pending");
     expect(runtime.runtime.actor.getSnapshot().external_auth.status).toBe("authenticated");
+    const statusResponse = await runtime.services.http.server.inject({
+      method: "GET",
+      url: "/api/status?bot_id=bot-online",
+    });
+    const replayResponse = await runtime.services.http.server.inject({
+      method: "GET",
+      url: "/api/replay?bot_id=bot-online&after_seq=0&limit=10",
+    });
+    const publicOnlineText = JSON.stringify({
+      status: statusResponse.json(),
+      replay: replayResponse.json(),
+    });
+
+    expect(publicOnlineText).not.toContain("hunter2");
+    expect(publicOnlineText).not.toContain("/login hunter2");
 
     await runtime.close();
 
@@ -537,6 +553,16 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
   });
 
   it("应在真实在线入口装配 server-bridge WebSocket 并写入 /api/replay", async () => {
+    const serverBridge = createAppServerBridgeConfigFromEnvironment({
+      env: {
+        SERVER_BRIDGE_ACCESS_TOKEN: "local-dev-token",
+      },
+    });
+
+    if (serverBridge === undefined) {
+      throw new Error("test server bridge config must be enabled");
+    }
+
     const bootstrap = createAppBootstrapContract({
       botId: "bot-bridge-online",
       now: "2026-04-27T00:00:00.000Z",
@@ -545,7 +571,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       bootstrap,
       dependencies: {
         serverBridge: {
-          accessToken: "local-dev-token",
+          ...serverBridge,
           now: () => "2026-04-27T00:00:10.000Z",
           eventIdFactory: () => "server-bridge-event",
         },
@@ -719,6 +745,37 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       }
       await runtime.close();
     }
+  });
+
+  it("应按环境变量解析默认入口的 server-bridge 启用 / 禁用 / 缺 token 边界", () => {
+    expect(createAppServerBridgeConfigFromEnvironment({ env: {} })).toBeUndefined();
+    expect(
+      createAppServerBridgeConfigFromEnvironment({
+        env: {
+          SERVER_BRIDGE_ACCESS_TOKEN: "local-dev-token",
+          SERVER_BRIDGE_PATH: "/ws/custom-bridge",
+        },
+      }),
+    ).toEqual({
+      enabled: true,
+      accessToken: "local-dev-token",
+      path: "/ws/custom-bridge",
+    });
+    expect(
+      createAppServerBridgeConfigFromEnvironment({
+        env: {
+          SERVER_BRIDGE_ENABLED: "false",
+          SERVER_BRIDGE_ACCESS_TOKEN: "local-dev-token",
+        },
+      }),
+    ).toBeUndefined();
+    expect(() =>
+      createAppServerBridgeConfigFromEnvironment({
+        env: {
+          SERVER_BRIDGE_ENABLED: "true",
+        },
+      }),
+    ).toThrow("SERVER_BRIDGE_ACCESS_TOKEN must be configured");
   });
 
   it("应在真实在线入口把闲聊消息接到 OpenAI（开放人工智能） 兼容 LLM（大语言模型） 并写回聊天", async () => {

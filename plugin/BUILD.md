@@ -89,8 +89,9 @@ java -jar fabric-server-launch.jar nogui
 [bridge-debug] frame type=heartbeat body={...}
 ```
 
-T-041 起 mod ↔ TS Core 双端最小闭环可直接对接 TS Core `/ws/server-bridge` 真实接收端，
-无需 `ws-debug-server.py`：在 TS Core 启动入口注入 `serverBridge.accessToken`（与 mod 端 `mcservant.bridge.accessToken` 完全一致），
+T-041 起 mod ↔ TS Core 双端最小闭环可直接对接 TS Core `/ws/server-bridge` 真实接收端。
+T-042 起默认 `pnpm start`（启动命令） 可通过 `SERVER_BRIDGE_ACCESS_TOKEN`（服务端桥接访问令牌） 直接启用接收端，
+无需 `ws-debug-server.py`：TS Core 侧 `SERVER_BRIDGE_ACCESS_TOKEN` 与 mod 端 `mcservant.bridge.accessToken` 必须完全一致，
 mod 启动后即可看到 `hello` / `heartbeat` 进入 `/api/replay` 的 `server_bridge.*` 事件流。
 
 游戏内执行 `/svs hello`（op 或 `mcservant.svs.use` 权限）后，TS Core 侧 `/api/replay`
@@ -119,4 +120,4 @@ mod 启动后即可看到 `hello` / `heartbeat` 进入 `/api/replay` 的 `server
 
 ---
 
-*最后更新：2026-04-27（T-041 Server Bridge 双端最小闭环：`/svs` 命令 + TS Core `/ws/server-bridge` 接收端）*
+*最后更新：2026-04-27（T-042 Server Bridge 默认入口装配：`pnpm start` + `/svs` 实服烟测）*

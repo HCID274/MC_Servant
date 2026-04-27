@@ -4,7 +4,7 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
 当前仓库已经提供一个最小本地在线入口：`src/main.ts`（可执行入口） 会启动真实 Redis（缓存） / PostgreSQL（关系型数据库） / BullMQ（任务队列） / Fastify（接口网关） / Mineflayer（Minecraft 协议客户端），并通过 ConversationWorker（对话工作线程） 把 `POST /api/message`（消息提交接口） 的文本回复写入 Minecraft（我的世界） 聊天频道。若已配置 `LLM_BASE_URL`（大语言模型基础地址） / `LLM_API_KEY`（接口密钥） / `LLM_MODEL`（模型名），普通闲聊会走一次真实 OpenAI（开放人工智能） 兼容 `chat.completions`（对话补全） 调用。
 
-同时，仓库现在已经提供可被后续消息链路复用的真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源工厂、BullMQ（任务队列） 三队列运行时工厂、Fastify（接口网关） 服务器骨架，以及 Drizzle（数据库工具） migration（迁移） 执行入口；默认启动摘要仍不会主动连接这些外部资源。
+同时，默认入口已经支持通过 `SERVER_BRIDGE_*`（服务端桥接） 环境变量启用 `/ws/server-bridge`（服务端桥接 WebSocket），用于 Fabric mod（Fabric 模组） `/svs`（服务端女仆命令） 到 TS Core（TypeScript 单核心） `/api/replay`（补拉接口） 的实服烟测。仓库也提供可被后续消息链路复用的真实 PostgreSQL（关系型数据库） / Redis（缓存） 资源工厂、BullMQ（任务队列） 三队列运行时工厂、Fastify（接口网关） 服务器骨架，以及 Drizzle（数据库工具） migration（迁移） 执行入口。
 
 ## 开发命令
 
@@ -48,9 +48,61 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
 - TS Core 端在 `interfaces/server-bridge`（服务端桥接接口） 内提供 `registerServerBridgeWsRoute`（路由注册），可挂在已有 Fastify（接口网关） 实例上，端点固定为 `/ws/server-bridge`。
 - token（令牌） 必须由调用方注入；缺失或不匹配的 `Authorization: Bearer`（授权头） 请求会在握手阶段被 401 拒绝，不会进入消息处理流程，也不会写入 replay（补拉） 事件。
-- 启动入口 `startAppOnlineRuntime` 已支持 `dependencies.serverBridge`：传入 `{ accessToken: "...", path?: "...", enabled?: true|false }` 后，hello / heartbeat / player_message 帧会按 `server_bridge.<type>` 写入 `/api/replay`（补拉接口）；任何 `access token` 都不会出现在 ack / error 帧、replay 事件或日志中。
+- 默认 `src/main.ts`（可执行入口） 已支持环境变量装配：设置 `SERVER_BRIDGE_ACCESS_TOKEN`（访问令牌） 后自动启用；设置 `SERVER_BRIDGE_ENABLED=false`（禁用） 后强制关闭；设置 `SERVER_BRIDGE_ENABLED=true`（启用） 但缺少 token（令牌） 会启动失败。
+- 可选 `SERVER_BRIDGE_PATH`（服务端桥接路径） 默认是 `/ws/server-bridge`。
+- 启动入口 `startAppOnlineRuntime` 仍支持 `dependencies.serverBridge` 注入：传入 `{ accessToken: "...", path?: "...", enabled?: true|false }` 后，hello / heartbeat / player_message 帧会按 `server_bridge.<type>` 写入 `/api/replay`（补拉接口）；任何 `access token`（访问令牌） 都不会出现在 ack（确认） / error（错误） 帧、replay（补拉） 事件或日志中。
 - mod 端 `/svs <message>` 与 TS Core 端联调步骤：mod 启动时配置 `mcservant.bridge.url=ws://<ts-core-host>:<port>/ws/server-bridge` 与 `mcservant.bridge.accessToken=<同 TS Core 注入值>`；游戏内执行 `/svs hello` 后，TS Core `/api/replay` 应出现 `server_bridge.player_message` 事件。
-- 当前 `src/main.ts`（默认入口） 不在本任务白名单内，未自动从环境变量装配 `serverBridge`；需要在自定义入口里显式传入 dep 才能开启接收端，否则保持禁用。
+
+## MC 实服烟测：Server Bridge（服务端桥接） + EasyAuth（离线服认证模组）
+
+TS Core（TypeScript 单核心） 最小环境变量清单：
+
+```bash
+TS_CORE_BOT_ID=local-bot
+PG_HOST=127.0.0.1
+PG_PORT=5432
+PG_DATABASE=ts_core
+PG_USER=ts_core
+PG_PASSWORD=<postgres-password>
+REDIS_URL=redis://127.0.0.1:6379
+MC_HOST=127.0.0.1
+MC_PORT=25565
+MC_USERNAME=test_bot01
+MC_VERSION=1.20.4
+MC_EXTERNAL_AUTH_REQUIRED=true
+MC_EXTERNAL_AUTH_SECRET=<bot-easyauth-password>
+SERVER_BRIDGE_ACCESS_TOKEN=<local-bridge-token>
+SERVER_BRIDGE_PATH=/ws/server-bridge
+```
+
+Fabric mod（Fabric 模组） 启动参数清单：
+
+```bash
+java \
+  -Dmcservant.bridge.enabled=true \
+  -Dmcservant.bridge.url=ws://127.0.0.1:3000/ws/server-bridge \
+  -Dmcservant.bridge.accessToken=<local-bridge-token> \
+  -Dmcservant.bridge.heartbeatSeconds=2 \
+  -Dmcservant.bridge.instanceId=local-fabric-01 \
+  -jar fabric-server-launch.jar nogui
+```
+
+最短手测步骤：
+
+1. 启动 PostgreSQL（关系型数据库） 与 Redis（缓存），确认 TS Core（TypeScript 单核心） `.env`（环境变量文件） 已导入当前 shell（命令行）：`set -a && source .env && set +a`。
+2. 在 `ts-core/` 下运行：`pnpm build && pnpm start`。
+3. 启动 Fabric server（Fabric 服务端），并使用上面的 `mcservant.bridge.*`（服务端桥接） 参数。
+4. 观察 MC（Minecraft，我的世界） 服务端日志：bot（机器人） 应上线；如果 EasyAuth（离线服认证模组） 要求登录，TS Core 会通过 BotActor（机器人执行代理） 单写者路径发送 `/login <secret>`（登录命令），公开状态只显示 `/login <redacted>`（脱敏登录命令）。
+5. 在游戏内用有权限的玩家执行 `/svs hello`。
+6. 查询状态：`curl "http://127.0.0.1:3000/api/status?bot_id=local-bot"`。
+7. 查询补拉事件：`curl "http://127.0.0.1:3000/api/replay?bot_id=local-bot&after_seq=0&limit=10"`，预期出现 `server_bridge.player_message`（服务端桥接玩家消息） 事件，payload（载荷） 中包含 `content:"hello"` 且 `runtime_effect:"observe_only"`（仅观测）。
+
+常见失败排查：
+
+- token（令牌） 不匹配：Fabric mod（Fabric 模组） 侧会连接失败或收到握手拒绝，TS Core（TypeScript 单核心） 不会写入 replay（补拉） 事件；检查 `SERVER_BRIDGE_ACCESS_TOKEN` 与 `mcservant.bridge.accessToken` 是否完全一致。
+- EasyAuth（离线服认证模组） 密码错误：MC（Minecraft，我的世界） 侧通常会提示登录失败；检查 `MC_EXTERNAL_AUTH_SECRET`，TS Core 日志与 `/api/status` 不会显示明文。
+- bot（机器人） 未 spawn（生成）：`/api/status` 中 `mineflayer.world_ready` 会是 `false`，世界交互技能不会放行；先看 MC 服务端是否允许该用户名进入世界。
+- Redis（缓存） / PostgreSQL（关系型数据库） 不可达：`pnpm start`（启动命令） 会在基础设施阶段失败；先确认连接参数、容器端口和用户密码。
 
 ## 最小闲聊手测
 

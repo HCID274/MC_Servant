@@ -1,3 +1,4 @@
+import { createAppServerBridgeConfigFromEnvironment } from "./app/bootstrap/env.js";
 import {
   createAppBootstrapContract,
   createAppExternalAuthSecretFromEnvironment,
@@ -78,6 +79,7 @@ async function main(): Promise<void> {
       now: new Date().toISOString(),
       env,
     });
+    const serverBridge = createAppServerBridgeConfigFromEnvironment({ env });
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
@@ -91,6 +93,7 @@ async function main(): Promise<void> {
 
           return externalAuthSecret === undefined ? {} : { externalAuthSecret };
         })(),
+        ...(serverBridge === undefined ? {} : { serverBridge }),
       },
       write: (message) => {
         process.stdout.write(`${message}\n`);

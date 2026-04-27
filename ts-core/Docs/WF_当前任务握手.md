@@ -1,27 +1,26 @@
 # 当前任务握手区
 
-【任务序号】: T-042
+【任务序号】: T-043
 【当前状态】: 待开发
 
 ---
 
 ## 任务目标
 
-T-042（任务四十二） 是模块级集成任务：收口 TS Core（TypeScript 单核心）真实在线启动配置与 MC（Minecraft，我的世界）实服烟测入口，让默认 `pnpm start`（启动命令） 不再依赖自定义入口即可启用 Server Bridge（服务端桥接）和 EasyAuth（离线服认证模组）登录命令。
+T-043（任务四十三） 是 Server Bridge（服务端桥接）模块级批量任务：一次性收口 TS Core（TypeScript 单核心）接收端与 Fabric mod（Fabric 模组）客户端的稳定性，不再把同一桥接模块拆成多个小任务。
 
-目标验收口径：用户按文档设置本地环境变量后，可以启动 TS Core（TypeScript 单核心）、启动 Fabric mod（Fabric 模组）、让 bot（机器人）进服并执行 EasyAuth（离线服认证模组） `/login <secret>`（登录命令），再通过 `/svs hello`（服务端女仆命令）看到 TS Core `/api/replay`（补拉接口）出现 `server_bridge.player_message`（服务端桥接玩家消息）事件。
+目标验收口径：`/ws/server-bridge`（服务端桥接 WebSocket）在真实服务端长期运行时具备可诊断、可恢复、可拒绝错误版本、可处理断线的基础能力；Fabric mod（Fabric 模组） 端在 TS Core（TypeScript 单核心）重启、网络短断、token（令牌）错误时行为明确，且不泄露 token（令牌）。
 
-本任务只做“可启动、可登录、可手测”的在线装配闭环，不把 `player_message`（玩家消息）接入 conversation（对话）主线，不调用 LLM（大语言模型），不读取或迁移 EasyAuth（离线服认证模组） SQLite（嵌入式数据库）文件，不新增外部认证数据同步。
+本任务仍保持 server-bridge（服务端桥接）为 `observe_only`（仅观测）入口，不把 `player_message`（玩家消息）接入 conversation（对话）主线，不调用 LLM（大语言模型），不触碰技能执行链路。
 
 ---
 
 ## 上下文说明
 
-- T-041（任务四十一） 已完成 TS Core（TypeScript 单核心） `/ws/server-bridge`（服务端桥接 WebSocket） 接收端、Fabric mod（Fabric 模组） `/svs`（服务端女仆命令）与 replay（补拉）事件写入。
-- T-041 遗留的已知运行缺口：`ts-core/src/main.ts`（默认入口）尚未从环境变量注入 `dependencies.serverBridge`，所以用户目前必须写自定义入口才能启用 `/ws/server-bridge`。
-- 现有外部认证模型已经支持 `MC_EXTERNAL_AUTH_REQUIRED`（是否需要外部认证） 与 `MC_EXTERNAL_AUTH_SECRET`（外部认证明文密钥） 生成 `/login <secret>`（登录命令），且公开状态必须只显示 `/login <redacted>`（脱敏登录命令）。
-- EasyAuth（离线服认证模组） 是外部认证真理源。TS Core（TypeScript 单核心） 现阶段只持有机器人自己的明文密码并走游戏内登录流程；不得把 EasyAuth（离线服认证模组） 的 SQLite（嵌入式数据库） 表结构纳入主业务库或启动依赖。
-- 本任务不触碰 LLM（大语言模型）调用链路、Prompt（提示词）、parser（解析器） 或 conversation（对话）路由，因此不需要真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收；但需要给出真实 MC（Minecraft，我的世界）手测步骤与预期现象。
+- T-041（任务四十一） 已完成双端最小闭环：Fabric mod（Fabric 模组） `/svs`（服务端女仆命令） 发送 `player_message`（玩家消息），TS Core（TypeScript 单核心） 写入 `/api/replay`（补拉接口）。
+- T-042（任务四十二） 已完成默认入口装配：`pnpm start`（启动命令） 可通过 `SERVER_BRIDGE_ACCESS_TOKEN`（服务端桥接访问令牌） 启用 `/ws/server-bridge`（服务端桥接 WebSocket），并给出 MC（Minecraft，我的世界）实服手测说明。
+- 当前缺口集中在同一模块内：重连、心跳超时、连接状态诊断、版本拒绝、断线事件、mod（模组）端退避重试和部署说明。按用户要求，这些同模块项本轮合并派发，避免后续重复握手消耗 token（文本配额）。
+- T-043 不解决“玩家消息如何触发 LLM（大语言模型）回复”。那是后续 conversation（对话）模块任务，且触碰 LLM（大语言模型）时必须执行真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
 
 ---
 
@@ -34,47 +33,46 @@ Coder（编码代理） 本轮允许读取：
 - `ts-core/Docs/WF_需求变更索引.md`
 - `ts-core/Docs/01_ARCHITECTURE.md` 第 2.6.1 节、第 3.2 节
 - `ts-core/Docs/02_RUNTIME_SPEC.md` 第 1 节、第 2.1 节、第 2.3 节
-- `ts-core/Docs/05_DATA_SPEC.md` 第 1 节、第 2.1 节
-- `ts-core/src/main.ts`
-- `ts-core/src/app/index.ts`
-- `ts-core/src/app/entrypoint.ts`
-- `ts-core/src/app/bootstrap/contract.ts`
-- `ts-core/src/app/bootstrap/directories.ts`
-- `ts-core/src/app/bootstrap/env.ts`
-- `ts-core/src/app/bootstrap/external-auth.ts`
-- `ts-core/src/app/bootstrap/types.ts`
-- `ts-core/src/runtime/contracts.ts`
-- `ts-core/src/runtime/actor.ts`
-- `ts-core/src/runtime/transport/lifecycle.ts`
-- `ts-core/src/interfaces/server-bridge/route.ts`
+- `ts-core/src/interfaces/server-bridge/contracts.ts`
 - `ts-core/src/interfaces/server-bridge/protocol.ts`
-- `ts-core/src/interfaces/server.ts`
+- `ts-core/src/interfaces/server-bridge/route.ts`
+- `ts-core/src/interfaces/server-bridge/index.ts`
 - `ts-core/src/interfaces/api.ts`
+- `ts-core/src/interfaces/server.ts`
+- `ts-core/src/app/entrypoint.ts`
+- `ts-core/src/app/bootstrap/env.ts`
+- `ts-core/src/main.ts`
+- `ts-core/src/__tests__/interfaces-server-bridge-model.spec.ts`
 - `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
-- `ts-core/src/__tests__/app-smoke-model.spec.ts`
-- `ts-core/src/__tests__/runtime-actor-model.spec.ts`
-- `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts`
-- `ts-core/src/__tests__/external-auth-execution-model.spec.ts`
+- `ts-core/src/__tests__/interfaces-model.spec.ts`
 - `ts-core/README.md`
+- `plugin/src/main/java/com/mcservant/MCServantMod.java`
+- `plugin/src/main/java/com/mcservant/bridge/ServerBridgeConfig.java`
+- `plugin/src/main/java/com/mcservant/bridge/ServerBridgeTransport.java`
+- `plugin/src/main/java/com/mcservant/bridge/OkHttpServerBridgeTransport.java`
+- `plugin/src/main/java/com/mcservant/command/SvsCommand.java`
 - `plugin/README.md`
 - `plugin/BUILD.md`
+- `plugin/build.gradle`
+- `plugin/gradle.properties`
 
 Coder（编码代理） 本轮允许新增 / 修改：
 
-- `ts-core/src/main.ts`
-- `ts-core/src/app/entrypoint.ts`（仅允许补 server-bridge（服务端桥接）启动依赖装配或脱敏状态；不得改 LLM（大语言模型）链路）
-- `ts-core/src/app/bootstrap/contract.ts`
-- `ts-core/src/app/bootstrap/env.ts`
-- `ts-core/src/app/bootstrap/external-auth.ts`
-- `ts-core/src/app/bootstrap/types.ts`
+- `ts-core/src/interfaces/server-bridge/**`
+- `ts-core/src/app/entrypoint.ts`（仅允许 server-bridge（服务端桥接）状态投影、断线事件与 replay（补拉）装配）
+- `ts-core/src/app/bootstrap/env.ts`（仅允许新增 server-bridge（服务端桥接）稳定性相关环境变量解析）
+- `ts-core/src/main.ts`（仅允许把新增 server-bridge（服务端桥接）配置注入在线入口）
+- `ts-core/src/__tests__/interfaces-server-bridge-model.spec.ts`
 - `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
-- `ts-core/src/__tests__/app-smoke-model.spec.ts`
-- `ts-core/src/__tests__/external-auth-execution-model.spec.ts`
-- `ts-core/src/__tests__/runtime-actor-model.spec.ts`（仅当登录命令行为需要补回归）
-- `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts`（仅当 Mineflayer（Minecraft 协议客户端）登录 ready（就绪）边界需要补回归）
+- `ts-core/src/__tests__/interfaces-model.spec.ts`
 - `ts-core/README.md`
+- `plugin/src/main/java/com/mcservant/MCServantMod.java`
+- `plugin/src/main/java/com/mcservant/bridge/**`
+- `plugin/src/main/java/com/mcservant/command/SvsCommand.java`（仅当稳定性反馈需要调整用户可见提示）
 - `plugin/README.md`
 - `plugin/BUILD.md`
+- `plugin/build.gradle`
+- `plugin/gradle.properties`
 - `ts-core/Docs/WF_当前任务握手.md`（仅 Coder（编码代理）反馈区回填）
 
 禁止修改：
@@ -86,56 +84,56 @@ Coder（编码代理） 本轮允许新增 / 修改：
 - `ts-core/src/workers/**`
 - `ts-core/src/skills/**`
 - `ts-core/src/sandbox/**`
-- `ts-core/src/data/**`（本任务不做 EasyAuth（离线服认证模组）数据库读取）
-- `plugin/src/main/java/**`（本任务默认不改 mod（模组）代码；如实服手测发现命令注册阻塞，先在反馈区说明）
+- `ts-core/src/data/**`
+- `ts-core/src/runtime/**`
 - 任何真实密钥、真实服务器地址、生产地址、个人本地绝对路径。
 
 ---
 
 ## 核心逻辑要求
 
-1. `ts-core/src/main.ts`（默认入口）必须支持从环境变量启用 Server Bridge（服务端桥接）：
-   - `SERVER_BRIDGE_ENABLED`（是否启用）：缺省时按 `SERVER_BRIDGE_ACCESS_TOKEN`（访问令牌）是否存在决定；显式 `false` 时禁用。
-   - `SERVER_BRIDGE_ACCESS_TOKEN`（访问令牌）：启用时必填；缺失必须启动失败并给出脱敏错误，不得使用硬编码默认令牌。
-   - `SERVER_BRIDGE_PATH`（服务端桥接路径）：可选，默认 `/ws/server-bridge`。
-   - token（令牌）只进入依赖注入，不得出现在日志、状态接口、replay（补拉）事件、错误摘要或测试快照。
-2. 外部认证登录口径必须保持现有方案二：
-   - 使用 `MC_EXTERNAL_AUTH_REQUIRED=true`（需要外部认证） + `MC_EXTERNAL_AUTH_SECRET=<机器人密码>`（外部认证明文密钥） 生成游戏内 `/login <secret>` 命令。
-   - `/api/status`（状态接口）和启动摘要只能暴露 `external_auth.status`（外部认证状态）与 `/login <redacted>`（脱敏登录命令预览），不得暴露明文密码。
-   - 不读取 EasyAuth（离线服认证模组） SQLite（嵌入式数据库），不把认证状态写入 PostgreSQL（关系型数据库）主业务 schema（结构）。
-3. 补齐测试：
-   - main（默认入口）配置解析或等价启动依赖装配测试：覆盖未配置、token（令牌）存在启用、显式禁用、启用但缺 token（令牌）失败。
-   - 外部认证状态脱敏测试：`MC_EXTERNAL_AUTH_SECRET=hunter2` 时，公开状态和错误摘要不得包含 `hunter2`。
-   - 若修改 Mineflayer（Minecraft 协议客户端）登录边界，必须补 `login`（协议登录）与 `spawn`（生成）时序回归。
-4. 文档必须给出最短 MC（Minecraft，我的世界）实服手测清单：
-   - TS Core（TypeScript 单核心）环境变量清单：PostgreSQL（关系型数据库）、Redis（缓存）、Mineflayer（Minecraft 协议客户端）、EasyAuth（离线服认证模组）、Server Bridge（服务端桥接）。
-   - Fabric mod（Fabric 模组）启动参数清单：`mcservant.bridge.enabled`、`mcservant.bridge.url`、`mcservant.bridge.accessToken`。
-   - 手测步骤：启动 TS Core → 启动 Fabric server（Fabric 服务端） → bot（机器人）上线并登录 → `/svs hello` → `/api/status` 与 `/api/replay` 验证。
-   - 明确预期日志与失败排查：token（令牌）不匹配、EasyAuth（离线服认证模组）密码错误、bot（机器人）未 spawn（生成）、Redis（缓存）/ PostgreSQL（关系型数据库）不可达。
-5. 本任务不得接入 LLM（大语言模型）回复，不得把 `/svs`（服务端女仆命令） 的 `player_message`（玩家消息）转入 conversation（对话）队列；server-bridge（服务端桥接）仍保持 `observe_only`（仅观测）。
+1. TS Core（TypeScript 单核心）接收端必须具备连接生命周期诊断：
+   - 成功连接、`hello`（握手）、`heartbeat`（心跳）、`player_message`（玩家消息）、正常关闭、异常断开、心跳超时都应有可测试的内部状态或 replay（补拉）诊断事件。
+   - replay（补拉）事件仍必须携带 `runtime_effect: "observe_only"`（运行时影响：仅观测）。
+   - token（令牌）不得进入 ack（确认）/ error（错误）帧、replay（补拉）事件、日志或测试快照。
+2. 协议版本与握手顺序必须明确：
+   - 不支持的 `protocol_version`（协议版本） 必须返回明确错误并关闭或拒绝后续处理。
+   - 连接未完成 `hello`（握手）前收到 `heartbeat`（心跳）或 `player_message`（玩家消息） 时，必须有确定性处理策略：拒绝并给错误帧，或只接受 `heartbeat`（心跳）但不接受 `player_message`（玩家消息）。策略需写入测试和文档。
+   - 重复 `hello`（握手）、重复 `message_id`（消息标识） 的行为必须确定：允许幂等、覆盖、拒绝三选一，不能隐式未定义。
+3. 心跳与超时必须可配置且默认保守：
+   - TS Core（TypeScript 单核心）端支持 server-bridge（服务端桥接）心跳超时配置，缺省值适合本地开发。
+   - Fabric mod（Fabric 模组）端支持重连退避配置，TS Core（TypeScript 单核心）不可达时不应刷屏、不应阻塞服务器主线程。
+   - 所有新增配置必须通过环境变量或 Java（编程语言）系统属性注入，不得硬编码真实部署值。
+4. Fabric mod（Fabric 模组）端必须补强连接恢复：
+   - TS Core（TypeScript 单核心）重启后能自动重连。
+   - token（令牌）错误时给出明确但脱敏的日志或用户提示。
+   - `/svs`（服务端女仆命令） 在未连接、正在重连、协议不兼容时返回明确提示，不吞消息、不假装已发送。
+5. 本任务不得接入 LLM（大语言模型）或 conversation（对话）主线：
+   - 不得把 `server_bridge.player_message`（服务端桥接玩家消息） 写入 `msg:{botId}`（消息队列）或调用 ConversationWorker（对话工作线程）。
+   - 若误触碰 LLM（大语言模型）链路、Prompt（提示词）、parser（解析器）或 conversation（对话）路由，必须立刻补真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收，否则不得回填完成。
 
 ---
 
 ## 验收标准
 
-1. `bash ts-core/scripts/pre_review.sh` 必须全部通过。
-2. 默认入口相关测试必须证明：配置 `SERVER_BRIDGE_ACCESS_TOKEN` 后 `pnpm start`（启动命令）路径会启用 `/ws/server-bridge`（服务端桥接 WebSocket）；显式禁用不会注册；启用但缺 token（令牌）会失败且不泄露密钥。
-3. 外部认证相关测试必须证明：EasyAuth（离线服认证模组）登录命令只在 BotActor（机器人执行代理）单写者路径发送，公开状态与日志只出现 `/login <redacted>`（脱敏登录命令），不出现明文密码。
-4. 文档必须提供用户可直接执行的 MC（Minecraft，我的世界）实服手测步骤；如果 Coder（编码代理） 当前环境不能连真实 Fabric server（Fabric 服务端），必须在反馈区明确“未做现场加载”，并列出需要用户回报的最小结果项。
-5. 若本轮实际触碰 LLM（大语言模型）链路，必须补真实 OpenAI（开放人工智能）兼容 API（应用程序接口）调用结果；否则反馈区明确“未触碰 LLM（大语言模型）链路，无需真实 LLM（大语言模型）验收”。
+1. TS Core（TypeScript 单核心）测试覆盖：正常 `hello` / `heartbeat` / `player_message`、未握手消息、协议版本不匹配、重复消息、断线或心跳超时、token（令牌）脱敏，且 replay（补拉）保持 `observe_only`（仅观测）。
+2. Fabric mod（Fabric 模组）构建通过，且代码层能说明重连退避、未连接 `/svs` 提示、token（令牌）错误脱敏、协议不兼容提示的行为；如无 Java（编程语言）单测框架，至少用结构化代码路径和 README（说明文档）手测清单覆盖。
+3. `pnpm start`（启动命令）路径可配置新增 server-bridge（服务端桥接）稳定性参数；默认值不要求用户额外配置即可本地运行。
+4. 文档更新必须给出长期运行排障清单：TS Core（TypeScript 单核心）重启、Fabric mod（Fabric 模组）重连、token（令牌）错误、协议版本错误、心跳超时、`/svs`（服务端女仆命令）未连接。
+5. `bash ts-core/scripts/pre_review.sh` 必须全部通过；如修改 `plugin/**`，还必须执行 `cd plugin && ./gradlew build --no-daemon` 并在反馈区记录结果。
 
 ---
 
 ## Coder 自检清单
 
-- [ ] 已核对任务序号为 T-042（任务四十二），并确认 T-041（任务四十一）已完成，不再改 T-041 的已通过语义。
-- [ ] 已确认本任务只做在线启动配置、EasyAuth（离线服认证模组）登录口径与实服手测说明，不读取 EasyAuth（离线服认证模组） SQLite（嵌入式数据库）。
-- [ ] 已让 `ts-core/src/main.ts`（默认入口）可通过环境变量启用 / 禁用 Server Bridge（服务端桥接），且 token（令牌）不落日志、不落状态、不落 replay（补拉）。
-- [ ] 已确认外部认证明文密码只用于 BotActor（机器人执行代理）受控 `/login`（登录命令）路径，公开视图全程脱敏。
-- [ ] 已补齐默认入口 / 外部认证 / server-bridge（服务端桥接）配置回归测试。
-- [ ] 已在 `ts-core/README.md` 和必要的 `plugin/README.md` / `plugin/BUILD.md` 写清 MC（Minecraft，我的世界）实服手测步骤与预期结果。
-- [ ] 已说明是否完成真实 Fabric server（Fabric 服务端）现场加载；若未完成，已给出用户回报清单。
-- [ ] 已确认未触碰 LLM（大语言模型）链路；若触碰，已补真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
+- [ ] 已核对任务序号为 T-043（任务四十三），且 T-042（任务四十二）已完成。
+- [ ] 已确认本任务是 Server Bridge（服务端桥接）同模块批量任务，没有把同模块稳定性拆成多个小任务。
+- [ ] 已确认所有改动只在白名单内，未触碰 conversation（对话）、workers（工作线程）、skills（技能）、sandbox（沙箱）、runtime（运行时）和 data（数据层）。
+- [ ] 已补齐 TS Core（TypeScript 单核心）接收端生命周期、协议版本、握手顺序、重复消息、心跳超时与脱敏测试。
+- [ ] 已补强 Fabric mod（Fabric 模组）端重连、退避、状态提示与 token（令牌）脱敏。
+- [ ] 已更新 TS Core（TypeScript 单核心）与 plugin（模组）文档，包含长期运行与实服排障步骤。
+- [ ] 已执行 `cd plugin && ./gradlew build --no-daemon` 并记录结果；若未修改 `plugin/**`，需说明原因。
+- [ ] 已确认本轮未触碰 LLM（大语言模型）链路；若触碰，已补真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
 - [ ] 执行 bash ts-core/scripts/pre_review.sh 全部通过
 
 ---
@@ -154,6 +152,6 @@ Coder（编码代理） 本轮允许新增 / 修改：
 
 ## 队列预览（只读，仅供 Coder 了解后续方向）
 
-- **T-043**: Server Bridge（服务端桥接）稳定性补强：双端重连、心跳超时、版本协商、断线诊断与部署文档收口。
-- **T-044**: 将 `player_message`（玩家消息） 从 observe_only（仅观测）灰度接入 conversation（对话）主线，形成 `/svs`（服务端女仆命令）到 LLM（大语言模型）回复的可控闭环；触碰 LLM（大语言模型）链路时必须真实调用本地 OpenAI（开放人工智能）兼容 API（应用程序接口）。
-- **T-045**: MC（Minecraft，我的世界）实服动作烟测扩展：在真实在线链路中验证 1-2 个低风险技能从自然语言到 BotActor（机器人执行代理）执行的闭环。
+- **T-044**: `/svs`（服务端女仆命令）消息接入 conversation（对话）主线：将 `server_bridge.player_message`（服务端桥接玩家消息） 灰度转成入站消息，形成游戏内 `/svs` → LLM（大语言模型）回复 → MC（Minecraft，我的世界）聊天的可控闭环；必须真实调用本地 OpenAI（开放人工智能）兼容 API（应用程序接口）。
+- **T-045**: MC（Minecraft，我的世界）实服动作烟测扩展：集中验证自然语言到 1-2 个低风险技能执行的在线闭环，仍走 BotActor（机器人执行代理）单写者路径。
+- **T-046**: 轻面板最小同步：围绕 `/api/status`（状态接口）、`/api/replay`（补拉接口）和 WebSocket（全双工通信协议）推送做最小网页控制台，不做复杂 UI（用户界面）。
