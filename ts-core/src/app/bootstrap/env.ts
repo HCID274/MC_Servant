@@ -9,6 +9,8 @@ export interface AppServerBridgeEnvironmentConfig {
   readonly accessToken: string;
   /** 可选监听路径，默认由路由层使用 /ws/server-bridge。 */
   readonly path?: string;
+  /** 可选心跳超时毫秒数，默认由路由层使用 90 秒。 */
+  readonly heartbeatTimeoutMs?: number;
 }
 
 /**
@@ -120,6 +122,9 @@ export function createAppServerBridgeConfigFromEnvironment(input: {
   const enabled = readOptionalBoolean(input.env, "SERVER_BRIDGE_ENABLED");
   const accessToken = readOptionalString(input.env, "SERVER_BRIDGE_ACCESS_TOKEN");
   const path = readOptionalString(input.env, "SERVER_BRIDGE_PATH");
+  const heartbeatTimeoutMs = readOptionalInteger(input.env, "SERVER_BRIDGE_HEARTBEAT_TIMEOUT_MS", {
+    min: 1,
+  });
 
   if (enabled === false) {
     return undefined;
@@ -143,6 +148,7 @@ export function createAppServerBridgeConfigFromEnvironment(input: {
     enabled: true,
     accessToken,
     ...(path === undefined ? {} : { path }),
+    ...(heartbeatTimeoutMs === undefined ? {} : { heartbeatTimeoutMs }),
   });
 }
 

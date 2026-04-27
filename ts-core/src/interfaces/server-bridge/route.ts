@@ -14,7 +14,7 @@ import type { WebSocket } from "ws";
 
 import fastifyWebsocket from "@fastify/websocket";
 
-import type { ServerBridgeEventEnvelope } from "./contracts.js";
+import { type ServerBridgeEventEnvelope, createServerBridgeEventEnvelope } from "./contracts.js";
 import {
   type ServerBridgeAckFrame,
   type ServerBridgeErrorCode,
@@ -30,6 +30,12 @@ import {
 
 /** Server Bridge（服务端桥接） WebSocket 端点默认路径。 */
 export const SERVER_BRIDGE_WS_PATH = "/ws/server-bridge" as const;
+
+/** Server Bridge（服务端桥接） 默认心跳超时毫秒数。 */
+export const SERVER_BRIDGE_DEFAULT_HEARTBEAT_TIMEOUT_MS = 90_000;
+
+/** Server Bridge（服务端桥接） 单连接 message_id（消息标识）去重窗口大小。 */
+export const SERVER_BRIDGE_MESSAGE_ID_DEDUP_WINDOW_SIZE = 1024;
 
 /** 帧成功解析后的事件回调入参。 */
 export interface ServerBridgeRouteEventInput {
@@ -55,11 +61,18 @@ export interface ServerBridgeWsRouteOptions {
   readonly eventIdFactory?: () => string;
   /** 帧解析成功后的回调；用于把事件写入 replay 流。 */
   readonly onEvent?: (input: ServerBridgeRouteEventInput) => void | Promise<void>;
+  /** 连接生命周期诊断事件回调；用于 replay（补拉） 或状态诊断。 */
+  readonly onLifecycleEvent?: (input: {
+    readonly envelope: ServerBridgeEventEnvelope;
+    readonly received_at: string;
+  }) => void | Promise<void>;
   /** 解析失败回调，便于诊断；不允许回显 access token。 */
   readonly onParseFailure?: (input: {
     readonly raw: string;
     readonly failure: ServerBridgeFrameParseFailure;
   }) => void;
+  /** 心跳超时毫秒数；默认 90 秒，适合本地开发。 */
+  readonly heartbeatTimeoutMs?: number;
   /** WS 关闭时回调；不强制要求实现。 */
   readonly onClose?: (input: { readonly code: number; readonly reason: string }) => void;
 }
@@ -89,6 +102,12 @@ export async function registerServerBridgeWsRoute(
   const expectedToken = options.accessToken;
   const now = options.now ?? defaultNow;
   const eventIdFactory = options.eventIdFactory ?? createDefaultEventIdFactory();
+  const heartbeatTimeoutMs =
+    options.heartbeatTimeoutMs ?? SERVER_BRIDGE_DEFAULT_HEARTBEAT_TIMEOUT_MS;
+
+  if (!Number.isInteger(heartbeatTimeoutMs) || heartbeatTimeoutMs <= 0) {
+    throw new Error("server-bridge heartbeatTimeoutMs must be a positive integer");
+  }
 
   if (!server.hasDecorator("websocketServer")) {
     await server.register(fastifyWebsocket);
@@ -109,6 +128,23 @@ export async function registerServerBridgeWsRoute(
       },
     },
     (socket: WebSocket, _request: FastifyRequest) => {
+      const state = createConnectionState({
+        socket,
+        botId: options.botId,
+        now,
+        eventIdFactory,
+        heartbeatTimeoutMs,
+        ...(options.onLifecycleEvent === undefined
+          ? {}
+          : { onLifecycleEvent: options.onLifecycleEvent }),
+      });
+
+      state.emitLifecycle("server_bridge.connected", {
+        connection_state: "connected",
+        heartbeat_timeout_ms: heartbeatTimeoutMs,
+      });
+      state.resetHeartbeatTimeout();
+
       socket.on("message", (raw: Buffer) => {
         const text = raw.toString("utf8");
         const result = parseServerBridgeInboundFrame(text);
@@ -124,6 +160,17 @@ export async function registerServerBridgeWsRoute(
           return;
         }
 
+        const protocolFailure = state.validateFrame(result.frame);
+        if (protocolFailure !== null) {
+          options.onParseFailure?.({
+            raw: redactRaw(text, expectedToken),
+            failure: protocolFailure,
+          });
+          sendErrorFrame(socket, protocolFailure.code, protocolFailure.message, now());
+          return;
+        }
+
+        state.acceptFrame(result.frame);
         const receivedAt = now();
         const envelope = createServerBridgeEnvelopeFromFrame({
           frame: result.frame,
@@ -155,9 +202,15 @@ export async function registerServerBridgeWsRoute(
       });
 
       socket.on("close", (code: number, reason: Buffer) => {
+        state.close();
+        const reasonText = redactRaw(reason.toString("utf8"), expectedToken);
+        state.emitLifecycle(code === 1000 ? "server_bridge.closed" : "server_bridge.disconnected", {
+          code,
+          reason: reasonText,
+        });
         options.onClose?.({
           code,
-          reason: reason.toString("utf8"),
+          reason: reasonText,
         });
       });
     },
@@ -217,6 +270,139 @@ function sendErrorFrame(
 
 function shouldCloseOnFailure(code: ServerBridgeErrorCode): boolean {
   return code === "protocol_version_mismatch";
+}
+
+function createConnectionState(input: {
+  socket: WebSocket;
+  botId: string;
+  now: () => string;
+  eventIdFactory: () => string;
+  heartbeatTimeoutMs: number;
+  onLifecycleEvent?: (input: {
+    readonly envelope: ServerBridgeEventEnvelope;
+    readonly received_at: string;
+  }) => void | Promise<void>;
+}): {
+  readonly validateFrame: (frame: ServerBridgeInboundFrame) => ServerBridgeFrameParseFailure | null;
+  readonly acceptFrame: (frame: ServerBridgeInboundFrame) => void;
+  readonly resetHeartbeatTimeout: () => void;
+  readonly emitLifecycle: (eventType: string, payload: Readonly<Record<string, unknown>>) => void;
+  readonly close: () => void;
+} {
+  let handshaken = false;
+  let closed = false;
+  let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  const seenMessageIds = new Set<string>();
+  const seenMessageIdOrder: string[] = [];
+
+  const emitLifecycle = (eventType: string, payload: Readonly<Record<string, unknown>>): void => {
+    const receivedAt = input.now();
+    const envelope = createServerBridgeEventEnvelope({
+      bot_id: input.botId,
+      event_id: input.eventIdFactory(),
+      event_type: eventType,
+      timestamp: receivedAt,
+      payload,
+    });
+    const promise = input.onLifecycleEvent?.({ envelope, received_at: receivedAt });
+
+    if (promise !== undefined) {
+      promise.catch(() => undefined);
+    }
+  };
+
+  const resetHeartbeatTimeout = (): void => {
+    if (closed) {
+      return;
+    }
+
+    if (heartbeatTimer !== null) {
+      clearTimeout(heartbeatTimer);
+    }
+    heartbeatTimer = setTimeout(() => {
+      if (closed) {
+        return;
+      }
+
+      emitLifecycle("server_bridge.heartbeat_timeout", {
+        timeout_ms: input.heartbeatTimeoutMs,
+      });
+      input.socket.close(4002, "heartbeat_timeout");
+    }, input.heartbeatTimeoutMs);
+  };
+
+  return Object.freeze({
+    validateFrame(frame): ServerBridgeFrameParseFailure | null {
+      if (frame.type === "hello") {
+        if (handshaken) {
+          return {
+            ok: false,
+            code: "duplicate_hello",
+            message: "server-bridge hello was already accepted",
+          };
+        }
+        return null;
+      }
+
+      if (!handshaken) {
+        return {
+          ok: false,
+          code: "handshake_required",
+          message: "server-bridge hello must be accepted before this frame",
+        };
+      }
+
+      if (frame.type === "player_message" && seenMessageIds.has(frame.message_id)) {
+        return {
+          ok: false,
+          code: "duplicate_message_id",
+          message: "server-bridge player_message message_id was already accepted",
+        };
+      }
+
+      return null;
+    },
+    acceptFrame(frame): void {
+      if (frame.type === "hello") {
+        handshaken = true;
+      }
+
+      if (frame.type === "heartbeat") {
+        resetHeartbeatTimeout();
+      }
+
+      if (frame.type === "player_message") {
+        rememberMessageId(seenMessageIds, seenMessageIdOrder, frame.message_id);
+      }
+    },
+    resetHeartbeatTimeout,
+    emitLifecycle,
+    close(): void {
+      closed = true;
+      if (heartbeatTimer !== null) {
+        clearTimeout(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+    },
+  });
+}
+
+function rememberMessageId(
+  seenMessageIds: Set<string>,
+  seenMessageIdOrder: string[],
+  id: string,
+): void {
+  seenMessageIds.add(id);
+  seenMessageIdOrder.push(id);
+
+  if (seenMessageIdOrder.length <= SERVER_BRIDGE_MESSAGE_ID_DEDUP_WINDOW_SIZE) {
+    return;
+  }
+
+  const oldestId = seenMessageIdOrder.shift();
+  if (oldestId !== undefined) {
+    seenMessageIds.delete(oldestId);
+  }
 }
 
 function redactRaw(raw: string, token: string): string {

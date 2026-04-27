@@ -40,6 +40,8 @@ T-041（任务四十一） 已交付 mod ↔ TS Core 双端最小闭环（含 `/
 | WebSocket（全双工通信协议）地址 | `mcservant.bridge.url` | `MCSERVANT_BRIDGE_URL` | `ws://127.0.0.1:8765/ws/server-bridge` |
 | access token（访问令牌） | `mcservant.bridge.accessToken` | `MCSERVANT_BRIDGE_ACCESS_TOKEN` | `REPLACE_WITH_LOCAL_DEV_TOKEN` |
 | heartbeat（心跳）秒数 | `mcservant.bridge.heartbeatSeconds` | `MCSERVANT_BRIDGE_HEARTBEAT_SECONDS` | `30` |
+| 首次重连退避秒数 | `mcservant.bridge.reconnectInitialSeconds` | `MCSERVANT_BRIDGE_RECONNECT_INITIAL_SECONDS` | `5` |
+| 最大重连退避秒数 | `mcservant.bridge.reconnectMaxSeconds` | `MCSERVANT_BRIDGE_RECONNECT_MAX_SECONDS` | `60` |
 | 本地实例标识 | `mcservant.bridge.instanceId` | `MCSERVANT_BRIDGE_INSTANCE_ID` | `local-dev` |
 
 本地联调示例：
@@ -56,20 +58,25 @@ java \
   -Dmcservant.bridge.url=ws://127.0.0.1:8765/ws/server-bridge \
   -Dmcservant.bridge.accessToken=local-dev-token \
   -Dmcservant.bridge.heartbeatSeconds=2 \
+  -Dmcservant.bridge.reconnectInitialSeconds=5 \
+  -Dmcservant.bridge.reconnectMaxSeconds=60 \
   -Dmcservant.bridge.instanceId=local-fabric-01 \
   -jar fabric-server-launch.jar nogui
 ```
 
 假服务日志应能看到 `hello`（握手）和至少一次 `heartbeat`（心跳）帧，并对每帧返回最小 `ack`（确认）帧。脚本只打印 `Authorization`（授权）是否存在，不打印 `access token`（访问令牌）值。
 
-如需对接真实 TS Core 接收端：在 TS Core 侧设置 `SERVER_BRIDGE_ACCESS_TOKEN=<local-bridge-token>` 并运行 `pnpm build && pnpm start`，再将 `mcservant.bridge.url` 指向 TS Core 启动后暴露的 `ws://<host>:<port>/ws/server-bridge`，`mcservant.bridge.accessToken` 与 TS Core 注入的 token（令牌） 必须完全一致。
+如需对接真实 TS Core 接收端：在 TS Core 侧设置 `SERVER_BRIDGE_ACCESS_TOKEN=<local-bridge-token>` 并运行 `pnpm build && pnpm start`，再将 `mcservant.bridge.url` 指向 TS Core 启动后暴露的 `ws://<host>:<port>/ws/server-bridge`，`mcservant.bridge.accessToken` 与 TS Core 注入的 token（令牌） 必须完全一致。TS Core 重启或网络短断时，mod（模组） 会进入 `RECONNECTING`（重连中） 并按退避配置自动重连。
 
 ## 🎮 `/svs` 命令最短手测
 
 1. 在游戏内以 op 身份（或被 `mcservant.svs.use` 授权的玩家）执行 `/svs hello`。
 2. 桥接已连接：聊天框收到灰色提示 `[svs] 已转发到 TS Core`，TS Core 侧 `/api/replay` 出现 `server_bridge.player_message` 事件。
 3. 桥接未连接：聊天框收到红色错误 `[svs] 桥接未连接，TS Core 无法接收消息`，无任何帧外发，无 replay（补拉） 事件写入。
-4. 普通玩家执行：聊天框收到红色 `[svs] 没有权限使用此命令`，不会触发 player_message 帧。
+4. 桥接正在重连：聊天框收到红色错误 `[svs] 桥接正在重连 TS Core，稍后重试`。
+5. token（令牌）错误：聊天框收到红色错误 `[svs] 桥接 token 配置错误，TS Core 拒绝连接`，普通日志不会打印 token（令牌）明文。
+6. 协议不兼容：聊天框收到红色错误 `[svs] 桥接协议不兼容，请升级 TS Core 或 mod`。
+7. 普通玩家执行：聊天框收到红色 `[svs] 没有权限使用此命令`，不会触发 player_message 帧。
 
 ## ⚙️ 编译
 

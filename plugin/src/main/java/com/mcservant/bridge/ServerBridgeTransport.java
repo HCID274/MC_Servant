@@ -60,8 +60,14 @@ public interface ServerBridgeTransport {
         DISCONNECTED,
         /** 握手中 */
         CONNECTING,
+        /** 已断开，等待退避重连 */
+        RECONNECTING,
         /** 已连接，可发送 */
         CONNECTED,
+        /** 访问令牌被 TS Core 拒绝 */
+        AUTH_FAILED,
+        /** 协议版本不兼容，需升级 TS Core 或 mod */
+        PROTOCOL_INCOMPATIBLE,
         /** 主动关闭中 */
         CLOSING
     }

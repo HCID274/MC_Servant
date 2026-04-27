@@ -21,6 +21,7 @@ import { type LlmDiagnosticSummary, createLlmDiagnosticSummary } from "../diagno
 import {
   type InterfaceBotStatusSnapshot,
   type RealtimeEventEnvelope,
+  type ServerBridgeEventEnvelope,
   type ServerBridgeWsRouteOptions,
   createInterfaceBotStatusSnapshot,
   createRealtimeEventEnvelope,
@@ -145,6 +146,8 @@ export interface AppServerBridgeDependencies {
   readonly eventIdFactory?: ServerBridgeWsRouteOptions["eventIdFactory"];
   /** 解析失败回调（仅诊断用）。 */
   readonly onParseFailure?: ServerBridgeWsRouteOptions["onParseFailure"];
+  /** 心跳超时毫秒数；默认由 server-bridge（服务端桥接）路由使用 90 秒。 */
+  readonly heartbeatTimeoutMs?: ServerBridgeWsRouteOptions["heartbeatTimeoutMs"];
 }
 
 /** 真实在线启动入口运行中资源。 */
@@ -906,21 +909,48 @@ async function registerOnlineServerBridgeRoute<TBotId extends string>(input: {
     ...(dependencies.onParseFailure === undefined
       ? {}
       : { onParseFailure: dependencies.onParseFailure }),
+    ...(dependencies.heartbeatTimeoutMs === undefined
+      ? {}
+      : { heartbeatTimeoutMs: dependencies.heartbeatTimeoutMs }),
+    onLifecycleEvent: async ({ envelope, received_at }) => {
+      await appendServerBridgeEnvelope({
+        botId: input.botId,
+        envelope,
+        receivedAt: received_at,
+        appendRealtimeEvent: input.appendRealtimeEvent,
+      });
+    },
     onEvent: async ({ frame, envelope, received_at }) => {
-      const realtimeType = `server_bridge.${frame.type}` as RuntimeEventType;
-      await input.appendRealtimeEvent({
-        bot_id: input.botId,
-        type: realtimeType,
-        created_at: received_at,
-        payload: {
-          runtime_effect: envelope.runtime_effect,
-          ...(envelope.payload ?? {}),
-        },
+      void frame;
+      await appendServerBridgeEnvelope({
+        botId: input.botId,
+        envelope,
+        receivedAt: received_at,
+        appendRealtimeEvent: input.appendRealtimeEvent,
       });
     },
   };
 
   await registerServerBridgeWsRoute(input.server, baseOptions);
+}
+
+/** 将 Server Bridge（服务端桥接）事件统一写入在线 replay（补拉）流。 */
+async function appendServerBridgeEnvelope<TBotId extends string>(input: {
+  readonly botId: TBotId;
+  readonly envelope: ServerBridgeEventEnvelope;
+  readonly receivedAt: string;
+  readonly appendRealtimeEvent: (event: Omit<RealtimeEventEnvelope, "seq">) => Promise<void>;
+}): Promise<void> {
+  const realtimeType = input.envelope.event_type as RuntimeEventType;
+  await input.appendRealtimeEvent({
+    bot_id: input.botId,
+    type: realtimeType,
+    created_at: input.receivedAt,
+    payload: {
+      runtime_effect: input.envelope.runtime_effect,
+      ...(input.envelope.payload ?? {}),
+    },
+  });
 }
 
 /**

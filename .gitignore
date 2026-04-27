@@ -1,5 +1,7 @@
 # MC_Servant Project .gitignore
 
+plugin/.gradle/
+
 # ===== Python =====
 __pycache__/
 *.py[cod]

@@ -44,14 +44,16 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
 默认会读取 `TS_CORE_BOT_ID`（机器人标识），未设置时回退到 `local-bot`。
 
-## Server Bridge（服务端桥接） 最短联调（T-041）
+## Server Bridge（服务端桥接） 长期运行联调（T-043）
 
 - TS Core 端在 `interfaces/server-bridge`（服务端桥接接口） 内提供 `registerServerBridgeWsRoute`（路由注册），可挂在已有 Fastify（接口网关） 实例上，端点固定为 `/ws/server-bridge`。
 - token（令牌） 必须由调用方注入；缺失或不匹配的 `Authorization: Bearer`（授权头） 请求会在握手阶段被 401 拒绝，不会进入消息处理流程，也不会写入 replay（补拉） 事件。
 - 默认 `src/main.ts`（可执行入口） 已支持环境变量装配：设置 `SERVER_BRIDGE_ACCESS_TOKEN`（访问令牌） 后自动启用；设置 `SERVER_BRIDGE_ENABLED=false`（禁用） 后强制关闭；设置 `SERVER_BRIDGE_ENABLED=true`（启用） 但缺少 token（令牌） 会启动失败。
 - 可选 `SERVER_BRIDGE_PATH`（服务端桥接路径） 默认是 `/ws/server-bridge`。
-- 启动入口 `startAppOnlineRuntime` 仍支持 `dependencies.serverBridge` 注入：传入 `{ accessToken: "...", path?: "...", enabled?: true|false }` 后，hello / heartbeat / player_message 帧会按 `server_bridge.<type>` 写入 `/api/replay`（补拉接口）；任何 `access token`（访问令牌） 都不会出现在 ack（确认） / error（错误） 帧、replay（补拉） 事件或日志中。
+- 可选 `SERVER_BRIDGE_HEARTBEAT_TIMEOUT_MS`（心跳超时毫秒数） 默认是 `90000`，超时后会关闭连接并写入 `server_bridge.heartbeat_timeout`（服务端桥接心跳超时） 与 `server_bridge.disconnected`（服务端桥接断开） 诊断事件。
+- 启动入口 `startAppOnlineRuntime` 仍支持 `dependencies.serverBridge` 注入：传入 `{ accessToken: "...", path?: "...", heartbeatTimeoutMs?: 90000, enabled?: true|false }` 后，hello / heartbeat / player_message 帧会按 `server_bridge.<type>` 写入 `/api/replay`（补拉接口）；任何 `access token`（访问令牌） 都不会出现在 ack（确认） / error（错误） 帧、replay（补拉） 事件或日志中。
 - mod 端 `/svs <message>` 与 TS Core 端联调步骤：mod 启动时配置 `mcservant.bridge.url=ws://<ts-core-host>:<port>/ws/server-bridge` 与 `mcservant.bridge.accessToken=<同 TS Core 注入值>`；游戏内执行 `/svs hello` 后，TS Core `/api/replay` 应出现 `server_bridge.player_message` 事件。
+- 协议策略：连接后必须先收到 `hello`（握手），再接受 `heartbeat`（心跳） 与 `player_message`（玩家消息）；重复 `hello`（握手）会返回 `duplicate_hello`（重复握手），重复 `message_id`（消息标识）会返回 `duplicate_message_id`（重复消息标识），协议版本不匹配会返回 `protocol_version_mismatch`（协议版本不匹配） 并关闭连接。
 
 ## MC 实服烟测：Server Bridge（服务端桥接） + EasyAuth（离线服认证模组）
 
@@ -73,6 +75,7 @@ MC_EXTERNAL_AUTH_REQUIRED=true
 MC_EXTERNAL_AUTH_SECRET=<bot-easyauth-password>
 SERVER_BRIDGE_ACCESS_TOKEN=<local-bridge-token>
 SERVER_BRIDGE_PATH=/ws/server-bridge
+SERVER_BRIDGE_HEARTBEAT_TIMEOUT_MS=90000
 ```
 
 Fabric mod（Fabric 模组） 启动参数清单：
@@ -83,6 +86,8 @@ java \
   -Dmcservant.bridge.url=ws://127.0.0.1:3000/ws/server-bridge \
   -Dmcservant.bridge.accessToken=<local-bridge-token> \
   -Dmcservant.bridge.heartbeatSeconds=2 \
+  -Dmcservant.bridge.reconnectInitialSeconds=5 \
+  -Dmcservant.bridge.reconnectMaxSeconds=60 \
   -Dmcservant.bridge.instanceId=local-fabric-01 \
   -jar fabric-server-launch.jar nogui
 ```
@@ -100,6 +105,9 @@ java \
 常见失败排查：
 
 - token（令牌） 不匹配：Fabric mod（Fabric 模组） 侧会连接失败或收到握手拒绝，TS Core（TypeScript 单核心） 不会写入 replay（补拉） 事件；检查 `SERVER_BRIDGE_ACCESS_TOKEN` 与 `mcservant.bridge.accessToken` 是否完全一致。
+- TS Core（TypeScript 单核心） 重启或短断网：Fabric mod（Fabric 模组） 会进入 `RECONNECTING`（重连中） 并按 `mcservant.bridge.reconnectInitialSeconds` 到 `mcservant.bridge.reconnectMaxSeconds` 指数退避；`/svs`（服务端女仆命令） 会提示“桥接正在重连 TS Core”。
+- 协议版本错误：TS Core（TypeScript 单核心） 会返回 `protocol_version_mismatch`（协议版本不匹配） 并关闭连接；Fabric mod（Fabric 模组） 会进入 `PROTOCOL_INCOMPATIBLE`（协议不兼容），需要升级 TS Core 或 mod 后重启服务端。
+- 心跳超时：TS Core（TypeScript 单核心） 会在 `/api/replay`（补拉接口） 中写入 `server_bridge.heartbeat_timeout`（服务端桥接心跳超时） 与 `server_bridge.disconnected`（服务端桥接断开）；Fabric mod（Fabric 模组） 会按退避策略重连。
 - EasyAuth（离线服认证模组） 密码错误：MC（Minecraft，我的世界） 侧通常会提示登录失败；检查 `MC_EXTERNAL_AUTH_SECRET`，TS Core 日志与 `/api/status` 不会显示明文。
 - bot（机器人） 未 spawn（生成）：`/api/status` 中 `mineflayer.world_ready` 会是 `false`，世界交互技能不会放行；先看 MC 服务端是否允许该用户名进入世界。
 - Redis（缓存） / PostgreSQL（关系型数据库） 不可达：`pnpm start`（启动命令） 会在基础设施阶段失败；先确认连接参数、容器端口和用户密码。

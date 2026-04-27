@@ -102,7 +102,7 @@ public final class SvsCommand {
             return 0;
         }
         if (!transport.isConnected()) {
-            sendErrorReply(context.getSource(), "桥接未连接，TS Core 无法接收消息");
+            sendErrorReply(context.getSource(), bridgeUnavailableMessage(transport.state()));
             return 0;
         }
 
@@ -128,5 +128,17 @@ public final class SvsCommand {
 
     private static void sendErrorReply(ServerCommandSource source, String message) {
         source.sendError(Text.literal("[svs] " + message).formatted(Formatting.RED));
+    }
+
+    private static String bridgeUnavailableMessage(ServerBridgeTransport.ConnectionState state) {
+        return switch (state) {
+            case CONNECTING -> "桥接正在连接 TS Core，稍后重试";
+            case RECONNECTING -> "桥接正在重连 TS Core，稍后重试";
+            case AUTH_FAILED -> "桥接 token 配置错误，TS Core 拒绝连接";
+            case PROTOCOL_INCOMPATIBLE -> "桥接协议不兼容，请升级 TS Core 或 mod";
+            case CLOSING -> "桥接正在关闭，TS Core 暂时无法接收消息";
+            case DISCONNECTED -> "桥接未连接，TS Core 无法接收消息";
+            case CONNECTED -> "桥接发送失败";
+        };
     }
 }

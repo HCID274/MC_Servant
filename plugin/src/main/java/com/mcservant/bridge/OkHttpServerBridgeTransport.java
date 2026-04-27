@@ -44,7 +44,9 @@ public final class OkHttpServerBridgeTransport implements ServerBridgeTransport 
     private final OkHttpClient httpClient;
     private final AtomicReference<ConnectionState> state = new AtomicReference<>(ConnectionState.DISCONNECTED);
     private final AtomicLong heartbeatSequence = new AtomicLong(0L);
+    private final AtomicLong reconnectDelaySeconds;
     private final ScheduledExecutorService heartbeatExecutor;
+    private volatile boolean disconnectRequested = false;
 
     @Nullable
     private volatile WebSocket socket;
@@ -52,11 +54,15 @@ public final class OkHttpServerBridgeTransport implements ServerBridgeTransport 
     @Nullable
     private volatile ScheduledFuture<?> heartbeatTask;
 
+    @Nullable
+    private volatile ScheduledFuture<?> reconnectTask;
+
     public OkHttpServerBridgeTransport(ServerBridgeConfig config) {
         this.config = Objects.requireNonNull(config, "config 不可为空");
         this.httpClient = new OkHttpClient.Builder()
                 .pingInterval(config.heartbeatIntervalSeconds(), TimeUnit.SECONDS)
                 .build();
+        this.reconnectDelaySeconds = new AtomicLong(config.reconnectInitialDelaySeconds());
         this.heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(new HeartbeatThreadFactory());
     }
 
@@ -66,12 +72,21 @@ public final class OkHttpServerBridgeTransport implements ServerBridgeTransport 
             LOGGER.info("[Bridge] 桥接未启用，跳过 connect()");
             return;
         }
-        if (!state.compareAndSet(ConnectionState.DISCONNECTED, ConnectionState.CONNECTING)) {
-            LOGGER.warn("[Bridge] 当前状态 {}，忽略重复 connect()", state.get());
+        ConnectionState currentState = state.get();
+        if (currentState == ConnectionState.AUTH_FAILED || currentState == ConnectionState.PROTOCOL_INCOMPATIBLE) {
+            LOGGER.warn("[Bridge] 当前状态 {}，忽略 connect()，请修正配置或协议版本后重启服务端", currentState);
+            return;
+        }
+        if (currentState != ConnectionState.DISCONNECTED && currentState != ConnectionState.RECONNECTING) {
+            LOGGER.warn("[Bridge] 当前状态 {}，忽略重复 connect()", currentState);
+            return;
+        }
+        if (!state.compareAndSet(currentState, ConnectionState.CONNECTING)) {
             return;
         }
 
         try {
+            disconnectRequested = false;
             Request request = new Request.Builder()
                     .url(config.url())
                     .header("Authorization", "Bearer " + config.accessToken())
@@ -80,12 +95,15 @@ public final class OkHttpServerBridgeTransport implements ServerBridgeTransport 
         } catch (RuntimeException e) {
             state.set(ConnectionState.DISCONNECTED);
             LOGGER.warn("[Bridge] WebSocket 连接启动失败: {}", sanitize(e.getMessage()));
+            scheduleReconnect("connect_start_failed");
         }
     }
 
     @Override
     public void disconnect() {
+        disconnectRequested = true;
         stopHeartbeat();
+        cancelReconnect();
         ConnectionState prev = state.getAndSet(ConnectionState.CLOSING);
         if (prev == ConnectionState.DISCONNECTED) {
             state.set(ConnectionState.DISCONNECTED);
@@ -154,7 +172,7 @@ public final class OkHttpServerBridgeTransport implements ServerBridgeTransport 
             );
             return true;
         } else {
-            failHeartbeat("hello 握手帧发送失败");
+            failConnection("hello 握手帧发送失败", true);
             return false;
         }
     }
@@ -194,7 +212,7 @@ public final class OkHttpServerBridgeTransport implements ServerBridgeTransport 
             boolean sent = state.get() == ConnectionState.CONNECTED
                     && sendProtocolFrame(webSocket, heartbeatFrame(sequence));
             if (!sent) {
-                failHeartbeat("heartbeat 心跳帧发送失败 sequence=" + sequence);
+                failConnection("heartbeat 心跳帧发送失败 sequence=" + sequence, true);
             }
         }, interval, interval, TimeUnit.SECONDS);
         LOGGER.info("[Bridge] 应用层 heartbeat 已启动 (interval={}s)", interval);
@@ -208,14 +226,63 @@ public final class OkHttpServerBridgeTransport implements ServerBridgeTransport 
         }
     }
 
-    private void failHeartbeat(String message) {
+    private void failConnection(String message, boolean reconnect) {
         stopHeartbeat();
-        state.set(ConnectionState.DISCONNECTED);
         WebSocket current = socket;
         if (current != null) {
             current.close(1011, "heartbeat failure");
         }
+        state.set(ConnectionState.DISCONNECTED);
         LOGGER.warn("[Bridge] {}", sanitize(message));
+        if (reconnect) {
+            scheduleReconnect(message);
+        }
+    }
+
+    private void scheduleReconnect(String reason) {
+        if (disconnectRequested || !config.enabled()) {
+            return;
+        }
+        ConnectionState currentState = state.get();
+        if (currentState == ConnectionState.AUTH_FAILED || currentState == ConnectionState.PROTOCOL_INCOMPATIBLE) {
+            return;
+        }
+        if (reconnectTask != null && !reconnectTask.isDone()) {
+            state.set(ConnectionState.RECONNECTING);
+            return;
+        }
+
+        long delay = reconnectDelaySeconds.get();
+        state.set(ConnectionState.RECONNECTING);
+        LOGGER.warn("[Bridge] 将在 {} 秒后重连 TS Core（原因: {}）", delay, sanitize(reason));
+        reconnectTask = heartbeatExecutor.schedule(() -> {
+            reconnectTask = null;
+            state.compareAndSet(ConnectionState.RECONNECTING, ConnectionState.DISCONNECTED);
+            connect();
+        }, delay, TimeUnit.SECONDS);
+        reconnectDelaySeconds.set(Math.min(delay * 2L, config.reconnectMaxDelaySeconds()));
+    }
+
+    private void cancelReconnect() {
+        ScheduledFuture<?> current = reconnectTask;
+        if (current != null) {
+            current.cancel(false);
+            reconnectTask = null;
+        }
+    }
+
+    private void markAuthenticatedFailure(String message) {
+        stopHeartbeat();
+        cancelReconnect();
+        state.set(ConnectionState.AUTH_FAILED);
+        LOGGER.warn("[Bridge] TS Core 拒绝桥接鉴权: {}", sanitize(message));
+    }
+
+    private void markProtocolIncompatible(String message) {
+        stopHeartbeat();
+        cancelReconnect();
+        state.set(ConnectionState.PROTOCOL_INCOMPATIBLE);
+        LOGGER.warn("[Bridge] TS Core 协议不兼容: {}", sanitize(message));
     }
 
     private String sanitize(String value) {
@@ -228,50 +295,104 @@ public final class OkHttpServerBridgeTransport implements ServerBridgeTransport 
     private final class BridgeListener extends WebSocketListener {
         @Override
         public void onOpen(WebSocket webSocket, Response response) {
-            state.set(ConnectionState.CONNECTED);
-            LOGGER.info("[Bridge] WebSocket 已连接 (HTTP {})", response.code());
-            if (sendHello(webSocket)) {
-                startHeartbeat(webSocket);
-            }
+            LOGGER.info("[Bridge] WebSocket 已打开 (HTTP {})，等待 hello ack", response.code());
+            sendHello(webSocket);
         }
 
         @Override
         public void onMessage(WebSocket webSocket, String text) {
-            LOGGER.info("[Bridge] 收到服务端帧 type={}", parseFrameType(text));
+            ServerFrame frame = parseServerFrame(text);
+            LOGGER.info("[Bridge] 收到服务端帧 type={}", frame.type());
+
+            if ("ack".equals(frame.type()) && "hello".equals(frame.ackType())) {
+                state.set(ConnectionState.CONNECTED);
+                reconnectDelaySeconds.set(config.reconnectInitialDelaySeconds());
+                LOGGER.info("[Bridge] hello ack 已确认，桥接进入 CONNECTED");
+                startHeartbeat(webSocket);
+                return;
+            }
+
+            if ("error".equals(frame.type())) {
+                if ("protocol_version_mismatch".equals(frame.code())) {
+                    markProtocolIncompatible(frame.message());
+                    webSocket.close(4001, "protocol_version_mismatch");
+                    return;
+                }
+                if ("unauthorized".equals(frame.code())) {
+                    markAuthenticatedFailure(frame.message());
+                    webSocket.close(4003, "unauthorized");
+                    return;
+                }
+                LOGGER.warn("[Bridge] TS Core 返回错误帧 code={}, message={}", sanitize(frame.code()), sanitize(frame.message()));
+            }
         }
 
         @Override
         public void onClosing(WebSocket webSocket, int code, String reason) {
             stopHeartbeat();
-            state.set(ConnectionState.CLOSING);
+            if (state.get() != ConnectionState.AUTH_FAILED
+                    && state.get() != ConnectionState.PROTOCOL_INCOMPATIBLE) {
+                state.set(ConnectionState.CLOSING);
+            }
         }
 
         @Override
         public void onClosed(WebSocket webSocket, int code, String reason) {
             stopHeartbeat();
-            state.set(ConnectionState.DISCONNECTED);
+            ConnectionState currentState = state.get();
+            if (currentState == ConnectionState.AUTH_FAILED
+                    || currentState == ConnectionState.PROTOCOL_INCOMPATIBLE) {
+                LOGGER.info("[Bridge] WebSocket 已关闭 (code={}, reason={})", code, sanitize(reason));
+                return;
+            }
+            if (!disconnectRequested) {
+                state.set(ConnectionState.DISCONNECTED);
+                scheduleReconnect("closed code=" + code + " reason=" + reason);
+            } else {
+                state.set(ConnectionState.DISCONNECTED);
+            }
             LOGGER.info("[Bridge] WebSocket 已关闭 (code={}, reason={})", code, sanitize(reason));
         }
 
         @Override
         public void onFailure(WebSocket webSocket, Throwable t, @Nullable Response response) {
             stopHeartbeat();
-            state.set(ConnectionState.DISCONNECTED);
             int code = response == null ? -1 : response.code();
+            if (code == 401) {
+                markAuthenticatedFailure("HTTP 401 unauthorized");
+                return;
+            }
+            if (!disconnectRequested) {
+                state.set(ConnectionState.DISCONNECTED);
+                scheduleReconnect("failure HTTP " + code);
+            } else {
+                state.set(ConnectionState.DISCONNECTED);
+            }
             LOGGER.warn("[Bridge] WebSocket 失败 (HTTP {}): {}", code, sanitize(t.getMessage()));
         }
 
-        private String parseFrameType(String text) {
+        private ServerFrame parseServerFrame(String text) {
             try {
                 JsonObject frame = JsonParser.parseString(text).getAsJsonObject();
-                if (frame.has("type") && frame.get("type").isJsonPrimitive()) {
-                    return sanitize(frame.get("type").getAsString());
-                }
+                String type = readString(frame, "type", "unknown");
+                String ackType = readString(frame, "ack_type", "");
+                String code = readString(frame, "code", "");
+                String message = readString(frame, "message", "");
+                return new ServerFrame(sanitize(type), sanitize(ackType), sanitize(code), sanitize(message));
             } catch (IllegalStateException | JsonSyntaxException ignored) {
-                return "unparseable";
+                return new ServerFrame("unparseable", "", "", "");
             }
-            return "unknown";
         }
+
+        private String readString(JsonObject frame, String key, String fallback) {
+            if (frame.has(key) && frame.get(key).isJsonPrimitive()) {
+                return frame.get(key).getAsString();
+            }
+            return fallback;
+        }
+    }
+
+    private record ServerFrame(String type, String ackType, String code, String message) {
     }
 
     private static final class HeartbeatThreadFactory implements ThreadFactory {

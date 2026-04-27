@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-041` ~ `T-050`
-- 当前已完成任务：`T-041` ~ `T-042`
-- 当前活跃任务：`T-043`（任务四十三） Server Bridge（服务端桥接）稳定性批量补强：集中完成 TS Core（TypeScript 单核心）接收端与 Fabric mod（Fabric 模组）客户端的重连、心跳、版本、断线诊断、状态投影与部署文档收口。
+- 当前已完成任务：`T-041` ~ `T-043`
+- 当前活跃任务：`T-044`（任务四十四） `/svs`（服务端女仆命令）接入 conversation（对话）主线：把 Server Bridge（服务端桥接）玩家消息灰度转入 `msg:{botId}`（消息队列），形成 `/svs` → LLM（大语言模型）回复 → MC（Minecraft，我的世界）聊天的可控闭环。
 - 当前批次摘要：上一批次 `T-031`（任务三十一） 到 `T-040`（任务四十） 已完成对话智能增强、记忆与状态注入、MC（Minecraft，我的世界）事实源、反射动作，以及 Fabric（模组加载器）端服务端桥接基线。新批次默认沿 Fabric mod（Fabric 模组） ↔ TS Core（TypeScript 单核心）真实通信链路推进；任务切分按模块批量合并，同一 Server Bridge（服务端桥接）模块内的稳定性项不再拆成多个小任务。
 - 当前批次硬约束：不得破坏 BotActor（机器人执行代理）单写者边界；server-bridge（服务端桥接）入口默认 `observe_only`（仅观测），不得绕过 game-chat（游戏聊天） / conversation（对话）队列直接写 Bot（机器人）；不得把 Java（编程语言）或 OkHttp（网络客户端）实现细节渗入 TS Core（TypeScript 单核心）。
 
@@ -69,3 +69,34 @@
   - `git diff --check` 通过。
   - `bash ts-core/scripts/pre_review.sh` 通过：循环依赖 161 个文件无循环，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 30 个测试文件 / 199 条测试全部通过。
   - 真实 Fabric server（Fabric 服务端）现场加载仍待用户按 README（说明文档） 手测回报；代码验收已给出最小回报项。
+
+### T-043 — Server Bridge（服务端桥接）长期运行稳定性批量补强
+
+- 状态：已完成（2026-04-27）
+- 核心文件：
+  - `ts-core/src/interfaces/server-bridge/protocol.ts`
+  - `ts-core/src/interfaces/server-bridge/route.ts`
+  - `ts-core/src/app/bootstrap/env.ts`
+  - `ts-core/src/app/entrypoint.ts`
+  - `ts-core/src/__tests__/interfaces-server-bridge-model.spec.ts`
+  - `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
+  - `ts-core/README.md`
+  - `plugin/src/main/java/com/mcservant/bridge/OkHttpServerBridgeTransport.java`
+  - `plugin/src/main/java/com/mcservant/bridge/ServerBridgeConfig.java`
+  - `plugin/src/main/java/com/mcservant/bridge/ServerBridgeTransport.java`
+  - `plugin/src/main/java/com/mcservant/command/SvsCommand.java`
+  - `plugin/README.md`
+  - `plugin/BUILD.md`
+- 变更快照：
+  - TS Core（TypeScript 单核心）端新增 Server Bridge（服务端桥接）生命周期诊断事件：`server_bridge.connected`（已连接）、`server_bridge.closed`（正常关闭）、`server_bridge.disconnected`（异常断开）、`server_bridge.heartbeat_timeout`（心跳超时），并统一写入在线 replay（补拉）流。
+  - 协议策略收口为确定性行为：未握手前拒绝 `heartbeat`（心跳）与 `player_message`（玩家消息），重复 `hello`（握手）返回 `duplicate_hello`（重复握手），重复 `message_id`（消息标识）返回 `duplicate_message_id`（重复消息标识），协议版本不匹配返回错误并关闭连接。
+  - `message_id`（消息标识）去重从无界 `Set`（集合）改为 1024 条有界 FIFO（先进先出）窗口，避免长连接内存增长；窗口内重复拒绝，窗口外最旧记录淘汰。
+  - `SERVER_BRIDGE_HEARTBEAT_TIMEOUT_MS`（服务端桥接心跳超时毫秒数）接入 `pnpm start`（启动命令）配置；所有 replay（补拉）事件继续携带 `runtime_effect: "observe_only"`（运行时影响：仅观测），未接入 conversation（对话）主线。
+  - Fabric mod（Fabric 模组）端新增指数退避重连、`AUTH_FAILED`（鉴权失败）、`PROTOCOL_INCOMPATIBLE`（协议不兼容）、`RECONNECTING`（重连中）等状态，并让 `/svs`（服务端女仆命令）在不可用时给出明确脱敏提示。
+- 审查与验证：
+  - 首轮审查打回：`seenMessageIds`（已见消息标识集合）无界增长；修复为有界 FIFO（先进先出）窗口并补淘汰测试。
+  - 二次审查打回：lifecycle（生命周期）测试存在 20ms（毫秒）竞态；修复为正常关闭与心跳超时分离测试，并在 route（路由）状态中加入 `closed`（已关闭）守卫。
+  - `git diff --check` 通过。
+  - `bash ts-core/scripts/pre_review.sh` 通过：循环依赖 161 个文件无循环，TypeScript（类型检查）通过，Biome（代码检查）通过，Vitest（测试）30 个测试文件 / 204 条测试全部通过。
+  - `cd plugin && ./gradlew build --no-daemon` 通过，`BUILD SUCCESSFUL in 26s`。
+  - 本任务未触碰 LLM（大语言模型）链路、Prompt（提示词）、parser（解析器）或 conversation（对话）路由，无需真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。

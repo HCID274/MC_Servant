@@ -66,6 +66,8 @@ java \
   -Dmcservant.bridge.url=ws://127.0.0.1:8765/ws/server-bridge \
   -Dmcservant.bridge.accessToken=local-dev-token \
   -Dmcservant.bridge.heartbeatSeconds=2 \
+  -Dmcservant.bridge.reconnectInitialSeconds=5 \
+  -Dmcservant.bridge.reconnectMaxSeconds=60 \
   -Dmcservant.bridge.instanceId=local-fabric-01 \
   -jar fabric-server-launch.jar nogui
 ```
@@ -77,6 +79,8 @@ MCSERVANT_BRIDGE_ENABLED=true \
 MCSERVANT_BRIDGE_URL=ws://127.0.0.1:8765/ws/server-bridge \
 MCSERVANT_BRIDGE_ACCESS_TOKEN=local-dev-token \
 MCSERVANT_BRIDGE_HEARTBEAT_SECONDS=2 \
+MCSERVANT_BRIDGE_RECONNECT_INITIAL_SECONDS=5 \
+MCSERVANT_BRIDGE_RECONNECT_MAX_SECONDS=60 \
 MCSERVANT_BRIDGE_INSTANCE_ID=local-fabric-01 \
 java -jar fabric-server-launch.jar nogui
 ```
@@ -93,6 +97,7 @@ T-041 起 mod ↔ TS Core 双端最小闭环可直接对接 TS Core `/ws/server-
 T-042 起默认 `pnpm start`（启动命令） 可通过 `SERVER_BRIDGE_ACCESS_TOKEN`（服务端桥接访问令牌） 直接启用接收端，
 无需 `ws-debug-server.py`：TS Core 侧 `SERVER_BRIDGE_ACCESS_TOKEN` 与 mod 端 `mcservant.bridge.accessToken` 必须完全一致，
 mod 启动后即可看到 `hello` / `heartbeat` 进入 `/api/replay` 的 `server_bridge.*` 事件流。
+TS Core（TypeScript 单核心）重启或网络短断时，mod（模组） 会自动进入 `RECONNECTING`（重连中） 状态并按退避配置重试；token（令牌）错误会进入 `AUTH_FAILED`（鉴权失败），协议版本错误会进入 `PROTOCOL_INCOMPATIBLE`（协议不兼容），两者都不会刷屏重试。
 
 游戏内执行 `/svs hello`（op 或 `mcservant.svs.use` 权限）后，TS Core 侧 `/api/replay`
 应出现 `server_bridge.player_message` 事件；脚本侧若仍接 `ws-debug-server.py`，
@@ -117,7 +122,10 @@ mod 启动后即可看到 `hello` / `heartbeat` 进入 `/api/replay` 的 `server
 - **未看到联调服务连接**：确认启动 Fabric（模组加载器）服务端时已显式设置 `mcservant.bridge.enabled=true` 或 `MCSERVANT_BRIDGE_ENABLED=true`，默认禁用策略不会自动连接。
 - **只看到 hello（握手）没有 heartbeat（心跳）**：把 `mcservant.bridge.heartbeatSeconds` 或 `MCSERVANT_BRIDGE_HEARTBEAT_SECONDS` 临时设为 `2`，等待至少一个心跳周期。
 - **连接失败或握手失败**：先确认 `python3 plugin/scripts/ws-debug-server.py` 已监听目标地址，再检查 `mcservant.bridge.url` / `MCSERVANT_BRIDGE_URL` 是否与脚本输出一致。
+- **TS Core 重启后 /svs 暂不可用**：观察日志中的 `RECONNECTING`（重连中） 与退避秒数，等待自动重连；需要更快复测可临时降低 `mcservant.bridge.reconnectInitialSeconds`。
+- **token 错误**：日志会显示 TS Core 拒绝桥接鉴权但不会打印 token 明文；修正 `mcservant.bridge.accessToken` / `MCSERVANT_BRIDGE_ACCESS_TOKEN` 后重启服务端。
+- **协议版本错误**：日志会显示协议不兼容，`/svs` 会提示升级 TS Core 或 mod；该状态不会自动重连，避免反复刷屏。
 
 ---
 
-*最后更新：2026-04-27（T-042 Server Bridge 默认入口装配：`pnpm start` + `/svs` 实服烟测）*
+*最后更新：2026-04-27（T-043 Server Bridge 稳定性补强：重连、超时、协议诊断）*

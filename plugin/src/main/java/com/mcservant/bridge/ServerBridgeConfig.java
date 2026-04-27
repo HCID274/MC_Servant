@@ -13,6 +13,8 @@ import java.util.Optional;
  * @param url                         TS Core 单核心 server-bridge WebSocket 地址
  * @param accessToken                 桥接访问令牌（占位令牌仅用于本地开发）
  * @param heartbeatIntervalSeconds    心跳间隔秒数（OkHttp pingInterval 用）
+ * @param reconnectInitialDelaySeconds 首次重连退避秒数
+ * @param reconnectMaxDelaySeconds     最大重连退避秒数
  * @param modId                       mod 标识
  * @param modVersion                  mod 版本
  * @param instanceId                  本地实例标识
@@ -22,6 +24,8 @@ public record ServerBridgeConfig(
         String url,
         String accessToken,
         long heartbeatIntervalSeconds,
+        long reconnectInitialDelaySeconds,
+        long reconnectMaxDelaySeconds,
         String modId,
         String modVersion,
         String instanceId
@@ -35,6 +39,12 @@ public record ServerBridgeConfig(
 
     /** 心跳默认 30 秒 */
     public static final long DEFAULT_HEARTBEAT_SECONDS = 30L;
+
+    /** 首次重连默认 5 秒 */
+    public static final long DEFAULT_RECONNECT_INITIAL_SECONDS = 5L;
+
+    /** 最大重连默认 60 秒 */
+    public static final long DEFAULT_RECONNECT_MAX_SECONDS = 60L;
 
     /** 默认本地实例标识，部署环境可覆盖 */
     public static final String DEFAULT_INSTANCE_ID = "local-dev";
@@ -51,6 +61,12 @@ public record ServerBridgeConfig(
         if (heartbeatIntervalSeconds <= 0L) {
             throw new IllegalArgumentException("heartbeatIntervalSeconds 必须为正数");
         }
+        if (reconnectInitialDelaySeconds <= 0L) {
+            throw new IllegalArgumentException("reconnectInitialDelaySeconds 必须为正数");
+        }
+        if (reconnectMaxDelaySeconds < reconnectInitialDelaySeconds) {
+            throw new IllegalArgumentException("reconnectMaxDelaySeconds 必须大于等于 reconnectInitialDelaySeconds");
+        }
     }
 
     /**
@@ -62,6 +78,8 @@ public record ServerBridgeConfig(
                 LOCAL_DEV_URL,
                 PLACEHOLDER_TOKEN,
                 DEFAULT_HEARTBEAT_SECONDS,
+                DEFAULT_RECONNECT_INITIAL_SECONDS,
+                DEFAULT_RECONNECT_MAX_SECONDS,
                 "mcservant",
                 "dev",
                 DEFAULT_INSTANCE_ID
@@ -84,6 +102,14 @@ public record ServerBridgeConfig(
                         resolve("heartbeatSeconds", "HEARTBEAT_SECONDS")
                                 .or(() -> resolve("heartbeatIntervalSeconds", "HEARTBEAT_INTERVAL_SECONDS"))
                                 .orElse(Long.toString(defaults.heartbeatIntervalSeconds()))
+                ),
+                parsePositiveLong(
+                        resolve("reconnectInitialSeconds", "RECONNECT_INITIAL_SECONDS")
+                                .orElse(Long.toString(defaults.reconnectInitialDelaySeconds()))
+                ),
+                parsePositiveLong(
+                        resolve("reconnectMaxSeconds", "RECONNECT_MAX_SECONDS")
+                                .orElse(Long.toString(defaults.reconnectMaxDelaySeconds()))
                 ),
                 nonBlank(modId).orElse(defaults.modId()),
                 nonBlank(modVersion).orElse(defaults.modVersion()),

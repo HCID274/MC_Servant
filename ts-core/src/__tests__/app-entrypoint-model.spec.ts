@@ -698,11 +698,20 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         after_seq: 0,
         limit: 10,
         state: {
-          last_event_seq: 3,
+          last_event_seq: 4,
         },
         events: [
           {
             seq: 1,
+            bot_id: "bot-bridge-online",
+            type: "server_bridge.connected",
+            payload: {
+              runtime_effect: "observe_only",
+              connection_state: "connected",
+            },
+          },
+          {
+            seq: 2,
             bot_id: "bot-bridge-online",
             type: "server_bridge.hello",
             payload: {
@@ -712,7 +721,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             },
           },
           {
-            seq: 2,
+            seq: 3,
             bot_id: "bot-bridge-online",
             type: "server_bridge.heartbeat",
             payload: {
@@ -722,7 +731,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             },
           },
           {
-            seq: 3,
+            seq: 4,
             bot_id: "bot-bridge-online",
             type: "server_bridge.player_message",
             payload: {
@@ -754,12 +763,14 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         env: {
           SERVER_BRIDGE_ACCESS_TOKEN: "local-dev-token",
           SERVER_BRIDGE_PATH: "/ws/custom-bridge",
+          SERVER_BRIDGE_HEARTBEAT_TIMEOUT_MS: "120000",
         },
       }),
     ).toEqual({
       enabled: true,
       accessToken: "local-dev-token",
       path: "/ws/custom-bridge",
+      heartbeatTimeoutMs: 120_000,
     });
     expect(
       createAppServerBridgeConfigFromEnvironment({

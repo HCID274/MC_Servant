@@ -35,6 +35,9 @@ export const SERVER_BRIDGE_ERROR_CODES = [
   "protocol_version_mismatch",
   "missing_field",
   "invalid_field",
+  "handshake_required",
+  "duplicate_hello",
+  "duplicate_message_id",
   "unauthorized",
 ] as const;
 
