@@ -41,6 +41,7 @@ cp plugin/build/libs/mcservant-0.4.0.jar /path/to/server/mods/
 
 ```
 [MCServant] Fabric mod 已加载 — 服务端桥接就绪 (T-040)
+[MCServant] /svs 命令已注册（权限节点 mcservant.svs.use / op level 2）
 ```
 
 ## 本地 WebSocket 联调
@@ -88,6 +89,14 @@ java -jar fabric-server-launch.jar nogui
 [bridge-debug] frame type=heartbeat body={...}
 ```
 
+T-041 起 mod ↔ TS Core 双端最小闭环可直接对接 TS Core `/ws/server-bridge` 真实接收端，
+无需 `ws-debug-server.py`：在 TS Core 启动入口注入 `serverBridge.accessToken`（与 mod 端 `mcservant.bridge.accessToken` 完全一致），
+mod 启动后即可看到 `hello` / `heartbeat` 进入 `/api/replay` 的 `server_bridge.*` 事件流。
+
+游戏内执行 `/svs hello`（op 或 `mcservant.svs.use` 权限）后，TS Core 侧 `/api/replay`
+应出现 `server_bridge.player_message` 事件；脚本侧若仍接 `ws-debug-server.py`，
+会看到 `[bridge-debug] frame type=player_message body={...}` 输出。
+
 `access token`（访问令牌）不会出现在 mod（模组）普通日志、联调脚本输出或 JSON（结构化文本）消息体中；脚本只打印是否收到 `Authorization`（授权）请求头。
 
 ## 服务器侧前置依赖
@@ -110,4 +119,4 @@ java -jar fabric-server-launch.jar nogui
 
 ---
 
-*最后更新：2026-04-27（T-040 Fabric bridge 本地联调落地）*
+*最后更新：2026-04-27（T-041 Server Bridge 双端最小闭环：`/svs` 命令 + TS Core `/ws/server-bridge` 接收端）*

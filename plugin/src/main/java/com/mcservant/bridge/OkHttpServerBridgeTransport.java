@@ -113,6 +113,36 @@ public final class OkHttpServerBridgeTransport implements ServerBridgeTransport 
         return state.get();
     }
 
+    @Override
+    public boolean sendPlayerMessage(String messageId, String playerUuid, String playerName, String content) {
+        Objects.requireNonNull(messageId, "messageId 不可为空");
+        Objects.requireNonNull(playerUuid, "playerUuid 不可为空");
+        Objects.requireNonNull(playerName, "playerName 不可为空");
+        Objects.requireNonNull(content, "content 不可为空");
+        if (state.get() != ConnectionState.CONNECTED) {
+            return false;
+        }
+        return send(GSON.toJson(playerMessageFrame(messageId, playerUuid, playerName, content)));
+    }
+
+    private Map<String, Object> playerMessageFrame(
+            String messageId,
+            String playerUuid,
+            String playerName,
+            String content
+    ) {
+        Map<String, Object> frame = new LinkedHashMap<>();
+        frame.put("type", "player_message");
+        frame.put("protocol_version", PROTOCOL_VERSION);
+        frame.put("instance_id", config.instanceId());
+        frame.put("message_id", messageId);
+        frame.put("player_uuid", playerUuid);
+        frame.put("player_name", playerName);
+        frame.put("content", content);
+        frame.put("timestamp", Instant.now().toString());
+        return frame;
+    }
+
     private boolean sendHello(WebSocket webSocket) {
         boolean sent = sendProtocolFrame(webSocket, helloFrame());
         if (sent) {

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
+import WebSocket from "ws";
 
 import {
   createAppBootstrapContract,
@@ -18,6 +19,7 @@ import {
 } from "../app/index.js";
 import type { AppRuntimeCoreResources } from "../app/index.js";
 import { ExecPriority, TaskHistoryStatus, createSandboxCodeJob } from "../core-ports/tasking.js";
+import { SERVER_BRIDGE_PROTOCOL_VERSION } from "../interfaces/index.js";
 import {
   BotStatus,
   createExternalAuthExecutionPlan,
@@ -47,6 +49,28 @@ class FakeEntrypointMineflayerBot extends EventEmitter implements MineflayerBotH
     this.events.push("mineflayer.quit");
     this.emit("end");
   }
+}
+
+function waitForWsOpen(socket: WebSocket): Promise<void> {
+  return new Promise((resolve, reject) => {
+    socket.once("open", () => resolve());
+    socket.once("error", reject);
+  });
+}
+
+function waitForWsClose(socket: WebSocket): Promise<void> {
+  return new Promise((resolve) => {
+    socket.once("close", () => resolve());
+  });
+}
+
+function readNextWsText(socket: WebSocket): Promise<string> {
+  return new Promise((resolve, reject) => {
+    socket.once("message", (data) => {
+      resolve(data.toString("utf8"));
+    });
+    socket.once("error", reject);
+  });
 }
 
 describe("app entrypoint（应用启动入口） 骨架", () => {
@@ -510,6 +534,191 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     await runtime.close();
+  });
+
+  it("应在真实在线入口装配 server-bridge WebSocket 并写入 /api/replay", async () => {
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-bridge-online",
+      now: "2026-04-27T00:00:00.000Z",
+    });
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        serverBridge: {
+          accessToken: "local-dev-token",
+          now: () => "2026-04-27T00:00:10.000Z",
+          eventIdFactory: () => "server-bridge-event",
+        },
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => undefined,
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => ({}),
+            connectClient: async () => undefined,
+            closeClient: async () => undefined,
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async () => ({ id: "job-online" }),
+              close: async () => undefined,
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalListen = server.listen.bind(server);
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => originalListen({ host: "127.0.0.1", port: 0 });
+              server.close = async () => originalClose();
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeEntrypointMineflayerBot([]);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        botWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+        conversationWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+      },
+    });
+    const socket = new WebSocket(
+      `${runtime.listen_address.replace(/^http/, "ws")}/ws/server-bridge`,
+      {
+        headers: {
+          Authorization: "Bearer local-dev-token",
+        },
+      },
+    );
+
+    try {
+      await waitForWsOpen(socket);
+
+      socket.send(
+        JSON.stringify({
+          type: "hello",
+          protocol_version: SERVER_BRIDGE_PROTOCOL_VERSION,
+          mod_id: "mcservant",
+          mod_version: "0.4.0",
+          connected_at: "2026-04-27T00:00:01.000Z",
+          instance_id: "local-fabric-01",
+        }),
+      );
+      const helloAck = JSON.parse(await readNextWsText(socket));
+
+      socket.send(
+        JSON.stringify({
+          type: "heartbeat",
+          protocol_version: SERVER_BRIDGE_PROTOCOL_VERSION,
+          instance_id: "local-fabric-01",
+          sequence: 1,
+          timestamp: "2026-04-27T00:00:02.000Z",
+          state: "CONNECTED",
+        }),
+      );
+      const heartbeatAck = JSON.parse(await readNextWsText(socket));
+
+      socket.send(
+        JSON.stringify({
+          type: "player_message",
+          protocol_version: SERVER_BRIDGE_PROTOCOL_VERSION,
+          instance_id: "local-fabric-01",
+          message_id: "msg-svs-online-1",
+          player_uuid: "00000000-0000-0000-0000-000000000001",
+          player_name: "Steve",
+          content: "hello",
+          timestamp: "2026-04-27T00:00:03.000Z",
+        }),
+      );
+      const playerAck = JSON.parse(await readNextWsText(socket));
+      const replayResponse = await runtime.services.http.server.inject({
+        method: "GET",
+        url: "/api/replay?bot_id=bot-bridge-online&after_seq=0&limit=10",
+      });
+      const replayBody = replayResponse.json();
+      const replayText = JSON.stringify(replayBody);
+
+      expect(helloAck).toMatchObject({ type: "ack", ack_type: "hello" });
+      expect(heartbeatAck).toMatchObject({ type: "ack", ack_type: "heartbeat" });
+      expect(playerAck).toMatchObject({ type: "ack", ack_type: "player_message" });
+      expect(replayResponse.statusCode).toBe(200);
+      expect(replayBody).toMatchObject({
+        bot_id: "bot-bridge-online",
+        after_seq: 0,
+        limit: 10,
+        state: {
+          last_event_seq: 3,
+        },
+        events: [
+          {
+            seq: 1,
+            bot_id: "bot-bridge-online",
+            type: "server_bridge.hello",
+            payload: {
+              runtime_effect: "observe_only",
+              mod_id: "mcservant",
+              instance_id: "local-fabric-01",
+            },
+          },
+          {
+            seq: 2,
+            bot_id: "bot-bridge-online",
+            type: "server_bridge.heartbeat",
+            payload: {
+              runtime_effect: "observe_only",
+              sequence: 1,
+              state: "CONNECTED",
+            },
+          },
+          {
+            seq: 3,
+            bot_id: "bot-bridge-online",
+            type: "server_bridge.player_message",
+            payload: {
+              runtime_effect: "observe_only",
+              message_id: "msg-svs-online-1",
+              player_uuid: "00000000-0000-0000-0000-000000000001",
+              player_name: "Steve",
+              content: "hello",
+            },
+          },
+        ],
+      });
+      expect(replayText).not.toContain("local-dev-token");
+    } finally {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.close();
+        await waitForWsClose(socket);
+      } else if (socket.readyState === WebSocket.CONNECTING) {
+        socket.terminate();
+      }
+      await runtime.close();
+    }
   });
 
   it("应在真实在线入口把闲聊消息接到 OpenAI（开放人工智能） 兼容 LLM（大语言模型） 并写回聊天", async () => {

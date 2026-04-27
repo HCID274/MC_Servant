@@ -3,6 +3,7 @@ package com.mcservant;
 import com.mcservant.bridge.OkHttpServerBridgeTransport;
 import com.mcservant.bridge.ServerBridgeConfig;
 import com.mcservant.bridge.ServerBridgeTransport;
+import com.mcservant.command.SvsCommand;
 import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -30,6 +31,10 @@ public final class MCServantMod implements DedicatedServerModInitializer {
 
         ServerBridgeConfig config = ServerBridgeConfig.fromRuntimeEnvironment(MOD_ID, resolveModVersion());
         transport = new OkHttpServerBridgeTransport(config);
+
+        SvsCommand.register(MCServantMod::transport);
+        LOGGER.info("[MCServant] /svs 命令已注册（权限节点 {} / op level {}）",
+                SvsCommand.PERMISSION_NODE, SvsCommand.DEFAULT_OP_LEVEL);
 
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             if (config.enabled()) {

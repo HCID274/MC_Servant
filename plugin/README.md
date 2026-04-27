@@ -8,8 +8,9 @@
 - 提供 `ServerBridgeTransport`（服务端桥接传输）接口与 OkHttp（网络客户端）实现，作为 mod（模组） 与 TS Core（TypeScript 单核心） 通信的统一出入口。业务代码只能依赖该接口，OkHttp（网络客户端） 细节被实现类封死。
 - 提供 `ServerBridgeConfig`（桥接配置）模型，含 `enabled`（启用） / `url`（地址） / `accessToken`（访问令牌） / `heartbeatIntervalSeconds`（心跳间隔秒数） 等字段；默认 `enabled=false`（禁用），禁止未配置时误连。
 - WebSocket（全双工通信协议） 打开后发送应用层 `hello`（握手）帧，并按配置周期发送 `heartbeat`（心跳）帧；`access token`（访问令牌） 只进入 `Authorization`（授权）请求头，不进入消息体或普通日志。
+- 注册 `/svs <message>`（服务端女仆命令）：将玩家原始消息封装为 `player_message`（玩家消息）协议帧并通过 `ServerBridgeTransport` 发送；权限优先用 `fabric-permissions-api`（节点 `mcservant.svs.use`），缺席时回退原版 op level 2。
 
-T-040 不实现 TS Core（TypeScript 单核心） 正式 `server-bridge`（服务端桥接）接收服务、`/svs`（游戏命令）链路与 EasyAuth（离线服认证模组）对接 —— 这些由后续 T-Fabric-Bridge-03 / 04 / 05 任务交付。
+T-041（任务四十一） 已交付 mod ↔ TS Core 双端最小闭环（含 `/svs` 与 TS Core `/ws/server-bridge` 接收端）；EasyAuth（离线服认证模组）只读状态适配、稳定性补强与 LLM（大语言模型） 主线接入留给 T-042 / T-043 / T-044。
 
 ## 🔧 技术栈
 
@@ -22,11 +23,12 @@ T-040 不实现 TS Core（TypeScript 单核心） 正式 `server-bridge`（服�
 
 ## 🏗️ 关键源码
 
-- `com.mcservant.MCServantMod` — Fabric mod 入口（`DedicatedServerModInitializer`），仅服务端加载。
-- `com.mcservant.bridge.ServerBridgeTransport` — 桥接传输接口（连接 / 断开 / 发送 / 状态查询）。
-- `com.mcservant.bridge.OkHttpServerBridgeTransport` — OkHttp（网络客户端） WebSocket（全双工通信协议）实现，负责 `hello`（握手）与 `heartbeat`（心跳）。
+- `com.mcservant.MCServantMod` — Fabric mod 入口（`DedicatedServerModInitializer`），仅服务端加载；负责装配桥接与注册 `/svs` 命令。
+- `com.mcservant.bridge.ServerBridgeTransport` — 桥接传输接口（连接 / 断开 / 发送 / 状态查询 / `sendPlayerMessage`）。
+- `com.mcservant.bridge.OkHttpServerBridgeTransport` — OkHttp（网络客户端） WebSocket（全双工通信协议）实现，负责 `hello`（握手）/ `heartbeat`（心跳）/ `player_message`（玩家消息）三类协议帧。
 - `com.mcservant.bridge.ServerBridgeConfig` — 桥接配置 record（记录类型），提供本地默认值与 runtime（运行时）覆盖读取。
-- `plugin/scripts/ws-debug-server.py` — 本地 WebSocket（全双工通信协议）联调假服务，只用于观察 mod（模组）侧帧。
+- `com.mcservant.command.SvsCommand` — `/svs <message>`（服务端女仆命令）注册器，使用 Fabric API（命令）+ Brigadier（命令库）+ fabric-permissions-api（权限接口）。
+- `plugin/scripts/ws-debug-server.py` — 本地 WebSocket（全双工通信协议）联调假服务，只用于观察 mod（模组）侧帧；T-041 起 TS Core 也提供真实 `/ws/server-bridge` 接收端（见 `ts-core/README.md`）。
 
 ## 🔌 桥接配置
 
@@ -59,6 +61,15 @@ java \
 ```
 
 假服务日志应能看到 `hello`（握手）和至少一次 `heartbeat`（心跳）帧，并对每帧返回最小 `ack`（确认）帧。脚本只打印 `Authorization`（授权）是否存在，不打印 `access token`（访问令牌）值。
+
+如需对接真实 TS Core 接收端：将 `mcservant.bridge.url` 指向 TS Core 启动后暴露的 `ws://<host>:<port>/ws/server-bridge`，`mcservant.bridge.accessToken` 与 TS Core 注入的 token 必须完全一致。
+
+## 🎮 `/svs` 命令最短手测
+
+1. 在游戏内以 op 身份（或被 `mcservant.svs.use` 授权的玩家）执行 `/svs hello`。
+2. 桥接已连接：聊天框收到灰色提示 `[svs] 已转发到 TS Core`，TS Core 侧 `/api/replay` 出现 `server_bridge.player_message` 事件。
+3. 桥接未连接：聊天框收到红色错误 `[svs] 桥接未连接，TS Core 无法接收消息`，无任何帧外发，无 replay 事件写入。
+4. 普通玩家执行：聊天框收到红色 `[svs] 没有权限使用此命令`，不会触发 player_message 帧。
 
 ## ⚙️ 编译
 

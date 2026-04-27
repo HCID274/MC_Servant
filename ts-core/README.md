@@ -44,6 +44,14 @@ TS Core 是当前主线的 TypeScript 单核心工程骨架。
 
 默认会读取 `TS_CORE_BOT_ID`（机器人标识），未设置时回退到 `local-bot`。
 
+## Server Bridge（服务端桥接） 最短联调（T-041）
+
+- TS Core 端在 `interfaces/server-bridge`（服务端桥接接口） 内提供 `registerServerBridgeWsRoute`（路由注册），可挂在已有 Fastify（接口网关） 实例上，端点固定为 `/ws/server-bridge`。
+- token（令牌） 必须由调用方注入；缺失或不匹配的 `Authorization: Bearer`（授权头） 请求会在握手阶段被 401 拒绝，不会进入消息处理流程，也不会写入 replay（补拉） 事件。
+- 启动入口 `startAppOnlineRuntime` 已支持 `dependencies.serverBridge`：传入 `{ accessToken: "...", path?: "...", enabled?: true|false }` 后，hello / heartbeat / player_message 帧会按 `server_bridge.<type>` 写入 `/api/replay`（补拉接口）；任何 `access token` 都不会出现在 ack / error 帧、replay 事件或日志中。
+- mod 端 `/svs <message>` 与 TS Core 端联调步骤：mod 启动时配置 `mcservant.bridge.url=ws://<ts-core-host>:<port>/ws/server-bridge` 与 `mcservant.bridge.accessToken=<同 TS Core 注入值>`；游戏内执行 `/svs hello` 后，TS Core `/api/replay` 应出现 `server_bridge.player_message` 事件。
+- 当前 `src/main.ts`（默认入口） 不在本任务白名单内，未自动从环境变量装配 `serverBridge`；需要在自定义入口里显式传入 dep 才能开启接收端，否则保持禁用。
+
 ## 最小闲聊手测
 
 1. 在 `.env`（环境变量文件） 中至少配置以下项：

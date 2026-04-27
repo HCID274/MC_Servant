@@ -15,13 +15,16 @@ import {
   createConversationLlmConfig,
   createMessageTriage,
 } from "../conversation/index.js";
+import type { RuntimeEventType } from "../core-ports/events.js";
 import { createBotActorStateProjection } from "../core-ports/index.js";
 import { type LlmDiagnosticSummary, createLlmDiagnosticSummary } from "../diagnostics/index.js";
 import {
   type InterfaceBotStatusSnapshot,
   type RealtimeEventEnvelope,
+  type ServerBridgeWsRouteOptions,
   createInterfaceBotStatusSnapshot,
   createRealtimeEventEnvelope,
+  registerServerBridgeWsRoute,
 } from "../interfaces/index.js";
 import {
   type BotWorkerAction,
@@ -124,6 +127,24 @@ export interface AppOnlineEntrypointDependencies extends AppProcessRuntimeDepend
   readonly botWorker?: Omit<BotWorkerRuntimeDependencies, "actor">;
   /** LLM（大语言模型） 依赖注入。 */
   readonly llm?: AppOnlineLlmDependencies;
+  /** Server Bridge（服务端桥接） WebSocket 接收端配置。 */
+  readonly serverBridge?: AppServerBridgeDependencies;
+}
+
+/** Server Bridge（服务端桥接） WebSocket 接收端可注入配置。 */
+export interface AppServerBridgeDependencies {
+  /** 是否启用接收端；默认按 accessToken 是否提供决定。 */
+  readonly enabled?: boolean;
+  /** 期望的 access token；与 mod 端 Authorization Bearer 必须完全一致。 */
+  readonly accessToken: string;
+  /** 监听路径；默认 /ws/server-bridge。 */
+  readonly path?: string;
+  /** 时钟覆盖。 */
+  readonly now?: ServerBridgeWsRouteOptions["now"];
+  /** 事件 id 工厂覆盖。 */
+  readonly eventIdFactory?: ServerBridgeWsRouteOptions["eventIdFactory"];
+  /** 解析失败回调（仅诊断用）。 */
+  readonly onParseFailure?: ServerBridgeWsRouteOptions["onParseFailure"];
 }
 
 /** 真实在线启动入口运行中资源。 */
@@ -381,6 +402,12 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         }),
       replayEvents: input.dependencies?.services?.replayEvents ?? replayStore.read,
       latestLlmDiagnostic: () => latestLlmDiagnostic,
+      appendRealtimeEvent: appendOnlineRealtimeEvent,
+    });
+    await registerOnlineServerBridgeRoute({
+      server: services.http.server,
+      botId: input.bootstrap.bot_id,
+      dependencies: input.dependencies?.serverBridge,
       appendRealtimeEvent: appendOnlineRealtimeEvent,
     });
     const listenAddress = await services.http.listen();
@@ -839,6 +866,61 @@ function createOnlineInterfaceStatusSnapshot<TBotId extends string>(input: {
     },
     llm: input.latestLlmDiagnostic,
   });
+}
+
+/**
+ * 在已创建的 Fastify 实例上挂载 Server Bridge（服务端桥接） WebSocket 接收端。
+ *
+ * 1. 默认按 enabled / accessToken 决定是否注册：未注入 token 等同禁用，
+ *    避免开发或测试无配置时误开端点。
+ * 2. 解析成功的帧走 onEvent 回调注入既有 replay（补拉） 流，事件类型固定为
+ *    `server_bridge.<frame.type>`，runtime_effect 由 envelope 保持 observe_only。
+ * 3. 类型断言把 server_bridge.* 收口到 RuntimeEventType；这是唯一接口边界，
+ *    Phase 1 不允许这些事件进入 conversation / workers / BotActor 写路径。
+ */
+async function registerOnlineServerBridgeRoute<TBotId extends string>(input: {
+  readonly server: AppRuntimeServices<TBotId>["http"]["server"];
+  readonly botId: TBotId;
+  readonly dependencies: AppServerBridgeDependencies | undefined;
+  readonly appendRealtimeEvent: (event: Omit<RealtimeEventEnvelope, "seq">) => Promise<void>;
+}): Promise<void> {
+  const dependencies = input.dependencies;
+  if (dependencies === undefined) {
+    return;
+  }
+  if (dependencies.enabled === false) {
+    return;
+  }
+  if (dependencies.accessToken.length === 0) {
+    return;
+  }
+
+  const baseOptions: ServerBridgeWsRouteOptions = {
+    botId: input.botId,
+    accessToken: dependencies.accessToken,
+    ...(dependencies.path === undefined ? {} : { path: dependencies.path }),
+    ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+    ...(dependencies.eventIdFactory === undefined
+      ? {}
+      : { eventIdFactory: dependencies.eventIdFactory }),
+    ...(dependencies.onParseFailure === undefined
+      ? {}
+      : { onParseFailure: dependencies.onParseFailure }),
+    onEvent: async ({ frame, envelope, received_at }) => {
+      const realtimeType = `server_bridge.${frame.type}` as RuntimeEventType;
+      await input.appendRealtimeEvent({
+        bot_id: input.botId,
+        type: realtimeType,
+        created_at: received_at,
+        payload: {
+          runtime_effect: envelope.runtime_effect,
+          ...(envelope.payload ?? {}),
+        },
+      });
+    },
+  };
+
+  await registerServerBridgeWsRoute(input.server, baseOptions);
 }
 
 /**
