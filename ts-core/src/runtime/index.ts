@@ -43,6 +43,7 @@ export const runtimeModuleBoundary = {
     "createMineflayerRuntimeTransport",
     "createMineflayerTransportDescriptor",
     "createBotActorRuntime",
+    "selectReflexAction",
   ],
 } satisfies ModuleBoundary;
 

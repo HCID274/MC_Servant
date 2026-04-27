@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import { createSandboxLogRef } from "../diagnostics/index.js";
-import { createObservationRuntimeCache } from "../observation/index.js";
+import {
+  type ThreatAssessment,
+  ThreatLevel,
+  ThreatRuleId,
+  createObservationRuntimeCache,
+} from "../observation/index.js";
 import {
   BotStatus,
   ExecPriority,
+  type InterruptSignal,
   type MineflayerRuntimeTransport,
   createBotActorRuntime,
   createExternalAuthExecutionPlan,
@@ -121,6 +127,36 @@ function createFakeTransport(input?: {
     getEventSource() {
       return null;
     },
+  });
+}
+
+function createThreatAssessment(input: {
+  level: ThreatLevel;
+  ruleId: ThreatRuleId;
+}): ThreatAssessment {
+  return Object.freeze({
+    rule_id: input.ruleId,
+    level: input.level,
+    reason: input.ruleId,
+    interrupt_required: true,
+    detected_at: 1_712_000_000,
+    hostile_entities: Object.freeze([]),
+    bot_state: Object.freeze({
+      health: 20,
+      is_on_fire: false,
+      y_velocity: input.ruleId === ThreatRuleId.Falling ? -1.2 : 0,
+      has_weapon_equipped: input.level === ThreatLevel.Fight,
+    }),
+  });
+}
+
+function createReflexInterruptSignal(threat: ThreatAssessment): InterruptSignal {
+  return Object.freeze({
+    source: Object.freeze({
+      type: "reflex" as const,
+      threat,
+    }),
+    reason: "threat_detected",
   });
 }
 
@@ -564,6 +600,246 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
         skill: "equip",
       },
     ]);
+  });
+});
+
+describe("BotActor（机器人执行代理） 脊髓反射入口", () => {
+  it("应在 IDLE（空闲） 状态执行 flee（逃离） 反射并回到 IDLE（空闲）", async () => {
+    const actions: string[] = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport(),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      reflexActionExecutor: ({ action }) => {
+        actions.push(action);
+      },
+    });
+
+    await actor.start();
+    const snapshot = await actor.interrupt(
+      createReflexInterruptSignal(
+        createThreatAssessment({
+          level: ThreatLevel.Flee,
+          ruleId: ThreatRuleId.HostileSwarm,
+        }),
+      ),
+    );
+
+    expect(actions).toEqual(["flee"]);
+    expect(snapshot.status).toBe(BotStatus.IDLE);
+    expect(snapshot.recent_reflex).toEqual({
+      action: "flee",
+      selected_action: "flee",
+      rule_id: ThreatRuleId.HostileSwarm,
+      threat_level: ThreatLevel.Flee,
+      status: "completed",
+      error: null,
+    });
+    expect(snapshot.emitted_events).toContain("state.transition");
+    expect(snapshot.emitted_events).toContain("reflex.triggered");
+    expect(snapshot.emitted_events).toContain("reflex.done");
+  });
+
+  it("应在 EXECUTING（执行中） 状态中断原任务并执行 fight（战斗） 反射", async () => {
+    let releaseMove: (() => void) | undefined;
+    const actions: string[] = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        goTo: async () => {
+          await new Promise<void>((resolve) => {
+            releaseMove = resolve;
+          });
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      reflexActionExecutor: ({ action }) => {
+        actions.push(action);
+      },
+    });
+
+    await actor.start();
+    const execution = actor.executeSkill(
+      createSkillCallJob({
+        message_id: "msg-running",
+        intent_epoch: 1,
+        snapshot_ts: 100,
+        priority: ExecPriority.Normal,
+        skill: SKILL_DIRECTORY.goTo,
+        params: { x: 1, y: 64, z: -3 },
+      }),
+    );
+
+    expect(actor.getSnapshot().status).toBe(BotStatus.EXECUTING);
+    const snapshot = await actor.interrupt(
+      createReflexInterruptSignal(
+        createThreatAssessment({
+          level: ThreatLevel.Fight,
+          ruleId: ThreatRuleId.HostileCloseArmed,
+        }),
+      ),
+    );
+
+    expect(actions).toEqual(["fight"]);
+    expect(snapshot.status).toBe(BotStatus.IDLE);
+    expect(snapshot.current_task).toBeNull();
+    expect(snapshot.recent_reflex?.action).toBe("fight");
+    expect(snapshot.emitted_events).toContain("task.interrupted");
+    expect(snapshot.emitted_events).not.toContain("task.completed");
+
+    releaseMove?.();
+    await expect(execution).rejects.toThrow(/interrupted/);
+    expect(actor.getSnapshot().emitted_events).not.toContain("task.completed");
+  });
+
+  it("应把 Emergency/Falling（紧急/坠落） 反射收口为 no_op（无操作）", async () => {
+    const actions: string[] = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport(),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      reflexActionExecutor: ({ action }) => {
+        actions.push(action);
+      },
+    });
+
+    await actor.start();
+    const snapshot = await actor.interrupt(
+      createReflexInterruptSignal(
+        createThreatAssessment({
+          level: ThreatLevel.Emergency,
+          ruleId: ThreatRuleId.Falling,
+        }),
+      ),
+    );
+
+    expect(actions).toEqual(["no_op"]);
+    expect(snapshot.status).toBe(BotStatus.IDLE);
+    expect(snapshot.recent_reflex).toMatchObject({
+      action: "no_op",
+      selected_action: "no_op",
+      rule_id: ThreatRuleId.Falling,
+      threat_level: ThreatLevel.Emergency,
+      status: "completed",
+    });
+  });
+
+  it("应在未注入执行器时安全降级为 no_op（无操作），不得伪装成逃离", async () => {
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport(),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+    });
+
+    await actor.start();
+    const snapshot = await actor.interrupt(
+      createReflexInterruptSignal(
+        createThreatAssessment({
+          level: ThreatLevel.Flee,
+          ruleId: ThreatRuleId.HostileCloseUnarmed,
+        }),
+      ),
+    );
+
+    expect(snapshot.status).toBe(BotStatus.IDLE);
+    expect(snapshot.recent_reflex).toMatchObject({
+      action: "no_op",
+      selected_action: "flee",
+      status: "completed",
+      error: null,
+    });
+  });
+
+  it("应在执行器失败或超时后回到 IDLE（空闲） 并留下反射摘要", async () => {
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const failedActor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport(),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      reflexActionExecutor: () => {
+        throw new Error("reflex actuator failed");
+      },
+    });
+    const timedOutActor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport(),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      reflexActionExecutor: async () => {
+        await new Promise<void>(() => {});
+      },
+      reflexActionTimeoutMs: 1,
+    });
+    const fightSignal = createReflexInterruptSignal(
+      createThreatAssessment({
+        level: ThreatLevel.Fight,
+        ruleId: ThreatRuleId.HostileCloseArmed,
+      }),
+    );
+
+    await failedActor.start();
+    const failedSnapshot = await failedActor.interrupt(fightSignal);
+    await timedOutActor.start();
+    const timedOutSnapshot = await timedOutActor.interrupt(fightSignal);
+
+    expect(failedSnapshot.status).toBe(BotStatus.IDLE);
+    expect(failedSnapshot.recent_reflex).toMatchObject({
+      action: "fight",
+      status: "failed",
+      error: "reflex actuator failed",
+    });
+    expect(failedSnapshot.emitted_events).toContain("reflex.done");
+    expect(timedOutSnapshot.status).toBe(BotStatus.IDLE);
+    expect(timedOutSnapshot.recent_reflex).toMatchObject({
+      action: "fight",
+      status: "timed_out",
+      error: "BotActor reflex action timed out",
+    });
+    expect(timedOutSnapshot.emitted_events).toContain("reflex.done");
+  });
+
+  it("应返回只读反射快照，调用方不能污染后续查询", async () => {
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport(),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      reflexActionExecutor: () => {},
+    });
+
+    await actor.start();
+    const snapshot = await actor.interrupt(
+      createReflexInterruptSignal(
+        createThreatAssessment({
+          level: ThreatLevel.Fight,
+          ruleId: ThreatRuleId.HostileCloseArmed,
+        }),
+      ),
+    );
+
+    expect(Object.isFrozen(snapshot.recent_reflex)).toBe(true);
+    expect(() => {
+      (snapshot.recent_reflex as unknown as { action: string }).action = "flee";
+    }).toThrow();
+    expect(actor.getSnapshot().recent_reflex?.action).toBe("fight");
   });
 });
 

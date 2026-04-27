@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-031` ~ `T-040`
-- 当前已完成任务：`T-031`、`T-032`、`T-033`、`T-034`、`T-035`、`T-036`、`T-037`
-- 当前活跃任务：`T-038`（任务三十八） BotActor（机器人执行代理） 脊髓反射动作硬编码。
+- 当前已完成任务：`T-031`、`T-032`、`T-033`、`T-034`、`T-035`、`T-036`、`T-037`、`T-038`
+- 当前活跃任务：`T-039`（任务三十九） JAR（自定义服务端插件） 桥接通信落地；派发前待用户确认 JAR（自定义服务端插件）端发包能力。
 - 当前批次摘要：上一批次 `T-021`（任务二十一） 到 `T-030`（任务三十） 已完成 MC（Minecraft，我的世界） 上线闭环、真实 LLM（大语言模型） 接入、多技能、观测出口、sandbox_code（沙箱代码） 与架构治理。新批次默认继续沿可运行主干推进对话智能增强。
 - 当前批次硬约束：不得回退 `T-021` 到 `T-030` 已形成的真实在线路径、单写者路径、无循环依赖图、OpenAI（开放人工智能） 兼容配置边界与 sandbox_code（沙箱代码） 执行安全边界。
 
@@ -207,3 +207,28 @@
   - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、185 条测试全部通过。
   - Manager（管理代理） 复跑 `git diff --check` 与 `git diff --cached --check`：通过。
   - Manager（管理代理） 复核 `pnpm list minecraft-data --depth 0`：生产依赖仅新增 `minecraft-data@3.109.1`（MC 事实包）。
+
+### T-038（已完成）
+
+- **任务主题**: BotActor（机器人执行代理） 脊髓反射动作硬编码。
+- **审查时间**: 2026-04-27T11:19:28+09:00
+- **核心文件**:
+  - `src/runtime/actor.ts`
+  - `src/runtime/index.ts`
+  - `src/__tests__/runtime-actor-model.spec.ts`
+- **变更快照**:
+  - `BotActorRuntime`（机器人执行代理运行时） 新增 `interrupt(signal)`（中断） 入口，复用现有 `resolveTransition()`（解析状态转换） 接受 `reflex`（反射） 中断并按状态机忽略或排队不可接收状态。
+  - BotActor（机器人执行代理） 边界内新增有限反射动作模型 `flee`（逃离） / `fight`（战斗） / `emergency`（紧急） / `no_op`（无操作），只依据 `ThreatAssessment`（威胁评估） 的 `level`（等级） 与 `rule_id`（规则标识） 选择动作；`Emergency/Falling`（紧急 / 坠落） 固定收口为 `no_op`（无操作）。
+  - 新增可注入 `reflexActionExecutor`（反射动作执行器） 与短超时边界；缺省执行器、执行器失败、执行器超时均记录 `recent_reflex`（最近反射） 摘要并回到 `IDLE`（空闲）。
+  - `BotActorRuntimeSnapshot`（机器人执行代理运行时快照） 新增冻结的 `recent_reflex`（最近反射） 摘要，包含动作、原始选中动作、威胁规则、威胁等级、状态与错误摘要。
+  - 从 `EXECUTING`（执行中） 进入反射时记录 `task.interrupted`（任务已中断），阻止原技能或 sandbox_code（沙箱代码） 任务在返回后伪装为 `task.completed`（任务已完成）；旧执行仍未释放前，新技能会被 `currentExecution`（当前执行） 门控拒绝。
+  - 本轮未修改 Mineflayer（Minecraft 协议客户端） transport（传输层） 低层端口，未暴露原始 Bot（机器人） 句柄，未新增依赖、数据库、网络服务、JAR（自定义服务端插件） 通信或事实表。
+- **审查结论**:
+  - 通过。T-038（任务三十八） 已闭合 observation（观测） 反射中断进入 BotActor（机器人执行代理） 后的最小动作执行闭环，并保留单写者边界。
+  - 本轮未触碰 LLM（大语言模型） 调用链路、Prompt（提示词）、parser（解析器）、对话路由或 online entrypoint（在线入口装配），因此不需要真实 OpenAI（开放人工智能）兼容 API（应用程序接口）验收。
+- **验证记录**:
+  - Manager（管理代理） 复跑 `cd ts-core && pnpm vitest run src/__tests__/runtime-actor-model.spec.ts src/__tests__/runtime-model.spec.ts src/__tests__/observation-world-model.spec.ts src/__tests__/observation-runtime-model.spec.ts`：4 个测试文件、33 条测试通过。
+  - Manager（管理代理） 复跑 `bash ts-core/scripts/pre_review.sh`：madge（依赖图工具） 无循环依赖，TypeScript（类型检查） 通过，Biome（代码检查） 通过，Vitest（测试） 29 个测试文件、191 条测试全部通过。
+  - Manager（管理代理） 复跑 `git diff --check` 与 `git diff --cached --check`：通过。
+  - Manager（管理代理） 复核 `pnpm list --depth 0`：依赖清单无 T-038（任务三十八） 新增项。
+  - Manager（管理代理） 额外验证：反射返回 `IDLE`（空闲） 后，旧技能 Promise（异步承诺） 未释放前新技能仍被门控拒绝，事件序列包含 `task.interrupted`（任务已中断）、`reflex.triggered`（反射触发） 与 `reflex.done`（反射完成）。

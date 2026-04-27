@@ -1,3 +1,4 @@
+import { type ThreatAssessment, ThreatLevel, ThreatRuleId } from "../core-ports/observation.js";
 import type {
   RuntimeSandboxExecutionDependencies,
   RuntimeSandboxExecutionResult,
@@ -20,6 +21,7 @@ import {
   BotStatus,
   type ExternalAuthExecutionPlan,
   type ExternalAuthState,
+  type InterruptSignal,
   type RuntimeReadyGate,
   createExternalAuthExecutionPlan,
   createRuntimeReadyGate,
@@ -51,6 +53,8 @@ export interface BotActorRuntimeSnapshot<TBotId extends string = string> {
   readonly external_auth_plan: ExternalAuthExecutionPlan;
   /** 当前正在执行的任务只读摘要。 */
   readonly current_task: BotActorCurrentTaskProjection | null;
+  /** 最近一次反射动作只读摘要。 */
+  readonly recent_reflex: BotActorReflexExecutionSummary | null;
   /** 本轮生命周期已产出的运行时事件类型。 */
   readonly emitted_events: readonly RuntimeEventType[];
   /** 本轮由 BotActor（机器人执行代理） 单写者完成的聊天写入记录。 */
@@ -60,6 +64,45 @@ export interface BotActorRuntimeSnapshot<TBotId extends string = string> {
   /** 本轮由 BotActor（机器人执行代理） 单写者完成的沙箱执行记录。 */
   readonly sandbox_executions: readonly BotActorSandboxExecutionRecord[];
 }
+
+/** BotActor（机器人执行代理） 反射动作清单。 */
+export type BotActorReflexAction = "flee" | "fight" | "emergency" | "no_op";
+
+/** BotActor（机器人执行代理） 反射执行状态清单。 */
+export type BotActorReflexExecutionStatus = "completed" | "skipped" | "failed" | "timed_out";
+
+/** BotActor（机器人执行代理） 反射执行摘要。 */
+export interface BotActorReflexExecutionSummary {
+  /** 最终执行动作。 */
+  readonly action: BotActorReflexAction;
+  /** 原始选中动作。 */
+  readonly selected_action: BotActorReflexAction;
+  /** 威胁规则标识。 */
+  readonly rule_id: ThreatAssessment["rule_id"];
+  /** 威胁等级。 */
+  readonly threat_level: ThreatAssessment["level"];
+  /** 执行状态。 */
+  readonly status: BotActorReflexExecutionStatus;
+  /** 可审计错误摘要。 */
+  readonly error: string | null;
+}
+
+/** BotActor（机器人执行代理） 反射动作执行器输入。 */
+export interface BotActorReflexActionExecutorInput {
+  /** 最终执行动作。 */
+  readonly action: BotActorReflexAction;
+  /** 原始选中动作。 */
+  readonly selected_action: BotActorReflexAction;
+  /** 触发反射的威胁评估。 */
+  readonly threat: ThreatAssessment;
+  /** 原始中断信号。 */
+  readonly signal: InterruptSignal;
+}
+
+/** BotActor（机器人执行代理） 反射动作执行器。 */
+export type BotActorReflexActionExecutor = (
+  input: BotActorReflexActionExecutorInput,
+) => Promise<void> | void;
 
 /** BotActor（机器人执行代理） 聊天写入记录。 */
 export type BotActorChatWriteRecord =
@@ -136,6 +179,8 @@ export interface BotActorRuntime<TBotId extends string = string> {
   executeSkill(job: SkillCallJob): Promise<BotActorSkillExecutionOutcome<TBotId>>;
   /** 通过 BotActor（机器人执行代理） 单写者入口执行沙箱代码任务。 */
   executeSandboxCode(job: SandboxCodeJob): Promise<BotActorSandboxExecutionOutcome<TBotId>>;
+  /** 向 BotActor（机器人执行代理） 投递运行时中断信号。 */
+  interrupt(signal: InterruptSignal): Promise<BotActorRuntimeSnapshot<TBotId>>;
   /** 将 BotActor（机器人执行代理） 切换到 SHUTDOWN（关闭） 状态。 */
   shutdown(): Promise<BotActorRuntimeSnapshot<TBotId>>;
   /** 获取当前运行时快照。 */
@@ -160,12 +205,16 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   externalAuthPlan: ExternalAuthExecutionPlan;
   skillExecution?: SkillExecutionDependencies;
   sandboxExecution?: RuntimeSandboxExecutionDependencies;
+  reflexActionExecutor?: BotActorReflexActionExecutor;
+  reflexActionTimeoutMs?: number;
 }): BotActorRuntime<TBotId> {
   let status = BotStatus.INITIALIZING;
   let externalAuth = input.externalAuth;
   let externalAuthPlan = input.externalAuthPlan;
   let currentTask: BotActorCurrentTaskProjection | null = null;
+  let currentExecution: { readonly message_id: string; interrupted: boolean } | null = null;
   let chatWriteInFlight: Promise<void> | null = null;
+  let recentReflex: BotActorReflexExecutionSummary | null = null;
   const emittedEvents: RuntimeEventType[] = [];
   const chatWrites: BotActorChatWriteRecord[] = [];
   const skillExecutions: BotActorSkillExecutionRecord[] = [];
@@ -189,6 +238,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       external_auth: externalAuth,
       external_auth_plan: externalAuthPlan,
       current_task: currentTask,
+      recent_reflex: cloneReflexExecutionSummary(recentReflex),
       emitted_events: Object.freeze([...emittedEvents]),
       chat_writes: Object.freeze([...chatWrites]),
       skill_executions: Object.freeze([...skillExecutions]),
@@ -330,6 +380,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         throw new Error("BotActor is not ready for executeSkill");
       }
 
+      if (currentExecution !== null) {
+        throw new Error("BotActor is not ready for executeSkill");
+      }
+
       if (!transportSnapshot.world_ready) {
         throw new Error("BotActor world interaction is not ready for executeSkill");
       }
@@ -349,11 +403,20 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         message_id: job.message_id,
         skill: job.skill,
       });
+      const execution = {
+        message_id: job.message_id,
+        interrupted: false,
+      };
+      currentExecution = execution;
       status = startDecision.to;
       emittedEvents.push(...startDecision.emittedEvents);
 
       try {
         const result = await executeActorSkillCallJob(job, skillExecution);
+        if (execution.interrupted) {
+          throw new Error("BotActor skill execution was interrupted");
+        }
+
         const completedDecision = resolveTransition(status, {
           type: "task_completed",
         });
@@ -376,6 +439,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           snapshot: createSnapshot(),
         });
       } catch (error) {
+        if (execution.interrupted) {
+          throw error;
+        }
+
         const failedDecision = resolveTransition(status, {
           type: "task_failed",
         });
@@ -387,7 +454,12 @@ export function createBotActorRuntime<TBotId extends string>(input: {
 
         throw error;
       } finally {
-        currentTask = null;
+        if (currentExecution === execution) {
+          currentExecution = null;
+        }
+        if (!execution.interrupted) {
+          currentTask = null;
+        }
       }
     },
     async executeSandboxCode(
@@ -400,6 +472,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       });
 
       if (!readyGate.ready) {
+        throw new Error("BotActor is not ready for executeSandboxCode");
+      }
+
+      if (currentExecution !== null) {
         throw new Error("BotActor is not ready for executeSandboxCode");
       }
 
@@ -421,6 +497,11 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         kind: "sandbox_code" as const,
         message_id: job.message_id,
       });
+      const execution = {
+        message_id: job.message_id,
+        interrupted: false,
+      };
+      currentExecution = execution;
       status = startDecision.to;
       emittedEvents.push(...startDecision.emittedEvents);
 
@@ -450,6 +531,9 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           },
           facade: createActorSandboxFacade(job),
         });
+        if (execution.interrupted) {
+          throw new Error("BotActor sandbox execution was interrupted");
+        }
 
         const completedDecision = resolveTransition(status, {
           type: sandboxResult.status === "completed" ? "task_completed" : "task_failed",
@@ -474,6 +558,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           snapshot: createSnapshot(),
         });
       } catch (error) {
+        if (execution.interrupted) {
+          throw error;
+        }
+
         const failedDecision = resolveTransition(status, {
           type: "task_failed",
         });
@@ -485,8 +573,50 @@ export function createBotActorRuntime<TBotId extends string>(input: {
 
         throw error;
       } finally {
-        currentTask = null;
+        if (currentExecution === execution) {
+          currentExecution = null;
+        }
+        if (!execution.interrupted) {
+          currentTask = null;
+        }
       }
+    },
+    async interrupt(signal: InterruptSignal): Promise<BotActorRuntimeSnapshot<TBotId>> {
+      const decision = resolveTransition(status, {
+        type: "interrupt",
+        signal,
+      });
+
+      if (!decision.accepted) {
+        return createSnapshot();
+      }
+
+      status = decision.to;
+      emittedEvents.push(...decision.emittedEvents);
+
+      if (currentExecution !== null) {
+        currentExecution.interrupted = true;
+      }
+
+      if (signal.source.type !== "reflex") {
+        currentTask = null;
+        return createSnapshot();
+      }
+
+      const threat = signal.source.threat;
+      currentTask = null;
+      recentReflex = await executeReflexAction(signal, threat);
+
+      const doneDecision = resolveTransition(status, {
+        type: "reflex_done",
+      });
+
+      if (doneDecision.accepted) {
+        status = doneDecision.to;
+        emittedEvents.push(...doneDecision.emittedEvents);
+      }
+
+      return createSnapshot();
     },
     async shutdown(): Promise<BotActorRuntimeSnapshot<TBotId>> {
       const shutdownDecision = resolveTransition(status, {
@@ -557,6 +687,133 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       if (chatWriteInFlight === writePromise) {
         chatWriteInFlight = null;
       }
+    }
+  }
+
+  /**
+   * 执行一次反射动作，并把失败或超时收口为可审计摘要。
+   */
+  async function executeReflexAction(
+    signal: InterruptSignal,
+    threat: ThreatAssessment,
+  ): Promise<BotActorReflexExecutionSummary> {
+    const selectedAction = selectReflexAction(threat);
+    const executableAction =
+      input.reflexActionExecutor === undefined && selectedAction !== "no_op"
+        ? "no_op"
+        : selectedAction;
+
+    if (input.reflexActionExecutor === undefined) {
+      return createReflexExecutionSummary({
+        action: executableAction,
+        selected_action: selectedAction,
+        threat,
+        status: executableAction === "no_op" ? "completed" : "skipped",
+        error: null,
+      });
+    }
+
+    try {
+      await runReflexActionWithTimeout(
+        input.reflexActionExecutor({
+          action: executableAction,
+          selected_action: selectedAction,
+          threat,
+          signal,
+        }),
+        input.reflexActionTimeoutMs ?? 250,
+      );
+
+      return createReflexExecutionSummary({
+        action: executableAction,
+        selected_action: selectedAction,
+        threat,
+        status: "completed",
+        error: null,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown reflex action failure";
+      const status = message === REFLEX_ACTION_TIMEOUT_MESSAGE ? "timed_out" : "failed";
+
+      return createReflexExecutionSummary({
+        action: executableAction,
+        selected_action: selectedAction,
+        threat,
+        status,
+        error: message,
+      });
+    }
+  }
+}
+
+const REFLEX_ACTION_TIMEOUT_MESSAGE = "BotActor reflex action timed out";
+
+/** 根据威胁评估选择 BotActor（机器人执行代理） 内置反射动作。 */
+export function selectReflexAction(threat: ThreatAssessment): BotActorReflexAction {
+  switch (threat.level) {
+    case ThreatLevel.Flee:
+      return "flee";
+    case ThreatLevel.Fight:
+      return "fight";
+    case ThreatLevel.Emergency:
+      return threat.rule_id === ThreatRuleId.Falling ? "no_op" : "emergency";
+  }
+}
+
+function createReflexExecutionSummary(input: {
+  readonly action: BotActorReflexAction;
+  readonly selected_action: BotActorReflexAction;
+  readonly threat: ThreatAssessment;
+  readonly status: BotActorReflexExecutionStatus;
+  readonly error: string | null;
+}): BotActorReflexExecutionSummary {
+  return Object.freeze({
+    action: input.action,
+    selected_action: input.selected_action,
+    rule_id: input.threat.rule_id,
+    threat_level: input.threat.level,
+    status: input.status,
+    error: input.error,
+  });
+}
+
+function cloneReflexExecutionSummary(
+  summary: BotActorReflexExecutionSummary | null,
+): BotActorReflexExecutionSummary | null {
+  if (summary === null) {
+    return null;
+  }
+
+  return Object.freeze({
+    action: summary.action,
+    selected_action: summary.selected_action,
+    rule_id: summary.rule_id,
+    threat_level: summary.threat_level,
+    status: summary.status,
+    error: summary.error,
+  });
+}
+
+async function runReflexActionWithTimeout(
+  action: Promise<void> | void,
+  timeoutMs: number,
+): Promise<void> {
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("reflexActionTimeoutMs must be a positive integer");
+  }
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(REFLEX_ACTION_TIMEOUT_MESSAGE));
+    }, timeoutMs);
+  });
+
+  try {
+    await Promise.race([Promise.resolve(action), timeout]);
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
     }
   }
 }
