@@ -509,9 +509,10 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
   });
 
-  it("应在 plan（规划） 路径读取 memory（记忆） 并在 provider（提供器） 失败时降级为空上下文", async () => {
+  it("应在 plan（规划） 路径读取 memory（记忆） 与资源摘要，并在 provider（提供器） 失败时降级", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const memoryContexts: Array<string | undefined> = [];
+    const resourceContexts: Array<string | undefined> = [];
     let callCount = 0;
     const runtime = createConversationWorkerRuntime({
       queue: {
@@ -541,8 +542,16 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
 
           return "历史：主人之前要求先装备镐子。";
         },
+        resourceContextProvider: (input) => {
+          if (input.message_id === "msg-plan-memory-fallback") {
+            throw new Error("resource index unavailable");
+          }
+
+          return "resources: tree: found 1 cluster(s): tree-a count=3 nearest=6.0 radius=16";
+        },
         planner: async (input) => {
           memoryContexts.push(input.memory_context);
+          resourceContexts.push(input.resource_context);
 
           return {
             type: "skill_call",
@@ -573,6 +582,10 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     }
 
     expect(memoryContexts).toEqual(["历史：主人之前要求先装备镐子。", undefined]);
+    expect(resourceContexts).toEqual([
+      "resources: tree: found 1 cluster(s): tree-a count=3 nearest=6.0 radius=16",
+      undefined,
+    ]);
     expect(runtime.getEvents()).toContainEqual({
       type: "task.accepted",
       bot_id: "bot-cw",

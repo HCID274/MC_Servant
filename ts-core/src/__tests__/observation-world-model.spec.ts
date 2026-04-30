@@ -11,6 +11,7 @@ import {
   createMinecraftDataFactsPort,
   createObservationReadBoundary,
   createReflexInterruptSource,
+  createResourceIndex,
   createThreatDetectorInput,
   createWorldModelQueryBoundary,
   createWorldModelRefreshBoundary,
@@ -501,13 +502,104 @@ describe("observation 与 world-model 契约", () => {
     expect(bestClusterAfterMutation?.cluster.centroid.x).toBe(3);
     expect(bestCandidateAfterMutation?.candidate.position.x).toBe(2);
     expect("refresh" in queryBoundary).toBe(false);
+    const refreshResult = await refreshBoundary.refresh({
+      snapshot_version: "snapshot-query",
+      resource_key: "oak_log",
+      radius: 16,
+      reason: "manual",
+    });
+
+    expect(refreshResult.status).toBe("runtime_unavailable");
+    expect(refreshResult.diagnostics).toEqual(["runtime_unavailable"]);
     await expect(
       refreshBoundary.refresh({
         snapshot_version: "snapshot-query",
         resource_key: "oak_log",
         reason: "manual",
       }),
-    ).rejects.toThrow("World-model refresh is intentionally not implemented in Phase 1");
+    ).resolves.toMatchObject({
+      status: "runtime_unavailable",
+      radius: 16,
+    });
+  });
+
+  it("应通过 ResourceIndex（资源索引） 按半径阶梯刷新并区分未命中、过期和命中", async () => {
+    let now = 1_712_000_000;
+    const calls: Array<{ resourceKey: string; radius: number }> = [];
+    const resourceIndex = createResourceIndex({
+      now: () => now,
+      staleAfterMs: 10,
+      refreshPort: {
+        async refreshAroundBot(resourceKey, radius) {
+          calls.push({ resourceKey, radius });
+
+          return {
+            resource_key: resourceKey,
+            radius,
+            status: radius === 16 ? "cache_miss" : "found",
+            world_key: "multiworld:resource",
+            snapshot_version: `resource-${radius}`,
+            scanned_at: now,
+            origin: { x: 0, y: 64, z: 0 },
+            blocks:
+              radius === 16
+                ? []
+                : [
+                    {
+                      block_name: "oak_log",
+                      position: { x: 4, y: 64, z: 3 },
+                      distance: 5,
+                      resource_keys: [resourceKey],
+                    },
+                    {
+                      block_name: "oak_log",
+                      position: { x: 5, y: 64, z: 3 },
+                      distance: 6,
+                      resource_keys: [resourceKey],
+                    },
+                  ],
+            diagnostics: radius === 16 ? ["cache_miss"] : [],
+          };
+        },
+      },
+    });
+
+    expect(resourceIndex.queryClusters("tree").status).toBe("cache_miss");
+    expect((await resourceIndex.refreshAroundBot("tree", 16)).status).toBe("cache_miss");
+    const found = await resourceIndex.refreshAroundBot("tree", 32);
+
+    expect(calls).toEqual([
+      { resourceKey: "tree", radius: 16 },
+      { resourceKey: "tree", radius: 32 },
+    ]);
+    expect(found.status).toBe("found");
+    expect(found.clusters[0]?.block_count).toBe(2);
+    expect(resourceIndex.queryClusters("tree").status).toBe("found");
+    expect(resourceIndex.createPlannerSummary(["tree"])).toContain("tree: found");
+
+    now += 11;
+
+    expect(resourceIndex.queryClusters("tree").status).toBe("stale_snapshot");
+  });
+
+  it("ResourceIndex（资源索引） 应把 refreshPort（刷新端口） 异常转换为 runtime_unavailable（运行时不可用）", async () => {
+    const resourceIndex = createResourceIndex({
+      refreshPort: {
+        async refreshAroundBot() {
+          throw new Error("runtime closed");
+        },
+      },
+    });
+
+    await expect(resourceIndex.refreshAroundBot("tree", 16)).resolves.toMatchObject({
+      resource_key: "tree",
+      radius: 16,
+      status: "runtime_unavailable",
+      world_key: null,
+      clusters: [],
+      diagnostics: ["runtime_unavailable", "refresh_port_failed:runtime closed"],
+    });
+    expect(resourceIndex.queryClusters("tree").status).toBe("cache_miss");
   });
 
   it("应通过 minecraft-data 提供版本化只读 MC 事实查询", () => {

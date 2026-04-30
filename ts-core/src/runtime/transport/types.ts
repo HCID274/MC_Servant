@@ -1,4 +1,8 @@
 import type {
+  ResourceRefreshRadius,
+  RuntimeResourceRefreshResult,
+} from "../../core-ports/runtime.js";
+import type {
   CollectSkillExecutionResult,
   CollectSkillParams,
   EquipSkillExecutionResult,
@@ -82,8 +86,12 @@ export interface MineflayerVec3Like {
 export interface MineflayerBlockHandle {
   /** 标准方块名称。 */
   readonly name?: string;
+  /** 方块数字标识。 */
+  readonly type?: number;
   /** 方块坐标。 */
   readonly position?: MineflayerVec3Like;
+  /** runtime（运行时） 暴露的方块 tag（标签） 列表或索引。 */
+  readonly tags?: readonly string[] | Readonly<Record<string, unknown>>;
 }
 
 /** Mineflayer（Minecraft 协议客户端） 物品句柄最小结构。 */
@@ -302,6 +310,11 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   collect(params: Readonly<CollectSkillParams>): Promise<CollectSkillExecutionResult>;
   /** 通过受控背包能力执行 equip（装备）。 */
   equip(params: Readonly<EquipSkillParams>): Promise<EquipSkillExecutionResult>;
+  /** 围绕 Bot（机器人） 当前位置执行只读资源刷新。 */
+  refreshAroundBot(
+    resourceKey: string,
+    radius: ResourceRefreshRadius,
+  ): Promise<RuntimeResourceRefreshResult>;
   /** 获取当前连接描述快照。 */
   getSnapshot(): MineflayerTransportSnapshot<TBotId>;
   /** 获取当前只读事件源；未连接或已回收时为 null。 */

@@ -6,8 +6,57 @@
  */
 
 import type { ExecutionTaskEnvelope } from "./foundation.js";
-import type { ReflexInterruptSource } from "./observation.js";
+import type { ReflexInterruptSource, SnapshotPosition } from "./observation.js";
 import type { SkillName } from "./skills.js";
+
+/** ResourceIndex（资源索引） 允许的只读刷新半径阶梯。 */
+export const RESOURCE_REFRESH_RADIUS_STEPS = Object.freeze([16, 32, 64] as const);
+
+/** ResourceIndex（资源索引） 允许的只读刷新半径。 */
+export type ResourceRefreshRadius = (typeof RESOURCE_REFRESH_RADIUS_STEPS)[number];
+
+/** runtime（运行时） 资源刷新状态，用于区分命中、未命中与不可用诊断。 */
+export type RuntimeResourceRefreshStatus =
+  | "found"
+  | "cache_miss"
+  | "runtime_unavailable"
+  | "unsupported_resource_key";
+
+/** runtime（运行时） 只读资源扫描到的候选方块。 */
+export interface RuntimeResourceBlockSummary {
+  /** 标准方块标识。 */
+  readonly block_name: string;
+  /** 方块坐标。 */
+  readonly position: Readonly<SnapshotPosition>;
+  /** 与 Bot（机器人） 的距离。 */
+  readonly distance: number;
+  /** 匹配到的资源键。 */
+  readonly resource_keys: readonly string[];
+  /** 可选资源簇标识。 */
+  readonly cluster_key?: string;
+}
+
+/** runtime（运行时） 只读资源刷新结果。 */
+export interface RuntimeResourceRefreshResult {
+  /** 被刷新的资源键。 */
+  readonly resource_key: string;
+  /** 使用的刷新半径。 */
+  readonly radius: ResourceRefreshRadius;
+  /** 刷新状态。 */
+  readonly status: RuntimeResourceRefreshStatus;
+  /** 当前世界 / 维度键，用于避免跨世界缓存混用。 */
+  readonly world_key: string;
+  /** 本次扫描产生的快照版本。 */
+  readonly snapshot_version: string;
+  /** 扫描发生时间戳。 */
+  readonly scanned_at: number;
+  /** 扫描锚点，默认为 Bot（机器人） 当前位置。 */
+  readonly origin: Readonly<SnapshotPosition>;
+  /** 匹配到的候选方块。 */
+  readonly blocks: readonly RuntimeResourceBlockSummary[];
+  /** 可读诊断。 */
+  readonly diagnostics: readonly string[];
+}
 
 /** Bot（机器人） 状态枚举，用于描述 BotActor（机器人执行代理） 在运行时内的最小状态集合。 */
 export enum BotStatus {

@@ -7,17 +7,52 @@
  * 4. 边界封装：提供查询和刷新边界的具体实现，维护读写分离架构。
  */
 
+import { RESOURCE_REFRESH_RADIUS_STEPS } from "../core-ports/runtime.js";
+import type {
+  ResourceRefreshRadius,
+  RuntimeResourceBlockSummary,
+  RuntimeResourceRefreshResult,
+} from "../core-ports/runtime.js";
 import type { SnapshotPosition } from "../observation/contracts.js";
 import type {
   BestResourceClusterResult,
   CandidateBlockSelectionResult,
   ResourceBlockCandidate,
+  ResourceClusterQueryResult,
   ResourceClusterSummary,
+  ResourceIndexBoundary,
+  ResourceIndexRefreshPort,
+  ResourceIndexRefreshResult,
   ResourceProfile,
   WorldModelQueryBoundary,
   WorldModelQueryContext,
   WorldModelRefreshBoundary,
+  WorldModelRefreshRequest,
 } from "./contracts.js";
+
+const DEFAULT_RESOURCE_INDEX_STALE_AFTER_MS = 60_000;
+const DEFAULT_RESOURCE_CLUSTER_RADIUS = 4;
+const DEFAULT_RESOURCE_PLANNER_SUMMARY_LIMIT = 2;
+
+interface ResourceIndexCacheEntry {
+  readonly resource_key: string;
+  readonly world_key: string;
+  readonly snapshot_version: string;
+  readonly refresh_radius: ResourceRefreshRadius;
+  readonly refreshed_at: number;
+  readonly clusters: readonly ResourceClusterSummary[];
+  readonly diagnostics: readonly string[];
+}
+
+interface MutableResourceIndexCacheEntry {
+  resource_key: string;
+  world_key: string;
+  snapshot_version: string;
+  refresh_radius: ResourceRefreshRadius;
+  refreshed_at: number;
+  clusters: readonly ResourceClusterSummary[];
+  diagnostics: readonly string[];
+}
 /** 浅度冻结只读数组。 */
 
 function freezeReadonlyArray<T>(values: readonly T[]): readonly T[] {
@@ -51,6 +86,28 @@ function cloneCluster(cluster: ResourceClusterSummary): ResourceClusterSummary {
     ),
   });
 }
+
+/** 克隆资源索引查询结果。 */
+function cloneResourceClusterQueryResult(
+  result: ResourceClusterQueryResult,
+): ResourceClusterQueryResult {
+  return Object.freeze({
+    ...result,
+    clusters: freezeReadonlyArray(result.clusters.map((cluster) => cloneCluster(cluster))),
+    diagnostics: freezeReadonlyArray(result.diagnostics),
+  });
+}
+
+/** 克隆资源索引刷新结果。 */
+function cloneResourceIndexRefreshResult(
+  result: ResourceIndexRefreshResult,
+): ResourceIndexRefreshResult {
+  return Object.freeze({
+    ...result,
+    clusters: freezeReadonlyArray(result.clusters.map((cluster) => cloneCluster(cluster))),
+    diagnostics: freezeReadonlyArray(result.diagnostics),
+  });
+}
 /** 克隆资源画像配置。 */
 
 function cloneProfile(profile: ResourceProfile): ResourceProfile {
@@ -63,6 +120,154 @@ function cloneProfile(profile: ResourceProfile): ResourceProfile {
 
 function scoreCluster(cluster: ResourceClusterSummary): number {
   return cluster.block_count * 10 - cluster.average_distance - cluster.nearest_distance;
+}
+
+/** 按资源簇评分、距离与标识进行稳定排序。 */
+function sortResourceClusters(
+  clusters: readonly ResourceClusterSummary[],
+): readonly ResourceClusterSummary[] {
+  return freezeReadonlyArray(
+    [...clusters].sort((left, right) => {
+      const scoreDelta = scoreCluster(right) - scoreCluster(left);
+
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+
+      if (left.nearest_distance !== right.nearest_distance) {
+        return left.nearest_distance - right.nearest_distance;
+      }
+
+      return left.cluster_id.localeCompare(right.cluster_id);
+    }),
+  );
+}
+
+/** 校验 ResourceIndex（资源索引） 半径阶梯。 */
+function isResourceRefreshRadius(value: number): value is ResourceRefreshRadius {
+  return RESOURCE_REFRESH_RADIUS_STEPS.includes(value as ResourceRefreshRadius);
+}
+
+/** 基于坐标计算三维距离。 */
+function distanceBetween(left: SnapshotPosition, right: SnapshotPosition): number {
+  return Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z);
+}
+
+/** 计算候选块列表的中心点。 */
+function calculateCentroid(candidates: readonly ResourceBlockCandidate[]): SnapshotPosition {
+  const sum = candidates.reduce(
+    (accumulator, candidate) => ({
+      x: accumulator.x + candidate.position.x,
+      y: accumulator.y + candidate.position.y,
+      z: accumulator.z + candidate.position.z,
+    }),
+    { x: 0, y: 0, z: 0 },
+  );
+
+  return freezePosition({
+    x: sum.x / candidates.length,
+    y: sum.y / candidates.length,
+    z: sum.z / candidates.length,
+  });
+}
+
+/** 判断运行时扫描块是否属于指定资源键。 */
+function runtimeBlockMatchesResourceKey(
+  block: RuntimeResourceBlockSummary,
+  resourceKey: string,
+): boolean {
+  return block.resource_keys.includes(resourceKey) || block.block_name === resourceKey;
+}
+
+/** 将运行时扫描块转换为资源候选块。 */
+function createResourceCandidate(block: RuntimeResourceBlockSummary): ResourceBlockCandidate {
+  return Object.freeze({
+    block_name: block.block_name,
+    position: freezePosition(block.position),
+    distance: block.distance,
+    score: Math.max(1, 64 - block.distance),
+    is_exposed: true,
+  });
+}
+
+/** 按显式 cluster_key（资源簇键） 或近邻半径把候选块分组。 */
+function groupRuntimeResourceBlocks(
+  resourceKey: string,
+  blocks: readonly RuntimeResourceBlockSummary[],
+): readonly (readonly RuntimeResourceBlockSummary[])[] {
+  const explicitGroups = new Map<string, RuntimeResourceBlockSummary[]>();
+  const ungrouped: RuntimeResourceBlockSummary[] = [];
+
+  for (const block of blocks.filter((candidate) =>
+    runtimeBlockMatchesResourceKey(candidate, resourceKey),
+  )) {
+    if (block.cluster_key) {
+      explicitGroups.set(block.cluster_key, [
+        ...(explicitGroups.get(block.cluster_key) ?? []),
+        block,
+      ]);
+    } else {
+      ungrouped.push(block);
+    }
+  }
+
+  const proximityGroups: RuntimeResourceBlockSummary[][] = [];
+
+  for (const block of ungrouped.sort((left, right) => left.distance - right.distance)) {
+    const matchedGroup = proximityGroups.find((group) =>
+      group.some(
+        (candidate) =>
+          distanceBetween(candidate.position, block.position) <= DEFAULT_RESOURCE_CLUSTER_RADIUS,
+      ),
+    );
+
+    if (matchedGroup) {
+      matchedGroup.push(block);
+    } else {
+      proximityGroups.push([block]);
+    }
+  }
+
+  return freezeReadonlyArray([
+    ...[...explicitGroups.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([, value]) => freezeReadonlyArray(value)),
+    ...proximityGroups.map((group) => freezeReadonlyArray(group)),
+  ]);
+}
+
+/** 从运行时刷新结果构建资源簇。 */
+export function createResourceClustersFromRuntimeRefresh(
+  refresh: RuntimeResourceRefreshResult,
+): readonly ResourceClusterSummary[] {
+  const groups = groupRuntimeResourceBlocks(refresh.resource_key, refresh.blocks);
+
+  return sortResourceClusters(
+    groups.map((group, index) => {
+      const candidates = freezeReadonlyArray(group.map((block) => createResourceCandidate(block)));
+      const centroid = calculateCentroid(candidates);
+      const nearestDistance = Math.min(...candidates.map((candidate) => candidate.distance));
+      const averageDistance =
+        candidates.reduce((sum, candidate) => sum + candidate.distance, 0) / candidates.length;
+      const clusterKey = group.find((block) => block.cluster_key !== undefined)?.cluster_key;
+
+      return cloneCluster({
+        resource_key: refresh.resource_key,
+        cluster_id:
+          clusterKey ??
+          `${refresh.world_key}:${refresh.resource_key}:${refresh.radius}:${index + 1}:${Math.round(centroid.x)}:${Math.round(centroid.y)}:${Math.round(centroid.z)}`,
+        snapshot_version: refresh.snapshot_version,
+        world_key: refresh.world_key,
+        refresh_radius: refresh.radius,
+        refreshed_at: refresh.scanned_at,
+        centroid,
+        block_count: candidates.length,
+        nearest_distance: nearestDistance,
+        average_distance: averageDistance,
+        candidates,
+      });
+    }),
+  );
 }
 
 /**
@@ -202,6 +407,179 @@ export function createWorldModelQueryBoundary(
   });
 }
 
+/** 创建 ResourceIndex（资源索引） 缓存与查询边界。 */
+export function createResourceIndex(
+  input: {
+    /** runtime（运行时） 只读刷新端口。 */
+    readonly refreshPort?: ResourceIndexRefreshPort;
+    /** 可注入当前时间。 */
+    readonly now?: () => number;
+    /** 缓存过期毫秒数。 */
+    readonly staleAfterMs?: number;
+    /** 初始资源簇。 */
+    readonly initialClusters?: readonly ResourceClusterSummary[];
+  } = {},
+): ResourceIndexBoundary {
+  const now = input.now ?? Date.now;
+  const staleAfterMs = input.staleAfterMs ?? DEFAULT_RESOURCE_INDEX_STALE_AFTER_MS;
+  const cache = new Map<string, MutableResourceIndexCacheEntry>();
+
+  for (const cluster of input.initialClusters ?? []) {
+    const existing = cache.get(cluster.resource_key);
+    const refreshedAt = cluster.refreshed_at ?? now();
+    const entry: MutableResourceIndexCacheEntry = existing ?? {
+      resource_key: cluster.resource_key,
+      world_key: cluster.world_key ?? "unknown",
+      snapshot_version: cluster.snapshot_version,
+      refresh_radius: cluster.refresh_radius ?? 16,
+      refreshed_at: refreshedAt,
+      clusters: [],
+      diagnostics: [],
+    };
+
+    entry.clusters = sortResourceClusters([...entry.clusters, cloneCluster(cluster)]);
+    entry.refreshed_at = Math.max(entry.refreshed_at, refreshedAt);
+    cache.set(cluster.resource_key, entry);
+  }
+
+  const queryClusters = (resourceKey: string, maxCount?: number): ResourceClusterQueryResult => {
+    const entry = cache.get(resourceKey);
+
+    if (entry === undefined) {
+      return cloneResourceClusterQueryResult({
+        resource_key: resourceKey,
+        status: "cache_miss",
+        world_key: null,
+        snapshot_version: null,
+        refresh_radius: null,
+        refreshed_at: null,
+        clusters: [],
+        diagnostics: ["cache_miss"],
+      });
+    }
+
+    const stale = now() - entry.refreshed_at > staleAfterMs;
+    const sortedClusters = sortResourceClusters(entry.clusters);
+
+    return cloneResourceClusterQueryResult({
+      resource_key: resourceKey,
+      status: stale ? "stale_snapshot" : sortedClusters.length > 0 ? "found" : "cache_miss",
+      world_key: entry.world_key,
+      snapshot_version: entry.snapshot_version,
+      refresh_radius: entry.refresh_radius,
+      refreshed_at: entry.refreshed_at,
+      clusters: sortedClusters.slice(0, maxCount ?? sortedClusters.length),
+      diagnostics: stale ? ["stale_snapshot", ...entry.diagnostics] : entry.diagnostics,
+    });
+  };
+
+  return Object.freeze({
+    queryClusters,
+    async refreshAroundBot(
+      resourceKey: string,
+      radius: ResourceRefreshRadius,
+    ): Promise<ResourceIndexRefreshResult> {
+      if (!isResourceRefreshRadius(radius)) {
+        return cloneResourceIndexRefreshResult({
+          resource_key: resourceKey,
+          radius: null,
+          status: "invalid_radius",
+          world_key: null,
+          snapshot_version: null,
+          refreshed_at: null,
+          clusters: [],
+          diagnostics: [`invalid_radius:${String(radius)}`],
+        });
+      }
+
+      if (input.refreshPort === undefined) {
+        return cloneResourceIndexRefreshResult({
+          resource_key: resourceKey,
+          radius,
+          status: "runtime_unavailable",
+          world_key: null,
+          snapshot_version: null,
+          refreshed_at: null,
+          clusters: [],
+          diagnostics: ["runtime_unavailable"],
+        });
+      }
+
+      let refresh: RuntimeResourceRefreshResult;
+
+      try {
+        refresh = await input.refreshPort.refreshAroundBot(resourceKey, radius);
+      } catch (error) {
+        return cloneResourceIndexRefreshResult({
+          resource_key: resourceKey,
+          radius,
+          status: "runtime_unavailable",
+          world_key: null,
+          snapshot_version: null,
+          refreshed_at: null,
+          clusters: [],
+          diagnostics: ["runtime_unavailable", `refresh_port_failed:${formatUnknownError(error)}`],
+        });
+      }
+
+      const clusters = createResourceClustersFromRuntimeRefresh(refresh);
+      const result: ResourceIndexRefreshResult = {
+        resource_key: resourceKey,
+        radius,
+        status: refresh.status,
+        world_key: refresh.world_key,
+        snapshot_version: refresh.snapshot_version,
+        refreshed_at: refresh.scanned_at,
+        clusters,
+        diagnostics: refresh.diagnostics,
+      };
+
+      cache.set(resourceKey, {
+        resource_key: resourceKey,
+        world_key: refresh.world_key,
+        snapshot_version: refresh.snapshot_version,
+        refresh_radius: radius,
+        refreshed_at: refresh.scanned_at,
+        clusters,
+        diagnostics: refresh.diagnostics,
+      });
+
+      return cloneResourceIndexRefreshResult(result);
+    },
+    createPlannerSummary(
+      resourceKeys: readonly string[],
+      maxClustersPerKey = DEFAULT_RESOURCE_PLANNER_SUMMARY_LIMIT,
+    ): string {
+      const lines = resourceKeys.map((resourceKey) => {
+        const result = queryClusters(resourceKey, maxClustersPerKey);
+
+        if (result.status !== "found") {
+          return `${resourceKey}: ${result.status}`;
+        }
+
+        const clusterSummaries = result.clusters
+          .map(
+            (cluster) =>
+              `${cluster.cluster_id} count=${cluster.block_count} nearest=${cluster.nearest_distance.toFixed(1)} radius=${cluster.refresh_radius ?? "unknown"}`,
+          )
+          .join("; ");
+
+        return `${resourceKey}: found ${result.clusters.length} cluster(s): ${clusterSummaries}`;
+      });
+
+      return lines.length > 0 ? `resources: ${lines.join(" | ")}` : "resources: unavailable";
+    },
+  });
+}
+
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
 /**
  * 创建世界模型的刷新契约边界。
  *
@@ -209,10 +587,17 @@ export function createWorldModelQueryBoundary(
  *
  * @returns 刷新边界对象
  */
-export function createWorldModelRefreshBoundary(): WorldModelRefreshBoundary {
+export function createWorldModelRefreshBoundary(
+  input: {
+    /** 复用的 ResourceIndex（资源索引） 边界。 */
+    readonly resourceIndex?: ResourceIndexBoundary;
+  } = {},
+): WorldModelRefreshBoundary {
+  const resourceIndex = input.resourceIndex ?? createResourceIndex();
+
   return Object.freeze({
-    async refresh() {
-      throw new Error("World-model refresh is intentionally not implemented in Phase 1");
+    async refresh(request: WorldModelRefreshRequest) {
+      return resourceIndex.refreshAroundBot(request.resource_key, request.radius ?? 16);
     },
   });
 }

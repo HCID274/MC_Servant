@@ -7,6 +7,7 @@
  * 4. 决策支持：定义结果结构，为 Bot 决定去哪里采集资源提供结构化参考。
  */
 
+import type { ResourceRefreshRadius, RuntimeResourceRefreshResult } from "../core-ports/runtime.js";
 import type { SnapshotPosition } from "../observation/contracts.js";
 
 /** 资源画像，用于声明某类资源的查询参数边界。 */
@@ -45,6 +46,12 @@ export interface ResourceClusterSummary {
   readonly cluster_id: string;
   /** 生成该摘要时的快照版本。 */
   readonly snapshot_version: string;
+  /** 当前世界 / 维度键，用于避免跨世界缓存混用。 */
+  readonly world_key?: string;
+  /** 生成该簇时使用的刷新半径。 */
+  readonly refresh_radius?: ResourceRefreshRadius;
+  /** 该簇最后刷新时间戳。 */
+  readonly refreshed_at?: number;
   /** 资源簇中心点。 */
   readonly centroid: Readonly<SnapshotPosition>;
   /** 资源块数量。 */
@@ -99,6 +106,79 @@ export interface WorldModelQueryBoundary {
   selectBestBlock(cluster: ResourceClusterSummary): CandidateBlockSelectionResult | null;
 }
 
+/** ResourceIndex（资源索引） 查询状态。 */
+export type ResourceClusterQueryStatus = "found" | "cache_miss" | "stale_snapshot";
+
+/** ResourceIndex（资源索引） 只读查询结果。 */
+export interface ResourceClusterQueryResult {
+  /** 被查询的资源键。 */
+  readonly resource_key: string;
+  /** 查询状态。 */
+  readonly status: ResourceClusterQueryStatus;
+  /** 当前世界 / 维度键。 */
+  readonly world_key: string | null;
+  /** 查询对应的快照版本。 */
+  readonly snapshot_version: string | null;
+  /** 缓存刷新半径。 */
+  readonly refresh_radius: ResourceRefreshRadius | null;
+  /** 缓存刷新时间戳。 */
+  readonly refreshed_at: number | null;
+  /** 排序后的资源簇。 */
+  readonly clusters: readonly ResourceClusterSummary[];
+  /** 可读诊断。 */
+  readonly diagnostics: readonly string[];
+}
+
+/** ResourceIndex（资源索引） 刷新状态。 */
+export type ResourceIndexRefreshStatus =
+  | "found"
+  | "cache_miss"
+  | "runtime_unavailable"
+  | "unsupported_resource_key"
+  | "invalid_radius";
+
+/** ResourceIndex（资源索引） 刷新结果。 */
+export interface ResourceIndexRefreshResult {
+  /** 被刷新的资源键。 */
+  readonly resource_key: string;
+  /** 使用的刷新半径。 */
+  readonly radius: ResourceRefreshRadius | null;
+  /** 刷新状态。 */
+  readonly status: ResourceIndexRefreshStatus;
+  /** 当前世界 / 维度键。 */
+  readonly world_key: string | null;
+  /** 本次刷新对应的快照版本。 */
+  readonly snapshot_version: string | null;
+  /** 刷新时间戳。 */
+  readonly refreshed_at: number | null;
+  /** 刷新后形成的资源簇。 */
+  readonly clusters: readonly ResourceClusterSummary[];
+  /** 可读诊断。 */
+  readonly diagnostics: readonly string[];
+}
+
+/** ResourceIndex（资源索引） 运行时刷新端口。 */
+export interface ResourceIndexRefreshPort {
+  /** 围绕 Bot（机器人） 执行只读资源刷新。 */
+  refreshAroundBot(
+    resourceKey: string,
+    radius: ResourceRefreshRadius,
+  ): Promise<RuntimeResourceRefreshResult>;
+}
+
+/** ResourceIndex（资源索引） 句柄。 */
+export interface ResourceIndexBoundary {
+  /** 查询指定资源键的资源簇列表，不触发扫描。 */
+  queryClusters(resourceKey: string, maxCount?: number): ResourceClusterQueryResult;
+  /** 围绕 Bot（机器人） 刷新指定资源键。 */
+  refreshAroundBot(
+    resourceKey: string,
+    radius: ResourceRefreshRadius,
+  ): Promise<ResourceIndexRefreshResult>;
+  /** 读取给 planner（规划器） 使用的短资源摘要。 */
+  createPlannerSummary(resourceKeys: readonly string[], maxClustersPerKey?: number): string;
+}
+
 /** world-model 刷新原因，用于显式声明 refresh 入口与 query 分离。 */
 export type WorldModelRefreshReason = "stale_snapshot" | "cache_miss" | "manual";
 
@@ -108,6 +188,8 @@ export interface WorldModelRefreshRequest {
   snapshot_version: string;
   /** 需要刷新的资源键。 */
   resource_key: string;
+  /** 刷新半径。 */
+  radius?: ResourceRefreshRadius;
   /** 刷新原因。 */
   reason: WorldModelRefreshReason;
 }
@@ -115,7 +197,7 @@ export interface WorldModelRefreshRequest {
 /** world-model 刷新边界，用于保留未来扫描实现的独立入口。 */
 export interface WorldModelRefreshBoundary {
   /** 请求刷新资源缓存。 */
-  refresh(request: WorldModelRefreshRequest): Promise<never>;
+  refresh(request: WorldModelRefreshRequest): Promise<ResourceIndexRefreshResult>;
 }
 
 /** Minecraft（我的世界）方块事实快照，用于封装 minecraft-data 的只读方块基础字段。 */

@@ -37,6 +37,7 @@ import {
   createObservationRuntimeCache,
 } from "../index.js";
 import type {
+  MineflayerBlockHandle,
   MineflayerBotHandle,
   MineflayerEntityHandle,
   MineflayerItemHandle,
@@ -69,6 +70,7 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     height: 256,
   };
   readonly receivedMovements: unknown[] = [];
+  readonly resourceBlocks: MineflayerBlockHandle[] = [];
   readonly inventoryItems: MineflayerItemHandle[] = [];
   readonly entities: Record<string, MineflayerEntityHandle | undefined> = {};
   readonly inventory = {
@@ -91,6 +93,35 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   }
 
   loadPlugin(): void {}
+
+  findBlocks(input: {
+    matching: (block: MineflayerBlockHandle) => boolean;
+    count: number;
+  }): readonly { readonly x: number; readonly y: number; readonly z: number }[] {
+    return this.resourceBlocks
+      .filter(input.matching)
+      .map((block) => block.position)
+      .filter(
+        (position): position is { readonly x: number; readonly y: number; readonly z: number } =>
+          position !== undefined,
+      )
+      .slice(0, input.count);
+  }
+
+  blockAt(position: {
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+  }): MineflayerBlockHandle | null {
+    return (
+      this.resourceBlocks.find(
+        (block) =>
+          block.position?.x === position.x &&
+          block.position.y === position.y &&
+          block.position.z === position.z,
+      ) ?? null
+    );
+  }
 
   nearestEntity(
     matcher: (entity: MineflayerEntityHandle) => boolean,
@@ -208,6 +239,64 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await Promise.resolve();
 
     expect(transport.getSnapshot().world_ready).toBe(true);
+    await transport.disconnect("test shutdown");
+  });
+
+  it("资源刷新应在 Mineflayer（Minecraft 协议客户端） 未 ready（就绪） 时返回 runtime_unavailable（运行时不可用）", async () => {
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-resource-not-ready",
+      }),
+      {
+        createBot: () => new FakeMineflayerBot(),
+      },
+    );
+
+    await expect(transport.refreshAroundBot("tree", 16)).resolves.toMatchObject({
+      status: "runtime_unavailable",
+      diagnostics: ["runtime_unavailable", "mineflayer_transport_not_connected"],
+    });
+  });
+
+  it("资源刷新不得把 tree（树木类） 硬编码映射到其他 tag（标签）", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-resource-tags",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          Object.assign(bot.registry, {
+            blockTags: {
+              logs: [7],
+            },
+          });
+          bot.resourceBlocks.push({
+            name: "sample_runtime_block",
+            type: 7,
+            position: { x: 1, y: 64, z: 0 },
+            tags: ["logs"],
+          });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(transport.refreshAroundBot("tree", 16)).resolves.toMatchObject({
+      status: "unsupported_resource_key",
+      blocks: [],
+      diagnostics: ["unsupported_resource_key:tree"],
+    });
+
     await transport.disconnect("test shutdown");
   });
 

@@ -1,4 +1,9 @@
 import type {
+  ResourceRefreshRadius,
+  RuntimeResourceBlockSummary,
+  RuntimeResourceRefreshResult,
+} from "../../core-ports/runtime.js";
+import type {
   CollectSkillParams,
   EquipSkillParams,
   GoToSkillParams,
@@ -19,6 +24,7 @@ import {
 import { executeMineflayerMine } from "./mine.js";
 import { createMineflayerPathfinderContext } from "./pathfinder.js";
 import type {
+  MineflayerBlockHandle,
   MineflayerBotHandle,
   MineflayerEventSource,
   MineflayerRuntimeTransport,
@@ -29,6 +35,7 @@ import type {
 } from "./types.js";
 
 const DEFAULT_MINEFLAYER_CONNECT_TIMEOUT_MS = 30_000;
+const DEFAULT_RESOURCE_SCAN_COUNT = 512;
 
 /** 创建 Mineflayer 运行时传输工厂。 */
 export function createMineflayerRuntimeTransport<TBotId extends string>(
@@ -148,6 +155,30 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
       const currentBot = ensureWorldInteractionReady("equip");
       return executeMineflayerEquip({ bot: currentBot, params });
     },
+    async refreshAroundBot(
+      resourceKey: string,
+      radius: ResourceRefreshRadius,
+    ): Promise<RuntimeResourceRefreshResult> {
+      const currentBot = getReadOnlyWorldReadyBot();
+
+      if (currentBot === null) {
+        return createRuntimeUnavailableResourceRefreshResult({
+          resourceKey,
+          radius,
+          worldKey: bot === null ? "unknown" : createMineflayerWorldKey(bot),
+          diagnostics:
+            state !== "connected" || bot === null
+              ? ["runtime_unavailable", "mineflayer_transport_not_connected"]
+              : ["runtime_unavailable", "mineflayer_world_not_ready"],
+        });
+      }
+
+      return executeMineflayerResourceRefresh({
+        bot: currentBot,
+        resourceKey,
+        radius,
+      });
+    },
     getSnapshot(): MineflayerTransportSnapshot<TBotId> {
       return createSnapshot();
     },
@@ -200,6 +231,322 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
 
     return bot;
   }
+
+  function getReadOnlyWorldReadyBot(): MineflayerBotHandle | null {
+    if (state !== "connected" || bot === null) {
+      return null;
+    }
+
+    if (!spawned && bot.entity?.position === undefined) {
+      return null;
+    }
+
+    return bot;
+  }
+}
+
+/** 执行 Mineflayer（Minecraft 协议客户端） 只读资源扫描。 */
+async function executeMineflayerResourceRefresh(input: {
+  readonly bot: MineflayerBotHandle;
+  readonly resourceKey: string;
+  readonly radius: ResourceRefreshRadius;
+}): Promise<RuntimeResourceRefreshResult> {
+  const origin = input.bot.entity?.position;
+  const worldKey = createMineflayerWorldKey(input.bot);
+  const scannedAt = Date.now();
+  const snapshotVersion = `${worldKey}:${scannedAt}:${input.resourceKey}:${input.radius}`;
+
+  if (origin === undefined) {
+    return createRuntimeResourceRefreshResult({
+      input,
+      status: "runtime_unavailable",
+      worldKey,
+      snapshotVersion,
+      scannedAt,
+      origin: { x: 0, y: 0, z: 0 },
+      blocks: [],
+      diagnostics: ["runtime_unavailable", "bot_position_unavailable"],
+    });
+  }
+
+  if (typeof input.bot.findBlocks !== "function" || typeof input.bot.blockAt !== "function") {
+    return createRuntimeResourceRefreshResult({
+      input,
+      status: "runtime_unavailable",
+      worldKey,
+      snapshotVersion,
+      scannedAt,
+      origin,
+      blocks: [],
+      diagnostics: ["runtime_unavailable", "mineflayer_block_query_unavailable"],
+    });
+  }
+
+  let positions: readonly { readonly x: number; readonly y: number; readonly z: number }[];
+
+  try {
+    positions = await input.bot.findBlocks({
+      matching: (block) => blockMatchesResourceKey(input.bot, block, input.resourceKey),
+      maxDistance: input.radius,
+      count: DEFAULT_RESOURCE_SCAN_COUNT,
+    });
+  } catch (error) {
+    return createRuntimeResourceRefreshResult({
+      input,
+      status: "runtime_unavailable",
+      worldKey,
+      snapshotVersion,
+      scannedAt,
+      origin,
+      blocks: [],
+      diagnostics: [
+        "runtime_unavailable",
+        `resource_refresh_failed:${stringifyMineflayerError(error)}`,
+      ],
+    });
+  }
+
+  const blocks = positions
+    .map((position) => input.bot.blockAt?.(position))
+    .filter((block): block is MineflayerBlockHandle => block !== null && block !== undefined)
+    .filter((block) => blockMatchesResourceKey(input.bot, block, input.resourceKey))
+    .map((block) =>
+      createRuntimeResourceBlockSummary({
+        block,
+        origin,
+        resourceKey: input.resourceKey,
+      }),
+    )
+    .sort((left, right) => left.distance - right.distance);
+  const unsupportedResourceKey =
+    blocks.length === 0 && !registryCanResolveResourceKey(input.bot.registry, input.resourceKey);
+
+  return createRuntimeResourceRefreshResult({
+    input,
+    status:
+      blocks.length > 0
+        ? "found"
+        : unsupportedResourceKey
+          ? "unsupported_resource_key"
+          : "cache_miss",
+    worldKey,
+    snapshotVersion,
+    scannedAt,
+    origin,
+    blocks,
+    diagnostics:
+      blocks.length > 0
+        ? []
+        : unsupportedResourceKey
+          ? [`unsupported_resource_key:${input.resourceKey}`]
+          : ["cache_miss"],
+  });
+}
+
+function createRuntimeUnavailableResourceRefreshResult(input: {
+  readonly resourceKey: string;
+  readonly radius: ResourceRefreshRadius;
+  readonly worldKey: string;
+  readonly diagnostics: readonly string[];
+}): RuntimeResourceRefreshResult {
+  const scannedAt = Date.now();
+
+  return cloneReadonlyValue({
+    resource_key: input.resourceKey,
+    radius: input.radius,
+    status: "runtime_unavailable",
+    world_key: input.worldKey,
+    snapshot_version: `${input.worldKey}:${scannedAt}:${input.resourceKey}:${input.radius}`,
+    scanned_at: scannedAt,
+    origin: {
+      x: 0,
+      y: 0,
+      z: 0,
+    },
+    blocks: [],
+    diagnostics: input.diagnostics,
+  });
+}
+
+function createRuntimeResourceRefreshResult(input: {
+  readonly input: {
+    readonly resourceKey: string;
+    readonly radius: ResourceRefreshRadius;
+  };
+  readonly status: RuntimeResourceRefreshResult["status"];
+  readonly worldKey: string;
+  readonly snapshotVersion: string;
+  readonly scannedAt: number;
+  readonly origin: MineflayerBotHandle["entity"] extends { position?: infer TPosition }
+    ? NonNullable<TPosition>
+    : { readonly x: number; readonly y: number; readonly z: number };
+  readonly blocks: readonly RuntimeResourceBlockSummary[];
+  readonly diagnostics: readonly string[];
+}): RuntimeResourceRefreshResult {
+  return cloneReadonlyValue({
+    resource_key: input.input.resourceKey,
+    radius: input.input.radius,
+    status: input.status,
+    world_key: input.worldKey,
+    snapshot_version: input.snapshotVersion,
+    scanned_at: input.scannedAt,
+    origin: {
+      x: input.origin.x,
+      y: input.origin.y,
+      z: input.origin.z,
+    },
+    blocks: input.blocks,
+    diagnostics: input.diagnostics,
+  });
+}
+
+function createRuntimeResourceBlockSummary(input: {
+  readonly block: MineflayerBlockHandle;
+  readonly origin: { readonly x: number; readonly y: number; readonly z: number };
+  readonly resourceKey: string;
+}): RuntimeResourceBlockSummary {
+  const position = input.block.position ?? input.origin;
+
+  return cloneReadonlyValue({
+    block_name: input.block.name ?? "unknown",
+    position: {
+      x: position.x,
+      y: position.y,
+      z: position.z,
+    },
+    distance: Math.hypot(
+      position.x - input.origin.x,
+      position.y - input.origin.y,
+      position.z - input.origin.z,
+    ),
+    resource_keys: [input.resourceKey],
+  });
+}
+
+function createMineflayerWorldKey(bot: MineflayerBotHandle): string {
+  return bot.game?.dimension ?? "unknown";
+}
+
+function blockMatchesResourceKey(
+  bot: MineflayerBotHandle,
+  block: MineflayerBlockHandle,
+  resourceKey: string,
+): boolean {
+  const blockName = block.name ?? "";
+  const normalizedResourceKey = stripMinecraftNamespace(resourceKey);
+
+  if (blockName === resourceKey || blockName === normalizedResourceKey) {
+    return true;
+  }
+
+  return blockHasRuntimeResourceTag(bot.registry, block, resourceKey);
+}
+
+function blockHasRuntimeResourceTag(
+  registry: unknown,
+  block: MineflayerBlockHandle,
+  resourceKey: string,
+): boolean {
+  const directTags = readBlockDirectTags(block.tags);
+  const tagNames = createResourceKeyLookupNames(resourceKey);
+
+  if (tagNames.some((tag) => directTags.has(tag))) {
+    return true;
+  }
+
+  const registryTagValues = getRegistryResourceTagIds(registry, resourceKey);
+
+  return registryTagValues.some((value) => value === block.type || value === block.name);
+}
+
+function registryCanResolveResourceKey(registry: unknown, resourceKey: string): boolean {
+  const registryRecord = asRecord(registry);
+  const blocksByName = asRecord(registryRecord?.blocksByName);
+
+  return (
+    createResourceKeyLookupNames(resourceKey).some((name) => blocksByName?.[name] !== undefined) ||
+    getRegistryResourceTagIds(registry, resourceKey).length > 0
+  );
+}
+
+function readBlockDirectTags(tags: MineflayerBlockHandle["tags"]): ReadonlySet<string> {
+  if (Array.isArray(tags)) {
+    return new Set(tags);
+  }
+
+  const record = asRecord(tags);
+
+  if (record === undefined) {
+    return new Set();
+  }
+
+  return new Set(
+    Object.entries(record)
+      .filter(([, value]) => Boolean(value))
+      .map(([key]) => key),
+  );
+}
+
+function getRegistryResourceTagIds(
+  registry: unknown,
+  resourceKey: string,
+): readonly (number | string)[] {
+  const registryRecord = asRecord(registry);
+  const blockTags =
+    asRecord(registryRecord?.blockTags) ??
+    asRecord(registryRecord?.blocksByTag) ??
+    asRecord(asRecord(registryRecord?.tags)?.blocks);
+  const tagNames = createResourceKeyLookupNames(resourceKey);
+
+  if (blockTags === undefined) {
+    return Object.freeze([]);
+  }
+
+  return Object.freeze(
+    tagNames.flatMap((tagName) => normalizeRegistryTagValue(blockTags[tagName])),
+  );
+}
+
+function createResourceKeyLookupNames(resourceKey: string): readonly string[] {
+  const names = new Set<string>([resourceKey]);
+  const normalizedResourceKey = stripMinecraftNamespace(resourceKey);
+
+  names.add(normalizedResourceKey);
+
+  if (!resourceKey.includes(":")) {
+    names.add(`minecraft:${resourceKey}`);
+  }
+
+  return Object.freeze([...names]);
+}
+
+function normalizeRegistryTagValue(value: unknown): readonly (number | string)[] {
+  if (Array.isArray(value)) {
+    return Object.freeze(
+      value.filter(
+        (entry): entry is number | string => typeof entry === "number" || typeof entry === "string",
+      ),
+    );
+  }
+
+  const record = asRecord(value);
+
+  if (record === undefined) {
+    return Object.freeze([]);
+  }
+
+  return Object.freeze(
+    Object.entries(record)
+      .filter(([, enabled]) => Boolean(enabled))
+      .map(([key]) => {
+        const numericKey = Number(key);
+        return Number.isInteger(numericKey) ? numericKey : key;
+      }),
+  );
+}
+
+function stripMinecraftNamespace(value: string): string {
+  return value.startsWith("minecraft:") ? value.slice("minecraft:".length) : value;
 }
 
 interface MineflayerDimensionBounds {

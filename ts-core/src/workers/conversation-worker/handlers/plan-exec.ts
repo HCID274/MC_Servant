@@ -42,11 +42,13 @@ export async function handlePlanExecRoute(input: {
   let plan: ConversationPlanDraft;
   try {
     const memoryContext = await readMemoryContext(input);
+    const resourceContext = await readResourceContext(input);
     plan = await input.dependencies.planner({
       task: input.task,
       triage: input.route.triage,
       route: input.route,
       ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+      ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
     });
   } catch (error) {
     if (isConversationLlmSkillNotEnabledError(error)) {
@@ -131,6 +133,33 @@ export async function handlePlanExecRoute(input: {
       priority: execJob.priority,
     }),
   );
+}
+
+/** 按规划类 route（路由） 读取 ResourceIndex（资源索引） 摘要；provider（提供器） 失败时降级为空上下文。 */
+async function readResourceContext(input: {
+  readonly task: ConversationWorkerTask;
+  readonly route: Extract<
+    ConversationRouteDecision,
+    { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
+  >;
+  readonly dependencies: ConversationWorkerRuntimeDependencies;
+}): Promise<string | undefined> {
+  if (input.dependencies.resourceContextProvider === undefined) {
+    return undefined;
+  }
+
+  try {
+    const context = await input.dependencies.resourceContextProvider({
+      bot_id: input.task.bot_id,
+      message_id: input.task.message.message_id,
+      message_content: input.task.message.content,
+      route_kind: input.route.kind,
+    });
+
+    return normalizeMemoryContext(context);
+  } catch {
+    return undefined;
+  }
 }
 
 /** 按规划类 route（路由） 读取 memory（记忆）；provider（提供器） 失败时降级为空上下文。 */

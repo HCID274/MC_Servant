@@ -99,6 +99,8 @@ export interface NearbyBlockSummary {
   position: SnapshotPosition;
   /** 与 Bot（机器人） 的距离。 */
   distance: number;
+  /** 该方块所属的资源类别键；由 runtime（运行时） 注册表或服务端观测源提供。 */
+  resource_keys?: readonly string[];
   /** 可选资源簇标识。 */
   cluster_key?: string;
 }

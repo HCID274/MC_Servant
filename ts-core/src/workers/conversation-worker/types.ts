@@ -165,6 +165,23 @@ export type ConversationMemoryContextProvider = (
   input: ConversationMemoryContextProviderInput,
 ) => string | null | undefined | Promise<string | null | undefined>;
 
+/** ConversationWorker（对话工作线程） 资源摘要读取输入。 */
+export interface ConversationResourceContextProviderInput {
+  /** 目标 Bot 标识。 */
+  readonly bot_id: string;
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 主人原始消息文本。 */
+  readonly message_content: string;
+  /** 当前路由类型。 */
+  readonly route_kind: ConversationRouteDecision["kind"];
+}
+
+/** ConversationWorker（对话工作线程） 可注入资源摘要 provider（提供器）。 */
+export type ConversationResourceContextProvider = (
+  input: ConversationResourceContextProviderInput,
+) => string | null | undefined | Promise<string | null | undefined>;
+
 /** ConversationWorker（对话工作线程） 最小规划依赖。 */
 export type ConversationWorkerPlanner = (input: {
   /** Worker 输入任务。 */
@@ -178,6 +195,8 @@ export type ConversationWorkerPlanner = (input: {
   >;
   /** 可选记忆摘要。 */
   readonly memory_context?: string;
+  /** 可选资源摘要。 */
+  readonly resource_context?: string;
 }) => ConversationPlanDraft | Promise<ConversationPlanDraft>;
 
 /** ConversationWorker（对话工作线程） BullMQ（任务队列） Worker 最小能力。 */
@@ -206,6 +225,8 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly actorStateProjectionProvider?: ConversationActorStateProjectionProvider;
   /** memory（记忆）上下文提供器；仅按路由信号读取，失败时降级为空上下文。 */
   readonly memoryContextProvider?: ConversationMemoryContextProvider;
+  /** ResourceIndex（资源索引） 摘要提供器；仅规划路径读取，失败时降级为空上下文。 */
+  readonly resourceContextProvider?: ConversationResourceContextProvider;
   /** 最小规划函数，成功时返回可执行规划草案。 */
   readonly planner?: ConversationWorkerPlanner;
   /** 广播回复汇点，真实路径指向 BotActor.broadcastReply。 */

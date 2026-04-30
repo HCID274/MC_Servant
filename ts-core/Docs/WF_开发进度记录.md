@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-041` ~ `T-050`
-- 当前已完成任务：`T-041` ~ `T-046`
-- 当前活跃任务：`T-047`（任务四十七） `cutTree`（砍树）单技能独立验收与接入前验证：先以独立 probe（探针） 文件验证真实砍树语义，再在同一任务内并入 `/svs`（服务端女仆命令）→ planner（规划器）→ 执行队列 → BotActor（机器人执行代理） 主链路。
+- 当前已完成任务：`T-041` ~ `T-047A`
+- 当前活跃任务：`T-047B`（任务四十七 B） `cutTree`（砍树）单技能独立验收与接入前验证：先做 `cut-tree-probe.ts`（砍树探针），实服验证通过后在同一任务内并入主程序。
 - 当前批次摘要：上一批次 `T-031`（任务三十一） 到 `T-040`（任务四十） 已完成对话智能增强、记忆与状态注入、MC（Minecraft，我的世界）事实源、反射动作，以及 Fabric（模组加载器）端服务端桥接基线。新批次默认沿 Fabric mod（Fabric 模组） ↔ TS Core（TypeScript 单核心）真实通信链路推进；`skill`（技能）任务按单技能独立验收执行，并新增 probe（探针） 先行规则：每个技能先在 `ts-core/scripts/probes/` 做独立验证，再在同一任务内并入主程序。
 - 当前批次硬约束：不得破坏 BotActor（机器人执行代理）单写者边界；server-bridge（服务端桥接）入口默认 `observe_only`（仅观测），不得绕过 game-chat（游戏聊天） / conversation（对话）队列直接写 Bot（机器人）；不得把 Java（编程语言）或 OkHttp（网络客户端）实现细节渗入 TS Core（TypeScript 单核心）；不得在同一任务内合并多个 `skill`（技能）接入；每个 `skill`（技能） 必须先完成独立 probe（探针） 验证后，才能在同任务内并入主程序。
 
@@ -194,3 +194,31 @@
   - Coder（编码代理） 真实 LLM（大语言模型） 验收通过：`把地上的圆石捡起来` 产出 `collect`（捡拾） `skill_call`（技能调用），`把地上的东西都捡起来` 产出省略 `itemName`（物品名）的 `collect`（捡拾）。
   - Coder（编码代理） 实服 probe（探针）验证通过：诊断半径 32 能看到掉落物，主 `executeMineflayerCollect`（执行 Mineflayer 捡拾） 成功捡入背包，结果包含 `collected: [{"name":"cobbled_deepslate","count":1}]`。
   - `bash ts-core/scripts/pre_review.sh` 通过：循环依赖检测、TypeScript（类型检查）、Biome（代码检查）、Vitest（测试）全部通过，30 个测试文件 / 209 条测试。
+
+### T-047A — ResourceIndex（资源索引）前置任务
+
+- 状态：已完成（2026-04-30）
+- 核心文件：
+  - `ts-core/src/world-model/contracts.ts`
+  - `ts-core/src/world-model/query.ts`
+  - `ts-core/src/core-ports/runtime.ts`
+  - `ts-core/src/core-ports/observation.ts`
+  - `ts-core/src/runtime/transport/runtime.ts`
+  - `ts-core/src/runtime/transport/types.ts`
+  - `ts-core/src/app/entrypoint.ts`
+  - `ts-core/src/workers/conversation-worker/handlers/plan-exec.ts`
+  - `ts-core/src/workers/conversation-worker/types.ts`
+  - `ts-core/src/conversation/llm/prompts/plan.ts`
+  - `ts-core/src/__tests__/observation-world-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts`
+  - `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts`
+- 变更快照：
+  - 新增 ResourceIndex（资源索引）契约与实现，提供 `queryClusters(resourceKey, maxCount?)`（查询资源簇）和 `refreshAroundBot(resourceKey, radius)`（围绕 Bot 刷新资源），刷新半径限制为 `16 -> 32 -> 64`。
+  - Mineflayer（Minecraft 协议客户端）传输层新增只读资源刷新端口，只读取当前位置、`findBlocks`（查找方块）、`blockAt`（读取方块）、运行时 block tags（方块标签）与 registry（注册表），不移动、不挖掘、不装备、不聊天。
+  - planner（规划器）输入新增短 `resources:`（资源摘要）上下文；provider（提供器）失败时降级为空上下文，在线可执行技能仍只有 `goTo`（前往坐标）+ `collect`（捡拾）。
+  - 首轮审查打回的硬编码 Minecraft（我的世界）事实已移除：不再把 `tree`（树木类）映射到 `logs`（原木标签）、不再把 `ore`（矿石类）映射到 `ores`（矿石标签）；资源类别只按 resourceKey（资源键）自身、命名空间等价名、运行时 tag（标签）或 registry（注册表）同名 tag / block（方块）解析。
+  - 首轮审查打回的异常泄漏已修复：Mineflayer（Minecraft 协议客户端）未连接、world（世界）未 ready（就绪）、缺少方块查询能力或 refreshPort（刷新端口）抛错时，稳定返回 `runtime_unavailable`（运行时不可用）诊断。
+- 审查与验证：
+  - Coder（编码代理）真实 LLM（大语言模型） planner（规划器）验收通过：`snapshot_context`（快照上下文）包含 ResourceIndex（资源索引）摘要，模型仍只输出已启用 `goTo`（前往坐标）技能，未诱导 `cutTree`（砍树）/ `equip`（装备）/ `mine`（挖掘）。
+  - 修复后新增测试覆盖未 ready（就绪）返回 `runtime_unavailable`（运行时不可用）、refreshPort（刷新端口）异常转换、以及不得把 `tree`（树木类）硬编码映射到 `logs`（原木标签）。
+  - `bash ts-core/scripts/pre_review.sh` 通过：循环依赖检测、TypeScript（类型检查）、Biome（代码检查）、Vitest（测试）全部通过，30 个测试文件 / 213 条测试。

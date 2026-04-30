@@ -38,6 +38,8 @@ import {
   createBotWorkerRuntime,
   createConversationWorkerRuntime,
 } from "../workers/index.js";
+import { createResourceIndex } from "../world-model/index.js";
+import type { ResourceIndexBoundary } from "../world-model/index.js";
 import {
   type AppBootstrapContract,
   type AppExternalAuthInitialConfig,
@@ -385,6 +387,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   const llmReplyGenerator =
     input.dependencies?.conversationWorker?.replyGenerator ??
     createOnlineConversationReplyGenerator(onlineLlmClient);
+  let resourceIndex: ResourceIndexBoundary | null = null;
   const onlinePlanner =
     input.dependencies?.conversationWorker?.planner ??
     createOnlineConversationPlanner(onlineLlmClient);
@@ -457,6 +460,9 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     runtime = await createAppRuntimeCoreResources(input.bootstrap, input.dependencies?.runtime);
     input.write?.(`TS Core Mineflayer ready: ${runtime.actor.getSnapshot().transport.username}`);
     const createdRuntime = runtime;
+    resourceIndex = createResourceIndex({
+      refreshPort: createdRuntime.transport,
+    });
     const interruptRuntimeSink =
       input.dependencies?.conversationWorker?.interruptRuntimeSink ??
       createOnlineConversationInterruptRuntimeSink(createdRuntime.actor);
@@ -499,6 +505,9 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         ...(onlineTriage === undefined ? {} : { triage: onlineTriage }),
         ...(llmReplyGenerator === undefined ? {} : { replyGenerator: llmReplyGenerator }),
         ...(onlinePlanner === undefined ? {} : { planner: onlinePlanner }),
+        resourceContextProvider:
+          input.dependencies?.conversationWorker?.resourceContextProvider ??
+          createOnlineResourceContextProvider(() => resourceIndex),
         interruptRuntimeSink,
         actorStateProjectionProvider,
         broadcastReplySink: async (reply) => {
@@ -690,14 +699,60 @@ function createOnlineConversationPlanner(
     return undefined;
   }
 
-  return async ({ task, route, memory_context }) =>
+  return async ({ task, route, memory_context, resource_context }) =>
     llm.generateSkillPlan({
       message_id: task.message.message_id,
       message: task.message.content,
-      snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
+      snapshot_context: createOnlinePlannerSnapshotContext(resource_context),
       triage_reason: route.triage.reason,
       ...(memory_context === undefined ? {} : { memory_context }),
     });
+}
+
+/** 组装在线 planner（规划器） 的短快照上下文。 */
+function createOnlinePlannerSnapshotContext(resourceContext?: string): string {
+  return [
+    "online_runtime: T-047A resource index ready; executable skills: goTo, collect",
+    ...(resourceContext === undefined ? [] : [resourceContext]),
+  ].join("; ");
+}
+
+/** 创建在线 ResourceIndex（资源索引） 摘要 provider（提供器）。 */
+function createOnlineResourceContextProvider(
+  readResourceIndex: () => ResourceIndexBoundary | null,
+): NonNullable<ConversationWorkerRuntimeDependencies["resourceContextProvider"]> {
+  return async () => {
+    const resourceIndex = readResourceIndex();
+
+    if (resourceIndex === null) {
+      return undefined;
+    }
+
+    await refreshResourceIndexByRadiusLadder(resourceIndex, "tree");
+    await refreshResourceIndexByRadiusLadder(resourceIndex, "ore");
+
+    return resourceIndex.createPlannerSummary(["tree", "ore"]);
+  };
+}
+
+/** 按 16 -> 32 -> 64 阶梯刷新资源索引，命中即停止。 */
+async function refreshResourceIndexByRadiusLadder(
+  resourceIndex: ResourceIndexBoundary,
+  resourceKey: string,
+): Promise<void> {
+  const cached = resourceIndex.queryClusters(resourceKey, 1);
+
+  if (cached.status === "found") {
+    return;
+  }
+
+  for (const radius of [16, 32, 64] as const) {
+    const refreshed = await resourceIndex.refreshAroundBot(resourceKey, radius);
+
+    if (refreshed.status === "found" || refreshed.status === "unsupported_resource_key") {
+      return;
+    }
+  }
 }
 
 /**
