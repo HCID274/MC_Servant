@@ -284,7 +284,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     const result = await client.generateSkillPlan({
       message_id: "msg-plan",
       message: "去 10, 64, -5 那里",
-      snapshot_context: "online_runtime: T-045 only; executable skills: goTo",
+      snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
       triage_reason: "主人给了明确坐标移动指令",
       memory_context: "历史：主人上次要求抵达坐标后先回报状态。",
     });
@@ -307,7 +307,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
           messages: createConversationPlanMessages({
             message_id: "msg-plan",
             message: "去 10, 64, -5 那里",
-            snapshot_context: "online_runtime: T-045 only; executable skills: goTo",
+            snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
             triage_reason: "主人给了明确坐标移动指令",
             memory_context: "历史：主人上次要求抵达坐标后先回报状态。",
           }),
@@ -327,7 +327,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     const messages = createConversationPlanMessages({
       message_id: "msg-plan-prompt",
       message: "把地上的圆石捡起来",
-      snapshot_context: "online_runtime: T-045 only; executable skills: goTo",
+      snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
     });
 
     expect(messages[0]?.content).toContain("如果不能明确判断为允许技能中的一种");
@@ -338,11 +338,11 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     const messages = createConversationPlanMessages({
       message_id: "msg-plan-template",
       message: "把地上的东西捡起来",
-      snapshot_context: "online_runtime: T-045 only; executable skills: goTo",
+      snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
     });
     const skillSection = createConversationSkillPlanPromptSection();
 
-    expect(Object.keys(CONVERSATION_SKILL_PLAN_TABLE)).toEqual(["goTo"]);
+    expect(Object.keys(CONVERSATION_SKILL_PLAN_TABLE)).toEqual(["goTo", "collect"]);
     expect(messages[0]?.content).toContain(skillSection);
     expect(messages[0]?.content).toContain("<skill_name>");
     expect(messages[0]?.content).toContain("<param_name>");
@@ -351,10 +351,10 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).not.toContain('"itemName":"stone_pickaxe"');
   });
 
-  it("应拒绝 mine（挖掘） / collect（捡拾） / equip（装备） 进入 T-045（任务四十五） 单技能规划结果", async () => {
+  it("应允许 collect（捡拾） 并拒绝 mine（挖掘） / equip（装备） 进入 T-046（任务四十六） 单技能规划结果", async () => {
     const responses = [
       '{"type":"skill_call","reply":"收到，我去挖石头","skill":"mine","params":{"blockName":"stone","count":2}}',
-      '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":6}}',
+      '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":8}}',
       '{"type":"skill_call","reply":"收到，我先把稿子拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}',
     ];
     const client = createConversationLlmClient(
@@ -392,21 +392,27 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       client.generateSkillPlan({
         message_id: "msg-plan-mine",
         message: "去挖两块石头",
-        snapshot_context: "online_runtime: T-045 only; executable skills: goTo",
+        snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
       }),
     ).rejects.toBeInstanceOf(ConversationLlmSkillNotEnabledError);
     await expect(
       client.generateSkillPlan({
         message_id: "msg-plan-collect",
         message: "把地上的圆石捡起来",
-        snapshot_context: "online_runtime: T-045 only; executable skills: goTo",
+        snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
       }),
-    ).rejects.toBeInstanceOf(ConversationLlmSkillNotEnabledError);
+    ).resolves.toMatchObject({
+      skill: "collect",
+      params: {
+        itemName: "cobblestone",
+        radius: 8,
+      },
+    });
     await expect(
       client.generateSkillPlan({
         message_id: "msg-plan-equip",
         message: "把石镐拿在手上",
-        snapshot_context: "online_runtime: T-045 only; executable skills: goTo",
+        snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
       }),
     ).rejects.toBeInstanceOf(ConversationLlmSkillNotEnabledError);
   });
@@ -448,7 +454,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       client.generateSkillPlan({
         message_id: "msg-plan-disabled-cannot-plan",
         message: "去挖两块石头",
-        snapshot_context: "online_runtime: T-045 only; executable skills: goTo",
+        snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
       }),
     ).rejects.toBeInstanceOf(ConversationLlmSkillNotEnabledError);
   });
@@ -490,7 +496,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       client.generateSkillPlan({
         message_id: "msg-plan-invalid",
         message: "帮我走过去",
-        snapshot_context: "online_runtime: T-045 only; executable skills: goTo",
+        snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
       }),
     ).rejects.toBeInstanceOf(ConversationLlmPlanError);
   });

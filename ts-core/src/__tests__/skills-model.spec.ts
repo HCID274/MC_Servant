@@ -55,7 +55,12 @@ describe("skills 模块契约", () => {
     expect(isGoToSkillParams({ x: 1, y: 64 })).toBe(false);
     expect(isMineSkillParams({ blockName: "stone", count: 3 })).toBe(true);
     expect(isMineSkillParams({ blockName: "stone", count: 0 })).toBe(false);
-    expect(isCollectSkillParams({ itemName: "oak_log", radius: 8 })).toBe(true);
+    expect(
+      isCollectSkillParams({ itemName: "oak_log", center: { x: 1, y: 64, z: -2 }, radius: 8 }),
+    ).toBe(true);
+    expect(isCollectSkillParams({ itemName: "oak_log", radius: 32 })).toBe(true);
+    expect(isCollectSkillParams({ itemName: "oak_log", radius: 7 })).toBe(false);
+    expect(isCollectSkillParams({ itemName: "oak_log", radius: 33 })).toBe(false);
     expect(isCollectSkillParams({ itemName: "oak_log", radius: -1 })).toBe(false);
   });
 
@@ -82,7 +87,7 @@ describe("skills 模块契约", () => {
       skill: SKILL_DIRECTORY.collect,
       params: {
         itemName: "oak_log",
-        radius: 12,
+        radius: 8,
       },
     });
     const skillCallJob = createSkillCallJob({
@@ -95,7 +100,7 @@ describe("skills 模块契约", () => {
     });
 
     expect(skillCall.skill).toBe("collect");
-    expect(skillCall.params.radius).toBe(12);
+    expect(skillCall.params.radius).toBe(8);
     expect(Object.isFrozen(skillCall)).toBe(true);
     expect(Object.isFrozen(skillCall.params)).toBe(true);
     expect(skillCallJob.type).toBe(ExecutionTaskKind.SkillCall);

@@ -76,12 +76,12 @@ export function createPlanningFailureReply() {
 /**
  * 创建未启用技能的模板回复。
  *
- * T-045（任务四十五） 只允许 goTo（前往坐标） 进入在线执行队列；其他技能必须明确拒绝。
+ * T-046（任务四十六） 只允许 goTo（前往坐标） 与 collect（捡拾） 进入在线执行队列；其他技能必须明确拒绝。
  */
 export function createSkillNotEnabledReply() {
   return createConversationReply({
     mode: "template",
-    reply: "这个技能还没有通过单技能验收，当前只允许执行 goTo 前往坐标喵~",
+    reply: "这个技能还没有通过单技能验收，当前只允许执行 goTo 前往坐标和 collect 捡拾喵~",
   });
 }
 

@@ -100,6 +100,8 @@ export interface MineflayerItemHandle {
 export interface MineflayerEntityHandle {
   /** 实体标识。 */
   readonly id?: number | string;
+  /** Mineflayer（Minecraft 协议客户端） 对象类型；掉落物常见值为 Item。 */
+  readonly objectType?: string;
   /** 实体名。 */
   readonly name?: string;
   /** 实体展示名。 */
@@ -128,7 +130,7 @@ export interface MineflayerLifecyclePort extends MineflayerEventPort {
   /** Mineflayer（Minecraft 协议客户端） 底层协议客户端事件源。 */
   readonly _client?: MineflayerProtocolEventSource;
   /** Mineflayer（Minecraft 协议客户端） 当前实体快照；spawn（生成） 前可能不存在。 */
-  readonly entity?: { readonly position?: MineflayerVec3Like };
+  readonly entity?: { readonly id?: number | string; readonly position?: MineflayerVec3Like };
   /** 断开连接的优先方法。 */
   quit?(reason?: string): void;
   /** 断开连接的兼容方法。 */
@@ -178,7 +180,12 @@ export interface MineflayerEntityPort {
 /** Mineflayer（Minecraft 协议客户端） 背包与装备能力端口。 */
 export interface MineflayerInventoryPort {
   /** 当前背包快照。 */
-  readonly inventory?: { items(): readonly MineflayerItemHandle[] };
+  readonly inventory?: {
+    /** 背包内所有非空物品栈。 */
+    items(): readonly MineflayerItemHandle[];
+    /** 可选空槽数量。 */
+    emptySlotCount?(): number;
+  };
   /** 装备物品到目标槽位。 */
   equip?(item: MineflayerItemHandle, destination: string): void | Promise<void>;
 }

@@ -284,12 +284,15 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await expect(
       transport.collect({
         itemName: "cobblestone",
-        radius: 6,
+        radius: 8,
       }),
     ).resolves.toMatchObject({
       skill: "collect",
       item_name: "cobblestone",
-      radius: 6,
+      radius: 8,
+    });
+    expect(collectBot.receivedMovements[0]).toMatchObject({
+      canDig: false,
     });
   });
 
@@ -328,9 +331,9 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await expect(
       transport.collect({
         itemName: "cobblestone",
-        radius: 6,
+        radius: 8,
       }),
-    ).rejects.toThrow("Mineflayer did not collect cobblestone in time");
+    ).rejects.toThrow("despawned_or_collected_by_other");
   }, 10_000);
 
   it("goTo（前往坐标） 应启用必要挖掘并同步 Multiworld（多世界模组） 维度高度边界", async () => {
@@ -408,9 +411,10 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await expect(
       transport.collect({
         itemName: "cobblestone",
-        radius: 4,
+        radius: 8,
+        timeoutMs: 300,
       }),
-    ).rejects.toThrow("Mineflayer cannot find collectible item cobblestone");
+    ).rejects.toThrow("not_found");
     expect(gotoCalls).toBe(0);
   });
 

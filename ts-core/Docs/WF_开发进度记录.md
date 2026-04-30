@@ -11,8 +11,8 @@
 ## 当前批次
 
 - 批次范围：`T-041` ~ `T-050`
-- 当前已完成任务：`T-041` ~ `T-045`
-- 当前活跃任务：`T-046`（任务四十六） `collect`（捡拾）单技能独立验收与接入前验证：先以独立 probe（探针） 文件验证真实捡拾语义，再在同一任务内并入 `/svs`（服务端女仆命令）→ planner（规划器）→ 执行队列 → BotActor（机器人执行代理） 主链路。
+- 当前已完成任务：`T-041` ~ `T-046`
+- 当前活跃任务：`T-047`（任务四十七） `cutTree`（砍树）单技能独立验收与接入前验证：先以独立 probe（探针） 文件验证真实砍树语义，再在同一任务内并入 `/svs`（服务端女仆命令）→ planner（规划器）→ 执行队列 → BotActor（机器人执行代理） 主链路。
 - 当前批次摘要：上一批次 `T-031`（任务三十一） 到 `T-040`（任务四十） 已完成对话智能增强、记忆与状态注入、MC（Minecraft，我的世界）事实源、反射动作，以及 Fabric（模组加载器）端服务端桥接基线。新批次默认沿 Fabric mod（Fabric 模组） ↔ TS Core（TypeScript 单核心）真实通信链路推进；`skill`（技能）任务按单技能独立验收执行，并新增 probe（探针） 先行规则：每个技能先在 `ts-core/scripts/probes/` 做独立验证，再在同一任务内并入主程序。
 - 当前批次硬约束：不得破坏 BotActor（机器人执行代理）单写者边界；server-bridge（服务端桥接）入口默认 `observe_only`（仅观测），不得绕过 game-chat（游戏聊天） / conversation（对话）队列直接写 Bot（机器人）；不得把 Java（编程语言）或 OkHttp（网络客户端）实现细节渗入 TS Core（TypeScript 单核心）；不得在同一任务内合并多个 `skill`（技能）接入；每个 `skill`（技能） 必须先完成独立 probe（探针） 验证后，才能在同任务内并入主程序。
 
@@ -157,3 +157,40 @@
   - Coder（编码代理） 真实 LLM（大语言模型） 验收通过：`/svs 去到 -16 104 10` 仅产出 `goTo`（前往坐标） `skill_call`（技能调用）。
   - Coder（编码代理） 真实 MC（Minecraft，我的世界） 烟测通过：`createMineflayerRuntimeTransport`（创建 Mineflayer 运行时传输） 到 `(-16, 104, 10)` 返回 `result.reached=true`。
   - `bash ts-core/scripts/pre_review.sh` 通过：循环依赖检测通过，TypeScript（类型检查）通过，Biome（代码检查）通过，Vitest（测试）30 个测试文件 / 208 条测试全部通过。
+
+### T-046 — `collect`（捡拾）单技能独立验收与接入前验证
+
+- 状态：已完成（2026-04-30）
+- 核心文件：
+  - `ts-core/scripts/probes/collect-probe.ts`
+  - `ts-core/src/core-ports/skills.ts`
+  - `ts-core/src/runtime/transport/collect.ts`
+  - `ts-core/src/runtime/transport/runtime.ts`
+  - `ts-core/src/runtime/transport/types.ts`
+  - `ts-core/src/runtime/actor.ts`
+  - `ts-core/src/conversation/llm/prompts/plan.ts`
+  - `ts-core/src/conversation/llm/skill-plan-table.ts`
+  - `ts-core/src/conversation/llm/types.ts`
+  - `ts-core/src/workers/conversation-worker/handlers/plan-exec.ts`
+  - `ts-core/src/workers/conversation-worker/helpers.ts`
+  - `ts-core/src/workers/bot-worker.ts`
+  - `ts-core/src/app/entrypoint.ts`
+  - `ts-core/src/__tests__/conversation-llm-planning-model.spec.ts`
+  - `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/bot-worker-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-skill-execution-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-actor-model.spec.ts`
+  - `ts-core/src/__tests__/skills-model.spec.ts`
+  - `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
+- 变更快照：
+  - 新增 `collect-probe.ts`（捡拾探针），实服验证以 Bot（机器人）背包目标物品数量增长作为唯一成功标准，保留 raw packet（原始协议包） 与 `bot.entities`（机器人实体表） 诊断输出。
+  - `collect`（捡拾） 技能语义收口为范围内掉落物清扫：`radius`（半径）省略默认 8，小于 8 或大于 32 均拒绝；`itemName`（物品名）可选，省略时收集范围内所有掉落物；`center`（中心点）可选。
+  - 主程序复用 `goTo`（前往坐标） 已验证的 Mineflayer（Minecraft 协议客户端）维度高度同步，`collect`（捡拾） 移动策略不为了捡拾挖穿障碍。
+  - 在线 planner（规划器） 可执行技能集合扩展为 `goTo`（前往坐标） + `collect`（捡拾）；ConversationWorker（对话工作线程） / BotWorker（机器人工作线程） / BotActor（机器人执行代理） 三层仍拒绝 `mine`（挖掘） / `equip`（装备） / `cutTree`（砍树）。
+  - `collect`（捡拾） 成功结果包含 `collected`（已收集）增量与 `skipped`（跳过）诊断；目标实体消失但背包数量未增长时明确失败，不伪装成功。
+- 审查与验证：
+  - 首轮审查因 `ts-core/src/workers/conversation-worker/helpers.ts`（对话工作线程辅助函数）文案修改未在允许修改白名单中被打回；修复后已显式记录该文件第 79-84 行为打回授权修复范围，并保留准确文案。
+  - Coder（编码代理） 真实 LLM（大语言模型） 验收通过：`把地上的圆石捡起来` 产出 `collect`（捡拾） `skill_call`（技能调用），`把地上的东西都捡起来` 产出省略 `itemName`（物品名）的 `collect`（捡拾）。
+  - Coder（编码代理） 实服 probe（探针）验证通过：诊断半径 32 能看到掉落物，主 `executeMineflayerCollect`（执行 Mineflayer 捡拾） 成功捡入背包，结果包含 `collected: [{"name":"cobbled_deepslate","count":1}]`。
+  - `bash ts-core/scripts/pre_review.sh` 通过：循环依赖检测、TypeScript（类型检查）、Biome（代码检查）、Vitest（测试）全部通过，30 个测试文件 / 209 条测试。

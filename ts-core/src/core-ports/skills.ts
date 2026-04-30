@@ -26,6 +26,15 @@ export const PHASE1_SKILL_NAMES = Object.freeze([
   SKILL_DIRECTORY.equip,
 ] as const);
 
+/** `collect`（捡拾） 允许的最小搜索半径。 */
+export const COLLECT_MIN_RADIUS = 8;
+
+/** `collect`（捡拾） 默认搜索半径。 */
+export const COLLECT_DEFAULT_RADIUS = COLLECT_MIN_RADIUS;
+
+/** `collect`（捡拾） 允许的最大搜索半径。 */
+export const COLLECT_MAX_RADIUS = 32;
+
 /** `equip`（装备） 技能允许的目标槽位。 */
 export const EQUIP_DESTINATIONS = Object.freeze([
   "hand",
@@ -65,10 +74,21 @@ export interface CutTreeSkillParams {
 
 /** `collect`（捡拾掉落物） 技能参数。 */
 export interface CollectSkillParams {
-  /** 目标物品标准名称。 */
-  readonly itemName: string;
-  /** 可选搜索半径。 */
+  /** 可选目标物品标准名称；省略时收集范围内所有掉落物。 */
+  readonly itemName?: string;
+  /** 可选中心点；省略时使用 Bot（机器人） 当前坐标。 */
+  readonly center?: Readonly<{
+    /** 中心点 X 坐标。 */
+    readonly x: number;
+    /** 中心点 Y 坐标。 */
+    readonly y: number;
+    /** 中心点 Z 坐标。 */
+    readonly z: number;
+  }>;
+  /** 可选搜索半径；默认 8，允许范围 8 到 32。 */
   readonly radius?: number;
+  /** 可选执行超时毫秒数。 */
+  readonly timeoutMs?: number;
 }
 
 /** `equip`（装备物品） 技能参数。 */
@@ -160,6 +180,15 @@ function freezePlainObject<TValue extends object>(value: TValue): Readonly<TValu
   return Object.freeze({ ...value });
 }
 
+/** 判断值是否为 `collect`（捡拾） 可用中心点。 */
+function isCollectCenter(value: unknown): value is NonNullable<CollectSkillParams["center"]> {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, ["x", "y", "z"])) {
+    return false;
+  }
+
+  return isFiniteNumber(value.x) && isFiniteNumber(value.y) && isFiniteNumber(value.z);
+}
+
 function createSkillDefinition<TName extends SkillName>(input: {
   name: TName;
   metadata: SkillMetadata;
@@ -205,13 +234,21 @@ export function isCutTreeSkillParams(params: unknown): params is CutTreeSkillPar
 
 /** 校验 `collect`（捡拾掉落物） 技能参数。 */
 export function isCollectSkillParams(params: unknown): params is CollectSkillParams {
-  if (!isRecord(params) || !hasOnlyAllowedKeys(params, ["itemName", "radius"])) {
+  if (
+    !isRecord(params) ||
+    !hasOnlyAllowedKeys(params, ["itemName", "center", "radius", "timeoutMs"])
+  ) {
     return false;
   }
 
   return (
-    isNonEmptyString(params.itemName) &&
-    (params.radius === undefined || isPositiveInteger(params.radius))
+    (params.itemName === undefined || isNonEmptyString(params.itemName)) &&
+    (params.center === undefined || isCollectCenter(params.center)) &&
+    (params.radius === undefined ||
+      (isPositiveInteger(params.radius) &&
+        params.radius >= COLLECT_MIN_RADIUS &&
+        params.radius <= COLLECT_MAX_RADIUS)) &&
+    (params.timeoutMs === undefined || isPositiveInteger(params.timeoutMs))
   );
 }
 
@@ -268,8 +305,8 @@ export const PHASE1_SKILL_DEFINITIONS = Object.freeze([
     name: SKILL_DIRECTORY.collect,
     metadata: {
       category: "resource",
-      summary: "按物品名执行范围内捡拾",
-      parameterKeys: ["itemName", "radius"],
+      summary: "按物品名与中心点执行范围内掉落物清扫",
+      parameterKeys: ["itemName", "center", "radius"],
     },
     validateParams: isCollectSkillParams,
   }),
@@ -313,11 +350,38 @@ export interface CollectSkillExecutionResult {
   /** 已执行的技能名。 */
   readonly skill: "collect";
   /** 目标物品标准名称。 */
-  readonly item_name: string;
+  readonly item_name: string | null;
+  /** 本次清扫中心点。 */
+  readonly center: NonNullable<CollectSkillParams["center"]>;
   /** 使用的搜索半径。 */
   readonly radius: number;
+  /** 已确认进入背包的物品差异。 */
+  readonly collected: readonly CollectSkillCollectedItem[];
+  /** 本次跳过或失败的掉落物实体。 */
+  readonly skipped: readonly CollectSkillSkippedItem[];
   /** 当前最小执行器的步骤数。 */
-  readonly total_steps: 1;
+  readonly total_steps: number;
+}
+
+/** `collect`（捡拾） 执行结果中的物品增量。 */
+export interface CollectSkillCollectedItem {
+  /** 物品标准名称。 */
+  readonly name: string;
+  /** 背包中增长的数量。 */
+  readonly count: number;
+}
+
+/** `collect`（捡拾） 执行结果中的跳过记录。 */
+export interface CollectSkillSkippedItem {
+  /** 掉落物实体标识。 */
+  readonly entityId: number | string;
+  /** 跳过原因。 */
+  readonly reason:
+    | "despawned_or_collected_by_other"
+    | "inventory_full"
+    | "not_found"
+    | "timeout"
+    | "unreachable";
 }
 
 /** `equip`（装备） 技能执行结果。 */
@@ -403,12 +467,39 @@ export function createMineSkillExecutionResult(
 /** 创建冻结的 `collect`（捡拾） 技能执行结果。 */
 export function createCollectSkillExecutionResult(
   params: Readonly<CollectSkillParams>,
+  outcome: {
+    readonly center?: NonNullable<CollectSkillParams["center"]>;
+    readonly collected?: readonly CollectSkillCollectedItem[];
+    readonly skipped?: readonly CollectSkillSkippedItem[];
+    readonly total_steps?: number;
+  } = {},
 ): CollectSkillExecutionResult {
   return Object.freeze({
     skill: "collect" as const,
-    item_name: params.itemName,
-    radius: params.radius ?? 8,
-    total_steps: 1 as const,
+    item_name: params.itemName ?? null,
+    center: Object.freeze({
+      x: outcome.center?.x ?? params.center?.x ?? 0,
+      y: outcome.center?.y ?? params.center?.y ?? 0,
+      z: outcome.center?.z ?? params.center?.z ?? 0,
+    }),
+    radius: params.radius ?? COLLECT_DEFAULT_RADIUS,
+    collected: Object.freeze(
+      (outcome.collected ?? []).map((item) =>
+        Object.freeze({
+          name: item.name,
+          count: item.count,
+        }),
+      ),
+    ),
+    skipped: Object.freeze(
+      (outcome.skipped ?? []).map((item) =>
+        Object.freeze({
+          entityId: item.entityId,
+          reason: item.reason,
+        }),
+      ),
+    ),
+    total_steps: outcome.total_steps ?? 1,
   });
 }
 

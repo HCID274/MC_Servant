@@ -1,7 +1,11 @@
 import {
+  COLLECT_DEFAULT_RADIUS,
+  COLLECT_MAX_RADIUS,
+  COLLECT_MIN_RADIUS,
   SKILL_DIRECTORY,
   type SkillName,
   type SkillParamsByName,
+  isCollectSkillParams,
   isGoToSkillParams,
 } from "../../core-ports/skills.js";
 import { createSkillCallPlanDraft } from "../planning.js";
@@ -33,8 +37,7 @@ type ConversationSkillPlanStrategyTable = {
 type AnyConversationSkillPlanStrategy =
   ConversationSkillPlanStrategyTable[keyof ConversationSkillPlanStrategyTable];
 
-const T045_DISABLED_PLAN_SKILLS = Object.freeze([
-  SKILL_DIRECTORY.collect,
+const T046_DISABLED_PLAN_SKILLS = Object.freeze([
   SKILL_DIRECTORY.mine,
   SKILL_DIRECTORY.equip,
   SKILL_DIRECTORY.cutTree,
@@ -46,6 +49,11 @@ export const CONVERSATION_SKILL_PLAN_TABLE = Object.freeze({
     skill: SKILL_DIRECTORY.goTo,
     paramsSchema: "params: { x: number; y: number; z: number }",
     guard: isGoToSkillParams,
+  }),
+  [SKILL_DIRECTORY.collect]: createSkillPlanStrategy({
+    skill: SKILL_DIRECTORY.collect,
+    paramsSchema: `params: { itemName?: string; center?: { x: number; y: number; z: number }; radius?: number }，radius 默认 ${COLLECT_DEFAULT_RADIUS}，允许范围 ${COLLECT_MIN_RADIUS} 到 ${COLLECT_MAX_RADIUS}`,
+    guard: isCollectSkillParams,
   }),
 } satisfies ConversationSkillPlanStrategyTable);
 
@@ -81,7 +89,7 @@ export function createConversationSkillPlanFromTable(input: {
   const strategy = getConversationSkillPlanStrategy(input.skill);
 
   if (strategy === undefined) {
-    if (isT045DisabledPlanSkill(input.skill)) {
+    if (isT046DisabledPlanSkill(input.skill)) {
       throw new ConversationLlmSkillNotEnabledError(
         `skill ${input.skill} has not passed independent validation and is not enabled`,
         { skill: input.skill },
@@ -131,10 +139,10 @@ export function isOnlinePlanSkillName(skill: SkillName): skill is OnlinePlanSkil
   return Object.hasOwn(CONVERSATION_SKILL_PLAN_TABLE, skill);
 }
 
-function isT045DisabledPlanSkill(
+function isT046DisabledPlanSkill(
   skill: unknown,
-): skill is (typeof T045_DISABLED_PLAN_SKILLS)[number] {
+): skill is (typeof T046_DISABLED_PLAN_SKILLS)[number] {
   return (
-    typeof skill === "string" && (T045_DISABLED_PLAN_SKILLS as readonly string[]).includes(skill)
+    typeof skill === "string" && (T046_DISABLED_PLAN_SKILLS as readonly string[]).includes(skill)
   );
 }

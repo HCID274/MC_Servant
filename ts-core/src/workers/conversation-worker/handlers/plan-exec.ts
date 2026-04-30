@@ -75,7 +75,7 @@ export async function handlePlanExecRoute(input: {
     return;
   }
 
-  if (execJob.skill !== SKILL_DIRECTORY.goTo) {
+  if (execJob.skill !== SKILL_DIRECTORY.goTo && execJob.skill !== SKILL_DIRECTORY.collect) {
     await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply);
     return;
   }

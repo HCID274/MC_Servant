@@ -207,7 +207,8 @@ interface MineflayerDimensionBounds {
   readonly height: number;
 }
 
-function attachMineflayerDimensionBoundsSync(bot: MineflayerBotHandle): () => void {
+/** 为 Mineflayer（Minecraft 协议客户端） 同步真实维度高度边界，避免 Multiworld（多世界） 下区块 Y 轴错位。 */
+export function attachMineflayerDimensionBoundsSync(bot: MineflayerBotHandle): () => void {
   const client = bot._client;
 
   if (client === undefined || typeof client.on !== "function") {

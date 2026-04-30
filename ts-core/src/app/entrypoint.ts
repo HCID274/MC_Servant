@@ -681,7 +681,7 @@ function createOnlineConversationReplyGenerator(
 /**
  * 为真实在线入口创建最小单技能 `skill_call`（技能调用） 规划器。
  *
- * 当前阶段只允许规划到单个 `goTo`（前往坐标） `skill_call`（技能调用）。
+ * 当前阶段只允许规划到 goTo（前往坐标） 或 collect（捡拾） 单个 `skill_call`（技能调用）。
  */
 function createOnlineConversationPlanner(
   llm: ConversationLlmClient | undefined,
@@ -694,7 +694,7 @@ function createOnlineConversationPlanner(
     llm.generateSkillPlan({
       message_id: task.message.message_id,
       message: task.message.content,
-      snapshot_context: "online_runtime: T-045 only; executable skills: goTo",
+      snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
       triage_reason: route.triage.reason,
       ...(memory_context === undefined ? {} : { memory_context }),
     });

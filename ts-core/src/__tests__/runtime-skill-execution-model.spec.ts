@@ -105,7 +105,7 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
       snapshot_ts: 100,
       priority: ExecPriority.Normal,
       skill: SKILL_DIRECTORY.collect,
-      params: { itemName: "cobblestone", radius: 6 },
+      params: { itemName: "cobblestone", radius: 8 },
     });
     const equipJob = createSkillCallJob({
       message_id: "msg-skill-equip",
@@ -145,7 +145,7 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
     await expect(executeSkillCallJob({ job: collectJob, dependencies })).resolves.toMatchObject({
       skill: "collect",
       item_name: "cobblestone",
-      radius: 6,
+      radius: 8,
       total_steps: 1,
     });
     await expect(executeSkillCallJob({ job: equipJob, dependencies })).resolves.toMatchObject({
@@ -154,6 +154,6 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
       destination: "hand",
       total_steps: 1,
     });
-    expect(calls).toEqual(["mine:stone:2", "collect:cobblestone:6", "equip:stone_pickaxe:hand"]);
+    expect(calls).toEqual(["mine:stone:2", "collect:cobblestone:8", "equip:stone_pickaxe:hand"]);
   });
 });

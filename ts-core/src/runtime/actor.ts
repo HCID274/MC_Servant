@@ -11,6 +11,7 @@ import {
   type SkillExecutionResult,
   type SkillName,
   type SkillParamsByName,
+  isCollectSkillParams,
   isGoToSkillParams,
 } from "../core-ports/skills.js";
 import {
@@ -260,12 +261,19 @@ export function createBotActorRuntime<TBotId extends string>(input: {
             return (await skillExecution.goToMovement.goTo(params)) as unknown as Readonly<
               Record<string, unknown>
             >;
-          case SKILL_DIRECTORY.mine:
           case SKILL_DIRECTORY.collect:
+            if (!isCollectSkillParams(params)) {
+              throw new Error("sandbox collect params are invalid");
+            }
+
+            return (await skillExecution.collect(params)) as unknown as Readonly<
+              Record<string, unknown>
+            >;
+          case SKILL_DIRECTORY.mine:
           case SKILL_DIRECTORY.equip:
           case SKILL_DIRECTORY.cutTree:
             throw new Error(
-              `Skill ${skill} has not passed independent validation and is not enabled in T-045`,
+              `Skill ${skill} has not passed independent validation and is not enabled in T-046`,
             );
         }
 
@@ -860,12 +868,13 @@ async function executeActorSkillCallJob(
   switch (job.skill) {
     case SKILL_DIRECTORY.goTo:
       return dependencies.goToMovement.goTo(job.params);
-    case SKILL_DIRECTORY.mine:
     case SKILL_DIRECTORY.collect:
+      return dependencies.collect(job.params);
+    case SKILL_DIRECTORY.mine:
     case SKILL_DIRECTORY.equip:
     case SKILL_DIRECTORY.cutTree:
       throw new Error(
-        `Skill ${job.skill} has not passed independent validation and is not enabled in T-045`,
+        `Skill ${job.skill} has not passed independent validation and is not enabled in T-046`,
       );
   }
 }

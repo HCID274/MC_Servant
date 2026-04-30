@@ -1744,7 +1744,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     await runtime.close();
   });
 
-  it("应在真实在线入口拒绝 mine（挖掘） / collect（捡拾） / equip（装备） / cutTree（砍树） 未启用技能", async () => {
+  it("应在真实在线入口允许 collect（捡拾） 并拒绝 mine（挖掘） / equip（装备） / cutTree（砍树） 未启用技能", async () => {
     const llmRequests: Array<{ url: string; body: unknown }> = [];
     const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
@@ -1784,7 +1784,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
                   '{"type":"skill_call","reply":"收到，我去挖石头","skill":"mine","params":{"blockName":"stone","count":2}}';
               } else if (userMessage.includes("把地上的圆石捡起来")) {
                 assistantContent =
-                  '{"type":"cannot_plan","reason":"skill_not_enabled","code":"skill_not_enabled"}';
+                  '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":8}}';
               } else if (userMessage.includes("把石镐拿在手上")) {
                 assistantContent =
                   '{"type":"skill_call","reply":"收到，我先把石镐拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}';
@@ -1930,7 +1930,26 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     expect(llmRequests).toHaveLength(8);
-    expect(queueAdds).toEqual([]);
+    expect(queueAdds).toEqual([
+      {
+        name: "bot:bot-skill-online:exec",
+        jobName: "bot",
+        data: expect.objectContaining({
+          worker: "bot",
+          bot_id: "bot-skill-online",
+          exec_job: expect.objectContaining({
+            message_id: "msg-online-collect",
+            priority: "normal",
+            skill: "collect",
+            params: { itemName: "cobblestone", radius: 8 },
+          }),
+        }),
+        options: {
+          jobId: "msg-online-collect",
+          priority: 5,
+        },
+      },
+    ]);
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "task.discarded",
       bot_id: "bot-skill-online",
@@ -1939,11 +1958,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       reason: "skill_not_enabled",
     });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
-      type: "task.discarded",
+      type: "task.accepted",
       bot_id: "bot-skill-online",
       message_id: "msg-online-collect",
-      status: "discarded",
-      reason: "skill_not_enabled",
+      skill: "collect",
+      priority: "normal",
     });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "task.discarded",

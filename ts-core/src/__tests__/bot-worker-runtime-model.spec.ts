@@ -6,7 +6,11 @@ import {
   createSandboxCodeJob,
   createSkillCallJob,
 } from "../index.js";
-import { SKILL_DIRECTORY, createGoToSkillExecutionResult } from "../skills/index.js";
+import {
+  SKILL_DIRECTORY,
+  createCollectSkillExecutionResult,
+  createGoToSkillExecutionResult,
+} from "../skills/index.js";
 import { createBotWorkerRuntime } from "../workers/bot-worker.js";
 import {
   type BotWorkerAction,
@@ -244,7 +248,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
 
     await runtime.start();
-    await expect(processor?.({ data: task })).rejects.toThrow(/not enabled in T-045/);
+    await expect(processor?.({ data: task })).rejects.toThrow(/not enabled in T-046/);
 
     expect(executedSkills).toEqual([]);
     expect(runtime.getEvents()).toEqual([
@@ -255,10 +259,74 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
         status: TaskHistoryStatus.Failed,
         error: {
           name: "Error",
-          message: "Skill has not passed independent validation and is not enabled in T-045: equip",
+          message: "Skill has not passed independent validation and is not enabled in T-046: equip",
         },
       },
     ]);
+  });
+
+  it("应允许已通过单技能验收的 collect（捡拾） 进入 BotActor（机器人执行代理）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const executedSkills: string[] = [];
+    const runtime = createBotWorkerRuntime({
+      queue: {
+        name: "bot:bot-worker:exec",
+        connection: {},
+      },
+      dependencies: {
+        actor: {
+          async executeSkill(job) {
+            executedSkills.push(job.skill);
+
+            if (job.skill !== SKILL_DIRECTORY.collect) {
+              throw new Error("expected collect skill");
+            }
+
+            return {
+              result: createCollectSkillExecutionResult(job.params, {
+                center: { x: 0, y: 64, z: 0 },
+                collected: [{ name: "cobblestone", count: 1 }],
+                total_steps: 1,
+              }),
+              snapshot: {} as never,
+            };
+          },
+          async executeSandboxCode() {
+            throw new Error("sandbox should not run");
+          },
+        },
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+    const task = createBotWorkerTask({
+      bot_id: "bot-worker",
+      exec_job: createSkillCallJob({
+        message_id: "msg-worker-collect",
+        intent_epoch: 1,
+        snapshot_ts: 111,
+        priority: ExecPriority.Normal,
+        skill: SKILL_DIRECTORY.collect,
+        params: { itemName: "cobblestone", radius: 8 },
+      }),
+    });
+
+    await runtime.start();
+    await processor?.({ data: task });
+
+    expect(executedSkills).toEqual(["collect"]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.completed",
+      bot_id: "bot-worker",
+      message_id: "msg-worker-collect",
+      status: TaskHistoryStatus.Completed,
+      total_steps: 1,
+    });
   });
 
   it("应把 sandbox_code（沙箱代码） 任务交给 BotActor（机器人执行代理） 执行", async () => {

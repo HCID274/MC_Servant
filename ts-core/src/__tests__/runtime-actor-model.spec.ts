@@ -512,7 +512,7 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
     expect(actor.getSnapshot().current_task).toBeNull();
   });
 
-  it("应拒绝未启用 mine（挖掘） / collect（捡拾） / equip（装备） 技能", async () => {
+  it("应允许 collect（捡拾） 并拒绝未启用 mine（挖掘） / equip（装备） 技能", async () => {
     const executed: string[] = [];
     const externalAuth = createExternalAuthState({ status: "not_required" });
     const actor = createBotActorRuntime({
@@ -546,7 +546,7 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
           params: { blockName: "stone", count: 2 },
         }),
       ),
-    ).rejects.toThrow(/not enabled in T-045/);
+    ).rejects.toThrow(/not enabled in T-046/);
     await expect(
       actor.executeSkill(
         createSkillCallJob({
@@ -555,10 +555,16 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
           snapshot_ts: 101,
           priority: ExecPriority.Normal,
           skill: SKILL_DIRECTORY.collect,
-          params: { itemName: "cobblestone", radius: 6 },
+          params: { itemName: "cobblestone", radius: 8 },
         }),
       ),
-    ).rejects.toThrow(/not enabled in T-045/);
+    ).resolves.toMatchObject({
+      result: {
+        skill: "collect",
+        item_name: "cobblestone",
+        radius: 8,
+      },
+    });
     await expect(
       actor.executeSkill(
         createSkillCallJob({
@@ -570,10 +576,15 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
           params: { itemName: "stone_pickaxe", destination: "hand" },
         }),
       ),
-    ).rejects.toThrow(/not enabled in T-045/);
+    ).rejects.toThrow(/not enabled in T-046/);
 
-    expect(executed).toEqual([]);
-    expect(actor.getSnapshot().skill_executions).toEqual([]);
+    expect(executed).toEqual(["collect:cobblestone:8"]);
+    expect(actor.getSnapshot().skill_executions).toEqual([
+      {
+        message_id: "msg-collect",
+        skill: "collect",
+      },
+    ]);
   });
 });
 
