@@ -1,5 +1,9 @@
 import { createConversationCompositeTriage, createMessageTriage } from "../triage.js";
-import { ConversationLlmChatError, ConversationLlmPlanError } from "./errors.js";
+import {
+  ConversationLlmChatError,
+  ConversationLlmPlanError,
+  isConversationLlmSkillNotEnabledError,
+} from "./errors.js";
 import {
   createConversationChatMessages,
   createConversationPlanMessages,
@@ -116,6 +120,10 @@ export function createConversationLlmClient(
         messages,
         parse: parseConversationSkillPlan,
         onFailure: ({ error, errorSnapshot }) => {
+          if (isConversationLlmSkillNotEnabledError(error)) {
+            throw error;
+          }
+
           throw new ConversationLlmPlanError(errorSnapshot.message, { cause: error });
         },
       });

@@ -1,15 +1,11 @@
 import {
-  EQUIP_DESTINATIONS,
   SKILL_DIRECTORY,
   type SkillName,
   type SkillParamsByName,
-  isCollectSkillParams,
-  isEquipSkillParams,
   isGoToSkillParams,
-  isMineSkillParams,
 } from "../../core-ports/skills.js";
 import { createSkillCallPlanDraft } from "../planning.js";
-import { ConversationLlmPlanError } from "./errors.js";
+import { ConversationLlmPlanError, ConversationLlmSkillNotEnabledError } from "./errors.js";
 import type { ConversationLlmPlanResult, ONLINE_PLAN_SKILLS } from "./types.js";
 
 /** 在线规划允许的技能名。 */
@@ -37,27 +33,19 @@ type ConversationSkillPlanStrategyTable = {
 type AnyConversationSkillPlanStrategy =
   ConversationSkillPlanStrategyTable[keyof ConversationSkillPlanStrategyTable];
 
+const T045_DISABLED_PLAN_SKILLS = Object.freeze([
+  SKILL_DIRECTORY.collect,
+  SKILL_DIRECTORY.mine,
+  SKILL_DIRECTORY.equip,
+  SKILL_DIRECTORY.cutTree,
+] as const);
+
 /** skill（技能） 到 guard（守卫） / buildPlan（构建器） 的只读策略表。 */
 export const CONVERSATION_SKILL_PLAN_TABLE = Object.freeze({
   [SKILL_DIRECTORY.goTo]: createSkillPlanStrategy({
     skill: SKILL_DIRECTORY.goTo,
     paramsSchema: "params: { x: number; y: number; z: number }",
     guard: isGoToSkillParams,
-  }),
-  [SKILL_DIRECTORY.mine]: createSkillPlanStrategy({
-    skill: SKILL_DIRECTORY.mine,
-    paramsSchema: "params: { blockName: string; count: positive_integer }",
-    guard: isMineSkillParams,
-  }),
-  [SKILL_DIRECTORY.collect]: createSkillPlanStrategy({
-    skill: SKILL_DIRECTORY.collect,
-    paramsSchema: "params: { itemName: string; radius?: positive_integer }",
-    guard: isCollectSkillParams,
-  }),
-  [SKILL_DIRECTORY.equip]: createSkillPlanStrategy({
-    skill: SKILL_DIRECTORY.equip,
-    paramsSchema: `params: { itemName: string; destination?: ${EQUIP_DESTINATIONS.join(" | ")} }`,
-    guard: isEquipSkillParams,
   }),
 } satisfies ConversationSkillPlanStrategyTable);
 
@@ -93,6 +81,13 @@ export function createConversationSkillPlanFromTable(input: {
   const strategy = getConversationSkillPlanStrategy(input.skill);
 
   if (strategy === undefined) {
+    if (isT045DisabledPlanSkill(input.skill)) {
+      throw new ConversationLlmSkillNotEnabledError(
+        `skill ${input.skill} has not passed independent validation and is not enabled`,
+        { skill: input.skill },
+      );
+    }
+
     throw new ConversationLlmPlanError(
       `planner must return skill=${createConversationSkillPlanNameList().replaceAll("、", "|")}`,
     );
@@ -134,4 +129,12 @@ function createSkillPlanStrategy<TName extends OnlinePlanSkillName>(input: {
 /** 判断技能是否属于在线规划策略表。 */
 export function isOnlinePlanSkillName(skill: SkillName): skill is OnlinePlanSkillName {
   return Object.hasOwn(CONVERSATION_SKILL_PLAN_TABLE, skill);
+}
+
+function isT045DisabledPlanSkill(
+  skill: unknown,
+): skill is (typeof T045_DISABLED_PLAN_SKILLS)[number] {
+  return (
+    typeof skill === "string" && (T045_DISABLED_PLAN_SKILLS as readonly string[]).includes(skill)
+  );
 }

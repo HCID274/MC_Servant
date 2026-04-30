@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { createConversationCompositeTriage, createMessageTriage } from "../conversation/index.js";
-import { ConversationLlmChatError } from "../conversation/llm.js";
+import {
+  ConversationLlmChatError,
+  ConversationLlmSkillNotEnabledError,
+} from "../conversation/llm.js";
 import { BotStatus, createBotActorStateProjection } from "../core-ports/index.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
 import { createTaskSummaryDraft } from "../data/index.js";
@@ -543,9 +546,9 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
 
           return {
             type: "skill_call",
-            reply: "收到，我去挖石头",
-            skill: "mine",
-            params: { blockName: "stone", count: 1 },
+            reply: "收到，我去目标坐标",
+            skill: "goTo",
+            params: { x: 1, y: 64, z: -3 },
           };
         },
         broadcastReplySink: async () => undefined,
@@ -574,7 +577,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       type: "task.accepted",
       bot_id: "bot-cw",
       message_id: "msg-plan-memory-fallback",
-      skill: "mine",
+      skill: "goTo",
       priority: "normal",
     });
   });
@@ -809,8 +812,9 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
   });
 
-  it("应通过 planner（规划器） 把自然语言采集任务转换为 mine（挖掘） 执行队列任务", async () => {
+  it("应拒绝 planner（规划器） 产出的未启用 mine（挖掘） 技能且不入执行队列", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const replies: Array<{ message_id: string; content: string }> = [];
     const enqueuedTasks: unknown[] = [];
     const runtime = createConversationWorkerRuntime({
       queue: {
@@ -837,7 +841,9 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           skill: "mine",
           params: { blockName: "stone", count: 2 },
         }),
-        broadcastReplySink: async () => undefined,
+        broadcastReplySink: async (reply) => {
+          replies.push(reply);
+        },
         enqueueExecTaskSink: async ({ task, priority }) => {
           enqueuedTasks.push({ task, priority });
         },
@@ -858,23 +864,87 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       }),
     });
 
-    expect(enqueuedTasks).toHaveLength(1);
-    expect(enqueuedTasks[0]).toMatchObject({
-      priority: 5,
-      task: {
-        exec_job: {
-          message_id: "msg-mine",
-          skill: "mine",
-          params: { blockName: "stone", count: 2 },
+    expect(replies).toEqual([
+      {
+        message_id: "msg-mine",
+        content: "这个技能还没有通过单技能验收，当前只允许执行 goTo 前往坐标喵~",
+      },
+    ]);
+    expect(enqueuedTasks).toEqual([]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.discarded",
+      bot_id: "bot-cw",
+      message_id: "msg-mine",
+      status: "discarded",
+      reason: "skill_not_enabled",
+    });
+  });
+
+  it("应把 planner（规划器） 抛出的未启用技能错误记录为 skill_not_enabled（技能未启用）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const replies: Array<{ message_id: string; content: string }> = [];
+    const enqueuedTasks: unknown[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createMessageTriage({
+            intent: "task",
+            priority: ConversationPriority.Normal,
+            reason: "llm_task_disabled_skill",
+          }),
+        planner: async () => {
+          throw new ConversationLlmSkillNotEnabledError(
+            "skill has not passed independent validation",
+            { skill: "mine" },
+          );
+        },
+        broadcastReplySink: async (reply) => {
+          replies.push(reply);
+        },
+        enqueueExecTaskSink: async ({ task, priority }) => {
+          enqueuedTasks.push({ task, priority });
         },
       },
     });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-disabled-skill-error",
+          content: "去挖两块石头",
+          intent_epoch: 7,
+          snapshot_ts: 106,
+        },
+      }),
+    });
+
+    expect(replies).toEqual([
+      {
+        message_id: "msg-disabled-skill-error",
+        content: "这个技能还没有通过单技能验收，当前只允许执行 goTo 前往坐标喵~",
+      },
+    ]);
+    expect(enqueuedTasks).toEqual([]);
     expect(runtime.getEvents()).toContainEqual({
-      type: "task.accepted",
+      type: "task.discarded",
       bot_id: "bot-cw",
-      message_id: "msg-mine",
-      skill: "mine",
-      priority: "normal",
+      message_id: "msg-disabled-skill-error",
+      status: "discarded",
+      reason: "skill_not_enabled",
     });
   });
 

@@ -1,6 +1,6 @@
 import type { ConversationCompositeTriage } from "../contracts.js";
 import { createConversationCompositeTriageFromRecord, createMessageTriage } from "../triage.js";
-import { ConversationLlmPlanError } from "./errors.js";
+import { ConversationLlmPlanError, ConversationLlmSkillNotEnabledError } from "./errors.js";
 import type { OpenAiCompatibleChatCompletionResponse } from "./http.js";
 import { createConversationSkillPlanFromTable } from "./skill-plan-table.js";
 import type { ConversationLlmPlanResult } from "./types.js";
@@ -50,6 +50,10 @@ export function parseConversationSkillPlan(content: string): ConversationLlmPlan
   const record = parseJsonRecord(content);
 
   if (record.type === "cannot_plan") {
+    if (isSkillNotEnabledCannotPlan(record)) {
+      throw new ConversationLlmSkillNotEnabledError("skill is not enabled for online execution");
+    }
+
     throw new ConversationLlmPlanError(
       typeof record.reason === "string" && record.reason.trim().length > 0
         ? record.reason
@@ -96,4 +100,13 @@ export function extractBraceWrappedJson(content: string): string | undefined {
   }
 
   return content.slice(firstBraceIndex, lastBraceIndex + 1);
+}
+
+function isSkillNotEnabledCannotPlan(record: Record<string, unknown>): boolean {
+  return (
+    record.reason === "skill_not_enabled" ||
+    record.code === "skill_not_enabled" ||
+    record.reason === "技能未启用" ||
+    record.reason === "未通过单技能验收"
+  );
 }

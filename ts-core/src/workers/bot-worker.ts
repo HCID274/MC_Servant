@@ -87,6 +87,9 @@ export type BotWorkerRuntimeEvent =
       readonly reason: "intent_epoch_stale";
     };
 
+const T045_DISABLED_SKILL_ERROR_MESSAGE =
+  "Skill has not passed independent validation and is not enabled in T-045";
+
 /** BotWorker（机器人工作线程） BullMQ（任务队列） Worker 最小能力。 */
 export interface BotBullmqWorkerLike {
   /** 关闭 Worker（工作线程）。 */
@@ -339,6 +342,38 @@ export function createBotWorkerRuntime(input: {
   const processTask = async (job: { readonly data: unknown }): Promise<void> => {
     const task = cloneBotWorkerTask(job.data);
     const currentEpoch = input.dependencies.currentIntentEpoch?.() ?? 0;
+
+    if (
+      task.exec_job.type === ExecutionTaskKind.SkillCall &&
+      task.exec_job.skill !== SKILL_DIRECTORY.goTo
+    ) {
+      const error = Object.freeze({
+        name: "Error",
+        message: `${T045_DISABLED_SKILL_ERROR_MESSAGE}: ${task.exec_job.skill}`,
+      });
+
+      await emitActions(
+        createBotWorkerActions({
+          task,
+          phase: "terminal",
+          status: TaskHistoryStatus.Failed,
+          total_steps: 0,
+          duration_ms: 0,
+          error,
+          last_step: "skill_gate",
+        }),
+      );
+      events.push(
+        Object.freeze({
+          type: "task.failed" as const,
+          bot_id: task.bot_id,
+          message_id: task.exec_job.message_id,
+          status: TaskHistoryStatus.Failed,
+          error,
+        }),
+      );
+      throw new Error(error.message);
+    }
 
     if (task.exec_job.intent_epoch < currentEpoch) {
       await emitActions(

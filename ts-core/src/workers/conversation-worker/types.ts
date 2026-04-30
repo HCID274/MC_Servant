@@ -71,7 +71,7 @@ export type ConversationWorkerRuntimeEvent =
       /** 任务历史状态。 */
       readonly status: TaskHistoryStatus.Discarded;
       /** 丢弃原因。 */
-      readonly reason: "planner_unavailable" | "planner_failed";
+      readonly reason: "planner_unavailable" | "planner_failed" | "skill_not_enabled";
     }
   | {
       /** 事件类型。 */

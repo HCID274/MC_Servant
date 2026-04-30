@@ -48,6 +48,26 @@ export interface MineflayerEventSource {
   removeListener?(eventName: string, listener: (...args: readonly unknown[]) => void): unknown;
 }
 
+/** Mineflayer（Minecraft 协议客户端） 底层协议事件源最小接口。 */
+export interface MineflayerProtocolEventSource {
+  /** 注册持续协议包监听器。 */
+  on(eventName: string, listener: (packet: unknown) => void): unknown;
+  /** 移除协议包监听器。 */
+  off?(eventName: string, listener: (packet: unknown) => void): unknown;
+  /** 移除协议包监听器。 */
+  removeListener?(eventName: string, listener: (packet: unknown) => void): unknown;
+}
+
+/** Mineflayer（Minecraft 协议客户端） 当前游戏维度状态的可写最小结构。 */
+export interface MineflayerGameState {
+  /** 当前 worldName（世界名） 或 dimension（维度） 标识。 */
+  dimension?: string;
+  /** 当前维度最低 Y 坐标。 */
+  minY?: number;
+  /** 当前维度总高度。 */
+  height?: number;
+}
+
 /** Mineflayer（Minecraft 协议客户端） 三维坐标最小结构。 */
 export interface MineflayerVec3Like {
   /** X 坐标。 */
@@ -103,6 +123,10 @@ export interface MineflayerEventPort extends MineflayerEventSource {}
 export interface MineflayerLifecyclePort extends MineflayerEventPort {
   /** Mineflayer（Minecraft 协议客户端） 实际登录用户名。 */
   readonly username?: string;
+  /** Mineflayer（Minecraft 协议客户端） 当前游戏状态；Multiworld（多世界模组） 下需修正维度高度边界。 */
+  readonly game?: MineflayerGameState;
+  /** Mineflayer（Minecraft 协议客户端） 底层协议客户端事件源。 */
+  readonly _client?: MineflayerProtocolEventSource;
   /** Mineflayer（Minecraft 协议客户端） 当前实体快照；spawn（生成） 前可能不存在。 */
   readonly entity?: { readonly position?: MineflayerVec3Like };
   /** 断开连接的优先方法。 */

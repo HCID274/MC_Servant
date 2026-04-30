@@ -512,7 +512,7 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
     expect(actor.getSnapshot().current_task).toBeNull();
   });
 
-  it("应在 ready（就绪） 后执行 mine（挖掘） / collect（捡拾） / equip（装备）", async () => {
+  it("应拒绝未启用 mine（挖掘） / collect（捡拾） / equip（装备） 技能", async () => {
     const executed: string[] = [];
     const externalAuth = createExternalAuthState({ status: "not_required" });
     const actor = createBotActorRuntime({
@@ -546,12 +546,7 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
           params: { blockName: "stone", count: 2 },
         }),
       ),
-    ).resolves.toMatchObject({
-      result: {
-        skill: "mine",
-        mined_count: 2,
-      },
-    });
+    ).rejects.toThrow(/not enabled in T-045/);
     await expect(
       actor.executeSkill(
         createSkillCallJob({
@@ -563,43 +558,22 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
           params: { itemName: "cobblestone", radius: 6 },
         }),
       ),
-    ).resolves.toMatchObject({
-      result: {
-        skill: "collect",
-        item_name: "cobblestone",
-      },
-    });
-    const equipOutcome = await actor.executeSkill(
-      createSkillCallJob({
-        message_id: "msg-equip",
-        intent_epoch: 1,
-        snapshot_ts: 102,
-        priority: ExecPriority.Normal,
-        skill: SKILL_DIRECTORY.equip,
-        params: { itemName: "stone_pickaxe", destination: "hand" },
-      }),
-    );
+    ).rejects.toThrow(/not enabled in T-045/);
+    await expect(
+      actor.executeSkill(
+        createSkillCallJob({
+          message_id: "msg-equip",
+          intent_epoch: 1,
+          snapshot_ts: 102,
+          priority: ExecPriority.Normal,
+          skill: SKILL_DIRECTORY.equip,
+          params: { itemName: "stone_pickaxe", destination: "hand" },
+        }),
+      ),
+    ).rejects.toThrow(/not enabled in T-045/);
 
-    expect(equipOutcome.result).toMatchObject({
-      skill: "equip",
-      item_name: "stone_pickaxe",
-      destination: "hand",
-    });
-    expect(executed).toEqual(["mine:stone:2", "collect:cobblestone:6", "equip:stone_pickaxe:hand"]);
-    expect(actor.getSnapshot().skill_executions).toEqual([
-      {
-        message_id: "msg-mine",
-        skill: "mine",
-      },
-      {
-        message_id: "msg-collect",
-        skill: "collect",
-      },
-      {
-        message_id: "msg-equip",
-        skill: "equip",
-      },
-    ]);
+    expect(executed).toEqual([]);
+    expect(actor.getSnapshot().skill_executions).toEqual([]);
   });
 });
 

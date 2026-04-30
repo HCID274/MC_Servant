@@ -11,10 +11,10 @@
 ## 当前批次
 
 - 批次范围：`T-041` ~ `T-050`
-- 当前已完成任务：`T-041` ~ `T-044`
-- 当前活跃任务：`T-045`（任务四十五） Phase 1（第一阶段）基础动作模块批量收口：集中完成 `/svs`（服务端女仆命令）自然语言到 `goTo`（前往坐标）/ `collect`（捡拾）/ `mine`（挖掘）/ `equip`（装备） 等低风险技能执行的在线闭环。
-- 当前批次摘要：上一批次 `T-031`（任务三十一） 到 `T-040`（任务四十） 已完成对话智能增强、记忆与状态注入、MC（Minecraft，我的世界）事实源、反射动作，以及 Fabric（模组加载器）端服务端桥接基线。新批次默认沿 Fabric mod（Fabric 模组） ↔ TS Core（TypeScript 单核心）真实通信链路推进；任务切分按模块批量合并，同一模块 / 同一上下文 / 同一目标闭环内的相关工作不再拆成多个小任务，以降低握手成本。
-- 当前批次硬约束：不得破坏 BotActor（机器人执行代理）单写者边界；server-bridge（服务端桥接）入口默认 `observe_only`（仅观测），不得绕过 game-chat（游戏聊天） / conversation（对话）队列直接写 Bot（机器人）；不得把 Java（编程语言）或 OkHttp（网络客户端）实现细节渗入 TS Core（TypeScript 单核心）。
+- 当前已完成任务：`T-041` ~ `T-045`
+- 当前活跃任务：`T-046`（任务四十六） `collect`（捡拾）单技能独立验收与接入前验证：先以独立 probe（探针） 文件验证真实捡拾语义，再在同一任务内并入 `/svs`（服务端女仆命令）→ planner（规划器）→ 执行队列 → BotActor（机器人执行代理） 主链路。
+- 当前批次摘要：上一批次 `T-031`（任务三十一） 到 `T-040`（任务四十） 已完成对话智能增强、记忆与状态注入、MC（Minecraft，我的世界）事实源、反射动作，以及 Fabric（模组加载器）端服务端桥接基线。新批次默认沿 Fabric mod（Fabric 模组） ↔ TS Core（TypeScript 单核心）真实通信链路推进；`skill`（技能）任务按单技能独立验收执行，并新增 probe（探针） 先行规则：每个技能先在 `ts-core/scripts/probes/` 做独立验证，再在同一任务内并入主程序。
+- 当前批次硬约束：不得破坏 BotActor（机器人执行代理）单写者边界；server-bridge（服务端桥接）入口默认 `observe_only`（仅观测），不得绕过 game-chat（游戏聊天） / conversation（对话）队列直接写 Bot（机器人）；不得把 Java（编程语言）或 OkHttp（网络客户端）实现细节渗入 TS Core（TypeScript 单核心）；不得在同一任务内合并多个 `skill`（技能）接入；每个 `skill`（技能） 必须先完成独立 probe（探针） 验证后，才能在同任务内并入主程序。
 
 ---
 
@@ -121,3 +121,39 @@
   - `git diff --check` 通过。
   - Manager（管理代理）真实 LLM（大语言模型）复验通过：`POST http://127.0.0.1:8045/v1/chat/completions`，`api_key`（接口密钥）=`sk-local-dev`，`model`（模型）=`bl-auto`，返回内容 `T-044 LLM 复验通过。`，实际上游模型为 `qwen3-max-2026-01-23`。
   - `bash ts-core/scripts/pre_review.sh` 通过：循环依赖 161 个文件无循环，TypeScript（类型检查）通过，Biome（代码检查）通过，Vitest（测试）30 个测试文件 / 205 条测试全部通过。
+
+### T-045 — `goTo`（前往坐标）单技能独立验收与接入前验证
+
+- 状态：已完成（2026-04-30）
+- 核心文件：
+  - `ts-core/src/app/entrypoint.ts`
+  - `ts-core/src/conversation/llm/client.ts`
+  - `ts-core/src/conversation/llm/errors.ts`
+  - `ts-core/src/conversation/llm/parsers.ts`
+  - `ts-core/src/conversation/llm/prompts/plan.ts`
+  - `ts-core/src/conversation/llm/skill-plan-table.ts`
+  - `ts-core/src/conversation/llm/types.ts`
+  - `ts-core/src/workers/conversation-worker/handlers/plan-exec.ts`
+  - `ts-core/src/workers/conversation-worker/helpers.ts`
+  - `ts-core/src/workers/conversation-worker/types.ts`
+  - `ts-core/src/workers/bot-worker.ts`
+  - `ts-core/src/runtime/actor.ts`
+  - `ts-core/src/runtime/transport/go-to.ts`
+  - `ts-core/src/runtime/transport/runtime.ts`
+  - `ts-core/src/runtime/transport/types.ts`
+  - `ts-core/src/__tests__/conversation-llm-planning-model.spec.ts`
+  - `ts-core/src/__tests__/conversation-worker-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/bot-worker-runtime-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-mineflayer-model.spec.ts`
+  - `ts-core/src/__tests__/runtime-actor-model.spec.ts`
+  - `ts-core/src/__tests__/app-entrypoint-model.spec.ts`
+- 变更快照：
+  - 在线 planner（规划器） 可执行技能集合收紧为仅 `goTo`（前往坐标）；Prompt（提示词）、策略表、快照上下文与在线入口全部只暴露 `goTo`（前往坐标）。
+  - ConversationWorker（对话工作线程） / BotWorker（机器人工作线程） / BotActor（机器人执行代理） 三层同时加门禁：`mine`（挖掘） / `collect`（捡拾） / `equip`（装备） / `cutTree`（砍树） 无论来自 LLM（大语言模型） 非法输出还是绕过对话层直接入队，都不会进入执行路径。
+  - 新增 `ConversationLlmSkillNotEnabledError`（LLM 技能未启用错误），把 `cannot_plan`（无法规划） 中的 `skill_not_enabled`（技能未启用） 以及 LLM（大语言模型） 直接返回禁用 `skill_call`（技能调用） 两条路径统一收口为明确门禁语义，不再泛化成 `planner_failed`（规划失败）。
+  - `goTo`（前往坐标） 运行时补齐实服修复：寻路允许必要挖掘并提高挖掘代价、兼容 `mineflayer-pathfinder`（Mineflayer 寻路插件） 默认导出 `GoalBlock`（方块目标） 构造器、在 `login/respawn`（登录/重生） 时同步维度 `minY/height`（最低高度/高度） 以适配 Multiworld（多世界模组）。
+- 审查与验证：
+  - 首轮审查打回的“未启用技能被记成 `planner_failed`（规划失败）”问题已修复；复审通过。
+  - Coder（编码代理） 真实 LLM（大语言模型） 验收通过：`/svs 去到 -16 104 10` 仅产出 `goTo`（前往坐标） `skill_call`（技能调用）。
+  - Coder（编码代理） 真实 MC（Minecraft，我的世界） 烟测通过：`createMineflayerRuntimeTransport`（创建 Mineflayer 运行时传输） 到 `(-16, 104, 10)` 返回 `result.reached=true`。
+  - `bash ts-core/scripts/pre_review.sh` 通过：循环依赖检测通过，TypeScript（类型检查）通过，Biome（代码检查）通过，Vitest（测试）30 个测试文件 / 208 条测试全部通过。

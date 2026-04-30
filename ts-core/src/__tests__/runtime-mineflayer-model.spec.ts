@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("mineflayer-pathfinder", () => ({
   pathfinder: Symbol("mock-pathfinder-plugin"),
-  Movements: class MockMovements {},
+  Movements: class MockMovements {
+    canDig = false;
+    digCost = 1;
+  },
   goals: {
     GoalBlock: class MockGoalBlock {
       constructor(
@@ -41,14 +44,31 @@ import type {
 
 class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-mc";
+  readonly _client = new EventEmitter();
   readonly chatWrites: string[] = [];
   readonly registry = {
+    dimensionsByName: {
+      "minecraft:overworld": {
+        minY: -64,
+        height: 384,
+      },
+      overworld: {
+        minY: -64,
+        height: 384,
+      },
+    },
     itemsByName: {
       cobblestone: {
         id: 1,
       },
     },
   };
+  readonly game = {
+    dimension: "multiworld:resource",
+    minY: 0,
+    height: 256,
+  };
+  readonly receivedMovements: unknown[] = [];
   readonly inventoryItems: MineflayerItemHandle[] = [];
   readonly entities: Record<string, MineflayerEntityHandle | undefined> = {};
   readonly inventory = {
@@ -56,7 +76,9 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   };
   readonly entity: { position?: { x: number; y: number; z: number } } = {};
   readonly pathfinder = {
-    setMovements: (): void => {},
+    setMovements: (movements: unknown): void => {
+      this.receivedMovements.push(movements);
+    },
     goto: async (): Promise<void> => {
       await this.onGoto?.();
     },
@@ -310,6 +332,49 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       }),
     ).rejects.toThrow("Mineflayer did not collect cobblestone in time");
   }, 10_000);
+
+  it("goTo（前往坐标） 应启用必要挖掘并同步 Multiworld（多世界模组） 维度高度边界", async () => {
+    const goToBot = new FakeMineflayerBot();
+    goToBot.entity.position = { x: 0, y: 64, z: 0 };
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-goto-multiworld",
+      }),
+      {
+        createBot: () => goToBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    goToBot._client.emit("login", {
+      dimension: "minecraft:overworld",
+      worldName: "multiworld:resource",
+    });
+    goToBot.emit("spawn");
+    await connectPromise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await expect(
+      transport.goTo({
+        x: -16,
+        y: 104,
+        z: 10,
+      }),
+    ).resolves.toMatchObject({
+      skill: "goTo",
+      reached: true,
+    });
+    expect(goToBot.game).toMatchObject({
+      dimension: "multiworld:resource",
+      minY: -64,
+      height: 384,
+    });
+    expect(goToBot.receivedMovements[0]).toMatchObject({
+      canDig: true,
+      digCost: 10,
+    });
+  });
 
   it("collect（捡拾） 只能选择 radius（搜索半径） 内的掉落物目标", async () => {
     const collectBot = new FakeMineflayerBot();

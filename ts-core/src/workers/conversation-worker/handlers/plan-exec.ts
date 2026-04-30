@@ -3,13 +3,16 @@ import type {
   ConversationPlanDraft,
   ConversationRouteDecision,
 } from "../../../conversation/contracts.js";
+import { isConversationLlmSkillNotEnabledError } from "../../../conversation/llm/errors.js";
 import { createExecJobFromPlan } from "../../../conversation/planning.js";
+import { SKILL_DIRECTORY } from "../../../core-ports/skills.js";
 import { TaskHistoryStatus } from "../../../core-ports/tasking.js";
 import { type ConversationWorkerTask, createBotWorkerTask } from "../../contracts.js";
 import {
   CONVERSATION_WORKER_MEMORY_CONTEXT_CHAR_BUDGET,
   CONVERSATION_WORKER_MEMORY_CONTEXT_LIMIT,
   createPlanningFailureReply,
+  createSkillNotEnabledReply,
   normalizeMemoryContext,
   toBullmqPriority,
 } from "../helpers.js";
@@ -45,7 +48,12 @@ export async function handlePlanExecRoute(input: {
       route: input.route,
       ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
     });
-  } catch {
+  } catch (error) {
+    if (isConversationLlmSkillNotEnabledError(error)) {
+      await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply);
+      return;
+    }
+
     await pushPlanningFailure(input, "planner_failed", plannerFailureReply.reply);
     return;
   }
@@ -64,6 +72,11 @@ export async function handlePlanExecRoute(input: {
 
   if (execJob.type !== "skill_call") {
     await pushPlanningFailure(input, "planner_failed", plannerFailureReply.reply);
+    return;
+  }
+
+  if (execJob.skill !== SKILL_DIRECTORY.goTo) {
+    await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply);
     return;
   }
 
@@ -158,7 +171,7 @@ async function pushPlanningFailure(
     readonly dependencies: ConversationWorkerRuntimeDependencies;
     readonly events: ConversationWorkerRuntimeEvent[];
   },
-  reason: "planner_unavailable" | "planner_failed",
+  reason: "planner_unavailable" | "planner_failed" | "skill_not_enabled",
   reply: string,
 ): Promise<void> {
   await input.dependencies.broadcastReplySink({

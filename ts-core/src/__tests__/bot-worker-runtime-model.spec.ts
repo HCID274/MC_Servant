@@ -6,11 +6,7 @@ import {
   createSandboxCodeJob,
   createSkillCallJob,
 } from "../index.js";
-import {
-  SKILL_DIRECTORY,
-  createEquipSkillExecutionResult,
-  createGoToSkillExecutionResult,
-} from "../skills/index.js";
+import { SKILL_DIRECTORY, createGoToSkillExecutionResult } from "../skills/index.js";
 import { createBotWorkerRuntime } from "../workers/bot-worker.js";
 import {
   type BotWorkerAction,
@@ -204,7 +200,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     ]);
   });
 
-  it("应把 equip（装备） 任务沿现有生命周期链路执行到 completed（已完成）", async () => {
+  it("应拒绝未启用 equip（装备） 技能且不调用 BotActor（机器人执行代理）", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const executedSkills: string[] = [];
     const runtime = createBotWorkerRuntime({
@@ -218,10 +214,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
             executedSkills.push(job.skill);
 
             return {
-              result: createEquipSkillExecutionResult({
-                itemName: "stone_pickaxe",
-                destination: "hand",
-              }),
+              result: createGoToSkillExecutionResult({ x: 0, y: 64, z: 0 }),
               snapshot: {} as never,
             };
           },
@@ -251,22 +244,19 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
 
     await runtime.start();
-    await processor?.({ data: task });
+    await expect(processor?.({ data: task })).rejects.toThrow(/not enabled in T-045/);
 
-    expect(executedSkills).toEqual(["equip"]);
+    expect(executedSkills).toEqual([]);
     expect(runtime.getEvents()).toEqual([
       {
-        type: "task.started",
+        type: "task.failed",
         bot_id: "bot-worker",
         message_id: "msg-worker-equip",
-        status: TaskHistoryStatus.Started,
-      },
-      {
-        type: "task.completed",
-        bot_id: "bot-worker",
-        message_id: "msg-worker-equip",
-        status: TaskHistoryStatus.Completed,
-        total_steps: 1,
+        status: TaskHistoryStatus.Failed,
+        error: {
+          name: "Error",
+          message: "Skill has not passed independent validation and is not enabled in T-045: equip",
+        },
       },
     ]);
   });

@@ -74,6 +74,18 @@ export function createPlanningFailureReply() {
 }
 
 /**
+ * 创建未启用技能的模板回复。
+ *
+ * T-045（任务四十五） 只允许 goTo（前往坐标） 进入在线执行队列；其他技能必须明确拒绝。
+ */
+export function createSkillNotEnabledReply() {
+  return createConversationReply({
+    mode: "template",
+    reply: "这个技能还没有通过单技能验收，当前只允许执行 goTo 前往坐标喵~",
+  });
+}
+
+/**
  * 归一化回复生成结果。
  *
  * @param result 回复生成器返回值

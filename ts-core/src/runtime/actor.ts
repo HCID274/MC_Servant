@@ -11,10 +11,7 @@ import {
   type SkillExecutionResult,
   type SkillName,
   type SkillParamsByName,
-  isCollectSkillParams,
-  isEquipSkillParams,
   isGoToSkillParams,
-  isMineSkillParams,
 } from "../core-ports/skills.js";
 import {
   type BotActorCurrentTaskProjection,
@@ -264,31 +261,12 @@ export function createBotActorRuntime<TBotId extends string>(input: {
               Record<string, unknown>
             >;
           case SKILL_DIRECTORY.mine:
-            if (!isMineSkillParams(params)) {
-              throw new Error("sandbox mine params are invalid");
-            }
-
-            return (await skillExecution.mine(params)) as unknown as Readonly<
-              Record<string, unknown>
-            >;
           case SKILL_DIRECTORY.collect:
-            if (!isCollectSkillParams(params)) {
-              throw new Error("sandbox collect params are invalid");
-            }
-
-            return (await skillExecution.collect(params)) as unknown as Readonly<
-              Record<string, unknown>
-            >;
           case SKILL_DIRECTORY.equip:
-            if (!isEquipSkillParams(params)) {
-              throw new Error("sandbox equip params are invalid");
-            }
-
-            return (await skillExecution.equip(params)) as unknown as Readonly<
-              Record<string, unknown>
-            >;
           case SKILL_DIRECTORY.cutTree:
-            throw new Error("cutTree is not executable in the current runtime sandbox");
+            throw new Error(
+              `Skill ${skill} has not passed independent validation and is not enabled in T-045`,
+            );
         }
 
         throw new Error(`Unsupported sandbox skill: ${String(skill)}`);
@@ -883,12 +861,11 @@ async function executeActorSkillCallJob(
     case SKILL_DIRECTORY.goTo:
       return dependencies.goToMovement.goTo(job.params);
     case SKILL_DIRECTORY.mine:
-      return dependencies.mine(job.params);
     case SKILL_DIRECTORY.collect:
-      return dependencies.collect(job.params);
     case SKILL_DIRECTORY.equip:
-      return dependencies.equip(job.params);
     case SKILL_DIRECTORY.cutTree:
-      throw new Error("cutTree is not executable in the current runtime");
+      throw new Error(
+        `Skill ${job.skill} has not passed independent validation and is not enabled in T-045`,
+      );
   }
 }
