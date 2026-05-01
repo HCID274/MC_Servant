@@ -91,6 +91,10 @@ docs/                        ← legacy-*.md 迁移索引
 ### ts-core (主线)
 
 ```bash
+./dev-infra.sh            # 根目录开发模式:只启动 PostgreSQL(数据库) + Redis(缓存),TS 本地跑
+./dev-infra.sh run        # 根目录开发模式:前台运行本地 TS Core(TypeScript 核心)并输出日志
+./start-ts-core.sh          # 根目录一键启动 app(应用) + PostgreSQL(数据库) + Redis(缓存)
+./stop-ts-core.sh           # 根目录一键停止,默认保留数据卷
 cd ts-core
 pnpm install
 pnpm typecheck     # 类型检查
@@ -111,9 +115,10 @@ cd plugin && ./mvnw clean package -DskipTests
 
 ```bash
 cd backend && pip install -r requirements.txt && npm install
-cd backend && python main.py     # 或根目录 .\start.bat
 cd backend && pytest -q
 ```
+
+旧 Python 启动入口已下线;不要再用 `backend/main.py` 或根目录 `start.bat` 启动服务。
 
 ## 9. 编码规范
 

@@ -7,7 +7,7 @@ ENV PATH="$PNPM_HOME:$PATH"
 
 RUN corepack enable
 
-COPY package.json tsconfig.json biome.json README.md ./
+COPY package.json tsconfig.json biome.json drizzle.config.ts vitest.config.ts README.md ./
 COPY src ./src
 
 RUN pnpm install --no-frozen-lockfile

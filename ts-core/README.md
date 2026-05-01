@@ -19,6 +19,37 @@ ConversationWorker 把 `POST /api/message` 文本回复写入 MC 聊天。
 
 ## 启动
 
+开发模式只用 Docker Compose（编排）启动 PostgreSQL（数据库）+ Redis（缓存）,
+TS Core（TypeScript 核心）在本机 Node.js（运行时）中运行:
+
+```bash
+./dev-infra.sh
+cd ts-core
+pnpm install
+set -a && source .env && set +a
+pnpm dev
+```
+
+需要同一终端停在 TS Core（TypeScript 核心）日志输出上时:
+
+```bash
+./dev-infra.sh run
+```
+
+验收模式从仓库根目录使用 Docker Compose（编排）启动 app（应用）+
+PostgreSQL（数据库）+ Redis（缓存）:
+
+```bash
+./start-ts-core.sh
+./stop-ts-core.sh
+```
+
+Compose 配置位于仓库根目录 `compose.yaml`。env 文件固定为 `ts-core/.env`,
+脚本通过 `docker compose --env-file ./ts-core/.env -f compose.yaml ...` 加载;
+如文件不存在,启动脚本会从 `ts-core/.env.example` 创建。
+
+纯本地直跑(不使用 Docker（容器）infra（基础设施）时自行准备 PostgreSQL（数据库）/ Redis（缓存）):
+
 ```bash
 cp .env.example .env       # 编辑 .env
 set -a && source .env && set +a
@@ -95,8 +126,16 @@ token 不会出现在 ack / error / replay / 日志中。`/login <secret>` 在�
 ## 容器
 
 ```bash
-docker build -t ts-core-local .
-docker run --rm --env-file .env ts-core-local
+cd ..
+docker compose --env-file ./ts-core/.env -f compose.yaml config
+docker compose --env-file ./ts-core/.env -f compose.yaml up -d postgres redis
+docker compose --env-file ./ts-core/.env -f compose.yaml up -d --build
 ```
 
-镜像只打包 ts-core 自身,不含 PostgreSQL / Redis / MC 服务端 / EasyAuth。
+根目录 Compose（编排）支持两种入口:`./dev-infra.sh` 只启动 PostgreSQL（数据库）+
+Redis（缓存）,本地用 `pnpm dev` 跑 TS Core（TypeScript 核心）;
+`./dev-infra.sh run` 会前台运行本地 TS Core（TypeScript 核心）并持续输出日志;
+`./start-ts-core.sh`
+启动 app（应用）+ PostgreSQL（数据库）+ Redis（缓存）,用于全 Docker（容器）
+验收。MC 服务端仍由宿主机裸跑,
+启动脚本只探活 `MC_HOST:MC_PORT` 并打印提示,不纳入 Compose。

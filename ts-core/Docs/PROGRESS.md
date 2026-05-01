@@ -42,3 +42,11 @@
 ## 已完成 (新工作流下)
 
 (从这里开始,Reviewer C 通过任务后追加)
+
+## T-OPS-001 | 2026-05-01 | Docker（容器引擎）一键启停与开发模式入口
+
+- 涉及模块: 根目录 Compose（编排）与启停脚本,ts-core（TS 单核心） Dockerfile（镜像构建文件）/ README（说明文档）,旧 Python（旧后端）入口
+- A 拆解依据: 用户要求保留三端全 Docker（容器）验收模式,新增 PostgreSQL（数据库）+ Redis（缓存）开发模式;边界限定不动 MC（我的世界）服务端、不触 LLM（大语言模型）链路
+- C 审查结论: 通过
+- 关键决策: 复用同一份 Compose（编排）与 ts-core/.env（环境变量文件）,用 dev-infra.sh 只拉起 infra（基础设施）并移除 Docker（容器）app（应用）,避免第二份配置漂移
+- 架构冲突: 无

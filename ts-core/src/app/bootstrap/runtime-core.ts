@@ -66,7 +66,8 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
           }),
       },
     });
-    await created.actor.start();
+    // MC（我的世界）宿主服务不归 TS Core 生命周期管理；首连失败时保留接口与工作线程，由状态快照暴露不可用原因。
+    await created.actor.start().catch(() => undefined);
 
     const observation = created.observation;
     const transport = created.transport;

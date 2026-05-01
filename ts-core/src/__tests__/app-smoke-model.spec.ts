@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 
+import { createAppRuntimeCoreResources } from "../app/bootstrap/runtime-core.js";
 import {
   assertAppLifecyclePlan,
   createAppBootstrapContract,
@@ -158,6 +159,38 @@ describe("app（应用装配） 骨架", () => {
     expect(assembly.runtime_resources.mineflayer_transport.descriptor.username).toBe("maid-bot");
     expect(assembly.runtime_resources.mineflayer_transport.descriptor.version).toBeNull();
     expect(assembly.runtime_resources.mineflayer_transport.descriptor.auth).toBeNull();
+  });
+
+  it("运行时核心首连 MC 失败时应保留资源并暴露不可用快照", async () => {
+    const closeOrder: string[] = [];
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-mc-unavailable",
+      now: "2026-04-15T00:00:00.000Z",
+    });
+
+    const runtime = await createAppRuntimeCoreResources(bootstrap, {
+      transport: {
+        createBot: () => {
+          const bot = new FakeAppMineflayerBot("bot-mc-unavailable", () => {
+            closeOrder.push("runtime_transport");
+          });
+
+          setTimeout(() => bot.emit("end"), 0);
+
+          return bot;
+        },
+      },
+    });
+    const snapshot = runtime.actor.getSnapshot();
+
+    expect(snapshot.status).toBe("initializing");
+    expect(snapshot.transport.connected).toBe(false);
+    expect(snapshot.transport.state).toBe("failed");
+    expect(snapshot.transport.last_error).toContain("ended before login or spawn");
+
+    await runtime.close();
+
+    expect(closeOrder).toContain("runtime_transport");
   });
 
   it("应拒绝已设置但非法的 MC 环境变量", () => {

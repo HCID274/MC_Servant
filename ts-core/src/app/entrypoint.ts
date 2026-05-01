@@ -458,7 +458,12 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     input.write?.(`TS Core HTTP ready: ${listenAddress}`);
 
     runtime = await createAppRuntimeCoreResources(input.bootstrap, input.dependencies?.runtime);
-    input.write?.(`TS Core Mineflayer ready: ${runtime.actor.getSnapshot().transport.username}`);
+    const transportSnapshot = runtime.actor.getSnapshot().transport;
+    input.write?.(
+      transportSnapshot.connected
+        ? `TS Core Mineflayer ready: ${transportSnapshot.username}`
+        : `TS Core Mineflayer unavailable: ${transportSnapshot.last_error ?? transportSnapshot.state}`,
+    );
     const createdRuntime = runtime;
     resourceIndex = createResourceIndex({
       refreshPort: createdRuntime.transport,

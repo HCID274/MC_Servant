@@ -1,0 +1,63 @@
+name: ts-core
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    network_mode: host
+    environment:
+      POSTGRES_DB: ${PG_DATABASE:?PG_DATABASE is required}
+      POSTGRES_USER: ${PG_USER:?PG_USER is required}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD is required}
+    volumes:
+      - ts-core-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -h 127.0.0.1 -p ${PG_PORT:-5432} -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+    command: ["redis-server", "--appendonly", "yes"]
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -h 127.0.0.1 -p 6379 ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  app:
+    image: ts-core-local
+    build:
+      context: ./ts-core
+      dockerfile: Dockerfile
+    network_mode: host
+    env_file:
+      - ./ts-core/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:3000/api/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  ts-core-postgres-data:
+    name: ts-core_ts-core-postgres-data

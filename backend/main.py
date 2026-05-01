@@ -1,3 +1,7 @@
+raise SystemExit(
+    "旧 Python 后端入口已下线。请在 WSL 中从仓库根目录执行: ./start-ts-core.sh"
+)
+
 # MC_Servant Backend - Layered Entry
 
 """
