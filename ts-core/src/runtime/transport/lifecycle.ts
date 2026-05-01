@@ -14,6 +14,7 @@ export function createMineflayerTransportDescriptor<TBotId extends string>(input
   port?: number;
   version?: string | null;
   auth?: string | null;
+  worldDimensionMap?: Readonly<Record<string, string>>;
 }): MineflayerTransportDescriptor<TBotId> {
   assertNonEmptyString(input.botId, "botId");
 
@@ -35,6 +36,7 @@ export function createMineflayerTransportDescriptor<TBotId extends string>(input
     port,
     version: input.version ?? null,
     auth: input.auth ?? null,
+    world_dimension_map: Object.freeze({ ...(input.worldDimensionMap ?? {}) }),
   });
 }
 

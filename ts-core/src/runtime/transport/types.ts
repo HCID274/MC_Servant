@@ -258,6 +258,12 @@ export interface MineflayerPathfinderModule {
       z: number,
       range: number,
     ) => unknown;
+    /** 近距离 XZ 平面目标。 */
+    readonly GoalNearXZ?: new (
+      x: number,
+      z: number,
+      range: number,
+    ) => unknown;
   };
 }
 
@@ -288,6 +294,8 @@ export interface MineflayerTransportDescriptor<TBotId extends string = string> {
   readonly version: string | null;
   /** 可选认证模式。 */
   readonly auth: string | null;
+  /** worldName（世界名） 到 dimension type（维度类型） 的显式映射。 */
+  readonly world_dimension_map: Readonly<Record<string, string>>;
 }
 
 /** Mineflayer（Minecraft 协议客户端） 运行时传输快照。 */

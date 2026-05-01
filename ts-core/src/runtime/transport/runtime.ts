@@ -10,6 +10,7 @@ import type {
   MineSkillParams,
 } from "../../core-ports/skills.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../../domain/invariants.js";
+import { attachMineflayerBlockWorldCompatibility } from "./block-world-compat.js";
 import { executeMineflayerCollect } from "./collect.js";
 import { executeMineflayerEquip } from "./equip.js";
 import { executeMineflayerGoTo } from "./go-to.js";
@@ -48,6 +49,7 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
   let eventSource: MineflayerEventSource | null = null;
   let lastError: string | null = null;
   let removeRuntimeListeners: (() => void) | null = null;
+  let removeBlockWorldCompatibilityListener: (() => void) | null = null;
   let removeDimensionBoundsListeners: (() => void) | null = null;
   let removeVelocityCompatibilityListener: (() => void) | null = null;
   let spawned = false;
@@ -82,6 +84,9 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
 
       try {
         bot = await createBot(createMineflayerCreateBotOptions(descriptor));
+        removeBlockWorldCompatibilityListener = attachMineflayerBlockWorldCompatibility(bot, {
+          worldDimensionMap: descriptor.world_dimension_map,
+        });
         removeDimensionBoundsListeners = attachMineflayerDimensionBoundsSync(bot);
         removeRuntimeListeners = attachRuntimeStateListeners(bot, {
           markSpawned() {
@@ -194,6 +199,8 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
     const currentBot = bot;
     removeRuntimeListeners?.();
     removeRuntimeListeners = null;
+    removeBlockWorldCompatibilityListener?.();
+    removeBlockWorldCompatibilityListener = null;
     removeDimensionBoundsListeners?.();
     removeDimensionBoundsListeners = null;
     removeVelocityCompatibilityListener?.();

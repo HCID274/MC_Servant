@@ -16,6 +16,7 @@ import {
   BotStatus,
   createExternalAuthPublicState,
   createMineflayerTransportDescriptor,
+  parseWorldDimensionMap,
 } from "../../runtime/index.js";
 import type { RuntimeScaffold } from "../../runtime/index.js";
 import type { WorkerQueueCatalog } from "../../workers/index.js";
@@ -110,6 +111,9 @@ export function createAppRuntimeCoreDirectory<TBotId extends string>(input: {
         port: readOptionalInteger(input.env, "MC_PORT", { min: 1, max: 65_535 }) ?? 25565,
         version: readOptionalString(input.env, "MC_VERSION") ?? null,
         auth: readOptionalString(input.env, "MC_AUTH") ?? null,
+        worldDimensionMap: parseWorldDimensionMap(
+          readOptionalString(input.env, "MC_WORLD_DIMENSION_MAP"),
+        ),
       }),
     }),
     bot_actor: Object.freeze({

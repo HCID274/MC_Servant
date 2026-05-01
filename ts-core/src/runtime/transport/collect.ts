@@ -43,6 +43,7 @@ type PickupOutcome =
 interface CollectDropsOptions {
   readonly itemName?: string;
   readonly center: MineflayerVec3Like;
+  readonly useLiveBotCenter: boolean;
   readonly radius: number;
   readonly timeoutMs: number;
 }
@@ -89,18 +90,20 @@ async function collectDrops(input: {
   const inventoryBefore = countInventoryByName(input.bot);
   let totalSteps = 0;
   const skipped: CollectSkillSkippedItem[] = [];
+  let sawTargetEntity = findCollectTargetEntities(input.bot, input.options).length > 0;
+  let confirmedInventoryIncrease = false;
 
   await moveToCollectCenterIfNeeded(input);
   totalSteps += 1;
 
   await delay(AUTO_COLLECT_SETTLE_MS);
+  const settledTargets = findCollectTargetEntities(input.bot, input.options);
+  sawTargetEntity ||= settledTargets.length > 0;
   const autoCollected = createCollectedDiff(input.options.itemName, inventoryBefore, input.bot);
 
-  if (
-    autoCollected.length > 0 &&
-    findCollectTargetEntities(input.bot, input.options).length === 0
-  ) {
+  if (sawTargetEntity && autoCollected.length > 0 && settledTargets.length === 0) {
     return createCollectResult(input.options, {
+      bot: input.bot,
       collected: autoCollected,
       skipped,
       totalSteps,
@@ -109,9 +112,17 @@ async function collectDrops(input: {
 
   while (Date.now() - startedAt < input.options.timeoutMs) {
     const targets = findCollectTargetEntities(input.bot, input.options);
+    sawTargetEntity ||= targets.length > 0;
 
     if (targets.length === 0) {
-      if (createCollectedDiff(input.options.itemName, inventoryBefore, input.bot).length > 0) {
+      const collectedSinceStart = createCollectedDiff(
+        input.options.itemName,
+        inventoryBefore,
+        input.bot,
+      );
+
+      if (sawTargetEntity && collectedSinceStart.length > 0) {
+        confirmedInventoryIncrease = true;
         break;
       }
 
@@ -140,11 +151,13 @@ async function collectDrops(input: {
 
       if (outcome.status === "collected") {
         madeProgress = true;
+        confirmedInventoryIncrease = true;
         continue;
       }
 
       if (createCollectedDiff(input.options.itemName, beforeAttempt, input.bot).length > 0) {
         madeProgress = true;
+        confirmedInventoryIncrease = true;
         continue;
       }
 
@@ -158,8 +171,9 @@ async function collectDrops(input: {
 
   const collected = createCollectedDiff(input.options.itemName, inventoryBefore, input.bot);
 
-  if (collected.length > 0) {
+  if (confirmedInventoryIncrease && collected.length > 0) {
     return createCollectResult(input.options, {
+      bot: input.bot,
       collected,
       skipped,
       totalSteps,
@@ -198,16 +212,7 @@ async function pickupEntity(input: {
 
   const inventoryBefore = countInventoryByName(input.bot);
 
-  try {
-    await input.pathfinder.goto(
-      new input.pathfinderModule.goals.GoalNear(
-        currentTarget.position.x,
-        currentTarget.position.y,
-        currentTarget.position.z,
-        1,
-      ),
-    );
-  } catch {
+  if (!(await goToPickupTarget(input.pathfinder, input.pathfinderModule, currentTarget.position))) {
     return {
       status: "skipped",
       skipped: createSkippedItem(entityId, "unreachable"),
@@ -271,6 +276,94 @@ async function pickupEntity(input: {
   };
 }
 
+async function goToPickupTarget(
+  pathfinder: MineflayerPathfinderApi,
+  pathfinderModule: MineflayerPathfinderModule,
+  position: MineflayerVec3Like,
+): Promise<boolean> {
+  const GoalNearXZ = resolveGoalNearXZConstructor(pathfinderModule);
+  if (GoalNearXZ !== undefined) {
+    try {
+      await pathfinder.goto(new GoalNearXZ(position.x, position.z, 1.5));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  const GoalNear = resolveGoalNearConstructor(pathfinderModule);
+  try {
+    await pathfinder.goto(new GoalNear(position.x, position.y, position.z, 1));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveGoalNearConstructor(
+  pathfinderModule: MineflayerPathfinderModule,
+): new (
+  x: number,
+  y: number,
+  z: number,
+  range: number,
+) => unknown {
+  const goalConstructor = readPathfinderGoals(pathfinderModule).GoalNear;
+
+  if (typeof goalConstructor !== "function") {
+    throw new Error("mineflayer-pathfinder GoalNear constructor is unavailable");
+  }
+
+  return goalConstructor as new (
+    x: number,
+    y: number,
+    z: number,
+    range: number,
+  ) => unknown;
+}
+
+function resolveGoalNearXZConstructor(
+  pathfinderModule: MineflayerPathfinderModule,
+): (new (x: number, z: number, range: number) => unknown) | undefined {
+  const goalConstructor = readPathfinderGoals(pathfinderModule).GoalNearXZ;
+
+  return typeof goalConstructor === "function"
+    ? (goalConstructor as new (
+        x: number,
+        z: number,
+        range: number,
+      ) => unknown)
+    : undefined;
+}
+
+function readPathfinderGoals(
+  pathfinderModule: MineflayerPathfinderModule,
+): Readonly<Record<string, unknown>> {
+  const moduleRecord = isRecord(pathfinderModule) ? pathfinderModule : undefined;
+  const directGoalsValue = readOptionalRecordValue(moduleRecord, "goals");
+  const directGoals = isRecord(directGoalsValue) ? directGoalsValue : undefined;
+  const defaultRecordValue = readOptionalRecordValue(moduleRecord, "default");
+  const defaultRecord = isRecord(defaultRecordValue) ? defaultRecordValue : undefined;
+  const defaultGoalsValue = readOptionalRecordValue(defaultRecord, "goals");
+  const defaultGoals = isRecord(defaultGoalsValue) ? defaultGoalsValue : undefined;
+  return directGoals ?? defaultGoals ?? {};
+}
+
+function readOptionalRecordValue(
+  record: Readonly<Record<string, unknown>> | undefined,
+  key: string,
+): unknown {
+  if (record === undefined || !Object.prototype.hasOwnProperty.call(record, key)) {
+    return undefined;
+  }
+
+  try {
+    return record[key];
+  } catch {
+    return undefined;
+  }
+}
+
 /** 规范化 collectDrops（收集掉落物） 参数，保证半径默认值和上限一致。 */
 function normalizeCollectDropsOptions(
   bot: MineflayerCollectPort,
@@ -297,6 +390,7 @@ function normalizeCollectDropsOptions(
       y: center.y,
       z: center.z,
     }),
+    useLiveBotCenter: params.center === undefined,
     radius,
     timeoutMs: params.timeoutMs ?? DEFAULT_COLLECT_TIMEOUT_MS,
   });
@@ -310,6 +404,9 @@ async function moveToCollectCenterIfNeeded(input: {
   readonly options: CollectDropsOptions;
 }): Promise<void> {
   const botPosition = input.bot.entity?.position;
+  if (input.options.useLiveBotCenter) {
+    return;
+  }
 
   if (
     botPosition !== undefined &&
@@ -466,14 +563,15 @@ function findCollectTargetEntities(
   bot: MineflayerCollectPort,
   options: CollectDropsOptions,
 ): readonly MineflayerEntityHandle[] {
-  const botPosition = bot.entity?.position ?? options.center;
+  const scanCenter = resolveCollectCenter(bot, options);
+  const botPosition = bot.entity?.position ?? scanCenter;
   const radiusSquared = options.radius * options.radius;
   const entities = Object.values(bot.entities ?? {}).filter(
     (entity): entity is MineflayerEntityHandle =>
       entity !== null &&
       entity !== undefined &&
       entity.position !== undefined &&
-      calculateDistanceSquared(entity.position, options.center) <= radiusSquared &&
+      calculateDistanceSquared(entity.position, scanCenter) <= radiusSquared &&
       matchesCollectTargetEntity(entity, options.itemName, bot.registry),
   );
 
@@ -631,25 +729,34 @@ function createSkippedItem(
 function createCollectResult(
   options: CollectDropsOptions,
   outcome: {
+    readonly bot: MineflayerCollectPort;
     readonly collected: readonly CollectSkillCollectedItem[];
     readonly skipped: readonly CollectSkillSkippedItem[];
     readonly totalSteps: number;
   },
 ): CollectSkillExecutionResult {
+  const center = resolveCollectCenter(outcome.bot, options);
   return createCollectSkillExecutionResult(
     {
       ...(options.itemName === undefined ? {} : { itemName: options.itemName }),
-      center: options.center,
+      center,
       radius: options.radius,
       timeoutMs: options.timeoutMs,
     },
     {
-      center: options.center,
+      center,
       collected: outcome.collected,
       skipped: outcome.skipped,
       total_steps: outcome.totalSteps,
     },
   );
+}
+
+function resolveCollectCenter(
+  bot: MineflayerCollectPort,
+  options: CollectDropsOptions,
+): MineflayerVec3Like {
+  return options.useLiveBotCenter ? (bot.entity?.position ?? options.center) : options.center;
 }
 
 /** 格式化跳过记录，作为失败诊断的一部分。 */

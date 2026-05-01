@@ -150,6 +150,8 @@ describe("app（应用装配） 骨架", () => {
         MC_USERNAME: "maid-bot",
         MC_VERSION: "",
         MC_AUTH: "",
+        MC_WORLD_DIMENSION_MAP:
+          "cherry=minecraft:overworld,resource=minecraft:overworld,minecraft:the_nether=minecraft:the_nether",
       },
     });
 
@@ -159,6 +161,11 @@ describe("app（应用装配） 骨架", () => {
     expect(assembly.runtime_resources.mineflayer_transport.descriptor.username).toBe("maid-bot");
     expect(assembly.runtime_resources.mineflayer_transport.descriptor.version).toBeNull();
     expect(assembly.runtime_resources.mineflayer_transport.descriptor.auth).toBeNull();
+    expect(assembly.runtime_resources.mineflayer_transport.descriptor.world_dimension_map).toEqual({
+      cherry: "minecraft:overworld",
+      resource: "minecraft:overworld",
+      "minecraft:the_nether": "minecraft:the_nether",
+    });
   });
 
   it("运行时核心首连 MC 失败时应保留资源并暴露不可用快照", async () => {

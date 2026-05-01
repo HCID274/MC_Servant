@@ -23,6 +23,13 @@ vi.mock("mineflayer-pathfinder", () => ({
         readonly range: number,
       ) {}
     },
+    GoalNearXZ: class MockGoalNearXZ {
+      constructor(
+        readonly x: number,
+        readonly z: number,
+        readonly range: number,
+      ) {}
+    },
   },
 }));
 
@@ -94,12 +101,12 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     setMovements: (movements: unknown): void => {
       this.receivedMovements.push(movements);
     },
-    goto: async (): Promise<void> => {
-      await this.onGoto?.();
+    goto: async (goal?: unknown): Promise<void> => {
+      await this.onGoto?.(goal);
     },
   };
   closed = false;
-  onGoto?: () => void | Promise<void>;
+  onGoto?: (goal?: unknown) => void | Promise<void>;
 
   chat(text: string): void {
     this.chatWrites.push(text);
@@ -315,6 +322,160 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(createdBots[0]?._client.listenerCount("entity_velocity")).toBe(0);
   });
 
+  it("应在适配层把 Multiworld（多世界） respawn（切维） 包的方块世界键对齐到 worldName（世界名）", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const observedBlockWorlds: string[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-block-world-compat",
+        version: "1.20.4",
+        worldDimensionMap: {
+          resource: "minecraft:overworld",
+        },
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          let blockPluginDimension = "minecraft:overworld";
+          let blockPluginWorldName = "minecraft:overworld";
+
+          bot._client.on("respawn", (packet: unknown) => {
+            const respawn = packet as { readonly dimension?: string; readonly worldName?: string };
+            if (blockPluginDimension === respawn.dimension) {
+              return;
+            }
+            blockPluginDimension = respawn.dimension ?? blockPluginDimension;
+            blockPluginWorldName = respawn.worldName ?? blockPluginWorldName;
+            observedBlockWorlds.push(blockPluginWorldName);
+          });
+
+          createdBots.push(bot);
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    const bot = createdBots[0];
+    bot?.emit("spawn");
+    await connectPromise;
+
+    bot?._client.emit("respawn", {
+      dimension: "minecraft:overworld",
+      worldName: "multiworld:resource",
+    });
+
+    expect(observedBlockWorlds).toEqual(["multiworld:resource"]);
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("应在 Multiworld（多世界） overworld 类型世界解析 map_chunk（区块） 时临时提供真实维度类型", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const dimensionsDuringChunk: string[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-block-world-skylight",
+        version: "1.20.4",
+        worldDimensionMap: {
+          cherry: "minecraft:overworld",
+          resource: "minecraft:overworld",
+          "minecraft:overworld": "minecraft:overworld",
+          "minecraft:the_nether": "minecraft:the_nether",
+          "minecraft:the_end": "minecraft:the_end",
+        },
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+
+          bot._client.on("map_chunk", () => {
+            dimensionsDuringChunk.push(bot.game.dimension);
+          });
+
+          createdBots.push(bot);
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    const bot = createdBots[0];
+    bot?._client.emit("login", {
+      dimension: "minecraft:overworld",
+      worldName: "multiworld:cherry",
+    });
+    if (bot !== undefined) {
+      bot.game.dimension = "multiworld:cherry";
+    }
+    bot?.emit("spawn");
+    await connectPromise;
+
+    bot?._client.emit("map_chunk", { x: -2, z: -2 });
+    await Promise.resolve();
+
+    expect(dimensionsDuringChunk).toEqual(["overworld"]);
+    expect(bot?.game.dimension).toBe("multiworld:cherry");
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("应按真实 dimension type（维度类型）解析 Nether（下界） 与 End（末地）子世界区块", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const dimensionsDuringChunk: string[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-block-world-dimension-types",
+        version: "1.20.4",
+        worldDimensionMap: {
+          "minecraft:the_nether": "minecraft:the_nether",
+          "minecraft:the_end": "minecraft:the_end",
+        },
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+
+          bot._client.on("map_chunk", () => {
+            dimensionsDuringChunk.push(bot.game.dimension);
+          });
+
+          createdBots.push(bot);
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    const bot = createdBots[0];
+    bot?._client.emit("login", {
+      dimension: "minecraft:the_nether",
+      worldName: "minecraft:the_nether",
+    });
+    if (bot !== undefined) {
+      bot.game.dimension = "minecraft:the_nether";
+    }
+    bot?.emit("spawn");
+    await connectPromise;
+
+    bot?._client.emit("map_chunk", { x: 0, z: 0 });
+    await Promise.resolve();
+    bot?._client.emit("respawn", {
+      dimension: "minecraft:the_end",
+      worldName: "minecraft:the_end",
+    });
+    bot?._client.emit("map_chunk", { x: 0, z: 0 });
+    await Promise.resolve();
+
+    expect(dimensionsDuringChunk).toEqual(["the_nether", "the_end"]);
+    expect(bot?.game.dimension).toBe("the_end");
+
+    await transport.disconnect("test shutdown");
+  });
+
   it("资源刷新不得把 tree（树木类） 硬编码映射到其他 tag（标签）", async () => {
     const createdBots: FakeMineflayerBot[] = [];
     const transport = createMineflayerRuntimeTransport(
@@ -440,6 +601,129 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(collectBot.receivedMovements[0]).toMatchObject({
       canDig: false,
     });
+  });
+
+  it("collect（捡拾） 不得把登录后的旧背包同步误判为本次捡拾成功", async () => {
+    const collectBot = new FakeMineflayerBot();
+    collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    setTimeout(() => {
+      collectBot.inventoryItems.push({
+        name: "shield",
+        count: 1,
+      });
+    }, 50);
+
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-collect-inventory-sync",
+      }),
+      {
+        createBot: () => collectBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    collectBot.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.collect({
+        radius: 8,
+        timeoutMs: 300,
+      }),
+    ).rejects.toThrow("not_found");
+  });
+
+  it("collect（捡拾） 未显式 center（中心点） 时应使用实时 Bot（机器人） 坐标扫描", async () => {
+    const collectBot = new FakeMineflayerBot();
+    collectBot.entity.position = { x: 0, y: 0, z: 0 };
+    collectBot.entities.shieldDrop = {
+      id: 10,
+      name: "item",
+      displayName: "Item",
+      position: { x: -10, y: 104, z: -14 },
+      metadata: [{ itemId: 1155, itemCount: 1 }],
+    };
+    setTimeout(() => {
+      collectBot.entity.position = { x: -9, y: 104, z: -12 };
+    }, 50);
+    collectBot.onGoto = () => {
+      collectBot.inventoryItems.push({
+        name: "shield",
+        count: 1,
+      });
+      collectBot.entities.shieldDrop = undefined;
+    };
+
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-collect-live-center",
+      }),
+      {
+        createBot: () => collectBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    collectBot.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.collect({
+        radius: 8,
+        timeoutMs: 1000,
+      }),
+    ).resolves.toMatchObject({
+      collected: [{ name: "shield", count: 1 }],
+      center: { x: -9, y: 104, z: -12 },
+    });
+  });
+
+  it("collect（捡拾） 应优先用 XZ 平面靠近掉落物", async () => {
+    const collectBot = new FakeMineflayerBot();
+    collectBot.entity.position = { x: -9, y: 104, z: -12 };
+    collectBot.entities.shieldDrop = {
+      id: 11,
+      name: "item",
+      displayName: "Item",
+      position: { x: -11, y: 104, z: -14 },
+      metadata: [{ itemId: 1155, itemCount: 1 }],
+    };
+    const goalNames: string[] = [];
+    collectBot.onGoto = (goal) => {
+      goalNames.push(goal?.constructor?.name ?? "unknown");
+      collectBot.inventoryItems.push({
+        name: "shield",
+        count: 1,
+      });
+      collectBot.entities.shieldDrop = undefined;
+    };
+
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-collect-xz-fallback",
+      }),
+      {
+        createBot: () => collectBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    collectBot.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.collect({
+        radius: 8,
+        timeoutMs: 1000,
+      }),
+    ).resolves.toMatchObject({
+      collected: [{ name: "shield", count: 1 }],
+    });
+    expect(goalNames).toEqual(["MockGoalNearXZ"]);
   });
 
   it("collect（捡拾） 目标实体消失但背包数量未增加时必须显式失败", async () => {
