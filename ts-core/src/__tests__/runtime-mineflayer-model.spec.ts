@@ -76,7 +76,20 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly inventory = {
     items: (): readonly MineflayerItemHandle[] => this.inventoryItems,
   };
-  readonly entity: { position?: { x: number; y: number; z: number } } = {};
+  readonly entity: MineflayerEntityHandle = {
+    id: 42,
+    position: undefined,
+    velocity: {
+      x: 0,
+      y: 0,
+      z: 0,
+      update(value): void {
+        this.x = value.x;
+        this.y = value.y;
+        this.z = value.z;
+      },
+    },
+  };
   readonly pathfinder = {
     setMovements: (movements: unknown): void => {
       this.receivedMovements.push(movements);
@@ -256,6 +269,50 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       status: "runtime_unavailable",
       diagnostics: ["runtime_unavailable", "mineflayer_transport_not_connected"],
     });
+  });
+
+  it("应在适配层修正 1.20.3+ entity_velocity（实体速度） 嵌套向量，避免 Mineflayer 写入 NaN", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-velocity-compat",
+        version: "1.20.4",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.id = 77;
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          if (bot.entity.velocity !== undefined) {
+            bot.entity.velocity.x = Number.NaN;
+            bot.entity.velocity.y = Number.NaN;
+            bot.entity.velocity.z = Number.NaN;
+          }
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    createdBots[0]?._client.emit("entity_velocity", {
+      entityId: 77,
+      velocity: { x: 4000, y: 1200, z: -2400 },
+    });
+
+    expect(createdBots[0]?.entity.velocity).toMatchObject({
+      x: 0.5,
+      y: 0.15,
+      z: -0.3,
+    });
+
+    await transport.disconnect("test shutdown");
+    expect(createdBots[0]?._client.listenerCount("entity_velocity")).toBe(0);
   });
 
   it("资源刷新不得把 tree（树木类） 硬编码映射到其他 tag（标签）", async () => {

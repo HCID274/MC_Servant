@@ -82,6 +82,20 @@ export interface MineflayerVec3Like {
   readonly z: number;
 }
 
+/** Mineflayer（Minecraft 协议客户端） 可写三维坐标最小结构。 */
+export interface MineflayerWritableVec3Like {
+  /** X 坐标。 */
+  x: number;
+  /** Y 坐标。 */
+  y: number;
+  /** Z 坐标。 */
+  z: number;
+  /** 兼容 Vec3（向量） 的整体更新方法。 */
+  update?(value: MineflayerVec3Like): void;
+  /** 兼容 Vec3（向量） 的整体设置方法。 */
+  set?(x: number, y: number, z: number): void;
+}
+
 /** Mineflayer（Minecraft 协议客户端） 方块句柄最小结构。 */
 export interface MineflayerBlockHandle {
   /** 标准方块名称。 */
@@ -116,6 +130,8 @@ export interface MineflayerEntityHandle {
   readonly displayName?: string;
   /** 实体坐标。 */
   readonly position?: MineflayerVec3Like;
+  /** 实体速度。 */
+  readonly velocity?: MineflayerWritableVec3Like;
   /** 可能存在的掉落物信息。 */
   readonly item?: MineflayerItemHandle;
   /** 兼容字段：掉落物信息。 */
@@ -138,7 +154,7 @@ export interface MineflayerLifecyclePort extends MineflayerEventPort {
   /** Mineflayer（Minecraft 协议客户端） 底层协议客户端事件源。 */
   readonly _client?: MineflayerProtocolEventSource;
   /** Mineflayer（Minecraft 协议客户端） 当前实体快照；spawn（生成） 前可能不存在。 */
-  readonly entity?: { readonly id?: number | string; readonly position?: MineflayerVec3Like };
+  readonly entity?: MineflayerEntityHandle;
   /** 断开连接的优先方法。 */
   quit?(reason?: string): void;
   /** 断开连接的兼容方法。 */

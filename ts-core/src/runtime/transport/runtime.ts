@@ -33,6 +33,7 @@ import type {
   MineflayerTransportSnapshot,
   MineflayerTransportState,
 } from "./types.js";
+import { attachMineflayerEntityVelocityCompatibility } from "./velocity-compat.js";
 
 const DEFAULT_MINEFLAYER_CONNECT_TIMEOUT_MS = 30_000;
 const DEFAULT_RESOURCE_SCAN_COUNT = 512;
@@ -48,6 +49,7 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
   let lastError: string | null = null;
   let removeRuntimeListeners: (() => void) | null = null;
   let removeDimensionBoundsListeners: (() => void) | null = null;
+  let removeVelocityCompatibilityListener: (() => void) | null = null;
   let spawned = false;
   let pathfinderLoaded = false;
   const createBot = dependencies.createBot ?? createDefaultMineflayerBot;
@@ -96,6 +98,7 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
           },
         });
         await waitForMineflayerSpawn(bot, connectTimeoutMs);
+        removeVelocityCompatibilityListener = attachMineflayerEntityVelocityCompatibility(bot);
         state = "connected";
         eventSource = createReadonlyMineflayerEventSource(bot);
 
@@ -193,6 +196,8 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
     removeRuntimeListeners = null;
     removeDimensionBoundsListeners?.();
     removeDimensionBoundsListeners = null;
+    removeVelocityCompatibilityListener?.();
+    removeVelocityCompatibilityListener = null;
     bot = null;
     eventSource = null;
     spawned = false;
