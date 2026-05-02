@@ -416,25 +416,150 @@ observation 模块产出的 EnvironmentSnapshot 原始结构约 2000-5000 字符
 
 ```
 [Bot] 位置:({x},{y},{z}) 生命:{hp}/20 饥饿:{food}/20 着火:{是|否}
+[世界] {world_key}（仅作为上下文信息呈现给 LLM，不参与任何分支逻辑；详见 §7.4 架构原则）
+[主人] 位置:({x},{y},{z}) 距离:{N}格 在线:{是|否}
 [装备] 头:{head} 身:{torso} 腿:{legs} 脚:{feet} 主手:{hand} 副手:{off_hand}
 [背包] {item1}x{count}, {item2}x{count}, ...（空槽不列）
+[背包变化] {item1}{+/-N}, {item2}{+/-N}, ...（相对上次对话；首次对话省略此行）
+[资源簇] tree={status}, ore={status}（详见 §7.4）
 [附近方块] {block1}x{count}(最近{dist}格), ...（Top-5，按距离排序）
 [附近生物] {entity1}({type},{dist}格), ...（敌对优先，Top-5）
 [时间] {白天|夜晚}({timeOfDay})
 ```
 
+主人离线时 `[主人]` 行降级为单行 `[主人] 离线`，不输出位置/距离/在线字段。
+
 ### 7.2 压缩示例
 
 ```
 [Bot] 位置:(120,64,200) 生命:18/20 饥饿:16/20 着火:否
+[世界] minecraft:overworld
+[主人] 位置:(115,64,205) 距离:7.1格 在线:是
 [装备] 主手:stone_pickaxe
 [背包] oak_log x12, cobblestone x34, stick x8, crafting_table x1
+[背包变化] oak_log+5, cobblestone-2
+[资源簇] tree=found(最近3格,2簇), ore=found(最近12格,1簇)
 [附近方块] oak_log x6(最近3格), stone x20(最近1格), coal_ore x3(最近8格), iron_ore x2(最近12格), dirt x15(最近1格)
 [附近生物] zombie(敌对,22格), cow(被动,8格), sheep(被动,15格)
 [时间] 白天(6000)
 ```
 
-约 300 字符 / ~150 token。远低于 400 token 预算。
+约 400 字符 / ~200 token。仍在 400 token 预算内。
+
+### 7.3 主人坐标行
+
+主人坐标行让 Bot 能解析"过来"、"朝我这边"、"我在哪挖"这类带主人位置参照的指令。仅靠 Bot 自身坐标无法处理这类相对指代。
+
+| 字段 | 来源 | 缺失处置 |
+|------|------|---------|
+| 位置 | observation 快照 `owner.position` | 主人离线时整行降级为 `[主人] 离线` |
+| 距离 | `distance(bot.position, owner.position)`，保留一位小数 | 同上 |
+| 在线 | `owner.online` | 同上 |
+
+主人离线意味着 observation 快照中 `owner` 字段为 `null` 或 `online=false`，此时不输出位置/距离，整行简化为 `[主人] 离线`。
+
+### 7.4 资源簇上下文与圆心刷新协议
+
+`[资源簇]` 行来自 world-model 的 ResourceService（世界感知资源服务接口），以"圆心 + 固定半径"模式维护跨对话缓存。它是后续 mine / cutTree 等技能启用时的资源抓手——LLM 规划时知道周边有没有树有没有矿，而不必每次都让 skill 临时全图扫描。
+
+**架构原则（强约束，违反即视为架构冲突）**：
+
+- 世界辨别由 ResourceService 接口内部承担。本协议描述的所有状态（P0、cache 条目、刷新触发、登录初扫、in-flight Promise、await 对齐）均**隐含按 Bot 当前所在世界路由**，消费者**不传 world_key**。
+- 业务层（skill、planner、ConversationWorker、observation 派生层、未来新功能）**不得自行读取 `bot.game.dimension` 或拼接 world_key 做资源判断**。任何"按世界路由"的需求一律通过 ResourceService 公共 API 满足。
+- ResourceService 内部缓存按 `(world_key, resource_key)` 二元组组织；跨世界回归时旧世界数据自然冷藏在另一桶，不需要消费者写"世界变更失效"补丁。
+- §7.1 `[世界]` 行只作为上下文信息呈现给 LLM，不参与任何分支逻辑或缓存路由判断。
+
+#### 7.4.1 协议规则
+
+| 项 | 值 |
+|----|---|
+| 半径 | **恒为 16 格**（本节场景；与 `RESOURCE_REFRESH_RADIUS_STEPS` 16/32/64 阶梯刷新是不同调用路径，详见 §7.4.3） |
+| 圆心 | 上次刷新时 Bot 的位置 P0 |
+| 触发阈值 | `distance(bot.position_now, P0) > 8` 时触发新一轮刷新 |
+| 刷新方式 | 异步：以 `bot.position_now` 为新圆心，扫半径 16，刷新成功后 P0 推进为当前位置 |
+| 资源 key 集合 | Phase 1 锁定 `tree`、`ore` 两个 key，并行刷新 |
+| 登录初扫 | Bot 登录瞬间以登录位置为初始圆心，异步触发一次半径 16 扫描；不阻塞登录流程 |
+| 对话等待 | ConversationWorker 在 plan 路径读取 resource_context 时，必须 `await` 当前 in-flight 刷新 Promise（若有）再读缓存 |
+
+#### 7.4.2 状态映射
+
+每个 resource_key 在 prompt 中的呈现按 ResourceService 返回的 `status` 字段渲染：
+
+- `found`：`tree=found(最近{N}格,{M}簇)`
+- `cache_miss` / `stale_snapshot`：`tree=cache_miss`
+- `unsupported_resource_key`：`tree=unsupported`
+- `runtime_unavailable`：`tree=unavailable`
+
+整行格式：`[资源簇] tree={...}, ore={...}`
+
+#### 7.4.3 与 RESOURCE_REFRESH_RADIUS_STEPS 阶梯刷新的关系
+
+`RESOURCE_REFRESH_RADIUS_STEPS`（16/32/64）阶梯刷新是**按需深度搜寻**路径——由用户明确触发 mine / cutTree 类任务时，skill 实施层逐级扩半径直到命中。
+
+§7.4 的"圆心 + 固定半径 16"是**被动周边感知**路径——纯粹服务于 planner prompt 的资源态势注入，不参与 skill 实施。
+
+两条路径共享同一个 ResourceService 缓存（按 `(world_key, resource_key)` 二元组组织），但触发源、半径策略、圆心语义彼此独立。同一个 `(world_key, resource_key)` 条目可能被任一路径写入，**后写覆盖前写**。
+
+**消费者契约**：后写覆盖可能把先前的 `found` 状态降级为 `cache_miss`（例如阶梯刷新在更大半径未命中后写回空簇）。消费者必须按返回结果的 `status` 字段判断当前态势，**不得把 ResourceService 缓存当作全局资源记忆**。
+
+### 7.5 背包跨对话 diff 缓存
+
+让 Bot 能感知"上次对话以来背包发生了什么变化"——例如主人偷偷塞了铁锭、或者执行任务消耗了原木。仅靠当前快照，LLM 无法分辨"这是新到手的还是一直有的"。
+
+#### 7.5.1 缓存形态
+
+```typescript
+interface InventorySnapshotCache {
+  readonly bot_id: string                          // 缓存 key，Phase 1 一主一 Bot，不引入 session_id 维度
+  readonly snapshot: ReadonlyMap<string, number>   // item_name → count
+  readonly captured_at: number                     // 上次 plan 调用写入时间戳
+}
+```
+
+#### 7.5.2 递推规则
+
+```
+新缓存 = 旧缓存 + 本次 diff ≡ 当前真实背包快照
+```
+
+即每次 plan 路径调用 ConversationWorker 时：
+
+1. 从 observation 取当前真实 inventory
+2. 与缓存中的 `snapshot` 逐 item 对比，产出 diff
+3. prompt 同时注入 `[背包]`（当前快照）和 `[背包变化]`（diff）
+4. 本次调用结束后，缓存的 `snapshot` 推进为当前真实 inventory
+
+#### 7.5.3 diff 形态
+
+按 `item_name` 求 delta，采用单一 delta 形式（正=新增，负=减少，0 不输出）：
+
+```typescript
+interface InventoryDiffEntry {
+  readonly item_name: string
+  readonly delta: number
+}
+```
+
+prompt 注入文本格式：`oak_log+5, cobblestone-2, iron_ingot+1`。所有 entry 的 delta 都为 0 时，整行 `[背包变化]` 省略。
+
+#### 7.5.4 边界与降级
+
+| 场景 | 处置 |
+|------|------|
+| 首次对话（缓存为空） | 整行 `[背包变化]` 不输出。缓存初始化为当前快照，下次对话起生效 |
+| 进程崩溃后重启 | 缓存为进程内内存对象，不持久化到 PG；重启等同首次对话 |
+| chat 路径 / cancel 路径 / Triage 阶段 | 不读不写缓存。diff 仅服务于 plan 路径，不污染分诊与闲聊 |
+| modify 路径 | 与 plan 路径同源，读写规则一致 |
+
+#### 7.5.5 缓存边界归属
+
+钉死为 **conversation 侧独立缓存模块**：diff 仅被 plan / modify 路径使用，紧贴消费方放在 conversation/ 域内。
+
+不放观测端的理由：observation 是"当前真值物化视图"，写入触发器是 Mineflayer 物理事件；diff 缓存的写入触发器是对话事件（plan / modify 路径完成）。两个时钟轴混在一起会迫使观测端开放写 API 给对话侧，破坏其只读边界。
+
+不立独立模块的理由：Phase 1 仅 plan / modify 单一消费方，独立模块属于过早抽象。未来若多消费方复用再迁。
+
+**缓存单写入口**：缓存写入只发生在 ConversationWorker 的 plan / modify 路径末尾（非 BotActor），读取也只发生在 plan / modify 路径开头。这是 inventory diff 缓存自身的写入约束，**与架构层面 BotActor 的"单写者"角色不同名同义**——本节用"缓存单写入口"以避免混淆。
 
 ---
 
