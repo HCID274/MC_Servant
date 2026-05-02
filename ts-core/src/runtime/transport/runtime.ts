@@ -35,6 +35,7 @@ import type {
   MineflayerTransportState,
 } from "./types.js";
 import { attachMineflayerEntityVelocityCompatibility } from "./velocity-compat.js";
+import { canReadMineflayerBlockAt, readMineflayerBlockAt } from "./world-reader.js";
 
 const DEFAULT_MINEFLAYER_CONNECT_TIMEOUT_MS = 30_000;
 const DEFAULT_RESOURCE_SCAN_COUNT = 512;
@@ -187,6 +188,9 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
         radius,
       });
     },
+    getCurrentWorldKey(): string {
+      return bot === null ? "unknown" : createMineflayerWorldKey(bot);
+    },
     getSnapshot(): MineflayerTransportSnapshot<TBotId> {
       return createSnapshot();
     },
@@ -281,7 +285,7 @@ async function executeMineflayerResourceRefresh(input: {
     });
   }
 
-  if (typeof input.bot.findBlocks !== "function" || typeof input.bot.blockAt !== "function") {
+  if (typeof input.bot.findBlocks !== "function" || !canReadMineflayerBlockAt(input.bot)) {
     return createRuntimeResourceRefreshResult({
       input,
       status: "runtime_unavailable",
@@ -319,7 +323,7 @@ async function executeMineflayerResourceRefresh(input: {
   }
 
   const blocks = positions
-    .map((position) => input.bot.blockAt?.(position))
+    .map((position) => readMineflayerBlockAt(input.bot, position))
     .filter((block): block is MineflayerBlockHandle => block !== null && block !== undefined)
     .filter((block) => blockMatchesResourceKey(input.bot, block, input.resourceKey))
     .map((block) =>

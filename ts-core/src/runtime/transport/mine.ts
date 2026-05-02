@@ -10,6 +10,7 @@ import type {
   MineflayerPathfinderApi,
   MineflayerPathfinderModule,
 } from "./types.js";
+import { canReadMineflayerBlockAt, readMineflayerBlockAt } from "./world-reader.js";
 
 /** mine（挖掘） 技能需要的 Mineflayer（Minecraft 协议客户端） 能力端口。 */
 export type MineflayerMinePort = MineflayerMovementPort & MineflayerMiningPort;
@@ -24,7 +25,7 @@ export async function executeMineflayerMine(input: {
   if (typeof input.bot.findBlocks !== "function") {
     throw new Error("Mineflayer bot handle does not expose findBlocks for mine");
   }
-  if (typeof input.bot.blockAt !== "function") {
+  if (!canReadMineflayerBlockAt(input.bot)) {
     throw new Error("Mineflayer bot handle does not expose blockAt for mine");
   }
   if (typeof input.bot.dig !== "function") {
@@ -46,7 +47,7 @@ export async function executeMineflayerMine(input: {
   input.pathfinder.setMovements?.(movements);
 
   for (const position of positions.slice(0, input.params.count)) {
-    const block = input.bot.blockAt(position);
+    const block = readMineflayerBlockAt(input.bot, position);
 
     if (block === null || block === undefined) {
       throw new Error(`Mineflayer cannot load target block for ${input.params.blockName}`);

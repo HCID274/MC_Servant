@@ -9,10 +9,10 @@ import type { ExecutionTaskEnvelope } from "./foundation.js";
 import type { ReflexInterruptSource, SnapshotPosition } from "./observation.js";
 import type { SkillName } from "./skills.js";
 
-/** ResourceIndex（资源索引） 允许的只读刷新半径阶梯。 */
+/** ResourceService（世界感知资源服务） 允许的只读刷新半径阶梯。 */
 export const RESOURCE_REFRESH_RADIUS_STEPS = Object.freeze([16, 32, 64] as const);
 
-/** ResourceIndex（资源索引） 允许的只读刷新半径。 */
+/** ResourceService（世界感知资源服务） 允许的只读刷新半径。 */
 export type ResourceRefreshRadius = (typeof RESOURCE_REFRESH_RADIUS_STEPS)[number];
 
 /** runtime（运行时） 资源刷新状态，用于区分命中、未命中与不可用诊断。 */

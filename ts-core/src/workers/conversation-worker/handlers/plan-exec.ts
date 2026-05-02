@@ -135,7 +135,7 @@ export async function handlePlanExecRoute(input: {
   );
 }
 
-/** 按规划类 route（路由） 读取 ResourceIndex（资源索引） 摘要；provider（提供器） 失败时降级为空上下文。 */
+/** 按规划类 route（路由） 读取 ResourceService（世界感知资源服务） 摘要；provider（提供器） 失败时降级为空上下文。 */
 async function readResourceContext(input: {
   readonly task: ConversationWorkerTask;
   readonly route: Extract<

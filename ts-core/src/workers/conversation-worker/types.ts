@@ -225,7 +225,7 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly actorStateProjectionProvider?: ConversationActorStateProjectionProvider;
   /** memory（记忆）上下文提供器；仅按路由信号读取，失败时降级为空上下文。 */
   readonly memoryContextProvider?: ConversationMemoryContextProvider;
-  /** ResourceIndex（资源索引） 摘要提供器；仅规划路径读取，失败时降级为空上下文。 */
+  /** ResourceService（世界感知资源服务） 摘要提供器；仅规划路径读取，失败时降级为空上下文。 */
   readonly resourceContextProvider?: ConversationResourceContextProvider;
   /** 最小规划函数，成功时返回可执行规划草案。 */
   readonly planner?: ConversationWorkerPlanner;

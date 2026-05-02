@@ -339,6 +339,8 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
     resourceKey: string,
     radius: ResourceRefreshRadius,
   ): Promise<RuntimeResourceRefreshResult>;
+  /** 读取当前世界键，供 ResourceService（世界感知资源服务） 内部路由使用。 */
+  getCurrentWorldKey(): string;
   /** 获取当前连接描述快照。 */
   getSnapshot(): MineflayerTransportSnapshot<TBotId>;
   /** 获取当前只读事件源；未连接或已回收时为 null。 */

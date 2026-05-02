@@ -106,10 +106,10 @@ export interface WorldModelQueryBoundary {
   selectBestBlock(cluster: ResourceClusterSummary): CandidateBlockSelectionResult | null;
 }
 
-/** ResourceIndex（资源索引） 查询状态。 */
+/** ResourceService（世界感知资源服务） 查询状态。 */
 export type ResourceClusterQueryStatus = "found" | "cache_miss" | "stale_snapshot";
 
-/** ResourceIndex（资源索引） 只读查询结果。 */
+/** ResourceService（世界感知资源服务） 只读查询结果。 */
 export interface ResourceClusterQueryResult {
   /** 被查询的资源键。 */
   readonly resource_key: string;
@@ -129,22 +129,22 @@ export interface ResourceClusterQueryResult {
   readonly diagnostics: readonly string[];
 }
 
-/** ResourceIndex（资源索引） 刷新状态。 */
-export type ResourceIndexRefreshStatus =
+/** ResourceService（世界感知资源服务） 刷新状态。 */
+export type ResourceServiceRefreshStatus =
   | "found"
   | "cache_miss"
   | "runtime_unavailable"
   | "unsupported_resource_key"
   | "invalid_radius";
 
-/** ResourceIndex（资源索引） 刷新结果。 */
-export interface ResourceIndexRefreshResult {
+/** ResourceService（世界感知资源服务） 刷新结果。 */
+export interface ResourceServiceRefreshResult {
   /** 被刷新的资源键。 */
   readonly resource_key: string;
   /** 使用的刷新半径。 */
   readonly radius: ResourceRefreshRadius | null;
   /** 刷新状态。 */
-  readonly status: ResourceIndexRefreshStatus;
+  readonly status: ResourceServiceRefreshStatus;
   /** 当前世界 / 维度键。 */
   readonly world_key: string | null;
   /** 本次刷新对应的快照版本。 */
@@ -157,8 +157,8 @@ export interface ResourceIndexRefreshResult {
   readonly diagnostics: readonly string[];
 }
 
-/** ResourceIndex（资源索引） 运行时刷新端口。 */
-export interface ResourceIndexRefreshPort {
+/** ResourceService（世界感知资源服务） 运行时刷新端口。 */
+export interface ResourceServiceRefreshPort {
   /** 围绕 Bot（机器人） 执行只读资源刷新。 */
   refreshAroundBot(
     resourceKey: string,
@@ -166,15 +166,21 @@ export interface ResourceIndexRefreshPort {
   ): Promise<RuntimeResourceRefreshResult>;
 }
 
-/** ResourceIndex（资源索引） 句柄。 */
-export interface ResourceIndexBoundary {
+/** ResourceService（世界感知资源服务） 当前世界解析端口。 */
+export interface ResourceWorldKeyPort {
+  /** 读取当前 Bot（机器人） 所在世界键；唯一实现来自 transport（传输层）。 */
+  getCurrentWorldKey(): string;
+}
+
+/** ResourceService（世界感知资源服务） 句柄。 */
+export interface ResourceServiceBoundary {
   /** 查询指定资源键的资源簇列表，不触发扫描。 */
-  queryClusters(resourceKey: string, maxCount?: number): ResourceClusterQueryResult;
+  query(resourceKey: string, maxCount?: number): ResourceClusterQueryResult;
   /** 围绕 Bot（机器人） 刷新指定资源键。 */
-  refreshAroundBot(
+  refresh(
     resourceKey: string,
     radius: ResourceRefreshRadius,
-  ): Promise<ResourceIndexRefreshResult>;
+  ): Promise<ResourceServiceRefreshResult>;
   /** 读取给 planner（规划器） 使用的短资源摘要。 */
   createPlannerSummary(resourceKeys: readonly string[], maxClustersPerKey?: number): string;
 }
@@ -197,7 +203,7 @@ export interface WorldModelRefreshRequest {
 /** world-model 刷新边界，用于保留未来扫描实现的独立入口。 */
 export interface WorldModelRefreshBoundary {
   /** 请求刷新资源缓存。 */
-  refresh(request: WorldModelRefreshRequest): Promise<ResourceIndexRefreshResult>;
+  refresh(request: WorldModelRefreshRequest): Promise<ResourceServiceRefreshResult>;
 }
 
 /** Minecraft（我的世界）方块事实快照，用于封装 minecraft-data 的只读方块基础字段。 */

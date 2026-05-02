@@ -38,8 +38,8 @@ import {
   createBotWorkerRuntime,
   createConversationWorkerRuntime,
 } from "../workers/index.js";
-import { createResourceIndex } from "../world-model/index.js";
-import type { ResourceIndexBoundary } from "../world-model/index.js";
+import { createResourceService } from "../world-model/index.js";
+import type { ResourceServiceBoundary } from "../world-model/index.js";
 import {
   type AppBootstrapContract,
   type AppExternalAuthInitialConfig,
@@ -387,7 +387,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   const llmReplyGenerator =
     input.dependencies?.conversationWorker?.replyGenerator ??
     createOnlineConversationReplyGenerator(onlineLlmClient);
-  let resourceIndex: ResourceIndexBoundary | null = null;
+  let resourceService: ResourceServiceBoundary | null = null;
   const onlinePlanner =
     input.dependencies?.conversationWorker?.planner ??
     createOnlineConversationPlanner(onlineLlmClient);
@@ -465,8 +465,9 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         : `TS Core Mineflayer unavailable: ${transportSnapshot.last_error ?? transportSnapshot.state}`,
     );
     const createdRuntime = runtime;
-    resourceIndex = createResourceIndex({
+    resourceService = createResourceService({
       refreshPort: createdRuntime.transport,
+      worldKeyPort: createdRuntime.transport,
     });
     const interruptRuntimeSink =
       input.dependencies?.conversationWorker?.interruptRuntimeSink ??
@@ -512,7 +513,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         ...(onlinePlanner === undefined ? {} : { planner: onlinePlanner }),
         resourceContextProvider:
           input.dependencies?.conversationWorker?.resourceContextProvider ??
-          createOnlineResourceContextProvider(() => resourceIndex),
+          createOnlineResourceContextProvider(() => resourceService),
         interruptRuntimeSink,
         actorStateProjectionProvider,
         broadcastReplySink: async (reply) => {
@@ -722,37 +723,37 @@ function createOnlinePlannerSnapshotContext(resourceContext?: string): string {
   ].join("; ");
 }
 
-/** 创建在线 ResourceIndex（资源索引） 摘要 provider（提供器）。 */
+/** 创建在线 ResourceService（世界感知资源服务） 摘要 provider（提供器）。 */
 function createOnlineResourceContextProvider(
-  readResourceIndex: () => ResourceIndexBoundary | null,
+  readResourceService: () => ResourceServiceBoundary | null,
 ): NonNullable<ConversationWorkerRuntimeDependencies["resourceContextProvider"]> {
   return async () => {
-    const resourceIndex = readResourceIndex();
+    const resourceService = readResourceService();
 
-    if (resourceIndex === null) {
+    if (resourceService === null) {
       return undefined;
     }
 
-    await refreshResourceIndexByRadiusLadder(resourceIndex, "tree");
-    await refreshResourceIndexByRadiusLadder(resourceIndex, "ore");
+    await refreshResourceServiceByRadiusLadder(resourceService, "tree");
+    await refreshResourceServiceByRadiusLadder(resourceService, "ore");
 
-    return resourceIndex.createPlannerSummary(["tree", "ore"]);
+    return resourceService.createPlannerSummary(["tree", "ore"]);
   };
 }
 
-/** 按 16 -> 32 -> 64 阶梯刷新资源索引，命中即停止。 */
-async function refreshResourceIndexByRadiusLadder(
-  resourceIndex: ResourceIndexBoundary,
+/** 按 16 -> 32 -> 64 阶梯刷新资源服务，命中即停止。 */
+async function refreshResourceServiceByRadiusLadder(
+  resourceService: ResourceServiceBoundary,
   resourceKey: string,
 ): Promise<void> {
-  const cached = resourceIndex.queryClusters(resourceKey, 1);
+  const cached = resourceService.query(resourceKey, 1);
 
   if (cached.status === "found") {
     return;
   }
 
   for (const radius of [16, 32, 64] as const) {
-    const refreshed = await resourceIndex.refreshAroundBot(resourceKey, radius);
+    const refreshed = await resourceService.refresh(resourceKey, radius);
 
     if (refreshed.status === "found" || refreshed.status === "unsupported_resource_key") {
       return;

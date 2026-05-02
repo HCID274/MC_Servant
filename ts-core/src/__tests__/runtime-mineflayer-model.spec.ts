@@ -42,6 +42,7 @@ import {
   createMineflayerRuntimeTransport,
   createMineflayerTransportDescriptor,
   createObservationRuntimeCache,
+  readMineflayerBlockAt,
 } from "../index.js";
 import type {
   MineflayerBlockHandle,
@@ -180,6 +181,18 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
 }
 
 describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () => {
+  it("WorldReader（世界读取器） 应集中封装单点方块读取", () => {
+    const bot = new FakeMineflayerBot();
+    const block: MineflayerBlockHandle = {
+      name: "oak_log",
+      position: { x: 1, y: 64, z: 2 },
+    };
+    bot.resourceBlocks.push(block);
+
+    expect(readMineflayerBlockAt(bot, { x: 1, y: 64, z: 2 })).toBe(block);
+    expect(readMineflayerBlockAt(bot, { x: 9, y: 64, z: 9 })).toBeNull();
+  });
+
   it("应通过可注入工厂完成连接、spawn（生成） 与断开生命周期", async () => {
     const createdBots: FakeMineflayerBot[] = [];
     const transport = createMineflayerRuntimeTransport(

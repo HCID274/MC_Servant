@@ -20,31 +20,22 @@ import type {
   ResourceBlockCandidate,
   ResourceClusterQueryResult,
   ResourceClusterSummary,
-  ResourceIndexBoundary,
-  ResourceIndexRefreshPort,
-  ResourceIndexRefreshResult,
   ResourceProfile,
+  ResourceServiceBoundary,
+  ResourceServiceRefreshPort,
+  ResourceServiceRefreshResult,
+  ResourceWorldKeyPort,
   WorldModelQueryBoundary,
   WorldModelQueryContext,
   WorldModelRefreshBoundary,
   WorldModelRefreshRequest,
 } from "./contracts.js";
 
-const DEFAULT_RESOURCE_INDEX_STALE_AFTER_MS = 60_000;
+const DEFAULT_RESOURCE_SERVICE_STALE_AFTER_MS = 60_000;
 const DEFAULT_RESOURCE_CLUSTER_RADIUS = 4;
 const DEFAULT_RESOURCE_PLANNER_SUMMARY_LIMIT = 2;
 
-interface ResourceIndexCacheEntry {
-  readonly resource_key: string;
-  readonly world_key: string;
-  readonly snapshot_version: string;
-  readonly refresh_radius: ResourceRefreshRadius;
-  readonly refreshed_at: number;
-  readonly clusters: readonly ResourceClusterSummary[];
-  readonly diagnostics: readonly string[];
-}
-
-interface MutableResourceIndexCacheEntry {
+interface MutableResourceServiceCacheEntry {
   resource_key: string;
   world_key: string;
   snapshot_version: string;
@@ -98,10 +89,10 @@ function cloneResourceClusterQueryResult(
   });
 }
 
-/** 克隆资源索引刷新结果。 */
-function cloneResourceIndexRefreshResult(
-  result: ResourceIndexRefreshResult,
-): ResourceIndexRefreshResult {
+/** 克隆资源服务刷新结果。 */
+function cloneResourceServiceRefreshResult(
+  result: ResourceServiceRefreshResult,
+): ResourceServiceRefreshResult {
   return Object.freeze({
     ...result,
     clusters: freezeReadonlyArray(result.clusters.map((cluster) => cloneCluster(cluster))),
@@ -143,7 +134,7 @@ function sortResourceClusters(
   );
 }
 
-/** 校验 ResourceIndex（资源索引） 半径阶梯。 */
+/** 校验 ResourceService（世界感知资源服务） 半径阶梯。 */
 function isResourceRefreshRadius(value: number): value is ResourceRefreshRadius {
   return RESOURCE_REFRESH_RADIUS_STEPS.includes(value as ResourceRefreshRadius);
 }
@@ -407,11 +398,13 @@ export function createWorldModelQueryBoundary(
   });
 }
 
-/** 创建 ResourceIndex（资源索引） 缓存与查询边界。 */
-export function createResourceIndex(
+/** 创建 ResourceService（世界感知资源服务） 缓存与查询边界。 */
+export function createResourceService(
   input: {
     /** runtime（运行时） 只读刷新端口。 */
-    readonly refreshPort?: ResourceIndexRefreshPort;
+    readonly refreshPort?: ResourceServiceRefreshPort;
+    /** 当前世界解析端口；生产环境必须由 transport（传输层） 提供。 */
+    readonly worldKeyPort?: ResourceWorldKeyPort;
     /** 可注入当前时间。 */
     readonly now?: () => number;
     /** 缓存过期毫秒数。 */
@@ -419,17 +412,20 @@ export function createResourceIndex(
     /** 初始资源簇。 */
     readonly initialClusters?: readonly ResourceClusterSummary[];
   } = {},
-): ResourceIndexBoundary {
+): ResourceServiceBoundary {
   const now = input.now ?? Date.now;
-  const staleAfterMs = input.staleAfterMs ?? DEFAULT_RESOURCE_INDEX_STALE_AFTER_MS;
-  const cache = new Map<string, MutableResourceIndexCacheEntry>();
+  const staleAfterMs = input.staleAfterMs ?? DEFAULT_RESOURCE_SERVICE_STALE_AFTER_MS;
+  const cache = new Map<string, MutableResourceServiceCacheEntry>();
+  const readWorldKey = () => input.worldKeyPort?.getCurrentWorldKey() ?? "unknown";
 
   for (const cluster of input.initialClusters ?? []) {
-    const existing = cache.get(cluster.resource_key);
+    const worldKey = cluster.world_key ?? readWorldKey();
+    const cacheKey = createResourceCacheKey(worldKey, cluster.resource_key);
+    const existing = cache.get(cacheKey);
     const refreshedAt = cluster.refreshed_at ?? now();
-    const entry: MutableResourceIndexCacheEntry = existing ?? {
+    const entry: MutableResourceServiceCacheEntry = existing ?? {
       resource_key: cluster.resource_key,
-      world_key: cluster.world_key ?? "unknown",
+      world_key: worldKey,
       snapshot_version: cluster.snapshot_version,
       refresh_radius: cluster.refresh_radius ?? 16,
       refreshed_at: refreshedAt,
@@ -439,17 +435,18 @@ export function createResourceIndex(
 
     entry.clusters = sortResourceClusters([...entry.clusters, cloneCluster(cluster)]);
     entry.refreshed_at = Math.max(entry.refreshed_at, refreshedAt);
-    cache.set(cluster.resource_key, entry);
+    cache.set(cacheKey, entry);
   }
 
-  const queryClusters = (resourceKey: string, maxCount?: number): ResourceClusterQueryResult => {
-    const entry = cache.get(resourceKey);
+  const query = (resourceKey: string, maxCount?: number): ResourceClusterQueryResult => {
+    const worldKey = readWorldKey();
+    const entry = cache.get(createResourceCacheKey(worldKey, resourceKey));
 
     if (entry === undefined) {
       return cloneResourceClusterQueryResult({
         resource_key: resourceKey,
         status: "cache_miss",
-        world_key: null,
+        world_key: worldKey,
         snapshot_version: null,
         refresh_radius: null,
         refreshed_at: null,
@@ -474,17 +471,19 @@ export function createResourceIndex(
   };
 
   return Object.freeze({
-    queryClusters,
-    async refreshAroundBot(
+    query,
+    async refresh(
       resourceKey: string,
       radius: ResourceRefreshRadius,
-    ): Promise<ResourceIndexRefreshResult> {
+    ): Promise<ResourceServiceRefreshResult> {
+      const currentWorldKey = readWorldKey();
+
       if (!isResourceRefreshRadius(radius)) {
-        return cloneResourceIndexRefreshResult({
+        return cloneResourceServiceRefreshResult({
           resource_key: resourceKey,
           radius: null,
           status: "invalid_radius",
-          world_key: null,
+          world_key: currentWorldKey,
           snapshot_version: null,
           refreshed_at: null,
           clusters: [],
@@ -493,11 +492,11 @@ export function createResourceIndex(
       }
 
       if (input.refreshPort === undefined) {
-        return cloneResourceIndexRefreshResult({
+        return cloneResourceServiceRefreshResult({
           resource_key: resourceKey,
           radius,
           status: "runtime_unavailable",
-          world_key: null,
+          world_key: currentWorldKey,
           snapshot_version: null,
           refreshed_at: null,
           clusters: [],
@@ -510,11 +509,11 @@ export function createResourceIndex(
       try {
         refresh = await input.refreshPort.refreshAroundBot(resourceKey, radius);
       } catch (error) {
-        return cloneResourceIndexRefreshResult({
+        return cloneResourceServiceRefreshResult({
           resource_key: resourceKey,
           radius,
           status: "runtime_unavailable",
-          world_key: null,
+          world_key: currentWorldKey,
           snapshot_version: null,
           refreshed_at: null,
           clusters: [],
@@ -523,7 +522,7 @@ export function createResourceIndex(
       }
 
       const clusters = createResourceClustersFromRuntimeRefresh(refresh);
-      const result: ResourceIndexRefreshResult = {
+      const result: ResourceServiceRefreshResult = {
         resource_key: resourceKey,
         radius,
         status: refresh.status,
@@ -534,7 +533,7 @@ export function createResourceIndex(
         diagnostics: refresh.diagnostics,
       };
 
-      cache.set(resourceKey, {
+      cache.set(createResourceCacheKey(refresh.world_key, resourceKey), {
         resource_key: resourceKey,
         world_key: refresh.world_key,
         snapshot_version: refresh.snapshot_version,
@@ -544,14 +543,14 @@ export function createResourceIndex(
         diagnostics: refresh.diagnostics,
       });
 
-      return cloneResourceIndexRefreshResult(result);
+      return cloneResourceServiceRefreshResult(result);
     },
     createPlannerSummary(
       resourceKeys: readonly string[],
       maxClustersPerKey = DEFAULT_RESOURCE_PLANNER_SUMMARY_LIMIT,
     ): string {
       const lines = resourceKeys.map((resourceKey) => {
-        const result = queryClusters(resourceKey, maxClustersPerKey);
+        const result = query(resourceKey, maxClustersPerKey);
 
         if (result.status !== "found") {
           return `${resourceKey}: ${result.status}`;
@@ -572,6 +571,10 @@ export function createResourceIndex(
   });
 }
 
+function createResourceCacheKey(worldKey: string, resourceKey: string): string {
+  return `${worldKey}\u0000${resourceKey}`;
+}
+
 function formatUnknownError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -589,15 +592,15 @@ function formatUnknownError(error: unknown): string {
  */
 export function createWorldModelRefreshBoundary(
   input: {
-    /** 复用的 ResourceIndex（资源索引） 边界。 */
-    readonly resourceIndex?: ResourceIndexBoundary;
+    /** 复用的 ResourceService（世界感知资源服务） 边界。 */
+    readonly resourceService?: ResourceServiceBoundary;
   } = {},
 ): WorldModelRefreshBoundary {
-  const resourceIndex = input.resourceIndex ?? createResourceIndex();
+  const resourceService = input.resourceService ?? createResourceService();
 
   return Object.freeze({
     async refresh(request: WorldModelRefreshRequest) {
-      return resourceIndex.refreshAroundBot(request.resource_key, request.radius ?? 16);
+      return resourceService.refresh(request.resource_key, request.radius ?? 16);
     },
   });
 }
