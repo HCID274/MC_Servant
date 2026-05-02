@@ -78,6 +78,7 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     height: 256,
   };
   readonly receivedMovements: unknown[] = [];
+  readonly resetGoals: unknown[] = [];
   readonly resourceBlocks: MineflayerBlockHandle[] = [];
   readonly inventoryItems: MineflayerItemHandle[] = [];
   readonly entities: Record<string, MineflayerEntityHandle | undefined> = {};
@@ -102,11 +103,19 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     setMovements: (movements: unknown): void => {
       this.receivedMovements.push(movements);
     },
+    setGoal: (goal: unknown): void => {
+      this.resetGoals.push(goal);
+    },
+    stop: (): void => {
+      this.pathfinderStops += 1;
+    },
     goto: async (goal?: unknown): Promise<void> => {
       await this.onGoto?.(goal);
     },
   };
   closed = false;
+  clearedControlStates = 0;
+  pathfinderStops = 0;
   onGoto?: (goal?: unknown) => void | Promise<void>;
 
   chat(text: string): void {
@@ -114,6 +123,10 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   }
 
   loadPlugin(): void {}
+
+  clearControlStates(): void {
+    this.clearedControlStates += 1;
+  }
 
   findBlocks(input: {
     matching: (block: MineflayerBlockHandle) => boolean;
@@ -191,6 +204,23 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     expect(readMineflayerBlockAt(bot, { x: 1, y: 64, z: 2 })).toBe(block);
     expect(readMineflayerBlockAt(bot, { x: 9, y: 64, z: 9 })).toBeNull();
+
+    expect(
+      readMineflayerBlockAt(
+        {
+          blockAt(position) {
+            if (typeof (position as { floored?: unknown }).floored !== "function") {
+              throw new Error("expected Vec3 compatible position");
+            }
+
+            return { name: "sample_floor", position };
+          },
+        },
+        { x: 1.2, y: 64.8, z: 2.4 },
+      ),
+    ).toMatchObject({
+      name: "sample_floor",
+    });
   });
 
   it("应通过可注入工厂完成连接、spawn（生成） 与断开生命周期", async () => {
@@ -485,6 +515,199 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     expect(dimensionsDuringChunk).toEqual(["the_nether", "the_end"]);
     expect(bot?.game.dimension).toBe("the_end");
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("切换 world key（世界键） 后应清理旧实体与 pathfinder（寻路器） 状态", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-world-state-reset",
+        version: "1.20.4",
+        worldDimensionMap: {
+          cherry: "minecraft:overworld",
+          resource: "minecraft:overworld",
+        },
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          Object.assign(bot, {
+            players: {
+              Steve: {
+                entity: {
+                  id: "owner",
+                  name: "player",
+                  username: "Steve",
+                  position: { x: 1, y: 80, z: 1 },
+                },
+              },
+            },
+          });
+          bot.entities.owner = {
+            id: "owner",
+            name: "player",
+            username: "Steve",
+            position: { x: 1, y: 80, z: 1 },
+          };
+          bot.entities.drop = {
+            id: "drop",
+            name: "item",
+            position: { x: 2, y: 80, z: 1 },
+          };
+          createdBots.push(bot);
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    const bot = createdBots[0];
+    bot?._client.emit("login", {
+      dimension: "minecraft:overworld",
+      worldName: "multiworld:cherry",
+    });
+    if (bot !== undefined) {
+      bot.game.dimension = "multiworld:cherry";
+    }
+    bot?.emit("spawn");
+    await connectPromise;
+
+    bot?._client.emit("respawn", {
+      dimension: "minecraft:overworld",
+      worldName: "multiworld:resource",
+    });
+    await Promise.resolve();
+
+    expect(bot?.resetGoals).toEqual([null]);
+    expect(bot?.pathfinderStops).toBe(1);
+    expect(bot?.clearedControlStates).toBe(1);
+    expect(Object.keys(bot?.entities ?? {})).toEqual(["42"]);
+    expect(
+      (bot as unknown as { players?: { Steve?: { entity?: unknown } } })?.players?.Steve?.entity,
+    ).toBeNull();
+    expect(transport.readObservationInput("Steve")?.owner).toMatchObject({
+      name: "Steve",
+      online: false,
+    });
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("同 world key（世界键） respawn（重生） 不应清理实体状态", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entities.owner = {
+      id: "owner",
+      name: "player",
+      username: "Steve",
+      position: { x: 1, y: 80, z: 1 },
+    };
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-same-world-respawn",
+        version: "1.20.4",
+        worldDimensionMap: {
+          resource: "minecraft:overworld",
+        },
+      }),
+      {
+        createBot: () => bot,
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    bot._client.emit("login", {
+      dimension: "minecraft:overworld",
+      worldName: "multiworld:resource",
+    });
+    bot.game.dimension = "multiworld:resource";
+    bot.emit("spawn");
+    await connectPromise;
+
+    bot._client.emit("respawn", {
+      dimension: "minecraft:overworld",
+      worldName: "multiworld:resource",
+    });
+    await Promise.resolve();
+
+    expect(bot.resetGoals).toEqual([]);
+    expect(bot.pathfinderStops).toBe(0);
+    expect(bot.entities.owner).toBeDefined();
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("应从 transport（传输层） 采样 planner（规划器） 所需 observation（观测）输入", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-observation-sampling",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 10, y: 64, z: -2 };
+          bot.inventoryItems.push({ name: "oak_log", count: 3 });
+          bot.resourceBlocks.push({
+            name: "sample_floor",
+            position: { x: 10, y: 63, z: -2 },
+          });
+          Object.assign(bot, {
+            health: 18,
+            food: 17,
+            heldItem: { name: "stone_pickaxe", count: 1 },
+            players: {
+              Steve: {
+                entity: {
+                  id: "owner",
+                  name: "player",
+                  username: "Steve",
+                  position: { x: 13, y: 64, z: -2 },
+                },
+              },
+            },
+            time: {
+              isDay: true,
+              timeOfDay: 6000,
+            },
+          });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    const observation = transport.readObservationInput("Steve");
+
+    expect(observation).toMatchObject({
+      bot: {
+        position: { x: 10, y: 64, z: -2 },
+        world_key: "multiworld:resource",
+        health: 18,
+        food: 17,
+      },
+      owner: {
+        name: "Steve",
+        online: true,
+        position: { x: 13, y: 64, z: -2 },
+      },
+      time: {
+        phase: "day",
+        time_of_day: 6000,
+      },
+    });
+    expect(observation?.inventory.items).toEqual([{ slot: 0, item_name: "oak_log", count: 3 }]);
+    expect(observation?.equipment.main_hand?.item_name).toBe("stone_pickaxe");
+    expect(observation?.nearby_blocks[0]?.block_name).toBe("sample_floor");
 
     await transport.disconnect("test shutdown");
   });

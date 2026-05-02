@@ -119,6 +119,8 @@ export interface OwnerSnapshot {
 export interface BotStateSnapshot {
   /** Bot（机器人） 当前坐标。 */
   position: SnapshotPosition;
+  /** 当前世界键；来源必须是 transport（传输层） 的世界解析端口。 */
+  world_key?: string;
   /** 当前生命值。 */
   health: number;
   /** 当前饥饿值。 */
@@ -143,6 +145,17 @@ export interface ServerExtendedSnapshot {
   tps: number;
 }
 
+/** 世界时间阶段，用于 planner（规划器） 环境快照压缩。 */
+export type WorldTimePhase = "day" | "night" | "unknown";
+
+/** 世界时间快照。 */
+export interface WorldTimeSnapshot {
+  /** 当前昼夜阶段。 */
+  phase: WorldTimePhase;
+  /** 当前 Minecraft（我的世界） timeOfDay；不可得时为 null。 */
+  time_of_day: number | null;
+}
+
 /** Mineflayer（Minecraft 协议客户端） 原始输入，用于表达客户端可直接读取的只读快照源。 */
 export interface MineflayerObservationInput {
   /** 原始快照时间戳。 */
@@ -161,6 +174,8 @@ export interface MineflayerObservationInput {
   nearby_blocks: readonly NearbyBlockSummary[];
   /** 主人信息。 */
   owner?: OwnerSnapshot;
+  /** 世界时间。 */
+  time?: WorldTimeSnapshot;
 }
 
 /** JAR Bridge（服务端桥接） 原始输入，用于表达服务端补充的观测字段。 */
@@ -181,6 +196,8 @@ export interface BridgeObservationInput {
   nearby_blocks?: readonly NearbyBlockSummary[];
   /** 可选主人信息补丁。 */
   owner?: Partial<OwnerSnapshot>;
+  /** 可选世界时间补丁。 */
+  time?: WorldTimeSnapshot;
   /** 服务端扩展字段。 */
   server_extended?: ServerExtendedSnapshot;
 }
@@ -203,6 +220,8 @@ export interface EnvironmentSnapshot {
   nearby_blocks: readonly NearbyBlockSummary[];
   /** 主人信息。 */
   owner?: OwnerSnapshot;
+  /** 世界时间。 */
+  time?: WorldTimeSnapshot;
   /** JAR Bridge（服务端桥接） 扩展信息。 */
   server_extended?: ServerExtendedSnapshot;
 }

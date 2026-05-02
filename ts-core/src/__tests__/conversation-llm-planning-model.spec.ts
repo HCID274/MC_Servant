@@ -9,6 +9,7 @@ import {
   createConversationPlanMessages,
   createConversationSkillPlanPromptSection,
   createConversationTriageMessages,
+  createPlannerSnapshotContext,
 } from "../conversation/llm.js";
 
 describe("conversation llm（对话大语言模型） 分诊与规划", () => {
@@ -332,6 +333,111 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
     expect(messages[0]?.content).toContain("如果不能明确判断为允许技能中的一种");
     expect(messages[0]?.content).not.toContain("如果不能明确提取三个坐标");
+  });
+
+  it("应把真实 observation（观测） 快照压缩为 planner（规划器） 八行上下文", () => {
+    const context = createPlannerSnapshotContext({
+      snapshot: {
+        timestamp: 1_712_000_000,
+        snapshot_version: "planner-snapshot-1",
+        bot: {
+          position: { x: 10, y: 64, z: -2 },
+          world_key: "multiworld:resource",
+          health: 18,
+          food: 16,
+          experience: 3,
+          is_on_fire: false,
+          is_in_water: false,
+          y_velocity: 0,
+        },
+        inventory: {
+          items: [{ slot: 0, item_name: "oak_log", count: 12 }],
+          total_items: 12,
+          occupied_slots: 1,
+          free_slots: 35,
+        },
+        equipment: {
+          head: null,
+          chest: null,
+          legs: null,
+          feet: null,
+          main_hand: { slot: "main_hand", item_name: "stone_pickaxe", count: 1 },
+          off_hand: null,
+          has_weapon_equipped: false,
+        },
+        nearby_blocks: [
+          { block_name: "oak_log", position: { x: 12, y: 64, z: -2 }, distance: 2 },
+          { block_name: "stone", position: { x: 10, y: 63, z: -2 }, distance: 1 },
+        ],
+        nearby_entities: [
+          {
+            entity_id: "owner",
+            entity_type: "player",
+            kind: "player",
+            display_name: "Steve",
+            position: { x: 13, y: 64, z: -2 },
+            distance: 3,
+          },
+        ],
+        owner: {
+          name: "Steve",
+          online: true,
+          position: { x: 13, y: 64, z: -2 },
+        },
+        time: {
+          phase: "day",
+          time_of_day: 6000,
+        },
+      },
+    });
+
+    expect(context).toContain("[Bot] 位置:(10,64,-2) 生命:18/20 饥饿:16/20 着火:否");
+    expect(context).toContain("[世界] multiworld:resource");
+    expect(context).toContain("[主人] 位置:(13,64,-2) 距离:3格 在线:是");
+    expect(context).toContain("[装备] 头:无 身:无 腿:无 脚:无 主手:stone_pickaxe 副手:无");
+    expect(context).toContain("[背包] oak_log x12");
+    expect(context).toContain("[附近方块] stonex1(最近1格), oak_logx1(最近2格)");
+    expect(context).toContain("[附近生物] player(玩家,3格)");
+    expect(context).toContain("[时间] 白天(6000)");
+  });
+
+  it("主人离线时 planner（规划器） 快照上下文不应输出主人坐标", () => {
+    const context = createPlannerSnapshotContext({
+      snapshot: {
+        timestamp: 1_712_000_000,
+        snapshot_version: "planner-snapshot-offline",
+        bot: {
+          position: { x: 0, y: 64, z: 0 },
+          world_key: "minecraft:overworld",
+          health: 20,
+          food: 20,
+          experience: 0,
+          is_on_fire: false,
+          is_in_water: false,
+          y_velocity: 0,
+        },
+        inventory: { items: [], total_items: 0, occupied_slots: 0, free_slots: 36 },
+        equipment: {
+          head: null,
+          chest: null,
+          legs: null,
+          feet: null,
+          main_hand: null,
+          off_hand: null,
+          has_weapon_equipped: false,
+        },
+        nearby_blocks: [],
+        nearby_entities: [],
+        owner: {
+          name: "Steve",
+          online: false,
+          position: { x: 0, y: 64, z: 0 },
+        },
+      },
+    });
+
+    expect(context).toContain("[主人] 离线");
+    expect(context).not.toContain("距离:");
   });
 
   it("单技能规划 prompt（提示词） 应由策略表生成技能段且不写死 MC（Minecraft） 示例物品", () => {

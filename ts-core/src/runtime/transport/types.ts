@@ -1,3 +1,4 @@
+import type { MineflayerObservationInput } from "../../core-ports/observation.js";
 import type {
   ResourceRefreshRadius,
   RuntimeResourceRefreshResult,
@@ -140,6 +141,8 @@ export interface MineflayerEntityHandle {
   readonly objectData?: unknown;
   /** 元数据载荷。 */
   readonly metadata?: readonly unknown[];
+  /** Mineflayer（Minecraft 协议客户端） 实体用户名；玩家实体常用。 */
+  readonly username?: string;
 }
 
 /** Mineflayer（Minecraft 协议客户端） 事件能力端口。 */
@@ -203,10 +206,14 @@ export interface MineflayerEntityPort {
 
 /** Mineflayer（Minecraft 协议客户端） 背包与装备能力端口。 */
 export interface MineflayerInventoryPort {
+  /** 当前手持物品。 */
+  readonly heldItem?: MineflayerItemHandle | null;
   /** 当前背包快照。 */
   readonly inventory?: {
     /** 背包内所有非空物品栈。 */
     items(): readonly MineflayerItemHandle[];
+    /** Mineflayer（Minecraft 协议客户端） 原始槽位数组；仅用于装备摘要采样。 */
+    readonly slots?: readonly (MineflayerItemHandle | null | undefined)[];
     /** 可选空槽数量。 */
     emptySlotCount?(): number;
   };
@@ -226,12 +233,24 @@ export interface MineflayerBotHandle
     MineflayerEntityPort,
     MineflayerInventoryPort {}
 
+/** Mineflayer（Minecraft 协议客户端） 玩家索引条目最小结构。 */
+export interface MineflayerPlayerHandle {
+  /** 玩家名。 */
+  readonly username?: string;
+  /** 已加载时的玩家实体。 */
+  readonly entity?: MineflayerEntityHandle | null;
+}
+
 /** Mineflayer 寻路插件内部接口声明。 */
 export interface MineflayerPathfinderApi {
   /** 设置 pathfinder（寻路器） 移动配置。 */
   setMovements?(movements: unknown): void;
+  /** 清空 pathfinder（寻路器） 当前目标。 */
+  setGoal?(goal: unknown | null, dynamic?: boolean): void;
   /** 执行寻路目标。 */
   goto(goal: unknown): Promise<void> | void;
+  /** 停止当前 pathfinder（寻路器） 移动。 */
+  stop?(): void;
 }
 
 /** Mineflayer 寻路插件模块结构。 */
@@ -341,6 +360,8 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   ): Promise<RuntimeResourceRefreshResult>;
   /** 读取当前世界键，供 ResourceService（世界感知资源服务） 内部路由使用。 */
   getCurrentWorldKey(): string;
+  /** 采样当前 Mineflayer（Minecraft 协议客户端） 观测输入；未 ready（就绪） 时返回 null。 */
+  readObservationInput(ownerName?: string): MineflayerObservationInput | null;
   /** 获取当前连接描述快照。 */
   getSnapshot(): MineflayerTransportSnapshot<TBotId>;
   /** 获取当前只读事件源；未连接或已回收时为 null。 */

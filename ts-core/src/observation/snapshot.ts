@@ -27,6 +27,7 @@ import {
   type ThreatDetectorInput,
   ThreatLevel,
   ThreatRuleId,
+  type WorldTimeSnapshot,
 } from "./contracts.js";
 
 /**
@@ -110,6 +111,14 @@ function cloneOwnerSnapshot(owner: OwnerSnapshot): OwnerSnapshot {
   });
 }
 
+/** 深克隆世界时间快照。 */
+function cloneWorldTimeSnapshot(time: WorldTimeSnapshot): WorldTimeSnapshot {
+  return Object.freeze({
+    phase: time.phase,
+    time_of_day: time.time_of_day,
+  });
+}
+
 /**
  * 深克隆完整环境快照。
  */
@@ -126,11 +135,12 @@ function cloneEnvironmentSnapshot(snapshot: EnvironmentSnapshot): EnvironmentSna
     nearby_blocks: freezeReadonlyArray(
       snapshot.nearby_blocks.map((block) => cloneBlockSummary(block)),
     ),
-  } satisfies Omit<EnvironmentSnapshot, "owner" | "server_extended">;
+  } satisfies Omit<EnvironmentSnapshot, "owner" | "time" | "server_extended">;
 
   return Object.freeze({
     ...snapshotBase,
     ...(snapshot.owner ? { owner: cloneOwnerSnapshot(snapshot.owner) } : {}),
+    ...(snapshot.time ? { time: cloneWorldTimeSnapshot(snapshot.time) } : {}),
     ...(snapshot.server_extended
       ? { server_extended: Object.freeze({ ...snapshot.server_extended }) }
       : {}),
@@ -202,6 +212,7 @@ function mergeBotState(
   }
 
   const health = mineflayer?.health ?? bridge?.health;
+  const worldKey = mineflayer?.world_key ?? bridge?.world_key;
   const food = mineflayer?.food ?? bridge?.food;
   const experience = mineflayer?.experience ?? bridge?.experience;
   const isOnFire = mineflayer?.is_on_fire ?? bridge?.is_on_fire;
@@ -221,6 +232,7 @@ function mergeBotState(
 
   return {
     position: freezePosition(basePosition),
+    ...(worldKey === undefined ? {} : { world_key: worldKey }),
     health,
     food,
     experience,
@@ -275,6 +287,7 @@ export function createEnvironmentSnapshot(input: {
   const inventory = input.mineflayer?.inventory ?? input.bridge?.inventory;
   const equipment = input.mineflayer?.equipment ?? input.bridge?.equipment;
   const owner = mergeOwnerSnapshot(input.mineflayer?.owner, input.bridge?.owner);
+  const time = input.mineflayer?.time ?? input.bridge?.time;
 
   if (timestamp === undefined || !snapshotVersion || !inventory || !equipment) {
     throw new Error(
@@ -296,11 +309,12 @@ export function createEnvironmentSnapshot(input: {
       input.mineflayer?.nearby_blocks ?? [],
       input.bridge?.nearby_blocks,
     ),
-  } satisfies Omit<EnvironmentSnapshot, "owner" | "server_extended">;
+  } satisfies Omit<EnvironmentSnapshot, "owner" | "time" | "server_extended">;
 
   return cloneEnvironmentSnapshot({
     ...snapshotBase,
     ...(owner ? { owner } : {}),
+    ...(time ? { time: cloneWorldTimeSnapshot(time) } : {}),
     ...(input.bridge?.server_extended
       ? { server_extended: Object.freeze({ ...input.bridge.server_extended }) }
       : {}),
