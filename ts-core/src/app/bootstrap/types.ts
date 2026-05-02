@@ -163,6 +163,12 @@ export interface AppLlmContract {
   readonly base_url: string | null;
   /** 模型名。 */
   readonly model: string | null;
+  /** 是否允许 thinking（思考） 模式。 */
+  readonly enable_thinking: boolean;
+  /** reasoning effort（推理强度） 统一配置。 */
+  readonly reasoning_effort: string;
+  /** 强制开启 thinking（思考） 模式的模型清单。 */
+  readonly force_thinking_models: readonly string[];
   /** 接口密钥是否已注入。 */
   readonly api_key_injected: boolean;
 }

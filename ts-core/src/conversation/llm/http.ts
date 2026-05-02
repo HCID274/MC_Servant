@@ -1,5 +1,15 @@
 import type { ConversationLlmConfig, ConversationLlmMessage } from "./types.js";
 
+/** OpenAI compatible（OpenAI 兼容） chat.completions（对话补全） 请求体。 */
+export interface OpenAiCompatibleChatCompletionRequest {
+  readonly model: string;
+  readonly messages: readonly ConversationLlmMessage[];
+  readonly chat_template_kwargs?: {
+    readonly enable_thinking?: boolean;
+  };
+  readonly reasoning_effort?: string;
+}
+
 /** OpenAI 兼容 chat.completions（对话补全） 响应的最小结构。 */
 export interface OpenAiCompatibleChatCompletionResponse {
   /** 候选回复集合。 */
@@ -37,6 +47,10 @@ export async function requestChatCompletionPayload(input: {
   config: ConversationLlmConfig;
   messages: readonly ConversationLlmMessage[];
 }): Promise<OpenAiCompatibleChatCompletionResponse> {
+  const requestBody = createChatCompletionRequestBody({
+    config: input.config,
+    messages: input.messages,
+  });
   const response = await fetchWithTimeout(
     input.fetchImpl,
     `${input.config.base_url}/chat/completions`,
@@ -46,10 +60,7 @@ export async function requestChatCompletionPayload(input: {
         "content-type": "application/json",
         authorization: `Bearer ${input.config.api_key}`,
       },
-      body: JSON.stringify({
-        model: input.config.model,
-        messages: input.messages,
-      }),
+      body: JSON.stringify(requestBody),
     },
     input.config.timeout_ms,
   );
@@ -60,6 +71,53 @@ export async function requestChatCompletionPayload(input: {
   }
 
   return payload;
+}
+
+/** 将统一 thinking（思考） 配置转换为具体供应商请求参数。 */
+export function createChatCompletionRequestBody(input: {
+  config: ConversationLlmConfig;
+  messages: readonly ConversationLlmMessage[];
+}): OpenAiCompatibleChatCompletionRequest {
+  const model = input.config.model.trim();
+  const thinkingEnabled = isThinkingEnabledForModel(input.config);
+  const body: OpenAiCompatibleChatCompletionRequest = {
+    model,
+    messages: input.messages,
+    ...(isMimoModel(model)
+      ? {
+          chat_template_kwargs: {
+            enable_thinking: thinkingEnabled,
+          },
+        }
+      : {}),
+    ...(!isMimoModel(model) && thinkingEnabled && input.config.reasoning_effort !== "none"
+      ? { reasoning_effort: input.config.reasoning_effort }
+      : {}),
+  };
+
+  return Object.freeze(body);
+}
+
+function isThinkingEnabledForModel(config: ConversationLlmConfig): boolean {
+  const normalizedModel = normalizeModelName(config.model);
+
+  if (
+    config.force_thinking_models.some(
+      (forcedModel) => normalizeModelName(forcedModel) === normalizedModel,
+    )
+  ) {
+    return true;
+  }
+
+  return config.enable_thinking;
+}
+
+function isMimoModel(model: string): boolean {
+  return normalizeModelName(model).startsWith("mimo-");
+}
+
+function normalizeModelName(model: string): string {
+  return model.trim().toLowerCase();
 }
 
 /** 提取 OpenAI 兼容错误摘要。 */

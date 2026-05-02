@@ -121,6 +121,144 @@ describe("conversation llm（对话大语言模型） 运行时", () => {
     expect(diagnostics).toEqual([result.diagnostics]);
   });
 
+  it("应把关闭 thinking（思考） 模式转换为 MiMo（小米大模型） 私有参数", async () => {
+    const capturedBodies: unknown[] = [];
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "https://token-plan-cn.xiaomimimo.com/v1",
+        api_key: "sk-local-dev",
+        model: "mimo-v2.5",
+        enable_thinking: false,
+        reasoning_effort: "none",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async (_url, init) => {
+          capturedBodies.push(init?.body === undefined ? undefined : JSON.parse(String(init.body)));
+
+          return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+      },
+    );
+
+    await client.generateChatReply({
+      message_id: "msg-mimo-no-thinking",
+      message: "只回复 ok",
+    });
+
+    expect(capturedBodies).toEqual([
+      expect.objectContaining({
+        model: "mimo-v2.5",
+        chat_template_kwargs: {
+          enable_thinking: false,
+        },
+      }),
+    ]);
+  });
+
+  it("应允许 force thinking models（强制思考模型） 覆盖默认关闭策略", async () => {
+    const capturedBodies: unknown[] = [];
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "https://token-plan-cn.xiaomimimo.com/v1",
+        api_key: "sk-local-dev",
+        model: "mimo-v2.5-pro",
+        enable_thinking: false,
+        reasoning_effort: "none",
+        force_thinking_models: ["mimo-v2.5-pro"],
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async (_url, init) => {
+          capturedBodies.push(init?.body === undefined ? undefined : JSON.parse(String(init.body)));
+
+          return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+      },
+    );
+
+    await client.generateChatReply({
+      message_id: "msg-mimo-force-thinking",
+      message: "只回复 ok",
+    });
+
+    expect(capturedBodies).toEqual([
+      expect.objectContaining({
+        model: "mimo-v2.5-pro",
+        chat_template_kwargs: {
+          enable_thinking: true,
+        },
+      }),
+    ]);
+  });
+
+  it("应拒绝非 MiMo（小米大模型） force thinking（强制思考） 但 reasoning effort（推理强度） 为 none 的配置", () => {
+    expect(() =>
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "gpt-5.5",
+        enable_thinking: false,
+        reasoning_effort: "none",
+        force_thinking_models: ["gpt-5.5"],
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+    ).toThrow(
+      "LLM_FORCE_THINKING_MODELS includes a non-MiMo model; set LLM_REASONING_EFFORT to a non-none value",
+    );
+  });
+
+  it("应在非 MiMo（小米大模型） force thinking（强制思考） 且 effort（强度） 有效时发送 reasoning_effort", async () => {
+    const capturedBodies: unknown[] = [];
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "gpt-5.5",
+        enable_thinking: false,
+        reasoning_effort: "medium",
+        force_thinking_models: ["gpt-5.5"],
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async (_url, init) => {
+          capturedBodies.push(init?.body === undefined ? undefined : JSON.parse(String(init.body)));
+
+          return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+      },
+    );
+
+    await client.generateChatReply({
+      message_id: "msg-non-mimo-force-thinking",
+      message: "只回复 ok",
+    });
+
+    expect(capturedBodies).toEqual([
+      expect.objectContaining({
+        model: "gpt-5.5",
+        reasoning_effort: "medium",
+      }),
+    ]);
+  });
+
   it("应在请求失败时留下显式诊断并抛出带诊断的错误", async () => {
     const diagnostics: unknown[] = [];
     const client = createConversationLlmClient(

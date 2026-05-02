@@ -170,6 +170,9 @@ export function createAppLlmContract(input: { env: DataConfigEnvironment }): App
   const baseUrl = readOptionalString(input.env, "LLM_BASE_URL");
   const apiKey = readOptionalString(input.env, "LLM_API_KEY");
   const model = readOptionalString(input.env, "LLM_MODEL");
+  const enableThinking = readBooleanEnv(input.env, "LLM_ENABLE_THINKING", false);
+  const reasoningEffort = readOptionalString(input.env, "LLM_REASONING_EFFORT") ?? "none";
+  const forceThinkingModels = readCsvEnv(input.env, "LLM_FORCE_THINKING_MODELS");
   const hasAnyConfig = baseUrl !== undefined || apiKey !== undefined || model !== undefined;
 
   if (!hasAnyConfig) {
@@ -178,6 +181,9 @@ export function createAppLlmContract(input: { env: DataConfigEnvironment }): App
       provider: "openai_compatible",
       base_url: null,
       model: null,
+      enable_thinking: false,
+      reasoning_effort: "none",
+      force_thinking_models: Object.freeze([]),
       api_key_injected: false,
     });
   }
@@ -199,8 +205,49 @@ export function createAppLlmContract(input: { env: DataConfigEnvironment }): App
     provider: "openai_compatible",
     base_url: baseUrl,
     model,
+    enable_thinking: enableThinking,
+    reasoning_effort: reasoningEffort,
+    force_thinking_models: forceThinkingModels,
     api_key_injected: true,
   });
+}
+
+function readBooleanEnv(env: DataConfigEnvironment, key: string, defaultValue: boolean): boolean {
+  const value = readOptionalString(env, key);
+
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  switch (value.trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return false;
+    default:
+      throw new Error(`${key} must be a boolean`);
+  }
+}
+
+function readCsvEnv(env: DataConfigEnvironment, key: string): readonly string[] {
+  const value = readOptionalString(env, key);
+
+  if (value === undefined) {
+    return Object.freeze([]);
+  }
+
+  return Object.freeze(
+    value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  );
 }
 
 /**

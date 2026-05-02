@@ -140,6 +140,29 @@ describe("app（应用装配） 骨架", () => {
     );
   });
 
+  it("应从 env（环境变量） 装配统一 thinking（思考） 配置", () => {
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-llm-thinking",
+      now: "2026-05-03T00:00:00.000Z",
+      env: {
+        LLM_BASE_URL: "https://token-plan-cn.xiaomimimo.com/v1",
+        LLM_API_KEY: "sk-local-dev",
+        LLM_MODEL: "mimo-v2.5",
+        LLM_ENABLE_THINKING: "false",
+        LLM_REASONING_EFFORT: "none",
+        LLM_FORCE_THINKING_MODELS: "mimo-v2.5-pro, gpt-5.5",
+      },
+    });
+
+    expect(bootstrap.llm).toMatchObject({
+      enabled: true,
+      model: "mimo-v2.5",
+      enable_thinking: false,
+      reasoning_effort: "none",
+      force_thinking_models: ["mimo-v2.5-pro", "gpt-5.5"],
+    });
+  });
+
   it("应把空字符串可选 MC 环境变量视为未设置", () => {
     const assembly = createAppBootstrapContract({
       botId: "bot-empty-mc-options",

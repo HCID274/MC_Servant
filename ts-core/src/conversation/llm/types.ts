@@ -16,6 +16,12 @@ export interface ConversationLlmConfig {
   readonly api_key: string;
   /** 默认模型名。 */
   readonly model: string;
+  /** 是否允许 thinking（思考） 模式；默认关闭以降低短任务延迟。 */
+  readonly enable_thinking: boolean;
+  /** reasoning effort（推理强度） 的统一语义，none 表示不主动请求推理。 */
+  readonly reasoning_effort: string;
+  /** 强制开启 thinking（思考） 模式的模型清单。 */
+  readonly force_thinking_models: readonly string[];
   /** 默认 Bot 名称。 */
   readonly bot_name: string;
   /** 默认主人称谓。 */

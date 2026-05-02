@@ -1215,6 +1215,9 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       provider: "openai_compatible",
       base_url: "http://127.0.0.1:8045/v1",
       model: "bl-auto",
+      enable_thinking: false,
+      reasoning_effort: "none",
+      force_thinking_models: [],
       api_key_injected: true,
     });
     expect(llmRequests).toHaveLength(2);
