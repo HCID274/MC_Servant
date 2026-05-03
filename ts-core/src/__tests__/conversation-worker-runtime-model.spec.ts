@@ -17,6 +17,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
   it("应消费 chat（闲聊） 消息并通过 BotActor（机器人执行代理） sink（汇点） 广播回复", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const replies: Array<{ message_id: string; content: string }> = [];
+    const replyLogs: unknown[] = [];
     const injectedStateContexts: Array<string | undefined> = [];
     let projectionCalls = 0;
     const runtime = createConversationWorkerRuntime({
@@ -72,6 +73,9 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
         broadcastReplySink: async (reply) => {
           replies.push(reply);
         },
+        conversationReplyLogSink: async (record) => {
+          replyLogs.push(record);
+        },
       },
     });
 
@@ -98,6 +102,24 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     expect(projectionCalls).toBe(1);
     expect(injectedStateContexts).toEqual([
       "当前状态：executing；ready：否；世界交互：已就绪；正在执行技能：mine（消息 msg-mine）",
+    ]);
+    expect(replyLogs).toEqual([
+      expect.objectContaining({
+        bot_id: "bot-cw",
+        message_id: "msg-chat",
+        owner_message: "你好",
+        route_kind: "chat_reply",
+        reply_mode: "llm",
+        reply: "我听到啦喵~",
+        contexts: {
+          state_context:
+            "当前状态：executing；ready：否；世界交互：已就绪；正在执行技能：mine（消息 msg-mine）",
+        },
+        llm_diagnostics: expect.objectContaining({
+          stage: "chat",
+          message_id: "msg-chat",
+        }),
+      }),
     ]);
     expect(runtime.getEvents()).toContainEqual({
       type: "llm.chat.diagnostic",
@@ -635,6 +657,11 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           calls.push(`reply:${reply.content}`);
           replies.push(reply);
         },
+        replyGenerator: () => {
+          calls.push("chat");
+
+          return "Stage 2 收到";
+        },
         planner: async () => {
           calls.push("planner");
 
@@ -666,11 +693,11 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       }),
     });
 
-    expect(calls).toEqual(["interrupt", "reply:知道了喵~", "planner", "enqueue"]);
+    expect(calls).toEqual(["interrupt", "chat", "reply:Stage 2 收到喵~", "planner", "enqueue"]);
     expect(replies).toEqual([
       {
         message_id: "msg-composite",
-        content: "知道了喵~",
+        content: "Stage 2 收到喵~",
       },
     ]);
     expect(enqueuedTasks).toHaveLength(1);
@@ -696,7 +723,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
         type: "chat.reply",
         bot_id: "bot-cw",
         message_id: "msg-composite",
-        content: "知道了喵~",
+        content: "Stage 2 收到喵~",
       },
     ]);
   });

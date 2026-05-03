@@ -140,7 +140,7 @@ export interface ConversationCompositeCancel {
 
 /** 复合分诊中的 reply（回复） 片段。 */
 export interface ConversationCompositeReply {
-  /** 显式回复文本；为空时复用 Stage 2-Chat（第二阶段闲聊）生成器。 */
+  /** 历史兼容字段；运行时统一复用 Stage 2-Chat（第二阶段闲聊）生成器。 */
   readonly content?: string;
 }
 

@@ -11,6 +11,39 @@ const MAX_INVENTORY_ITEMS = 12;
 const MAX_NEARBY_BLOCKS = 5;
 const MAX_NEARBY_ENTITIES = 5;
 
+/** Chat（闲聊） 路径快照模板输入。 */
+export interface ChatSnapshotContextInput {
+  /** observation（观测） 当前环境快照。 */
+  readonly snapshot: EnvironmentSnapshot | null;
+  /** 可选 inventory diff（背包变化） 渲染槽位，空值时整行省略。 */
+  readonly inventoryChangeContext?: string;
+  /** 可选 recent context（最近上下文） 时间线槽位，空值时整段省略。 */
+  readonly recentContextLines?: readonly string[];
+}
+
+/** 将 observation（观测）快照压缩为 Chat（闲聊） prompt（提示词）子集上下文。 */
+export function createChatSnapshotContext(input: ChatSnapshotContextInput): string | undefined {
+  if (input.snapshot === null) {
+    return undefined;
+  }
+
+  const inventoryChangeLine = createOptionalPrefixedLine(
+    "[背包变化]",
+    input.inventoryChangeContext,
+  );
+  const recentContextSection = createRecentContextSection(input.recentContextLines);
+
+  return [
+    createBotLine(input.snapshot),
+    `[世界] ${input.snapshot.bot.world_key ?? "unknown"}`,
+    createOwnerLine(input.snapshot),
+    createChatInventoryLine(input.snapshot),
+    ...(inventoryChangeLine === undefined ? [] : [inventoryChangeLine]),
+    ...(recentContextSection === undefined ? [] : [recentContextSection]),
+    createTimeLine(input.snapshot.time),
+  ].join("\n");
+}
+
 /** 将 observation（观测）快照压缩为 planner（规划器） prompt（提示词）上下文。 */
 export function createPlannerSnapshotContext(input: {
   readonly snapshot: EnvironmentSnapshot | null;
@@ -66,6 +99,35 @@ function createInventoryLine(snapshot: EnvironmentSnapshot): string {
   const suffix = snapshot.inventory.items.length > MAX_INVENTORY_ITEMS ? ", ..." : "";
 
   return `[背包] ${renderedItems.length === 0 ? "空" : `${renderedItems.join(", ")}${suffix}`}`;
+}
+
+function createChatInventoryLine(snapshot: EnvironmentSnapshot): string {
+  const renderedItems = snapshot.inventory.items
+    .slice(0, MAX_INVENTORY_ITEMS)
+    .map((item) => `${item.item_name}x${item.count}`);
+  const suffix = snapshot.inventory.items.length > MAX_INVENTORY_ITEMS ? ", ..." : "";
+
+  return `[背包] ${renderedItems.length === 0 ? "空" : `${renderedItems.join(", ")}${suffix}`}`;
+}
+
+function createOptionalPrefixedLine(prefix: string, value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+
+  if (normalized === undefined || normalized.length === 0) {
+    return undefined;
+  }
+
+  return `${prefix} ${normalized}`;
+}
+
+function createRecentContextSection(lines: readonly string[] | undefined): string | undefined {
+  const normalizedLines = lines?.map((line) => line.trim()).filter((line) => line.length > 0) ?? [];
+
+  if (normalizedLines.length === 0) {
+    return undefined;
+  }
+
+  return ["[最近上下文]", ...normalizedLines].join("\n");
 }
 
 function createNearbyBlocksLine(blocks: readonly NearbyBlockSummary[]): string {

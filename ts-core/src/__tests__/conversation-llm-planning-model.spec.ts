@@ -4,6 +4,7 @@ import {
   CONVERSATION_SKILL_PLAN_TABLE,
   ConversationLlmPlanError,
   ConversationLlmSkillNotEnabledError,
+  createChatSnapshotContext,
   createConversationLlmClient,
   createConversationLlmConfig,
   createConversationPlanMessages,
@@ -79,6 +80,18 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         },
       },
     ]);
+  });
+
+  it("triage（分诊） prompt（提示词） 不应要求生成聊天正文", () => {
+    const messages = createConversationTriageMessages({
+      message_id: "msg-triage-prompt",
+      message: "你在哪",
+    });
+
+    expect(messages[0]?.content).toContain("分诊只做路由判断");
+    expect(messages[0]?.content).toContain('纯闲聊只输出 reply 空对象，例如 {"reply":{}}。');
+    expect(messages[0]?.content).not.toContain('"content":"我在喵~"');
+    expect(messages[0]?.content).not.toContain("reply 只写自然短句");
   });
 
   it("应按 OpenAI（开放人工智能） 兼容 chat.completions（对话补全） 解析 composite triage（复合分诊） JSON", async () => {
@@ -438,6 +451,154 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
     expect(context).toContain("[主人] 离线");
     expect(context).not.toContain("距离:");
+  });
+
+  it("应把真实 observation（观测） 快照压缩为 Chat（闲聊） 七类行上下文", () => {
+    const context = createChatSnapshotContext({
+      snapshot: {
+        timestamp: 1_712_000_000,
+        snapshot_version: "chat-snapshot-1",
+        bot: {
+          position: { x: 10, y: 64, z: -2 },
+          world_key: "multiworld:resource",
+          health: 18,
+          food: 16,
+          experience: 3,
+          is_on_fire: false,
+          is_in_water: false,
+          y_velocity: 0,
+        },
+        inventory: {
+          items: [{ slot: 0, item_name: "oak_log", count: 12 }],
+          total_items: 12,
+          occupied_slots: 1,
+          free_slots: 35,
+        },
+        equipment: {
+          head: null,
+          chest: null,
+          legs: null,
+          feet: null,
+          main_hand: null,
+          off_hand: null,
+          has_weapon_equipped: false,
+        },
+        nearby_blocks: [],
+        nearby_entities: [],
+        owner: {
+          name: "Steve",
+          online: true,
+          position: { x: 13, y: 64, z: -2 },
+        },
+        time: {
+          phase: "day",
+          time_of_day: 6000,
+        },
+      },
+      inventoryChangeContext: "oak_log+2",
+      recentContextLines: ["主人：早上好", "Bot：早上好喵~"],
+    });
+
+    expect(context).toBe(
+      [
+        "[Bot] 位置:(10,64,-2) 生命:18/20 饥饿:16/20 着火:否",
+        "[世界] multiworld:resource",
+        "[主人] 位置:(13,64,-2) 距离:3格 在线:是",
+        "[背包] oak_logx12",
+        "[背包变化] oak_log+2",
+        "[最近上下文]",
+        "主人：早上好",
+        "Bot：早上好喵~",
+        "[时间] 白天(6000)",
+      ].join("\n"),
+    );
+  });
+
+  it("主人离线时 Chat（闲聊） 快照上下文应整行降级", () => {
+    const context = createChatSnapshotContext({
+      snapshot: {
+        timestamp: 1_712_000_000,
+        snapshot_version: "chat-snapshot-offline",
+        bot: {
+          position: { x: 0, y: 64, z: 0 },
+          world_key: "minecraft:overworld",
+          health: 20,
+          food: 20,
+          experience: 0,
+          is_on_fire: false,
+          is_in_water: false,
+          y_velocity: 0,
+        },
+        inventory: { items: [], total_items: 0, occupied_slots: 0, free_slots: 36 },
+        equipment: {
+          head: null,
+          chest: null,
+          legs: null,
+          feet: null,
+          main_hand: null,
+          off_hand: null,
+          has_weapon_equipped: false,
+        },
+        nearby_blocks: [],
+        nearby_entities: [],
+        owner: {
+          name: "Steve",
+          online: false,
+          position: { x: 0, y: 64, z: 0 },
+        },
+      },
+    });
+
+    expect(context).toContain("[主人] 离线");
+    expect(context).not.toContain("距离:");
+    expect(context).not.toContain("在线:");
+  });
+
+  it("Chat（闲聊） 空槽位应省略背包变化整行与最近上下文整段", () => {
+    const context = createChatSnapshotContext({
+      snapshot: {
+        timestamp: 1_712_000_000,
+        snapshot_version: "chat-snapshot-empty-slots",
+        bot: {
+          position: { x: 0, y: 64, z: 0 },
+          world_key: "minecraft:overworld",
+          health: 20,
+          food: 20,
+          experience: 0,
+          is_on_fire: false,
+          is_in_water: false,
+          y_velocity: 0,
+        },
+        inventory: { items: [], total_items: 0, occupied_slots: 0, free_slots: 36 },
+        equipment: {
+          head: null,
+          chest: null,
+          legs: null,
+          feet: null,
+          main_hand: null,
+          off_hand: null,
+          has_weapon_equipped: false,
+        },
+        nearby_blocks: [],
+        nearby_entities: [],
+        time: {
+          phase: "night",
+          time_of_day: 13_000,
+        },
+      },
+      inventoryChangeContext: "   ",
+      recentContextLines: ["  "],
+    });
+
+    expect(context).toBe(
+      [
+        "[Bot] 位置:(0,64,0) 生命:20/20 饥饿:20/20 着火:否",
+        "[世界] minecraft:overworld",
+        "[主人] 离线",
+        "[背包] 空",
+        "[时间] 夜晚(13000)",
+      ].join("\n"),
+    );
   });
 
   it("单技能规划 prompt（提示词） 应由策略表生成技能段且不写死 MC（Minecraft） 示例物品", () => {

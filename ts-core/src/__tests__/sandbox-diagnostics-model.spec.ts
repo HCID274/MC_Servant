@@ -1,3 +1,7 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -17,6 +21,7 @@ import {
   createLlmDiagnosticSummary,
   createLlmLogLine,
   createLlmLogRef,
+  createLocalConversationReplyLogSink,
   createSandboxCodeJob,
   createSandboxCodeRef,
   createSandboxError,
@@ -408,6 +413,54 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         log_ref: taskLogRef,
       }),
     ).toThrow(/sandbox/);
+  });
+
+  it("应把每次 conversation reply（对话回复） 与上下文写入本地 JSONL（结构化日志）", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "ts-core-conversation-log-"));
+    const logSink = createLocalConversationReplyLogSink({
+      baseDir,
+      sensitiveValues: ["sk-local-dev"],
+    });
+
+    try {
+      await logSink({
+        bot_id: "bot-log",
+        message_id: "msg/log:1",
+        created_at: "2026-05-03T01:46:56.000Z",
+        owner_message: "你在哪",
+        route_kind: "chat_reply",
+        reply_mode: "llm",
+        reply: "我在这里喵~",
+        contexts: {
+          state_context: "当前状态：idle",
+          memory_context: "api_key=sk-local-dev",
+        },
+        llm_diagnostics: {
+          lines: [
+            {
+              role: "system",
+              content: "[Bot] 位置:(0,64,0)\n[世界] minecraft:overworld",
+            },
+          ],
+        },
+      });
+
+      const content = await readFile(
+        join(baseDir, "conversation", "2026-05-03", "msg_log_1.jsonl"),
+        "utf8",
+      );
+      const line = JSON.parse(content.trim()) as {
+        reply?: string;
+        contexts?: { memory_context?: string };
+        llm_diagnostics?: { lines?: Array<{ content?: string }> };
+      };
+
+      expect(line.reply).toBe("我在这里喵~");
+      expect(line.contexts?.memory_context).toBe(`api_key=${"<redacted>"}`);
+      expect(line.llm_diagnostics?.lines?.[0]?.content).toContain("[世界] minecraft:overworld");
+    } finally {
+      await rm(baseDir, { recursive: true, force: true });
+    }
   });
 
   it("应创建只读的 tasks（任务执行） / sandbox（沙箱执行） / llm（大语言模型） 日志行", () => {

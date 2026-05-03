@@ -90,3 +90,11 @@
 - C 审查结论: 曾打回 1 次 (非 MiMo（小米大模型） `force_thinking_models`（强制思考模型）命中且 `reasoning_effort=none`（推理强度为无）时会静默不发有效开启字段);B（实现代理）改为配置阶段显式拒绝坏组合并补齐非 MiMo（小米大模型）回归测试后通过
 - 关键决策: 业务配置统一使用 `LLM_ENABLE_THINKING=false`（关闭思考）、`LLM_REASONING_EFFORT=none`（无推理强度）与 `LLM_FORCE_THINKING_MODELS`（强制思考模型清单）;HTTP（超文本传输协议）适配层只对 MiMo（小米大模型）下沉 `chat_template_kwargs.enable_thinking=false`（聊天模板参数关闭思考）,非 MiMo（小米大模型）仅在 force（强制）且 effort（强度）非 `none`（无）时发送 `reasoning_effort`（推理强度）,避免配置声称开启但请求体无效
 - 架构冲突: 无
+
+## T-CTX-CHAT-1 | 2026-05-03 | Chat（闲聊）路径快照模板与 Stage 2-Chat（第二阶段闲聊）回归
+
+- 涉及模块: conversation/llm（对话大语言模型） prompt（提示词）模板与 snapshot context（快照上下文）渲染,ConversationWorker（对话工作线程） chat（闲聊）/triage（分诊）路由处理,app（应用装配）在线 observation（观测）注入,diagnostics（诊断）本地 JSONL（结构化日志）
+- A 拆解依据: 用户要求 Chat（闲聊）路径按 §7.1.2 注入 `[Bot]`/`[世界]`/`[主人]`/`[背包]`/`[背包变化]`/`[最近上下文]`/`[时间]` 子集,只落模板与渲染槽位,`world_key`（世界键）走 transport（传输层）既有端口,不新增 recent_events（最近事件）/对话轮队列/inventory diff cache（背包差异缓存）;后续用户明确要求修正 triage（分诊）直出 reply（回复）导致 Chat（闲聊）阶段不执行的问题,并把每次回复与上下文落本地日志
+- C 审查结论: 通过
+- 关键决策: Chat（闲聊）快照顺序按 §7.1.2 而不是任务文字列表,空 `[背包变化]` 与 `[最近上下文]` 按规则省略;triage（分诊）保留兼容 `reply.content`（回复正文）字段但运行时统一忽略正文并进入 Stage 2-Chat（第二阶段闲聊）,防止旧模型输出绕过 Chat（闲聊） prompt（提示词）;本地日志通过 worker（工作线程）可选 sink（汇点）旁路写入,失败不阻断实服回复
+- 架构冲突: 无

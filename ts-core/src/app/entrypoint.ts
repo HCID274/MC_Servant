@@ -11,6 +11,7 @@ import {
   type ConversationLlmClient,
   type ConversationLlmDependencies,
   type ConversationLlmDiagnosticRecord,
+  createChatSnapshotContext,
   createConversationLlmClient,
   createConversationLlmConfig,
   createMessageTriage,
@@ -18,7 +19,11 @@ import {
 } from "../conversation/index.js";
 import type { RuntimeEventType } from "../core-ports/events.js";
 import { createBotActorStateProjection } from "../core-ports/index.js";
-import { type LlmDiagnosticSummary, createLlmDiagnosticSummary } from "../diagnostics/index.js";
+import {
+  type LlmDiagnosticSummary,
+  createLlmDiagnosticSummary,
+  createLocalConversationReplyLogSink,
+} from "../diagnostics/index.js";
 import {
   type InterfaceBotStatusSnapshot,
   type RealtimeEventEnvelope,
@@ -388,7 +393,13 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     createOnlineConversationTriage(onlineLlmClient);
   const llmReplyGenerator =
     input.dependencies?.conversationWorker?.replyGenerator ??
-    createOnlineConversationReplyGenerator(onlineLlmClient);
+    createOnlineConversationReplyGenerator(onlineLlmClient, {
+      readSnapshotContext: () =>
+        createOnlineChatSnapshotContext({
+          runtime,
+          ...(latestOwnerPlayerName === undefined ? {} : { ownerName: latestOwnerPlayerName }),
+        }),
+    });
   let resourceService: ResourceServiceBoundary | null = null;
   const onlinePlanner =
     input.dependencies?.conversationWorker?.planner ??
@@ -521,6 +532,15 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         ...(onlineTriage === undefined ? {} : { triage: onlineTriage }),
         ...(llmReplyGenerator === undefined ? {} : { replyGenerator: llmReplyGenerator }),
         ...(onlinePlanner === undefined ? {} : { planner: onlinePlanner }),
+        conversationReplyLogSink:
+          input.dependencies?.conversationWorker?.conversationReplyLogSink ??
+          createLocalConversationReplyLogSink({
+            baseDir: input.bootstrap.config.logs.baseDir,
+            sensitiveValues:
+              input.dependencies?.llm?.api_key === undefined
+                ? []
+                : [input.dependencies.llm.api_key],
+          }),
         resourceContextProvider:
           input.dependencies?.conversationWorker?.resourceContextProvider ??
           createOnlineResourceContextProvider(() => resourceService),
@@ -689,18 +709,24 @@ function createOnlineConversationTriage(
  */
 function createOnlineConversationReplyGenerator(
   llm: ConversationLlmClient | undefined,
+  input: {
+    readonly readSnapshotContext: () => string | undefined;
+  },
 ): ConversationWorkerRuntimeDependencies["replyGenerator"] | undefined {
   if (llm === undefined) {
     return undefined;
   }
 
-  return async ({ task, state_context, memory_context }) =>
-    llm.generateChatReply({
+  return async ({ task, memory_context }) => {
+    const snapshotContext = input.readSnapshotContext();
+
+    return llm.generateChatReply({
       message_id: task.message.message_id,
       message: task.message.content,
+      ...(snapshotContext === undefined ? {} : { snapshot_context: snapshotContext }),
       ...(memory_context === undefined ? {} : { memory_context }),
-      ...(state_context === undefined ? {} : { state_context }),
     });
+  };
 }
 
 /**
@@ -750,6 +776,25 @@ function createOnlinePlannerSnapshotContext<TBotId extends string>(input: {
   return createPlannerSnapshotContext({
     snapshot,
     ...(input.resourceContext === undefined ? {} : { resourceContext: input.resourceContext }),
+  });
+}
+
+function createOnlineChatSnapshotContext<TBotId extends string>(input: {
+  readonly runtime: AppRuntimeCoreResources<TBotId> | undefined;
+  readonly ownerName?: string;
+}): string | undefined {
+  if (input.runtime === undefined) {
+    return undefined;
+  }
+
+  const observationInput = input.runtime.transport.readObservationInput(input.ownerName);
+  const snapshot =
+    observationInput === null
+      ? null
+      : input.runtime.observation.refreshFromMineflayer(observationInput);
+
+  return createChatSnapshotContext({
+    snapshot,
   });
 }
 

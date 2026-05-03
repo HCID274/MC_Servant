@@ -135,11 +135,7 @@ async function handleCompositeTriage(input: {
   }
 
   if (input.triage.reply !== undefined) {
-    if (input.triage.reply.content === undefined) {
-      await handleGeneratedCompositeReply(input);
-    } else {
-      await broadcastCompositeReply(input, input.triage.reply.content, "llm");
-    }
+    await handleGeneratedCompositeReply(input);
     replyBroadcasted = true;
   } else if (input.triage.cancel !== undefined) {
     await broadcastCompositeReply(input, createCancelTemplateReply().reply, "template");
@@ -237,6 +233,12 @@ async function broadcastCompositeReply(
     message_id: input.task.message.message_id,
     content: reply.reply,
   });
+  await appendConversationReplyLog({
+    task: input.task,
+    dependencies: input.dependencies,
+    reply_mode: reply.mode,
+    reply: reply.reply,
+  });
   input.events.push(
     Object.freeze({
       type: "chat.reply",
@@ -245,4 +247,26 @@ async function broadcastCompositeReply(
       content: reply.reply,
     }),
   );
+}
+
+async function appendConversationReplyLog(input: {
+  readonly task: ReturnType<typeof cloneWorkerTask>;
+  readonly dependencies: ConversationWorkerRuntimeDependencies;
+  readonly reply_mode: "llm" | "template";
+  readonly reply: string;
+}): Promise<void> {
+  try {
+    await input.dependencies.conversationReplyLogSink?.({
+      bot_id: input.task.bot_id,
+      message_id: input.task.message.message_id,
+      created_at: new Date().toISOString(),
+      owner_message: input.task.message.content,
+      route_kind: "composite_reply",
+      reply_mode: input.reply_mode,
+      reply: input.reply,
+      contexts: {},
+    });
+  } catch {
+    // conversation（对话）本地日志是旁路诊断，不能阻断实服回复。
+  }
 }

@@ -1251,8 +1251,15 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(chatRequestBody.messages?.[0]?.content).toContain(
       "记忆摘要：历史：主人上次让 Bot 去过矿洞入口。",
     );
-    expect(chatRequestBody.messages?.[0]?.content).toContain("当前状态摘要：当前状态：idle");
-    expect(chatRequestBody.messages?.[0]?.content).toContain("世界交互：已就绪");
+    expect(chatRequestBody.messages?.[0]?.content).toContain(
+      "[Bot] 位置:(0,0,0) 生命:20/20 饥饿:20/20 着火:否",
+    );
+    expect(chatRequestBody.messages?.[0]?.content).toContain("[世界] unknown");
+    expect(chatRequestBody.messages?.[0]?.content).toContain("[主人] 离线");
+    expect(chatRequestBody.messages?.[0]?.content).toContain("[背包] 空");
+    expect(chatRequestBody.messages?.[0]?.content).toContain("[时间] 未知(unknown)");
+    expect(chatRequestBody.messages?.[0]?.content).not.toContain("当前状态摘要：");
+    expect(chatRequestBody.messages?.[0]?.content).not.toContain("世界交互：");
     expect(events).toContain("chat:当然可以，我在这里喵~");
     expect(writes).toContain(
       "TS Core LLM chat ok: model=bl-auto message_id=msg-online-chat log_ref=llm/2026-04-24/chat-msg-online-chat.jsonl",

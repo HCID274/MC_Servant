@@ -35,6 +35,12 @@ export async function handleCancelInterruptRoute(input: {
           message_id: input.task.message.message_id,
           content: action.reply.reply,
         });
+        await appendConversationReplyLog({
+          task: input.task,
+          route: input.route,
+          dependencies: input.dependencies,
+          reply: action.reply.reply,
+        });
         input.events.push(
           Object.freeze({
             type: "chat.reply",
@@ -57,4 +63,27 @@ export async function handleCancelInterruptRoute(input: {
       reason: input.route.triage.reason,
     }),
   );
+}
+
+async function appendConversationReplyLog(input: {
+  readonly task: ConversationWorkerTask;
+  readonly route: Extract<ConversationRouteDecision, { readonly kind: "cancel_interrupt" }>;
+  readonly dependencies: ConversationWorkerRuntimeDependencies;
+  readonly reply: string;
+}): Promise<void> {
+  try {
+    await input.dependencies.conversationReplyLogSink?.({
+      bot_id: input.task.bot_id,
+      message_id: input.task.message.message_id,
+      created_at: new Date().toISOString(),
+      owner_message: input.task.message.content,
+      route_kind: input.route.kind,
+      reply_mode: "template",
+      reply: input.reply,
+      triage: input.route.triage,
+      contexts: {},
+    });
+  } catch {
+    // conversation（对话）本地日志是旁路诊断，不能阻断实服回复。
+  }
 }

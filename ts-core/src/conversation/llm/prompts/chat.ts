@@ -4,6 +4,8 @@ export interface ChatSystemPromptInput {
   readonly botName: string;
   /** 主人称谓。 */
   readonly ownerName: string;
+  /** 可选 Chat（闲聊） 路径环境快照。 */
+  readonly snapshotContext?: string;
   /** 可选记忆摘要。 */
   readonly memoryContext?: string;
   /** 可选当前状态摘要。 */
@@ -18,6 +20,7 @@ export function createChatSystemPrompt(input: ChatSystemPromptInput): string {
     "- 每句回复结尾必须加“喵”或“喵~”",
     "- 回复简短自然，不超过 3 句话",
     "- 不要输出 JSON，不要输出动作计划，只说话",
+    ...(input.snapshotContext === undefined ? [] : [input.snapshotContext]),
     ...(input.memoryContext === undefined ? [] : [`记忆摘要：${input.memoryContext}`]),
     ...(input.stateContext === undefined ? [] : [`当前状态摘要：${input.stateContext}`]),
   ].join("\n");

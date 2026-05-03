@@ -35,14 +35,16 @@ export async function handlePlanExecRoute(input: {
   const plannerFailureReply = createPlanningFailureReply();
 
   if (input.dependencies.planner === undefined) {
-    await pushPlanningFailure(input, "planner_unavailable", plannerFailureReply.reply);
+    await pushPlanningFailure(input, "planner_unavailable", plannerFailureReply.reply, {});
     return;
   }
 
   let plan: ConversationPlanDraft;
+  let memoryContext: string | undefined;
+  let resourceContext: string | undefined;
   try {
-    const memoryContext = await readMemoryContext(input);
-    const resourceContext = await readResourceContext(input);
+    memoryContext = await readMemoryContext(input);
+    resourceContext = await readResourceContext(input);
     plan = await input.dependencies.planner({
       task: input.task,
       triage: input.route.triage,
@@ -52,11 +54,17 @@ export async function handlePlanExecRoute(input: {
     });
   } catch (error) {
     if (isConversationLlmSkillNotEnabledError(error)) {
-      await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply);
+      await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply, {
+        ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+        ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
+      });
       return;
     }
 
-    await pushPlanningFailure(input, "planner_failed", plannerFailureReply.reply);
+    await pushPlanningFailure(input, "planner_failed", plannerFailureReply.reply, {
+      ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+      ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
+    });
     return;
   }
 
@@ -73,12 +81,18 @@ export async function handlePlanExecRoute(input: {
   });
 
   if (execJob.type !== "skill_call") {
-    await pushPlanningFailure(input, "planner_failed", plannerFailureReply.reply);
+    await pushPlanningFailure(input, "planner_failed", plannerFailureReply.reply, {
+      ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+      ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
+    });
     return;
   }
 
   if (execJob.skill !== SKILL_DIRECTORY.goTo && execJob.skill !== SKILL_DIRECTORY.collect) {
-    await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply);
+    await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply, {
+      ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+      ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
+    });
     return;
   }
 
@@ -105,6 +119,17 @@ export async function handlePlanExecRoute(input: {
     await input.dependencies.broadcastReplySink({
       message_id: input.task.message.message_id,
       content: reply.reply,
+    });
+    await appendConversationReplyLog({
+      task: input.task,
+      route: input.route,
+      dependencies: input.dependencies,
+      reply_mode: reply.mode,
+      reply: reply.reply,
+      contexts: {
+        ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+        ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
+      },
     });
     input.events.push(
       Object.freeze({
@@ -197,15 +222,31 @@ async function readMemoryContext(input: {
 async function pushPlanningFailure(
   input: {
     readonly task: ConversationWorkerTask;
+    readonly route?: Extract<
+      ConversationRouteDecision,
+      { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
+    >;
     readonly dependencies: ConversationWorkerRuntimeDependencies;
     readonly events: ConversationWorkerRuntimeEvent[];
   },
   reason: "planner_unavailable" | "planner_failed" | "skill_not_enabled",
   reply: string,
+  contexts: {
+    readonly memory_context?: string;
+    readonly resource_context?: string;
+  },
 ): Promise<void> {
   await input.dependencies.broadcastReplySink({
     message_id: input.task.message.message_id,
     content: reply,
+  });
+  await appendConversationReplyLog({
+    task: input.task,
+    dependencies: input.dependencies,
+    reply_mode: "template",
+    reply,
+    contexts,
+    ...(input.route === undefined ? {} : { route: input.route }),
   });
   input.events.push(
     Object.freeze({
@@ -224,4 +265,35 @@ async function pushPlanningFailure(
       reason,
     }),
   );
+}
+
+async function appendConversationReplyLog(input: {
+  readonly task: ConversationWorkerTask;
+  readonly route?: Extract<
+    ConversationRouteDecision,
+    { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
+  >;
+  readonly dependencies: ConversationWorkerRuntimeDependencies;
+  readonly reply_mode: "llm" | "template";
+  readonly reply: string;
+  readonly contexts: {
+    readonly memory_context?: string;
+    readonly resource_context?: string;
+  };
+}): Promise<void> {
+  try {
+    await input.dependencies.conversationReplyLogSink?.({
+      bot_id: input.task.bot_id,
+      message_id: input.task.message.message_id,
+      created_at: new Date().toISOString(),
+      owner_message: input.task.message.content,
+      route_kind: input.route?.kind ?? "plan_exec",
+      reply_mode: input.reply_mode,
+      reply: input.reply,
+      ...(input.route === undefined ? {} : { triage: input.route.triage }),
+      contexts: input.contexts,
+    });
+  } catch {
+    // conversation（对话）本地日志是旁路诊断，不能阻断实服回复。
+  }
 }

@@ -8,6 +8,30 @@ import {
 } from "../conversation/llm.js";
 
 describe("conversation llm（对话大语言模型） 运行时", () => {
+  it("Chat（闲聊） system prompt（系统提示词） 应注入快照上下文且不补空槽位", () => {
+    const messages = createConversationChatMessages({
+      message_id: "msg-chat-snapshot",
+      message: "你在哪",
+      bot_name: "maid_bot",
+      owner_name: "主人",
+      snapshot_context: [
+        "[Bot] 位置:(0,64,0) 生命:20/20 饥饿:20/20 着火:否",
+        "[世界] minecraft:overworld",
+        "[主人] 离线",
+        "[背包] 空",
+        "[时间] 白天(1000)",
+      ].join("\n"),
+    });
+
+    expect(messages[0]?.content).toContain("[Bot] 位置:(0,64,0)");
+    expect(messages[0]?.content).toContain("[世界] minecraft:overworld");
+    expect(messages[0]?.content).toContain("[主人] 离线");
+    expect(messages[0]?.content).toContain("[背包] 空");
+    expect(messages[0]?.content).toContain("[时间] 白天(1000)");
+    expect(messages[0]?.content).not.toContain("[背包变化]");
+    expect(messages[0]?.content).not.toContain("[最近上下文]");
+  });
+
   it("应按 OpenAI（开放人工智能） 兼容 chat.completions（对话补全） 组装请求并解析回复", async () => {
     const capturedRequests: Array<{
       url: string;

@@ -38,6 +38,9 @@ export function createConversationChatMessages(
       content: createChatSystemPrompt({
         botName,
         ownerName,
+        ...(input.snapshot_context === undefined
+          ? {}
+          : { snapshotContext: input.snapshot_context }),
         ...(input.memory_context === undefined ? {} : { memoryContext: input.memory_context }),
         ...(input.state_context === undefined ? {} : { stateContext: input.state_context }),
       }),

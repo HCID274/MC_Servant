@@ -80,6 +80,8 @@ export interface ConversationLlmChatInput {
   readonly bot_name?: string;
   /** 可选主人称谓覆盖。 */
   readonly owner_name?: string;
+  /** 可选 Chat（闲聊） 路径快照上下文。 */
+  readonly snapshot_context?: string;
   /** 可选记忆摘要。 */
   readonly memory_context?: string;
   /** 可选当前状态摘要。 */
