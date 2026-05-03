@@ -414,20 +414,39 @@ observation 模块产出的 EnvironmentSnapshot 原始结构约 2000-5000 字符
 
 ### 7.1 压缩模板
 
+#### 7.1.1 全量模板（Plan / Modify 路径）
+
 ```
 [Bot] 位置:({x},{y},{z}) 生命:{hp}/20 饥饿:{food}/20 着火:{是|否}
 [世界] {world_key}（仅作为上下文信息呈现给 LLM，不参与任何分支逻辑；详见 §7.4 架构原则）
 [主人] 位置:({x},{y},{z}) 距离:{N}格 在线:{是|否}
 [装备] 头:{head} 身:{torso} 腿:{legs} 脚:{feet} 主手:{hand} 副手:{off_hand}
 [背包] {item1}x{count}, {item2}x{count}, ...（空槽不列）
-[背包变化] {item1}{+/-N}, {item2}{+/-N}, ...（相对上次对话；首次对话省略此行）
+[背包变化] {item1}{+/-N}, {item2}{+/-N}, ...（详见 §7.5；首次对话或净变化为零时整行省略）
+[最近动作] {line1} | {line2} | ...（最新在前，最多 10 条；无事件时整行省略；详见 §7.6）
 [资源簇] tree={status}, ore={status}（详见 §7.4）
 [附近方块] {block1}x{count}(最近{dist}格), ...（Top-5，按距离排序）
 [附近生物] {entity1}({type},{dist}格), ...（敌对优先，Top-5）
 [时间] {白天|夜晚}({timeOfDay})
 ```
 
-主人离线时 `[主人]` 行降级为单行 `[主人] 离线`，不输出位置/距离/在线字段。
+#### 7.1.2 Chat 子集模板（Chat 路径）
+
+```
+[Bot] 位置:({x},{y},{z}) 生命:{hp}/20 饥饿:{food}/20 着火:{是|否}
+[世界] {world_key}
+[主人] 位置:({x},{y},{z}) 距离:{N}格 在线:{是|否}
+[背包] {item1}x{count}, {item2}x{count}, ...（空槽不列）
+[背包变化] ...（净变化为零时整行省略）
+[最近动作] ...（无事件时整行省略）
+[时间] {白天|夜晚}({timeOfDay})
+```
+
+Chat 子集不含 `[装备] / [资源簇] / [附近方块] / [附近生物]`——闲聊不规划，无需局部地形或资源态势，token 预算收紧。
+
+#### 7.1.3 通用降级
+
+主人离线时 `[主人]` 行降级为单行 `[主人] 离线`，不输出位置/距离/在线字段（全量模板与 Chat 子集一致）。
 
 ### 7.2 压缩示例
 
@@ -438,6 +457,7 @@ observation 模块产出的 EnvironmentSnapshot 原始结构约 2000-5000 字符
 [装备] 主手:stone_pickaxe
 [背包] oak_log x12, cobblestone x34, stick x8, crafting_table x1
 [背包变化] oak_log+5, cobblestone-2
+[最近动作] 砍伐 oak_log x6 | 已到达 (120,64,200) 附近 | 捡到 stick x2
 [资源簇] tree=found(最近3格,2簇), ore=found(最近12格,1簇)
 [附近方块] oak_log x6(最近3格), stone x20(最近1格), coal_ore x3(最近8格), iron_ore x2(最近12格), dirt x15(最近1格)
 [附近生物] zombie(敌对,22格), cow(被动,8格), sheep(被动,15格)
@@ -468,6 +488,7 @@ observation 模块产出的 EnvironmentSnapshot 原始结构约 2000-5000 字符
 - 业务层（skill、planner、ConversationWorker、observation 派生层、未来新功能）**不得自行读取 `bot.game.dimension` 或拼接 world_key 做资源判断**。任何"按世界路由"的需求一律通过 ResourceService 公共 API 满足。
 - ResourceService 内部缓存按 `(world_key, resource_key)` 二元组组织；跨世界回归时旧世界数据自然冷藏在另一桶，不需要消费者写"世界变更失效"补丁。
 - §7.1 `[世界]` 行只作为上下文信息呈现给 LLM，不参与任何分支逻辑或缓存路由判断。
+- §7.1 `[世界]` 行的 `world_key` 取值来源为 **transport/currentWorld 端口**（权威世界辨别），不经 ResourceService。ResourceService 只保证资源查询的世界感知路由，不充当世界信息展示源。业务层仍禁止直接读取 `bot.game.dimension`。
 
 #### 7.4.1 协议规则
 
@@ -522,12 +543,16 @@ interface InventorySnapshotCache {
 新缓存 = 旧缓存 + 本次 diff ≡ 当前真实背包快照
 ```
 
-即每次 plan 路径调用 ConversationWorker 时：
+即每次 ConversationWorker 进入 prompt 构建阶段时（不区分 Chat / Plan / Modify 路径）：
 
 1. 从 observation 取当前真实 inventory
 2. 与缓存中的 `snapshot` 逐 item 对比，产出 diff
-3. prompt 同时注入 `[背包]`（当前快照）和 `[背包变化]`（diff）
-4. 本次调用结束后，缓存的 `snapshot` 推进为当前真实 inventory
+3. prompt 同时注入 `[背包]`（当前快照）和 `[背包变化]`（diff）；渲染策略由路径决定（全量模板 vs Chat 子集，详见 §7.1）
+4. **完成本次 prompt 渲染后立即**推进 `snapshot` 为当前真实 inventory
+
+**时序硬约束**：baseline 推进必须发生在"diff 计算 → prompt 渲染"之后、当前路径返回之前，**不得等待 skill 执行完成后再推进**。否则本轮 skill 引发的背包变化会被吞进上一轮 baseline，下一轮 prompt 看不到。
+
+"上次上下文" 语义统一为"上一条进入 LLM 的对话上下文"，不区分路径类型。
 
 #### 7.5.3 diff 形态
 
@@ -548,18 +573,70 @@ prompt 注入文本格式：`oak_log+5, cobblestone-2, iron_ingot+1`。所有 en
 |------|------|
 | 首次对话（缓存为空） | 整行 `[背包变化]` 不输出。缓存初始化为当前快照，下次对话起生效 |
 | 进程崩溃后重启 | 缓存为进程内内存对象，不持久化到 PG；重启等同首次对话 |
-| chat 路径 / cancel 路径 / Triage 阶段 | 不读不写缓存。diff 仅服务于 plan 路径，不污染分诊与闲聊 |
-| modify 路径 | 与 plan 路径同源，读写规则一致 |
+| Chat / Plan / Modify 路径 | 共用 diff 能力，均读取并推进 baseline。渲染策略差异见 §7.1：Chat 子集与全量模板均按 "净变化为零则整行省略" 规则展示 `[背包变化]` |
+| Cancel 路径 / Triage 阶段 | 不读不写缓存。diff 不污染分诊与取消路径 |
 
 #### 7.5.5 缓存边界归属
 
-钉死为 **conversation 侧独立缓存模块**：diff 仅被 plan / modify 路径使用，紧贴消费方放在 conversation/ 域内。
+钉死为 **ConversationWorker 共享上下文构建能力**：diff 服务于 Chat / Plan / Modify 三路 prompt 渲染，放在 conversation/ 域内紧贴消费链。
 
-不放观测端的理由：observation 是"当前真值物化视图"，写入触发器是 Mineflayer 物理事件；diff 缓存的写入触发器是对话事件（plan / modify 路径完成）。两个时钟轴混在一起会迫使观测端开放写 API 给对话侧，破坏其只读边界。
+不放观测端的理由：observation 是"当前真值物化视图"，写入触发器是 Mineflayer 物理事件；diff 缓存的写入触发器是对话事件（任一路径进入 prompt 构建）。两个时钟轴混在一起会迫使观测端开放写 API 给对话侧，破坏其只读边界。
 
-不立独立模块的理由：Phase 1 仅 plan / modify 单一消费方，独立模块属于过早抽象。未来若多消费方复用再迁。
+**缓存单写入口**：写入只发生在 ConversationWorker 路由分发后、prompt 渲染时；读和写在同一路径里同步完成，由路径出口统一推进 baseline。Cancel / Triage 路径不进入这一写入入口。这是 inventory diff 缓存自身的写入约束，**与架构层面 BotActor 的"单写者"角色不同名同义**——本节用"缓存单写入口"以避免混淆。
 
-**缓存单写入口**：缓存写入只发生在 ConversationWorker 的 plan / modify 路径末尾（非 BotActor），读取也只发生在 plan / modify 路径开头。这是 inventory diff 缓存自身的写入约束，**与架构层面 BotActor 的"单写者"角色不同名同义**——本节用"缓存单写入口"以避免混淆。
+---
+
+### 7.6 recent_events 实时事件队列
+
+让 Bot 能确定性地回答"刚才你做了什么 / 刚捡到什么 / 失败了吗"——不依赖 LLM 总结，不依赖 §8 异步压缩通路，不依赖数据库，直接从 BotActor 内部事件流派生。
+
+#### 7.6.1 协议规则
+
+| 项 | 值 |
+|----|---|
+| 容量 | 最近 10 条，LRU 淘汰 |
+| 来源 | skill / sandbox 执行完成时（成功 / 失败 / 中断 / 取消）写入一条 |
+| 文本归属 | 由各 skill 模块自带 `formatRecentEventLine(result)` 生成确定性文本，不调用 LLM，不在 BotActor 集中 switch |
+| 持久化 | 无，进程内，重启清空 |
+| 投影 | 通过 `BotActorStateProjection.recent_events: ReadonlyArray<string>` 暴露给 ConversationWorker |
+| 消费方 | Chat / Plan / Modify 三路 prompt 渲染均可读 |
+| 写入者 | BotActor（single writer）；ConversationWorker 只读不改 |
+| 渲染顺序 | `[最近动作]` 行按最新在前排列，最多 10 条 |
+
+#### 7.6.2 文本示例
+
+成功：
+
+- collect → 「捡到 shield x1」
+- mine → 「挖到 iron_ore x3」
+- goTo → 「已到达 (10,64,20) 附近」
+- cutTree → 「砍伐 oak_log x6」
+
+失败 / 中断 / 取消：
+
+- mine 失败 → 「mine 失败：工具等级不足」
+- goTo 中断 → 「goTo 中断：被打断」
+- collect 取消 → 「collect 取消：用户撤销」
+
+文本由 skill 决定，本节不规定字面格式，仅约束"短句 + 包含关键事实"。
+
+#### 7.6.3 与 §7.5 / §8 的边界
+
+| 维度 | recent_events (§7.6) | inventory diff (§7.5) | task_summaries (§8) |
+|------|----------------------|------------------------|---------------------|
+| 时效 | 实时，事件触发即写 | 同步，prompt 渲染时算 | 异步，BrainWorker 压缩 |
+| 内容 | skill 执行流水 | 背包净变化 | 自然语言任务摘要 |
+| 存储 | 进程内队列 | 进程内缓存 | PG 持久化 |
+| 重启 | 清空 | 等同首次对话 | 保留 |
+| 用途 | "刚才做了啥" | "背包多了啥少了啥" | "上次 / 上周做过啥" |
+
+三者互不替代：recent_events 不解释背包变化原因（skill 外的 give / pickup 由 §7.5 体现净 delta，但不解释来源）；§8 的异步摘要也不替代 §7.6 的实时性。
+
+#### 7.6.4 不变量
+
+- skill 模块新增时，**必须**同处实现 `formatRecentEventLine`。缺失 formatter 应在测试或 review 阶段失败；运行时不得调用 LLM 兜底，也不得静默丢弃事件。
+- ConversationWorker 不得调用 LLM 总结 skill 结果作为回退路径。
+- recent_events 不进 §8 异步通路的写入源；长期记忆链路独立设计（T-MEM-001 评估）。
 
 ---
 
