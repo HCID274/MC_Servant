@@ -8,6 +8,7 @@
 import type { ExecutionTaskEnvelope } from "./foundation.js";
 import type { ReflexInterruptSource, SnapshotPosition } from "./observation.js";
 import type { SkillName } from "./skills.js";
+import type { SkillExecutionResult } from "./skills.js";
 
 /** ResourceService（世界感知资源服务） 允许的只读刷新半径阶梯。 */
 export const RESOURCE_REFRESH_RADIUS_STEPS = Object.freeze([16, 32, 64] as const);
@@ -143,6 +144,52 @@ export interface BotActorRecentSandboxProjection {
   readonly total_steps: number;
 }
 
+/** BotActor（机器人执行代理） recent_events（最近事件） 单行投影。 */
+export interface BotActorRecentEventProjection {
+  /** 原始消息标识；null 表示 reflex（反射） / system（系统） 自发事件。 */
+  readonly message_id: string | null;
+  /** 可直接进入 [最近上下文] 的确定性单行。 */
+  readonly line: string;
+  /** 真实事件时间戳。 */
+  readonly timestamp: number;
+}
+
+/** runtime（运行时） recent_events（最近事件） 技能终态。 */
+export type RuntimeRecentSkillEventStatus = "completed" | "failed" | "interrupted";
+
+/** runtime（运行时） recent_events（最近事件） sandbox（沙盒） 终态。 */
+export type RuntimeRecentSandboxEventStatus = "completed" | "failed" | "interrupted";
+
+/** runtime（运行时） recent_events（最近事件） skill（技能） 格式化输入。 */
+export interface RuntimeRecentSkillEventInput {
+  /** 已执行技能名。 */
+  readonly skill: SkillName;
+  /** 执行终态。 */
+  readonly status: RuntimeRecentSkillEventStatus;
+  /** 成功时的技能结果。 */
+  readonly result?: SkillExecutionResult;
+  /** 失败或中断时的原始错误消息。 */
+  readonly message?: string;
+}
+
+/** runtime（运行时） recent_events（最近事件） sandbox（沙盒） 格式化输入。 */
+export interface RuntimeRecentSandboxEventInput {
+  /** 执行终态。 */
+  readonly status: RuntimeRecentSandboxEventStatus;
+  /** sandbox（沙盒） 执行器返回的完整终态。 */
+  readonly result?: unknown;
+  /** 执行器外层失败或中断时的原始错误消息。 */
+  readonly message?: string;
+}
+
+/** BotActor（机器人执行代理） recent_events（最近事件） 格式化端口。 */
+export interface RuntimeRecentEventFormatter {
+  /** 格式化 skill（技能） 执行结果单行。 */
+  formatSkill(input: RuntimeRecentSkillEventInput): string;
+  /** 格式化 sandbox（沙盒） 执行结果单行。 */
+  formatSandbox(input: RuntimeRecentSandboxEventInput): string;
+}
+
 /** BotActor（机器人执行代理） 给对话侧读取的只读状态投影。 */
 export interface BotActorStateProjection {
   /** 当前 BotActor（机器人执行代理） 状态。 */
@@ -157,6 +204,8 @@ export interface BotActorStateProjection {
   readonly recent_skill: BotActorRecentSkillProjection | null;
   /** 最近一次沙箱执行摘要。 */
   readonly recent_sandbox: BotActorRecentSandboxProjection | null;
+  /** BotActor（机器人执行代理） 单写者产出的最近执行结果单行。 */
+  readonly recent_events: readonly BotActorRecentEventProjection[];
   /** 可直接注入 chat prompt（闲聊提示词） 的短摘要。 */
   readonly summary: string;
 }
@@ -175,6 +224,8 @@ export function createBotActorStateProjection(input: {
   readonly recent_skill?: BotActorRecentSkillProjection | null;
   /** 最近一次沙箱执行摘要。 */
   readonly recent_sandbox?: BotActorRecentSandboxProjection | null;
+  /** BotActor（机器人执行代理） 单写者产出的最近执行结果单行。 */
+  readonly recent_events?: readonly BotActorRecentEventProjection[];
 }): BotActorStateProjection {
   const currentTask = cloneBotActorCurrentTaskProjection(input.current_task ?? null);
   const recentSkill =
@@ -192,6 +243,15 @@ export function createBotActorStateProjection(input: {
           status: input.recent_sandbox.status,
           total_steps: input.recent_sandbox.total_steps,
         });
+  const recentEvents = Object.freeze(
+    (input.recent_events ?? []).map((event) =>
+      Object.freeze({
+        message_id: event.message_id,
+        line: event.line,
+        timestamp: event.timestamp,
+      }),
+    ),
+  );
 
   return Object.freeze({
     status: input.status,
@@ -200,6 +260,7 @@ export function createBotActorStateProjection(input: {
     current_task: currentTask,
     recent_skill: recentSkill,
     recent_sandbox: recentSandbox,
+    recent_events: recentEvents,
     summary: createBotActorStateProjectionSummary({
       status: input.status,
       ready: input.ready,

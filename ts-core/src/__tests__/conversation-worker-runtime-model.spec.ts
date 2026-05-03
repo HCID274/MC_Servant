@@ -1,19 +1,79 @@
 import { describe, expect, it } from "vitest";
 
-import { createConversationCompositeTriage, createMessageTriage } from "../conversation/index.js";
+import {
+  createConversationCompositeTriage,
+  createConversationRecentContextStore,
+  createMessageTriage,
+} from "../conversation/index.js";
 import {
   ConversationLlmChatError,
+  ConversationLlmPlanError,
   ConversationLlmSkillNotEnabledError,
 } from "../conversation/llm.js";
-import { BotStatus, createBotActorStateProjection } from "../core-ports/index.js";
+import {
+  BotStatus,
+  ExecPriority,
+  createBotActorStateProjection,
+  createSandboxCodeJob,
+} from "../core-ports/index.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
 import { createTaskSummaryDraft } from "../data/index.js";
 import { ConversationPriority } from "../domain/contracts.js";
-import { createConversationWorkerTask } from "../workers/contracts.js";
-import { createConversationWorkerRuntime } from "../workers/conversation-worker.js";
+import {
+  createBotWorkerActions,
+  createBotWorkerTask,
+  createConversationWorkerTask,
+} from "../workers/contracts.js";
+import {
+  createConversationBotWorkerActionSink,
+  createConversationWorkerRuntime,
+} from "../workers/conversation-worker.js";
 import { createConversationWorkerMemoryContext } from "../workers/conversation-worker/helpers.js";
 
 describe("ConversationWorker（对话工作线程） 真实运行时", () => {
+  it("应由 conversation（对话） 侧 sink（汇点） 消费 sandbox finalize（沙盒终态） 并写入最近上下文", async () => {
+    const store = createConversationRecentContextStore({ now: () => 10 });
+    const sink = createConversationBotWorkerActionSink({ recentContextStore: store });
+    const task = createBotWorkerTask({
+      bot_id: "bot-cw",
+      exec_job: createSandboxCodeJob({
+        message_id: "msg-sandbox-failed",
+        intent_epoch: 1,
+        snapshot_ts: 100,
+        priority: ExecPriority.Normal,
+        code: "await api.bot.goTo(1, 64, 1)",
+      }),
+    });
+
+    for (const action of createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Failed,
+      total_steps: 1,
+      duration_ms: 1,
+      error: {
+        name: "Error",
+        message: "path blocked\nwith stack details",
+      },
+      sandbox_result: {
+        error: {
+          name: "Error",
+          message: "path blocked\nwith stack details",
+        },
+      },
+    })) {
+      await sink(action);
+    }
+
+    expect(store.getRounds()).toEqual([
+      {
+        aggregate_key: "message:msg-sandbox-failed",
+        message_id: "msg-sandbox-failed",
+        lines: ["报错：path blocked with stack details"],
+      },
+    ]);
+  });
+
   it("应消费 chat（闲聊） 消息并通过 BotActor（机器人执行代理） sink（汇点） 广播回复", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const replies: Array<{ message_id: string; content: string }> = [];
@@ -137,6 +197,78 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       message_id: "msg-chat",
       content: "我听到啦喵~",
     });
+  });
+
+  it("应在下一轮 chat（闲聊） prompt（提示词）构建期注入合并后的最近上下文", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const recentContexts: Array<string | undefined> = [];
+    const store = createConversationRecentContextStore({ now: () => 0 });
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        recentContextStore: store,
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createMessageTriage({
+            intent: "chat",
+            priority: "normal",
+            reason: "unit_chat",
+          }),
+        actorStateProjectionProvider: () =>
+          createBotActorStateProjection({
+            status: BotStatus.IDLE,
+            ready: true,
+            world_ready: true,
+            recent_events: [
+              {
+                message_id: "msg-1",
+                line: "collect 成功,捡到 shield x1",
+                timestamp: 30,
+              },
+            ],
+          }),
+        replyGenerator: (input) => {
+          recentContexts.push(input.recent_context);
+
+          return `第 ${recentContexts.length} 次回复`;
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    for (const message of [
+      { id: "msg-1", content: "去捡盾牌" },
+      { id: "msg-2", content: "你刚刚捡到了什么" },
+    ]) {
+      await processor?.({
+        data: createConversationWorkerTask({
+          bot_id: "bot-cw",
+          message: {
+            bot_id: "bot-cw",
+            message_id: message.id,
+            content: message.content,
+            intent_epoch: 1,
+            snapshot_ts: 100,
+          },
+        }),
+      });
+    }
+
+    expect(recentContexts[0]).toBeUndefined();
+    expect(recentContexts[1]).toContain("主人：去捡盾牌");
+    expect(recentContexts[1]).toContain("Bot：第 1 次回复喵~");
+    expect(recentContexts[1]).toContain("执行结果：collect 成功,捡到 shield x1");
+    expect(recentContexts[1]).not.toContain("你刚刚捡到了什么");
   });
 
   it("应在状态投影读取失败时降级为无状态闲聊", async () => {
@@ -985,6 +1117,78 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       message_id: "msg-disabled-skill-error",
       status: "discarded",
       reason: "skill_not_enabled",
+    });
+  });
+
+  it("应把 planner（规划器） 失败时的完整 LLM diagnostics（大语言模型诊断） 写入本地对话日志", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const replyLogs: unknown[] = [];
+    const diagnostics = Object.freeze({
+      stage: "plan" as const,
+      model: "bl-auto",
+      message_id: "msg-plan-failed",
+      log_ref: "llm/2026-05-03/plan-msg-plan-failed.jsonl",
+      created_at: "2026-05-03T02:44:15.000Z",
+      ok: false,
+      error_summary: "planner cannot determine a valid executable skill",
+      lines: Object.freeze([
+        Object.freeze({
+          t: 1_777_776_255,
+          role: "user" as const,
+          content: "环境快照：[附近掉落物] Item(item,1格)\n主人的指令：把这个东西捡起来",
+        }),
+      ]),
+    });
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createMessageTriage({
+            intent: "task",
+            priority: ConversationPriority.Normal,
+            reason: "unit_plan_error_log",
+          }),
+        planner: async () => {
+          throw new ConversationLlmPlanError("planner cannot determine", { diagnostics });
+        },
+        conversationReplyLogSink: async (record) => {
+          replyLogs.push(record);
+        },
+        broadcastReplySink: async () => undefined,
+        enqueueExecTaskSink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-plan-failed",
+          content: "把这个东西捡起来",
+          intent_epoch: 8,
+          snapshot_ts: 107,
+        },
+      }),
+    });
+
+    expect(replyLogs).toHaveLength(1);
+    expect(replyLogs[0]).toMatchObject({
+      message_id: "msg-plan-failed",
+      reply_mode: "template",
+      reply: "抱歉，这次我还没能规划出可执行的技能任务喵~",
+      llm_diagnostics: diagnostics,
     });
   });
 

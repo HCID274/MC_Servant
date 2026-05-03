@@ -4,6 +4,7 @@ import type {
   ConversationCompositeTriage,
   ConversationHistoryTurn,
   ConversationReplyMode,
+  ConversationSandboxCodePlanDraft,
   ConversationSkillCallPlanDraft,
   InterruptedTaskSummary,
 } from "../contracts.js";
@@ -135,10 +136,13 @@ export const ONLINE_PLAN_SKILLS = Object.freeze([
 ] as const);
 
 /** 最小技能规划成功结果。 */
-export type ConversationLlmPlanResult = Extract<
-  ConversationSkillCallPlanDraft,
-  { skill: (typeof ONLINE_PLAN_SKILLS)[number] }
->;
+export type ConversationLlmPlanResult = (
+  | Extract<ConversationSkillCallPlanDraft, { skill: (typeof ONLINE_PLAN_SKILLS)[number] }>
+  | ConversationSandboxCodePlanDraft
+) & {
+  /** 可选诊断摘要；在线调用成功时用于 conversation（对话） 本地完整日志。 */
+  readonly diagnostics?: ConversationLlmDiagnosticRecord;
+};
 
 /** OpenAI 兼容聊天请求依赖。 */
 export interface ConversationLlmDependencies {

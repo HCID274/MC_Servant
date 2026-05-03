@@ -24,15 +24,25 @@ export class ConversationLlmChatError extends Error {
 
 /** 最小规划失败错误。 */
 export class ConversationLlmPlanError extends Error {
+  /** 失败时已生成的诊断摘要。 */
+  readonly diagnostics?: ConversationLlmDiagnosticRecord;
+
   /**
    * 创建规划失败错误。
    *
    * @param message 错误消息
-   * @param options 原始 cause（原因）
+   * @param options 原始 cause（原因） 与可选诊断
    */
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(
+    message: string,
+    options?: ErrorOptions & { readonly diagnostics?: ConversationLlmDiagnosticRecord },
+  ) {
     super(message, options);
     this.name = "ConversationLlmPlanError";
+
+    if (options?.diagnostics !== undefined) {
+      this.diagnostics = options.diagnostics;
+    }
   }
 }
 
@@ -48,8 +58,18 @@ export class ConversationLlmSkillNotEnabledError extends ConversationLlmPlanErro
    * @param input 可选技能名
    * @param options 原始 cause（原因）
    */
-  constructor(message: string, input: { readonly skill?: string } = {}, options?: ErrorOptions) {
-    super(message, options);
+  constructor(
+    message: string,
+    input: {
+      readonly skill?: string;
+      readonly diagnostics?: ConversationLlmDiagnosticRecord;
+    } = {},
+    options?: ErrorOptions,
+  ) {
+    super(message, {
+      ...options,
+      ...(input.diagnostics === undefined ? {} : { diagnostics: input.diagnostics }),
+    });
     this.name = "ConversationLlmSkillNotEnabledError";
 
     if (input.skill !== undefined) {

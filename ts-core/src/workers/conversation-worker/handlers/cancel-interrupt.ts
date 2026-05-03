@@ -35,6 +35,14 @@ export async function handleCancelInterruptRoute(input: {
           message_id: input.task.message.message_id,
           content: action.reply.reply,
         });
+        input.dependencies.recentContextStore?.appendOwnerMessage({
+          message_id: input.task.message.message_id,
+          text: input.task.message.content,
+        });
+        input.dependencies.recentContextStore?.appendBotReply({
+          message_id: input.task.message.message_id,
+          text: action.reply.reply,
+        });
         await appendConversationReplyLog({
           task: input.task,
           route: input.route,

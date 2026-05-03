@@ -1,4 +1,5 @@
 import type { ConversationCompositeTriage } from "../contracts.js";
+import { createSandboxCodePlanDraft } from "../planning.js";
 import { createConversationCompositeTriageFromRecord, createMessageTriage } from "../triage.js";
 import { ConversationLlmPlanError, ConversationLlmSkillNotEnabledError } from "./errors.js";
 import type { OpenAiCompatibleChatCompletionResponse } from "./http.js";
@@ -61,8 +62,24 @@ export function parseConversationSkillPlan(content: string): ConversationLlmPlan
     );
   }
 
+  if (record.type === "sandbox_code") {
+    if (typeof record.reply !== "string" || record.reply.trim().length === 0) {
+      throw new ConversationLlmPlanError("planner reply must be a non-empty string");
+    }
+    if (typeof record.code !== "string" || record.code.trim().length === 0) {
+      throw new ConversationLlmPlanError("planner sandbox code must be a non-empty string");
+    }
+
+    return createSandboxCodePlanDraft({
+      reply: record.reply,
+      code: record.code,
+    });
+  }
+
   if (record.type !== "skill_call") {
-    throw new ConversationLlmPlanError("planner must return type=skill_call or type=cannot_plan");
+    throw new ConversationLlmPlanError(
+      "planner must return type=skill_call, type=sandbox_code, or type=cannot_plan",
+    );
   }
 
   if (typeof record.reply !== "string" || record.reply.trim().length === 0) {

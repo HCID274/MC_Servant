@@ -16,11 +16,15 @@ import {
 } from "../core-ports/skills.js";
 import {
   type BotActorCurrentTaskProjection,
+  type BotActorRecentEventProjection,
   BotStatus,
   type ExternalAuthExecutionPlan,
   type ExternalAuthState,
   type InterruptSignal,
   type RuntimeReadyGate,
+  type RuntimeRecentEventFormatter,
+  type RuntimeRecentSandboxEventInput,
+  type RuntimeRecentSkillEventInput,
   createExternalAuthExecutionPlan,
   createRuntimeReadyGate,
 } from "./contracts.js";
@@ -61,6 +65,8 @@ export interface BotActorRuntimeSnapshot<TBotId extends string = string> {
   readonly skill_executions: readonly BotActorSkillExecutionRecord[];
   /** 本轮由 BotActor（机器人执行代理） 单写者完成的沙箱执行记录。 */
   readonly sandbox_executions: readonly BotActorSandboxExecutionRecord[];
+  /** BotActor（机器人执行代理） 单写 recent_events（最近事件） 执行结果投影。 */
+  readonly recent_events: readonly BotActorRecentEventProjection[];
 }
 
 /** BotActor（机器人执行代理） 反射动作清单。 */
@@ -203,6 +209,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   externalAuthPlan: ExternalAuthExecutionPlan;
   skillExecution?: SkillExecutionDependencies;
   sandboxExecution?: RuntimeSandboxExecutionDependencies;
+  recentEventFormatter?: RuntimeRecentEventFormatter;
   reflexActionExecutor?: BotActorReflexActionExecutor;
   reflexActionTimeoutMs?: number;
 }): BotActorRuntime<TBotId> {
@@ -217,12 +224,14 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   const chatWrites: BotActorChatWriteRecord[] = [];
   const skillExecutions: BotActorSkillExecutionRecord[] = [];
   const sandboxExecutions: BotActorSandboxExecutionRecord[] = [];
+  const recentEvents: BotActorRecentEventProjection[] = [];
   const skillExecution = input.skillExecution ?? {
     goToMovement: input.transport,
     mine: input.transport.mine.bind(input.transport),
     collect: input.transport.collect.bind(input.transport),
     equip: input.transport.equip.bind(input.transport),
   };
+  const recentEventFormatter = input.recentEventFormatter ?? defaultRuntimeRecentEventFormatter;
 
   const createSnapshot = (): BotActorRuntimeSnapshot<TBotId> =>
     Object.freeze({
@@ -241,6 +250,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       chat_writes: Object.freeze([...chatWrites]),
       skill_executions: Object.freeze([...skillExecutions]),
       sandbox_executions: Object.freeze([...sandboxExecutions]),
+      recent_events: Object.freeze([...recentEvents]),
     });
 
   const createActorSandboxFacade = (job: SandboxCodeJob): SandboxFacadeExecutionAdapter =>
@@ -418,6 +428,14 @@ export function createBotActorRuntime<TBotId extends string>(input: {
             skill: job.skill,
           }),
         );
+        appendRecentEvent({
+          message_id: job.message_id,
+          line: recentEventFormatter.formatSkill({
+            skill: job.skill,
+            status: "completed",
+            result,
+          }),
+        });
         currentTask = null;
 
         return Object.freeze({
@@ -426,6 +444,14 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         });
       } catch (error) {
         if (execution.interrupted) {
+          appendRecentEvent({
+            message_id: job.message_id,
+            line: recentEventFormatter.formatSkill({
+              skill: job.skill,
+              status: "interrupted",
+              message: getErrorMessage(error),
+            }),
+          });
           throw error;
         }
 
@@ -438,6 +464,14 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           emittedEvents.push(...failedDecision.emittedEvents);
         }
 
+        appendRecentEvent({
+          message_id: job.message_id,
+          line: recentEventFormatter.formatSkill({
+            skill: job.skill,
+            status: "failed",
+            message: getErrorMessage(error),
+          }),
+        });
         throw error;
       } finally {
         if (currentExecution === execution) {
@@ -537,6 +571,13 @@ export function createBotActorRuntime<TBotId extends string>(input: {
             total_steps: sandboxResult.summary.total_steps,
           }),
         );
+        appendRecentEvent({
+          message_id: job.message_id,
+          line: recentEventFormatter.formatSandbox({
+            status: sandboxResult.status,
+            result: sandboxResult,
+          }),
+        });
         currentTask = null;
 
         return Object.freeze({
@@ -545,6 +586,13 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         });
       } catch (error) {
         if (execution.interrupted) {
+          appendRecentEvent({
+            message_id: job.message_id,
+            line: recentEventFormatter.formatSandbox({
+              status: "interrupted",
+              message: getErrorMessage(error),
+            }),
+          });
           throw error;
         }
 
@@ -557,6 +605,13 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           emittedEvents.push(...failedDecision.emittedEvents);
         }
 
+        appendRecentEvent({
+          message_id: job.message_id,
+          line: recentEventFormatter.formatSandbox({
+            status: "failed",
+            message: getErrorMessage(error),
+          }),
+        });
         throw error;
       } finally {
         if (currentExecution === execution) {
@@ -673,6 +728,20 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       if (chatWriteInFlight === writePromise) {
         chatWriteInFlight = null;
       }
+    }
+  }
+
+  function appendRecentEvent(input: { readonly message_id: string | null; readonly line: string }) {
+    recentEvents.push(
+      Object.freeze({
+        message_id: input.message_id,
+        line: input.line,
+        timestamp: Date.now(),
+      }),
+    );
+
+    if (recentEvents.length > 50) {
+      recentEvents.splice(0, recentEvents.length - 50);
     }
   }
 
@@ -858,6 +927,84 @@ function assertSandboxFacadeCallActive(control: SandboxFacadeCallControl | undef
   if (control.signal.aborted || Date.now() >= control.deadline_ms) {
     throw new Error("sandbox Facade call is no longer active");
   }
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+const defaultRuntimeRecentEventFormatter: RuntimeRecentEventFormatter = Object.freeze({
+  formatSkill(input: RuntimeRecentSkillEventInput): string {
+    switch (input.status) {
+      case "completed":
+        if (input.skill === SKILL_DIRECTORY.goTo && input.result?.skill === SKILL_DIRECTORY.goTo) {
+          const target = input.result.target;
+          return `goTo 成功,到达 (${formatNumber(target.x)},${formatNumber(target.y)},${formatNumber(target.z)})`;
+        }
+        if (
+          input.skill === SKILL_DIRECTORY.collect &&
+          input.result?.skill === SKILL_DIRECTORY.collect
+        ) {
+          const collected = input.result.collected;
+          return collected.length === 0
+            ? "collect 成功,未捡到物品"
+            : `collect 成功,捡到 ${collected
+                .map(
+                  (item: { readonly name: string; readonly count: number }) =>
+                    `${item.name} x${item.count}`,
+                )
+                .join(", ")}`;
+        }
+
+        return `${input.skill} 成功`;
+      case "failed":
+        return `${input.skill} 失败：${normalizeRecentEventMessage(input.message)}`;
+      case "interrupted":
+        return `${input.skill} 中断：${normalizeRecentEventMessage(input.message)}`;
+      default:
+        return `${input.skill} 失败：unknown`;
+    }
+  },
+  formatSandbox(input: RuntimeRecentSandboxEventInput): string {
+    if (isRuntimeSandboxExecutionResult(input.result)) {
+      switch (input.result.status) {
+        case "completed":
+          return `sandbox 成功,步骤 ${input.result.summary.total_steps}`;
+        case "failed":
+          return `sandbox 失败：${normalizeRecentEventMessage(input.result.error.message)}`;
+        case "interrupted":
+          return `sandbox 中断：${normalizeRecentEventMessage(input.result.error.message)}`;
+      }
+    }
+
+    return input.status === "interrupted"
+      ? `sandbox 中断：${normalizeRecentEventMessage(input.message)}`
+      : `sandbox 失败：${normalizeRecentEventMessage(input.message)}`;
+  },
+});
+
+function isRuntimeSandboxExecutionResult(value: unknown): value is RuntimeSandboxExecutionResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "status" in value &&
+    (value.status === "completed" || value.status === "failed" || value.status === "interrupted") &&
+    "summary" in value &&
+    typeof value.summary === "object" &&
+    value.summary !== null &&
+    "total_steps" in value.summary &&
+    typeof value.summary.total_steps === "number"
+  );
+}
+
+function normalizeRecentEventMessage(message: string | undefined): string {
+  const normalized = message?.replaceAll(/\s+/gu, " ").trim();
+
+  return normalized === undefined || normalized.length === 0 ? "unknown" : normalized;
+}
+
+function formatNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 /** 通过注入的技能执行依赖分发 skill_call（技能调用），避免 runtime（运行时） 依赖 skills（技能） 实现模块。 */

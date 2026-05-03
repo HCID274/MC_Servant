@@ -8,6 +8,7 @@ import type {
   ConversationGeneratedReply,
   ConversationLlmDiagnosticRecord,
 } from "../../conversation/llm.js";
+import type { ConversationRecentContextStore } from "../../conversation/recent-context.js";
 import type { MessageTriage } from "../../core-ports/foundation.js";
 import type { BotActorStateProjection } from "../../core-ports/runtime.js";
 import type { SkillName } from "../../core-ports/skills.js";
@@ -81,7 +82,9 @@ export type ConversationWorkerRuntimeEvent =
       /** 原始消息标识。 */
       readonly message_id: string;
       /** 技能名。 */
-      readonly skill: SkillName;
+      readonly skill?: SkillName;
+      /** 非 skill_call（技能调用） 的执行类型。 */
+      readonly exec_type?: "sandbox_code";
       /** 执行队列优先级。 */
       readonly priority: ExecPriority;
     };
@@ -126,6 +129,8 @@ export type ConversationWorkerReplyGenerator = (input: {
   readonly route: ConversationRouteDecision;
   /** 可选 BotActor（机器人执行代理） 当前状态短摘要。 */
   readonly state_context?: string;
+  /** 可选最近上下文时间线，已按 §7.6 渲染。 */
+  readonly recent_context?: string;
   /** 可选记忆摘要。 */
   readonly memory_context?: string;
 }) => string | ConversationGeneratedReply | Promise<string | ConversationGeneratedReply>;
@@ -197,7 +202,11 @@ export type ConversationWorkerPlanner = (input: {
   readonly memory_context?: string;
   /** 可选资源摘要。 */
   readonly resource_context?: string;
-}) => ConversationPlanDraft | Promise<ConversationPlanDraft>;
+  /** 可选最近上下文时间线，已按 §7.6 渲染。 */
+  readonly recent_context?: string;
+}) =>
+  | (ConversationPlanDraft & { readonly diagnostics?: ConversationLlmDiagnosticRecord })
+  | Promise<ConversationPlanDraft & { readonly diagnostics?: ConversationLlmDiagnosticRecord }>;
 
 /** 对话回复本地诊断日志输入。 */
 export interface ConversationReplyLogInput {
@@ -222,6 +231,7 @@ export interface ConversationReplyLogInput {
     readonly state_context?: string;
     readonly memory_context?: string;
     readonly resource_context?: string;
+    readonly recent_context?: string;
   };
   /** LLM（大语言模型） 诊断记录，包含实际发送的 messages（消息）。 */
   readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;
@@ -262,6 +272,8 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly planner?: ConversationWorkerPlanner;
   /** 本地 conversation（对话） JSONL（结构化日志） 写入汇点。 */
   readonly conversationReplyLogSink?: ConversationReplyLogSink;
+  /** ConversationWorker（对话工作线程） 单写侧最近上下文 store（存储）。 */
+  readonly recentContextStore?: ConversationRecentContextStore;
   /** 广播回复汇点，真实路径指向 BotActor.broadcastReply。 */
   readonly broadcastReplySink: ConversationBroadcastReplySink;
   /** 运行时中断汇点，真实路径指向 BotActor 中断入口。 */

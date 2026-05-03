@@ -3,6 +3,7 @@ import type { ConversationRouteDecision } from "../../../conversation/contracts.
 import { ConversationLlmChatError } from "../../../conversation/llm.js";
 import type { ConversationLlmDiagnosticRecord } from "../../../conversation/llm.js";
 import type { MessageTriage } from "../../../core-ports/foundation.js";
+import type { BotActorStateProjection } from "../../../core-ports/runtime.js";
 import type { ConversationWorkerTask } from "../../contracts.js";
 import { appendLlmDiagnosticEvent } from "../events.js";
 import {
@@ -26,7 +27,14 @@ export async function handleChatReplyRoute(input: {
   readonly events: ConversationWorkerRuntimeEvent[];
 }): Promise<void> {
   try {
-    const stateContext = await readStateContext(input);
+    const actorProjection = await readActorStateProjection(input);
+    const stateContext = createConversationStateContextFromProjection(actorProjection);
+    const recentContext = input.dependencies.recentContextStore?.render({
+      ...(actorProjection?.recent_events === undefined
+        ? {}
+        : { actorRecentEvents: actorProjection.recent_events }),
+      currentMessageId: input.task.message.message_id,
+    });
     const memoryContext = await readMemoryContext(input);
     const generatedReply = normalizeGeneratedReply(
       (await input.dependencies.replyGenerator?.({
@@ -34,6 +42,7 @@ export async function handleChatReplyRoute(input: {
         triage: input.triage,
         route: input.route,
         ...(stateContext === undefined ? {} : { state_context: stateContext }),
+        ...(recentContext === undefined ? {} : { recent_context: recentContext }),
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
       })) ?? `收到：${input.task.message.content}`,
     );
@@ -49,6 +58,14 @@ export async function handleChatReplyRoute(input: {
       message_id: input.task.message.message_id,
       content: reply.reply,
     });
+    input.dependencies.recentContextStore?.appendOwnerMessage({
+      message_id: input.task.message.message_id,
+      text: input.task.message.content,
+    });
+    input.dependencies.recentContextStore?.appendBotReply({
+      message_id: input.task.message.message_id,
+      text: reply.reply,
+    });
     await appendConversationReplyLog({
       task: input.task,
       route: input.route,
@@ -58,6 +75,7 @@ export async function handleChatReplyRoute(input: {
       reply: reply.reply,
       contexts: {
         ...(stateContext === undefined ? {} : { state_context: stateContext }),
+        ...(recentContext === undefined ? {} : { recent_context: recentContext }),
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
       },
       ...(generatedReply.diagnostics === undefined
@@ -81,16 +99,14 @@ export async function handleChatReplyRoute(input: {
 }
 
 /** 读取 chat_reply（闲聊回复） 专用状态摘要；失败时降级为无状态闲聊。 */
-async function readStateContext(input: {
+async function readActorStateProjection(input: {
   readonly task: ConversationWorkerTask;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
-}): Promise<string | undefined> {
+}): Promise<BotActorStateProjection | null | undefined> {
   try {
-    return createConversationStateContextFromProjection(
-      await input.dependencies.actorStateProjectionProvider?.({
-        task: input.task,
-      }),
-    );
+    return input.dependencies.actorStateProjectionProvider?.({
+      task: input.task,
+    });
   } catch {
     return undefined;
   }
@@ -105,6 +121,7 @@ async function appendConversationReplyLog(input: {
   readonly reply: string;
   readonly contexts: {
     readonly state_context?: string;
+    readonly recent_context?: string;
     readonly memory_context?: string;
   };
   readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;

@@ -1,3 +1,5 @@
+import type { RuntimeSandboxExecutionResult } from "../../core-ports/sandbox.js";
+import { SKILL_DIRECTORY } from "../../core-ports/skills.js";
 import { createSandboxLogRef } from "../../diagnostics/index.js";
 import { createObservationRuntimeCache } from "../../observation/index.js";
 import type { ObservationRuntimeCache } from "../../observation/index.js";
@@ -6,8 +8,16 @@ import {
   createExternalAuthExecutionPlan,
   createMineflayerRuntimeTransport,
 } from "../../runtime/index.js";
-import type { BotActorRuntime, MineflayerRuntimeTransport } from "../../runtime/index.js";
+import type {
+  BotActorRuntime,
+  MineflayerRuntimeTransport,
+  RuntimeRecentEventFormatter,
+  RuntimeRecentSandboxEventInput,
+  RuntimeRecentSkillEventInput,
+} from "../../runtime/index.js";
 import { createSandboxExecutionRequest, executeSandboxCodeRequest } from "../../sandbox/index.js";
+import { formatSandboxRecentEventLine } from "../../sandbox/recent-event.js";
+import { formatSkillRecentEventLine } from "../../skills/recent-event.js";
 import { createAppRuntimeCoreExternalAuth } from "./external-auth.js";
 import type {
   AppBootstrapContract,
@@ -65,6 +75,7 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
             task: sandboxInput.task,
           }),
       },
+      recentEventFormatter: createOnlineRuntimeRecentEventFormatter(),
     });
     // MC（我的世界）宿主服务不归 TS Core 生命周期管理；首连失败时保留接口与工作线程，由状态快照暴露不可用原因。
     await created.actor.start().catch(() => undefined);
@@ -101,6 +112,76 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
     }).catch(() => undefined);
     throw error;
   }
+}
+
+/** 生产装配的 recent_events（最近事件） formatter（格式化器），由 app（应用） 连接实现模块与 runtime（运行时） 端口。 */
+function createOnlineRuntimeRecentEventFormatter(): RuntimeRecentEventFormatter {
+  return Object.freeze({
+    formatSkill(input: RuntimeRecentSkillEventInput): string {
+      switch (input.skill) {
+        case SKILL_DIRECTORY.goTo:
+          return formatSkillRecentEventLine({
+            skill: SKILL_DIRECTORY.goTo,
+            status: input.status,
+            ...(input.result?.skill === SKILL_DIRECTORY.goTo ? { result: input.result } : {}),
+            ...(input.message === undefined ? {} : { message: input.message }),
+          });
+        case SKILL_DIRECTORY.collect:
+          return formatSkillRecentEventLine({
+            skill: SKILL_DIRECTORY.collect,
+            status: input.status,
+            ...(input.result?.skill === SKILL_DIRECTORY.collect ? { result: input.result } : {}),
+            ...(input.message === undefined ? {} : { message: input.message }),
+          });
+        case SKILL_DIRECTORY.mine:
+        case SKILL_DIRECTORY.equip:
+        case SKILL_DIRECTORY.cutTree:
+          return formatUnsupportedSkillRecentEventLine(input);
+        default:
+          return formatUnsupportedSkillRecentEventLine(input);
+      }
+    },
+    formatSandbox(input: RuntimeRecentSandboxEventInput): string {
+      if (isRuntimeSandboxExecutionResult(input.result)) {
+        return formatSandboxRecentEventLine(input.result);
+      }
+
+      return input.status === "interrupted"
+        ? `sandbox 中断：${normalizeRecentEventMessage(input.message)}`
+        : `sandbox 失败：${normalizeRecentEventMessage(input.message)}`;
+    },
+  });
+}
+
+function isRuntimeSandboxExecutionResult(value: unknown): value is RuntimeSandboxExecutionResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "status" in value &&
+    (value.status === "completed" || value.status === "failed" || value.status === "interrupted") &&
+    "summary" in value &&
+    typeof value.summary === "object" &&
+    value.summary !== null &&
+    "total_steps" in value.summary &&
+    typeof value.summary.total_steps === "number"
+  );
+}
+
+function formatUnsupportedSkillRecentEventLine(input: RuntimeRecentSkillEventInput): string {
+  switch (input.status) {
+    case "completed":
+      return `${input.skill} 成功`;
+    case "failed":
+      return `${input.skill} 失败：${normalizeRecentEventMessage(input.message)}`;
+    case "interrupted":
+      return `${input.skill} 中断：${normalizeRecentEventMessage(input.message)}`;
+  }
+}
+
+function normalizeRecentEventMessage(message: string | undefined): string {
+  const normalized = message?.replaceAll(/\s+/gu, " ").trim();
+
+  return normalized === undefined || normalized.length === 0 ? "unknown" : normalized;
 }
 
 /**

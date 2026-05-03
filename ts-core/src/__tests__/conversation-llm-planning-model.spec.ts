@@ -303,7 +303,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       memory_context: "历史：主人上次要求抵达坐标后先回报状态。",
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       type: "skill_call",
       reply: "收到，我这就过去喵~",
       skill: "goTo",
@@ -312,6 +312,11 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         y: 64,
         z: -5,
       },
+    });
+    expect(result.diagnostics).toMatchObject({
+      stage: "plan",
+      message_id: "msg-plan",
+      ok: true,
     });
     expect(capturedRequests).toEqual([
       {
@@ -334,7 +339,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(requestBody.messages?.[1]?.content).toContain(
       "记忆摘要：历史：主人上次要求抵达坐标后先回报状态。",
     );
-    expect(requestBody.messages?.[0]?.content).toContain("不要输出 sandbox_code");
+    expect(requestBody.messages?.[0]?.content).toContain("复杂任务输出 JSON");
   });
 
   it("单技能规划 prompt（提示词） 不应再把“三个坐标”写成通用失败条件", () => {
@@ -345,6 +350,9 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     });
 
     expect(messages[0]?.content).toContain("如果不能明确判断为允许技能中的一种");
+    expect(messages[0]?.content).toContain("把这个东西捡起来");
+    expect(messages[0]?.content).toContain("不要因为缺 itemName 输出 cannot_plan");
+    expect(messages[0]?.content).toContain("禁止把 item、unknown 或 Item 当作 itemName");
     expect(messages[0]?.content).not.toContain("如果不能明确提取三个坐标");
   });
 
@@ -384,6 +392,14 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         ],
         nearby_entities: [
           {
+            entity_id: "drop-1",
+            entity_type: "item",
+            kind: "other",
+            display_name: "Item",
+            position: { x: 11, y: 64, z: -2 },
+            distance: 1,
+          },
+          {
             entity_id: "owner",
             entity_type: "player",
             kind: "player",
@@ -410,6 +426,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(context).toContain("[装备] 头:无 身:无 腿:无 脚:无 主手:stone_pickaxe 副手:无");
     expect(context).toContain("[背包] oak_log x12");
     expect(context).toContain("[附近方块] stonex1(最近1格), oak_logx1(最近2格)");
+    expect(context).toContain("[附近掉落物] Item(item,1格)");
     expect(context).toContain("[附近生物] player(玩家,3格)");
     expect(context).toContain("[时间] 白天(6000)");
   });
@@ -622,6 +639,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     const responses = [
       '{"type":"skill_call","reply":"收到，我去挖石头","skill":"mine","params":{"blockName":"stone","count":2}}',
       '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":8}}',
+      '{"type":"skill_call","reply":"收到，我去捡附近掉落物","skill":"collect","params":{}}',
       '{"type":"skill_call","reply":"收到，我先把稿子拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}',
     ];
     const client = createConversationLlmClient(
@@ -674,6 +692,17 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         itemName: "cobblestone",
         radius: 8,
       },
+    });
+    await expect(
+      client.generateSkillPlan({
+        message_id: "msg-plan-collect-generic",
+        message: "把这个东西捡起来",
+        snapshot_context:
+          "online_runtime: T-046 only; executable skills: goTo, collect\n[附近掉落物] Item(item,1格)",
+      }),
+    ).resolves.toMatchObject({
+      skill: "collect",
+      params: {},
     });
     await expect(
       client.generateSkillPlan({

@@ -358,6 +358,60 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
         skill: "goTo",
       },
     ]);
+    expect(outcome.snapshot.recent_events).toEqual([
+      {
+        message_id: "msg-goto",
+        line: "goTo 成功,到达 (1,64,-3)",
+        timestamp: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("应通过注入 formatter（格式化器） 生成 recent_events（最近事件） 单行", async () => {
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const formattedInputs: unknown[] = [];
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        goTo: () => undefined,
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
+      recentEventFormatter: {
+        formatSkill: (input) => {
+          formattedInputs.push(input);
+
+          return `custom:${input.skill}:${input.status}`;
+        },
+        formatSandbox: () => "custom:sandbox",
+      },
+    });
+
+    await actor.start();
+    const outcome = await actor.executeSkill(
+      createSkillCallJob({
+        message_id: "msg-custom-formatter",
+        intent_epoch: 1,
+        snapshot_ts: 100,
+        priority: ExecPriority.Normal,
+        skill: SKILL_DIRECTORY.goTo,
+        params: { x: 1, y: 64, z: -3 },
+      }),
+    );
+
+    expect(formattedInputs).toMatchObject([
+      {
+        skill: "goTo",
+        status: "completed",
+      },
+    ]);
+    expect(outcome.snapshot.recent_events.at(-1)).toMatchObject({
+      message_id: "msg-custom-formatter",
+      line: "custom:goTo:completed",
+    });
   });
 
   it("应在 world_ready（世界交互就绪） 未打开时拒绝 goTo（前往坐标） 且不触碰移动适配器", async () => {
@@ -872,6 +926,10 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
         total_steps: 1,
       },
     ]);
+    expect(outcome.snapshot.recent_events.at(-1)).toMatchObject({
+      message_id: "msg-sandbox-chat",
+      line: "sandbox 成功,步骤 1",
+    });
     expect(outcome.snapshot.chat_writes).toContainEqual({
       kind: "sandbox_chat",
       message_id: "msg-sandbox-chat",

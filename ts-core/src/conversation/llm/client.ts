@@ -2,6 +2,7 @@ import { createConversationCompositeTriage, createMessageTriage } from "../triag
 import {
   ConversationLlmChatError,
   ConversationLlmPlanError,
+  ConversationLlmSkillNotEnabledError,
   isConversationLlmSkillNotEnabledError,
 } from "./errors.js";
 import {
@@ -119,16 +120,29 @@ export function createConversationLlmClient(
         message_id: input.message_id,
         messages,
         parse: parseConversationSkillPlan,
-        onFailure: ({ error, errorSnapshot }) => {
+        onFailure: ({ error, diagnostics, errorSnapshot }) => {
           if (isConversationLlmSkillNotEnabledError(error)) {
-            throw error;
+            throw new ConversationLlmSkillNotEnabledError(
+              errorSnapshot.message,
+              {
+                ...(error.skill === undefined ? {} : { skill: error.skill }),
+                diagnostics,
+              },
+              { cause: error },
+            );
           }
 
-          throw new ConversationLlmPlanError(errorSnapshot.message, { cause: error });
+          throw new ConversationLlmPlanError(errorSnapshot.message, {
+            cause: error,
+            diagnostics,
+          });
         },
       });
 
-      return result.value;
+      return Object.freeze({
+        ...result.value,
+        diagnostics: result.diagnostics,
+      });
     },
   });
 }

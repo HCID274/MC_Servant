@@ -27,6 +27,7 @@ export interface ConversationReplyDiagnosticLogInput {
     readonly state_context?: string;
     readonly memory_context?: string;
     readonly resource_context?: string;
+    readonly recent_context?: string;
   };
   /** LLM（大语言模型） 诊断记录，包含实际发送的 messages（消息）。 */
   readonly llm_diagnostics?: unknown;

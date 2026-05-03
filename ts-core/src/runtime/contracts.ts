@@ -10,10 +10,15 @@
 import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import {
   type BotActorCurrentTaskProjection,
+  type BotActorRecentEventProjection,
   type BotActorStateProjection,
   BotStatus,
   type InterruptSignal,
   type InterruptSource,
+  type RuntimeRecentEventFormatter,
+  type RuntimeRecentSandboxEventInput,
+  type RuntimeRecentSkillEventInput,
+  type RuntimeRecentSkillEventStatus,
   type RuntimeTaskEnvelope,
   type ThreatAssessment,
 } from "../core-ports/index.js";
@@ -22,9 +27,14 @@ import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.j
 export {
   BotStatus,
   type BotActorCurrentTaskProjection,
+  type BotActorRecentEventProjection,
   type BotActorStateProjection,
   type InterruptSignal,
   type InterruptSource,
+  type RuntimeRecentEventFormatter,
+  type RuntimeRecentSandboxEventInput,
+  type RuntimeRecentSkillEventInput,
+  type RuntimeRecentSkillEventStatus,
   type RuntimeTaskEnvelope,
 };
 export type { ThreatAssessment } from "../core-ports/index.js";

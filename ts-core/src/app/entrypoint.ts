@@ -14,6 +14,7 @@ import {
   createChatSnapshotContext,
   createConversationLlmClient,
   createConversationLlmConfig,
+  createConversationRecentContextStore,
   createMessageTriage,
   createPlannerSnapshotContext,
 } from "../conversation/index.js";
@@ -42,6 +43,7 @@ import {
   type ConversationWorkerRuntime,
   type ConversationWorkerRuntimeDependencies,
   createBotWorkerRuntime,
+  createConversationBotWorkerActionSink,
   createConversationWorkerRuntime,
 } from "../workers/index.js";
 import { createResourceService } from "../world-model/index.js";
@@ -357,6 +359,12 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   let latestLlmDiagnostic: LlmDiagnosticSummary | null = null;
   let latestOwnerPlayerName: string | undefined;
   const replayStore = createOnlineEventReplayStore(input.bootstrap.bot_id);
+  const recentContextStore =
+    input.dependencies?.conversationWorker?.recentContextStore ??
+    createConversationRecentContextStore();
+  const conversationBotWorkerActionSink = createConversationBotWorkerActionSink({
+    recentContextStore,
+  });
   const userAppendRealtimeEvent = input.dependencies?.services?.appendRealtimeEvent;
   const appendOnlineRealtimeEvent = async (
     event: Omit<RealtimeEventEnvelope, "seq">,
@@ -394,21 +402,23 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   const llmReplyGenerator =
     input.dependencies?.conversationWorker?.replyGenerator ??
     createOnlineConversationReplyGenerator(onlineLlmClient, {
-      readSnapshotContext: () =>
+      readSnapshotContext: (recentContext) =>
         createOnlineChatSnapshotContext({
           runtime,
           ...(latestOwnerPlayerName === undefined ? {} : { ownerName: latestOwnerPlayerName }),
+          ...(recentContext === undefined ? {} : { recentContext }),
         }),
     });
   let resourceService: ResourceServiceBoundary | null = null;
   const onlinePlanner =
     input.dependencies?.conversationWorker?.planner ??
     createOnlineConversationPlanner(onlineLlmClient, {
-      readSnapshotContext: (resourceContext) =>
+      readSnapshotContext: (resourceContext, recentContext) =>
         createOnlinePlannerSnapshotContext({
           runtime,
           ...(latestOwnerPlayerName === undefined ? {} : { ownerName: latestOwnerPlayerName }),
           ...(resourceContext === undefined ? {} : { resourceContext }),
+          ...(recentContext === undefined ? {} : { recentContext }),
         }),
     });
 
@@ -512,6 +522,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
             action,
             createdAt: new Date().toISOString(),
           });
+          await conversationBotWorkerActionSink(action);
 
           if (realtimeEvent !== null) {
             await appendOnlineRealtimeEvent(realtimeEvent);
@@ -541,6 +552,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
                 ? []
                 : [input.dependencies.llm.api_key],
           }),
+        recentContextStore,
         resourceContextProvider:
           input.dependencies?.conversationWorker?.resourceContextProvider ??
           createOnlineResourceContextProvider(() => resourceService),
@@ -652,6 +664,7 @@ export function createOnlineConversationActorStateProjectionProvider<TBotId exte
               status: recentSandbox.status,
               total_steps: recentSandbox.total_steps,
             },
+      recent_events: snapshot.recent_events,
     });
   };
 }
@@ -710,15 +723,15 @@ function createOnlineConversationTriage(
 function createOnlineConversationReplyGenerator(
   llm: ConversationLlmClient | undefined,
   input: {
-    readonly readSnapshotContext: () => string | undefined;
+    readonly readSnapshotContext: (recentContext?: string) => string | undefined;
   },
 ): ConversationWorkerRuntimeDependencies["replyGenerator"] | undefined {
   if (llm === undefined) {
     return undefined;
   }
 
-  return async ({ task, memory_context }) => {
-    const snapshotContext = input.readSnapshotContext();
+  return async ({ task, memory_context, recent_context }) => {
+    const snapshotContext = input.readSnapshotContext(recent_context);
 
     return llm.generateChatReply({
       message_id: task.message.message_id,
@@ -737,18 +750,18 @@ function createOnlineConversationReplyGenerator(
 function createOnlineConversationPlanner(
   llm: ConversationLlmClient | undefined,
   input: {
-    readonly readSnapshotContext: (resourceContext?: string) => string;
+    readonly readSnapshotContext: (resourceContext?: string, recentContext?: string) => string;
   },
 ): ConversationWorkerRuntimeDependencies["planner"] | undefined {
   if (llm === undefined) {
     return undefined;
   }
 
-  return async ({ task, route, memory_context, resource_context }) =>
+  return async ({ task, route, memory_context, resource_context, recent_context }) =>
     llm.generateSkillPlan({
       message_id: task.message.message_id,
       message: task.message.content,
-      snapshot_context: input.readSnapshotContext(resource_context),
+      snapshot_context: input.readSnapshotContext(resource_context, recent_context),
       triage_reason: route.triage.reason,
       ...(memory_context === undefined ? {} : { memory_context }),
     });
@@ -759,11 +772,13 @@ function createOnlinePlannerSnapshotContext<TBotId extends string>(input: {
   readonly runtime: AppRuntimeCoreResources<TBotId> | undefined;
   readonly ownerName?: string;
   readonly resourceContext?: string;
+  readonly recentContext?: string;
 }): string {
   if (input.runtime === undefined) {
     return createPlannerSnapshotContext({
       snapshot: null,
       ...(input.resourceContext === undefined ? {} : { resourceContext: input.resourceContext }),
+      ...(input.recentContext === undefined ? {} : { recentContext: input.recentContext }),
     });
   }
 
@@ -776,12 +791,14 @@ function createOnlinePlannerSnapshotContext<TBotId extends string>(input: {
   return createPlannerSnapshotContext({
     snapshot,
     ...(input.resourceContext === undefined ? {} : { resourceContext: input.resourceContext }),
+    ...(input.recentContext === undefined ? {} : { recentContext: input.recentContext }),
   });
 }
 
 function createOnlineChatSnapshotContext<TBotId extends string>(input: {
   readonly runtime: AppRuntimeCoreResources<TBotId> | undefined;
   readonly ownerName?: string;
+  readonly recentContext?: string;
 }): string | undefined {
   if (input.runtime === undefined) {
     return undefined;
@@ -795,6 +812,7 @@ function createOnlineChatSnapshotContext<TBotId extends string>(input: {
 
   return createChatSnapshotContext({
     snapshot,
+    ...(input.recentContext === undefined ? {} : { recentContext: input.recentContext }),
   });
 }
 

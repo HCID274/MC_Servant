@@ -27,3 +27,4 @@ export const skillsModuleBoundary = {
 export * from "./contracts.js";
 export * from "./registry.js";
 export * from "./execution.js";
+export * from "./recent-event.js";

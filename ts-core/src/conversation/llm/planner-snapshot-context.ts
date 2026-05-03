@@ -19,6 +19,8 @@ export interface ChatSnapshotContextInput {
   readonly inventoryChangeContext?: string;
   /** 可选 recent context（最近上下文） 时间线槽位，空值时整段省略。 */
   readonly recentContextLines?: readonly string[];
+  /** 可选 recent context（最近上下文） 已渲染时间线，空值时整段省略。 */
+  readonly recentContext?: string;
 }
 
 /** 将 observation（观测）快照压缩为 Chat（闲聊） prompt（提示词）子集上下文。 */
@@ -31,7 +33,12 @@ export function createChatSnapshotContext(input: ChatSnapshotContextInput): stri
     "[背包变化]",
     input.inventoryChangeContext,
   );
-  const recentContextSection = createRecentContextSection(input.recentContextLines);
+  const recentContextSection = createRecentContextSection({
+    ...(input.recentContext === undefined ? {} : { recentContext: input.recentContext }),
+    ...(input.recentContextLines === undefined
+      ? {}
+      : { recentContextLines: input.recentContextLines }),
+  });
 
   return [
     createBotLine(input.snapshot),
@@ -48,12 +55,21 @@ export function createChatSnapshotContext(input: ChatSnapshotContextInput): stri
 export function createPlannerSnapshotContext(input: {
   readonly snapshot: EnvironmentSnapshot | null;
   readonly resourceContext?: string;
+  readonly recentContext?: string;
+  readonly inventoryChangeContext?: string;
 }): string {
-  void input.resourceContext;
-
   if (input.snapshot === null) {
     return "online_runtime: observation unavailable; executable skills: goTo, collect";
   }
+
+  const inventoryChangeLine = createOptionalPrefixedLine(
+    "[背包变化]",
+    input.inventoryChangeContext,
+  );
+  const recentContextSection = createRecentContextSection({
+    ...(input.recentContext === undefined ? {} : { recentContext: input.recentContext }),
+  });
+  const resourceContextLine = createOptionalPrefixedLine("[资源簇]", input.resourceContext);
 
   return [
     createBotLine(input.snapshot),
@@ -61,7 +77,11 @@ export function createPlannerSnapshotContext(input: {
     createOwnerLine(input.snapshot),
     createEquipmentLine(input.snapshot.equipment),
     createInventoryLine(input.snapshot),
+    ...(inventoryChangeLine === undefined ? [] : [inventoryChangeLine]),
+    ...(recentContextSection === undefined ? [] : [recentContextSection]),
+    ...(resourceContextLine === undefined ? [] : [resourceContextLine]),
     createNearbyBlocksLine(input.snapshot.nearby_blocks),
+    createNearbyDropsLine(input.snapshot.nearby_entities),
     createNearbyEntitiesLine(input.snapshot.nearby_entities),
     createTimeLine(input.snapshot.time),
   ].join("\n");
@@ -120,8 +140,18 @@ function createOptionalPrefixedLine(prefix: string, value: string | undefined): 
   return `${prefix} ${normalized}`;
 }
 
-function createRecentContextSection(lines: readonly string[] | undefined): string | undefined {
-  const normalizedLines = lines?.map((line) => line.trim()).filter((line) => line.length > 0) ?? [];
+function createRecentContextSection(input: {
+  readonly recentContext?: string;
+  readonly recentContextLines?: readonly string[];
+}): string | undefined {
+  const normalizedContext = input.recentContext?.trim();
+
+  if (normalizedContext !== undefined && normalizedContext.length > 0) {
+    return ["[最近上下文]", normalizedContext].join("\n");
+  }
+
+  const normalizedLines =
+    input.recentContextLines?.map((line) => line.trim()).filter((line) => line.length > 0) ?? [];
 
   if (normalizedLines.length === 0) {
     return undefined;
@@ -141,6 +171,7 @@ function createNearbyBlocksLine(blocks: readonly NearbyBlockSummary[]): string {
 
 function createNearbyEntitiesLine(entities: readonly NearbyEntitySummary[]): string {
   const renderedEntities = [...entities]
+    .filter((entity) => !isDroppedItemEntity(entity))
     .sort((left, right) => {
       const priorityDiff = getEntityPriority(left) - getEntityPriority(right);
       return priorityDiff === 0 ? left.distance - right.distance : priorityDiff;
@@ -152,6 +183,26 @@ function createNearbyEntitiesLine(entities: readonly NearbyEntitySummary[]): str
     );
 
   return `[附近生物] ${renderedEntities.length === 0 ? "无" : renderedEntities.join(", ")}`;
+}
+
+function createNearbyDropsLine(entities: readonly NearbyEntitySummary[]): string {
+  const renderedDrops = [...entities]
+    .filter((entity) => isDroppedItemEntity(entity))
+    .sort((left, right) => left.distance - right.distance)
+    .slice(0, MAX_NEARBY_ENTITIES)
+    .map(
+      (entity) =>
+        `${entity.display_name}(${entity.entity_type},${formatNumber(entity.distance)}格)`,
+    );
+
+  return `[附近掉落物] ${renderedDrops.length === 0 ? "无" : renderedDrops.join(", ")}`;
+}
+
+function isDroppedItemEntity(entity: NearbyEntitySummary): boolean {
+  const entityType = entity.entity_type.toLowerCase();
+  const displayName = entity.display_name.toLowerCase();
+
+  return entityType === "item" || displayName === "item";
 }
 
 function createTimeLine(time: WorldTimeSnapshot | undefined): string {

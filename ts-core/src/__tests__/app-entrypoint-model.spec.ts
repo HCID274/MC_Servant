@@ -1785,17 +1785,18 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
                     messages?: Array<{ role: string; content: string }>;
                   });
             const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
+            const currentInstruction = userMessage.split("主人的指令：").at(-1) ?? userMessage;
             let assistantContent =
               '{"intent":"task","priority":"normal","reason":"主人给了明确技能指令"}';
 
             if (userMessage.includes("主人的指令：")) {
-              if (userMessage.includes("挖两块石头")) {
+              if (currentInstruction.includes("挖两块石头")) {
                 assistantContent =
                   '{"type":"skill_call","reply":"收到，我去挖石头","skill":"mine","params":{"blockName":"stone","count":2}}';
-              } else if (userMessage.includes("把地上的圆石捡起来")) {
+              } else if (currentInstruction.includes("把地上的圆石捡起来")) {
                 assistantContent =
                   '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":8}}';
-              } else if (userMessage.includes("把石镐拿在手上")) {
+              } else if (currentInstruction.includes("把石镐拿在手上")) {
                 assistantContent =
                   '{"type":"skill_call","reply":"收到，我先把石镐拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}';
               } else {

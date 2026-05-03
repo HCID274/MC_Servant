@@ -26,3 +26,4 @@ export const sandboxModuleBoundary = {
 export * from "./contracts.js";
 export * from "./facade.js";
 export * from "./execution.js";
+export * from "./recent-event.js";

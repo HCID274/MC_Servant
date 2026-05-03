@@ -1,5 +1,6 @@
 import { createCancelTemplateReply, createConversationReply } from "../../conversation/chat.js";
 import type { ConversationCompositeTriage } from "../../conversation/contracts.js";
+import { createConversationRecentContextStore } from "../../conversation/recent-context.js";
 import {
   createConversationRouteDecision,
   createMessageTriage,
@@ -31,16 +32,21 @@ export function createConversationWorkerRuntime(input: {
 }): ConversationWorkerRuntime {
   let worker: ConversationBullmqWorkerLike | null = null;
   const events: ConversationWorkerRuntimeEvent[] = [];
-  const createWorker = input.dependencies.createWorker ?? createDefaultConversationWorker;
+  const dependencies: ConversationWorkerRuntimeDependencies = Object.freeze({
+    ...input.dependencies,
+    recentContextStore:
+      input.dependencies.recentContextStore ?? createConversationRecentContextStore(),
+  });
+  const createWorker = dependencies.createWorker ?? createDefaultConversationWorker;
 
   const processTask = async (job: { readonly data: unknown }): Promise<void> => {
     const task = cloneWorkerTask(job.data);
-    const triage = await (input.dependencies.triage?.({ task }) ?? createDefaultTriage());
+    const triage = await (dependencies.triage?.({ task }) ?? createDefaultTriage());
     if (!isMessageTriageOutput(triage)) {
       await handleCompositeTriage({
         task,
         triage,
-        dependencies: input.dependencies,
+        dependencies,
         events,
       });
 
@@ -50,7 +56,7 @@ export function createConversationWorkerRuntime(input: {
     const route = createConversationRouteDecision({
       triage,
       message: task.message.content,
-      has_active_task: input.dependencies.hasActiveTask?.() ?? false,
+      has_active_task: dependencies.hasActiveTask?.() ?? false,
     });
 
     switch (route.kind) {
@@ -59,7 +65,7 @@ export function createConversationWorkerRuntime(input: {
           task,
           triage,
           route,
-          dependencies: input.dependencies,
+          dependencies,
           events,
         });
         break;
@@ -67,7 +73,7 @@ export function createConversationWorkerRuntime(input: {
         await handleCancelInterruptRoute({
           task,
           route,
-          dependencies: input.dependencies,
+          dependencies,
           events,
         });
         break;
@@ -76,7 +82,7 @@ export function createConversationWorkerRuntime(input: {
         await handlePlanExecRoute({
           task,
           route,
-          dependencies: input.dependencies,
+          dependencies,
           events,
         });
         break;
@@ -232,6 +238,14 @@ async function broadcastCompositeReply(
   await input.dependencies.broadcastReplySink({
     message_id: input.task.message.message_id,
     content: reply.reply,
+  });
+  input.dependencies.recentContextStore?.appendOwnerMessage({
+    message_id: input.task.message.message_id,
+    text: input.task.message.content,
+  });
+  input.dependencies.recentContextStore?.appendBotReply({
+    message_id: input.task.message.message_id,
+    text: reply.reply,
   });
   await appendConversationReplyLog({
     task: input.task,

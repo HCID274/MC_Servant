@@ -3,8 +3,13 @@ import type {
   ConversationPlanDraft,
   ConversationRouteDecision,
 } from "../../../conversation/contracts.js";
-import { isConversationLlmSkillNotEnabledError } from "../../../conversation/llm/errors.js";
+import type { ConversationLlmDiagnosticRecord } from "../../../conversation/llm.js";
+import {
+  ConversationLlmPlanError,
+  isConversationLlmSkillNotEnabledError,
+} from "../../../conversation/llm/errors.js";
 import { createExecJobFromPlan } from "../../../conversation/planning.js";
+import { ExecutionTaskKind } from "../../../core-ports/foundation.js";
 import { SKILL_DIRECTORY } from "../../../core-ports/skills.js";
 import { TaskHistoryStatus } from "../../../core-ports/tasking.js";
 import { type ConversationWorkerTask, createBotWorkerTask } from "../../contracts.js";
@@ -39,10 +44,12 @@ export async function handlePlanExecRoute(input: {
     return;
   }
 
-  let plan: ConversationPlanDraft;
+  let plan: ConversationPlanDraft & { readonly diagnostics?: ConversationLlmDiagnosticRecord };
   let memoryContext: string | undefined;
   let resourceContext: string | undefined;
+  let recentContext: string | undefined;
   try {
+    recentContext = await readRecentContext(input);
     memoryContext = await readMemoryContext(input);
     resourceContext = await readResourceContext(input);
     plan = await input.dependencies.planner({
@@ -51,19 +58,25 @@ export async function handlePlanExecRoute(input: {
       route: input.route,
       ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
       ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
+      ...(recentContext === undefined ? {} : { recent_context: recentContext }),
     });
   } catch (error) {
     if (isConversationLlmSkillNotEnabledError(error)) {
       await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply, {
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
         ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
+        ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+        ...(error.diagnostics === undefined ? {} : { llm_diagnostics: error.diagnostics }),
       });
       return;
     }
 
+    const diagnostics = getPlanErrorDiagnostics(error);
     await pushPlanningFailure(input, "planner_failed", plannerFailureReply.reply, {
       ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
       ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
+      ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+      ...(diagnostics === undefined ? {} : { llm_diagnostics: diagnostics }),
     });
     return;
   }
@@ -80,18 +93,16 @@ export async function handlePlanExecRoute(input: {
     priority: input.route.exec_priority,
   });
 
-  if (execJob.type !== "skill_call") {
-    await pushPlanningFailure(input, "planner_failed", plannerFailureReply.reply, {
-      ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
-      ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
-    });
-    return;
-  }
-
-  if (execJob.skill !== SKILL_DIRECTORY.goTo && execJob.skill !== SKILL_DIRECTORY.collect) {
+  if (
+    execJob.type === ExecutionTaskKind.SkillCall &&
+    execJob.skill !== SKILL_DIRECTORY.goTo &&
+    execJob.skill !== SKILL_DIRECTORY.collect
+  ) {
     await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply, {
       ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
       ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
+      ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+      ...(plan.diagnostics === undefined ? {} : { llm_diagnostics: plan.diagnostics }),
     });
     return;
   }
@@ -129,7 +140,9 @@ export async function handlePlanExecRoute(input: {
       contexts: {
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
         ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
+        ...(recentContext === undefined ? {} : { recent_context: recentContext }),
       },
+      ...(plan.diagnostics === undefined ? {} : { llm_diagnostics: plan.diagnostics }),
     });
     input.events.push(
       Object.freeze({
@@ -139,6 +152,23 @@ export async function handlePlanExecRoute(input: {
         content: reply.reply,
       }),
     );
+  }
+
+  if (input.suppressPlanReply !== true) {
+    input.dependencies.recentContextStore?.appendOwnerMessage({
+      message_id: input.task.message.message_id,
+      text: input.task.message.content,
+    });
+    input.dependencies.recentContextStore?.appendBotReply({
+      message_id: input.task.message.message_id,
+      text: plan.reply,
+    });
+  }
+  if (execJob.type === ExecutionTaskKind.SandboxCode) {
+    input.dependencies.recentContextStore?.appendSandboxCode({
+      message_id: input.task.message.message_id,
+      code: execJob.code,
+    });
   }
 
   const botTask = createBotWorkerTask({
@@ -154,10 +184,31 @@ export async function handlePlanExecRoute(input: {
       type: "task.accepted",
       bot_id: input.task.bot_id,
       message_id: input.task.message.message_id,
-      skill: execJob.skill,
+      ...(execJob.type === ExecutionTaskKind.SkillCall ? { skill: execJob.skill } : {}),
+      ...(execJob.type === ExecutionTaskKind.SandboxCode ? { exec_type: execJob.type } : {}),
       priority: execJob.priority,
     }),
   );
+}
+
+async function readRecentContext(input: {
+  readonly task: ConversationWorkerTask;
+  readonly dependencies: ConversationWorkerRuntimeDependencies;
+}): Promise<string | undefined> {
+  try {
+    const projection = await input.dependencies.actorStateProjectionProvider?.({
+      task: input.task,
+    });
+
+    return input.dependencies.recentContextStore?.render({
+      ...(projection?.recent_events === undefined
+        ? {}
+        : { actorRecentEvents: projection.recent_events }),
+      currentMessageId: input.task.message.message_id,
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 /** 按规划类 route（路由） 读取 ResourceService（世界感知资源服务） 摘要；provider（提供器） 失败时降级为空上下文。 */
@@ -234,18 +285,37 @@ async function pushPlanningFailure(
   contexts: {
     readonly memory_context?: string;
     readonly resource_context?: string;
+    readonly recent_context?: string;
+    readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;
   },
 ): Promise<void> {
   await input.dependencies.broadcastReplySink({
     message_id: input.task.message.message_id,
     content: reply,
   });
+  input.dependencies.recentContextStore?.appendOwnerMessage({
+    message_id: input.task.message.message_id,
+    text: input.task.message.content,
+  });
+  input.dependencies.recentContextStore?.appendBotReply({
+    message_id: input.task.message.message_id,
+    text: reply,
+  });
   await appendConversationReplyLog({
     task: input.task,
     dependencies: input.dependencies,
     reply_mode: "template",
     reply,
-    contexts,
+    contexts: {
+      ...(contexts.memory_context === undefined ? {} : { memory_context: contexts.memory_context }),
+      ...(contexts.resource_context === undefined
+        ? {}
+        : { resource_context: contexts.resource_context }),
+      ...(contexts.recent_context === undefined ? {} : { recent_context: contexts.recent_context }),
+    },
+    ...(contexts.llm_diagnostics === undefined
+      ? {}
+      : { llm_diagnostics: contexts.llm_diagnostics }),
     ...(input.route === undefined ? {} : { route: input.route }),
   });
   input.events.push(
@@ -279,7 +349,9 @@ async function appendConversationReplyLog(input: {
   readonly contexts: {
     readonly memory_context?: string;
     readonly resource_context?: string;
+    readonly recent_context?: string;
   };
+  readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;
 }): Promise<void> {
   try {
     await input.dependencies.conversationReplyLogSink?.({
@@ -292,8 +364,13 @@ async function appendConversationReplyLog(input: {
       reply: input.reply,
       ...(input.route === undefined ? {} : { triage: input.route.triage }),
       contexts: input.contexts,
+      ...(input.llm_diagnostics === undefined ? {} : { llm_diagnostics: input.llm_diagnostics }),
     });
   } catch {
     // conversation（对话）本地日志是旁路诊断，不能阻断实服回复。
   }
+}
+
+function getPlanErrorDiagnostics(error: unknown): ConversationLlmDiagnosticRecord | undefined {
+  return error instanceof ConversationLlmPlanError ? error.diagnostics : undefined;
 }
