@@ -4,12 +4,14 @@ import type {
   ConversationRouteDecision,
   ConversationTriageOutput,
 } from "../../conversation/contracts.js";
+import type { ConversationInventoryDiffCache } from "../../conversation/inventory-diff-cache.js";
 import type {
   ConversationGeneratedReply,
   ConversationLlmDiagnosticRecord,
 } from "../../conversation/llm.js";
 import type { ConversationRecentContextStore } from "../../conversation/recent-context.js";
 import type { MessageTriage } from "../../core-ports/foundation.js";
+import type { EnvironmentSnapshot } from "../../core-ports/observation.js";
 import type { BotActorStateProjection } from "../../core-ports/runtime.js";
 import type { SkillName } from "../../core-ports/skills.js";
 import type { ExecPriority, TaskHistoryStatus } from "../../core-ports/tasking.js";
@@ -131,6 +133,10 @@ export type ConversationWorkerReplyGenerator = (input: {
   readonly state_context?: string;
   /** 可选最近上下文时间线，已按 §7.6 渲染。 */
   readonly recent_context?: string;
+  /** 可选 observation（观测） 快照上下文，已按当前路由模板渲染。 */
+  readonly snapshot_context?: string;
+  /** 可选 inventory diff（背包变化） 文本，用于诊断与测试。 */
+  readonly inventory_change_context?: string;
   /** 可选记忆摘要。 */
   readonly memory_context?: string;
 }) => string | ConversationGeneratedReply | Promise<string | ConversationGeneratedReply>;
@@ -144,6 +150,12 @@ export type ConversationActorStateProjectionProvider = (input: {
   | null
   | undefined
   | Promise<BotActorStateProjection | null | undefined>;
+
+/** ConversationWorker（对话工作线程） prompt（提示词） 构建期环境快照 provider（提供器）。 */
+export type ConversationEnvironmentSnapshotProvider = (input: {
+  /** Worker 输入任务。 */
+  readonly task: ConversationWorkerTask;
+}) => EnvironmentSnapshot | null | undefined | Promise<EnvironmentSnapshot | null | undefined>;
 
 /** ConversationWorker（对话工作线程） memory（记忆）读取输入。 */
 export interface ConversationMemoryContextProviderInput {
@@ -204,6 +216,10 @@ export type ConversationWorkerPlanner = (input: {
   readonly resource_context?: string;
   /** 可选最近上下文时间线，已按 §7.6 渲染。 */
   readonly recent_context?: string;
+  /** 可选 observation（观测） 快照上下文，已按当前路由模板渲染。 */
+  readonly snapshot_context?: string;
+  /** 可选 inventory diff（背包变化） 文本，用于诊断与测试。 */
+  readonly inventory_change_context?: string;
 }) =>
   | (ConversationPlanDraft & { readonly diagnostics?: ConversationLlmDiagnosticRecord })
   | Promise<ConversationPlanDraft & { readonly diagnostics?: ConversationLlmDiagnosticRecord }>;
@@ -232,6 +248,7 @@ export interface ConversationReplyLogInput {
     readonly memory_context?: string;
     readonly resource_context?: string;
     readonly recent_context?: string;
+    readonly inventory_change_context?: string;
   };
   /** LLM（大语言模型） 诊断记录，包含实际发送的 messages（消息）。 */
   readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;
@@ -274,6 +291,10 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly conversationReplyLogSink?: ConversationReplyLogSink;
   /** ConversationWorker（对话工作线程） 单写侧最近上下文 store（存储）。 */
   readonly recentContextStore?: ConversationRecentContextStore;
+  /** ConversationWorker（对话工作线程） 侧 inventory diff cache（背包差异缓存）。 */
+  readonly inventoryDiffCache?: ConversationInventoryDiffCache;
+  /** prompt（提示词） 构建期环境快照 provider（提供器）。 */
+  readonly environmentSnapshotProvider?: ConversationEnvironmentSnapshotProvider;
   /** 广播回复汇点，真实路径指向 BotActor.broadcastReply。 */
   readonly broadcastReplySink: ConversationBroadcastReplySink;
   /** 运行时中断汇点，真实路径指向 BotActor 中断入口。 */

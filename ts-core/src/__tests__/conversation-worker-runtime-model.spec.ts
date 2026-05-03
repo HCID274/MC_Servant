@@ -16,6 +16,7 @@ import {
   createBotActorStateProjection,
   createSandboxCodeJob,
 } from "../core-ports/index.js";
+import type { EnvironmentSnapshot, InventorySummary } from "../core-ports/observation.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
 import { createTaskSummaryDraft } from "../data/index.js";
 import { ConversationPriority } from "../domain/contracts.js";
@@ -269,6 +270,199 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     expect(recentContexts[1]).toContain("Bot：第 1 次回复喵~");
     expect(recentContexts[1]).toContain("执行结果：collect 成功,捡到 shield x1");
     expect(recentContexts[1]).not.toContain("你刚刚捡到了什么");
+  });
+
+  it("应让 Chat / Plan / Modify（三路） 按路径出口顺序递推 inventory diff（背包差异） baseline（基线）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const inventoryChanges: Array<string | undefined> = [];
+    const snapshotContexts: string[] = [];
+    const triages = [
+      createMessageTriage({
+        intent: "chat",
+        priority: "normal",
+        reason: "unit_chat_inventory",
+      }),
+      createMessageTriage({
+        intent: "task",
+        priority: ConversationPriority.Normal,
+        reason: "unit_plan_inventory",
+      }),
+      createMessageTriage({
+        intent: "modify",
+        priority: ConversationPriority.Urgent,
+        reason: "unit_modify_inventory",
+      }),
+    ];
+    const snapshots = [
+      createEnvironmentSnapshotFixture([["oak_log", 1]]),
+      createEnvironmentSnapshotFixture([
+        ["oak_log", 6],
+        ["cobblestone", 4],
+      ]),
+      createEnvironmentSnapshotFixture([
+        ["oak_log", 4],
+        ["cobblestone", 4],
+        ["iron_ingot", 2],
+      ]),
+    ];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          triages.shift() ??
+          createMessageTriage({
+            intent: "chat",
+            priority: "normal",
+            reason: "unit_inventory_fallback",
+          }),
+        environmentSnapshotProvider: () => {
+          const snapshot = snapshots.shift();
+
+          if (snapshot === undefined) {
+            throw new Error("unexpected snapshot read");
+          }
+
+          return snapshot;
+        },
+        replyGenerator: (input) => {
+          inventoryChanges.push(input.inventory_change_context);
+          if (input.snapshot_context !== undefined) {
+            snapshotContexts.push(input.snapshot_context);
+          }
+
+          return "看到背包了";
+        },
+        planner: (input) => {
+          inventoryChanges.push(input.inventory_change_context);
+          if (input.snapshot_context !== undefined) {
+            snapshotContexts.push(input.snapshot_context);
+          }
+
+          return {
+            type: "skill_call",
+            reply: "收到，我去执行",
+            skill: "goTo",
+            params: { x: 1, y: 64, z: -3 },
+          };
+        },
+        interruptRuntimeSink: async () => undefined,
+        broadcastReplySink: async () => undefined,
+        enqueueExecTaskSink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    for (const message of [
+      { id: "msg-inventory-chat", content: "现在背包如何" },
+      { id: "msg-inventory-plan", content: "去坐标 1 64 -3" },
+      { id: "msg-inventory-modify", content: "改成快点过去" },
+    ]) {
+      await processor?.({
+        data: createConversationWorkerTask({
+          bot_id: "bot-cw",
+          message: {
+            bot_id: "bot-cw",
+            message_id: message.id,
+            content: message.content,
+            intent_epoch: 1,
+            snapshot_ts: 100,
+          },
+        }),
+      });
+    }
+
+    expect(inventoryChanges).toEqual([
+      undefined,
+      "oak_log+5, cobblestone+4",
+      "oak_log-2, iron_ingot+2",
+    ]);
+    expect(snapshotContexts[0]).not.toContain("[背包变化]");
+    expect(snapshotContexts[1]).toContain("[背包变化] oak_log+5, cobblestone+4");
+    expect(snapshotContexts[2]).toContain("[背包变化] oak_log-2, iron_ingot+2");
+  });
+
+  it("Cancel（取消） 路径不应读写 inventory diff cache（背包差异缓存）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    let snapshotReads = 0;
+    const inventoryChanges: Array<string | undefined> = [];
+    const triages = [
+      createMessageTriage({
+        intent: "cancel",
+        priority: "interrupt",
+        reason: "unit_cancel_inventory",
+      }),
+      createMessageTriage({
+        intent: "chat",
+        priority: "normal",
+        reason: "unit_chat_after_cancel",
+      }),
+    ];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          triages.shift() ??
+          createMessageTriage({
+            intent: "chat",
+            priority: "normal",
+            reason: "unit_cancel_inventory_fallback",
+          }),
+        environmentSnapshotProvider: () => {
+          snapshotReads += 1;
+
+          return createEnvironmentSnapshotFixture([["oak_log", 5]]);
+        },
+        replyGenerator: (input) => {
+          inventoryChanges.push(input.inventory_change_context);
+
+          return "取消后闲聊";
+        },
+        interruptRuntimeSink: async () => undefined,
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    for (const message of [
+      { id: "msg-inventory-cancel", content: "停下" },
+      { id: "msg-inventory-chat-after-cancel", content: "背包变化了吗" },
+    ]) {
+      await processor?.({
+        data: createConversationWorkerTask({
+          bot_id: "bot-cw",
+          message: {
+            bot_id: "bot-cw",
+            message_id: message.id,
+            content: message.content,
+            intent_epoch: 1,
+            snapshot_ts: 100,
+          },
+        }),
+      });
+    }
+
+    expect(snapshotReads).toBe(1);
+    expect(inventoryChanges).toEqual([undefined]);
   });
 
   it("应在状态投影读取失败时降级为无状态闲聊", async () => {
@@ -1262,3 +1456,67 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
   });
 });
+
+function createEnvironmentSnapshotFixture(
+  inventoryItems: readonly (readonly [string, number])[],
+): EnvironmentSnapshot {
+  return Object.freeze({
+    timestamp: 1,
+    snapshot_version: "inventory-diff-test",
+    bot: {
+      position: { x: 0, y: 64, z: 0 },
+      world_key: "overworld",
+      health: 20,
+      food: 20,
+      experience: 0,
+      is_on_fire: false,
+      is_in_water: false,
+      y_velocity: 0,
+    },
+    inventory: createInventorySummaryFixture(inventoryItems),
+    equipment: {
+      head: null,
+      chest: null,
+      legs: null,
+      feet: null,
+      main_hand: null,
+      off_hand: null,
+      has_weapon_equipped: false,
+    },
+    nearby_entities: [],
+    nearby_blocks: [],
+    owner: {
+      position: { x: 1, y: 64, z: 1 },
+      name: "owner",
+      online: true,
+    },
+    time: {
+      phase: "day",
+      time_of_day: 1000,
+    },
+    server_extended: {
+      global_entity_count: 0,
+      chunk_loaded_count: 0,
+      tps: 20,
+    },
+  });
+}
+
+function createInventorySummaryFixture(
+  items: readonly (readonly [string, number])[],
+): InventorySummary {
+  const entries = items.map(([itemName, count], index) =>
+    Object.freeze({
+      slot: index,
+      item_name: itemName,
+      count,
+    }),
+  );
+
+  return Object.freeze({
+    items: entries,
+    total_items: entries.reduce((sum, item) => sum + item.count, 0),
+    occupied_slots: entries.length,
+    free_slots: 36 - entries.length,
+  });
+}

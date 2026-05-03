@@ -21,6 +21,7 @@ import {
   normalizeMemoryContext,
   toBullmqPriority,
 } from "../helpers.js";
+import { createPlanPromptSnapshotContext } from "../shared-context.js";
 import type {
   ConversationWorkerRuntimeDependencies,
   ConversationWorkerRuntimeEvent,
@@ -48,24 +49,46 @@ export async function handlePlanExecRoute(input: {
   let memoryContext: string | undefined;
   let resourceContext: string | undefined;
   let recentContext: string | undefined;
+  let inventoryChangeContext: string | undefined;
   try {
     recentContext = await readRecentContext(input);
     memoryContext = await readMemoryContext(input);
     resourceContext = await readResourceContext(input);
-    plan = await input.dependencies.planner({
+    const promptContext = await createPlanPromptSnapshotContext({
       task: input.task,
-      triage: input.route.triage,
-      route: input.route,
-      ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+      dependencies: input.dependencies,
       ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
       ...(recentContext === undefined ? {} : { recent_context: recentContext }),
     });
+    inventoryChangeContext = promptContext.inventory_change_context;
+
+    try {
+      plan = await input.dependencies.planner({
+        task: input.task,
+        triage: input.route.triage,
+        route: input.route,
+        ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+        ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
+        ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+        ...(promptContext.snapshot_context === undefined
+          ? {}
+          : { snapshot_context: promptContext.snapshot_context }),
+        ...(inventoryChangeContext === undefined
+          ? {}
+          : { inventory_change_context: inventoryChangeContext }),
+      });
+    } finally {
+      promptContext.advanceInventoryBaseline();
+    }
   } catch (error) {
     if (isConversationLlmSkillNotEnabledError(error)) {
       await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply, {
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
         ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
         ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+        ...(inventoryChangeContext === undefined
+          ? {}
+          : { inventory_change_context: inventoryChangeContext }),
         ...(error.diagnostics === undefined ? {} : { llm_diagnostics: error.diagnostics }),
       });
       return;
@@ -76,6 +99,9 @@ export async function handlePlanExecRoute(input: {
       ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
       ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
       ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+      ...(inventoryChangeContext === undefined
+        ? {}
+        : { inventory_change_context: inventoryChangeContext }),
       ...(diagnostics === undefined ? {} : { llm_diagnostics: diagnostics }),
     });
     return;
@@ -102,6 +128,9 @@ export async function handlePlanExecRoute(input: {
       ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
       ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
       ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+      ...(inventoryChangeContext === undefined
+        ? {}
+        : { inventory_change_context: inventoryChangeContext }),
       ...(plan.diagnostics === undefined ? {} : { llm_diagnostics: plan.diagnostics }),
     });
     return;
@@ -141,6 +170,9 @@ export async function handlePlanExecRoute(input: {
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
         ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
         ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+        ...(inventoryChangeContext === undefined
+          ? {}
+          : { inventory_change_context: inventoryChangeContext }),
       },
       ...(plan.diagnostics === undefined ? {} : { llm_diagnostics: plan.diagnostics }),
     });
@@ -286,6 +318,7 @@ async function pushPlanningFailure(
     readonly memory_context?: string;
     readonly resource_context?: string;
     readonly recent_context?: string;
+    readonly inventory_change_context?: string;
     readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;
   },
 ): Promise<void> {
@@ -312,6 +345,9 @@ async function pushPlanningFailure(
         ? {}
         : { resource_context: contexts.resource_context }),
       ...(contexts.recent_context === undefined ? {} : { recent_context: contexts.recent_context }),
+      ...(contexts.inventory_change_context === undefined
+        ? {}
+        : { inventory_change_context: contexts.inventory_change_context }),
     },
     ...(contexts.llm_diagnostics === undefined
       ? {}
@@ -350,6 +386,7 @@ async function appendConversationReplyLog(input: {
     readonly memory_context?: string;
     readonly resource_context?: string;
     readonly recent_context?: string;
+    readonly inventory_change_context?: string;
   };
   readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;
 }): Promise<void> {

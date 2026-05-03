@@ -312,7 +312,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
         snapshot_ts: 111,
         priority: ExecPriority.Normal,
         skill: SKILL_DIRECTORY.collect,
-        params: { itemName: "cobblestone", radius: 8 },
+        params: { itemName: "cobblestone", radius: 32 },
       }),
     });
 

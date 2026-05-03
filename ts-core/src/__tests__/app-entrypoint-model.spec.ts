@@ -1795,7 +1795,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
                   '{"type":"skill_call","reply":"收到，我去挖石头","skill":"mine","params":{"blockName":"stone","count":2}}';
               } else if (currentInstruction.includes("把地上的圆石捡起来")) {
                 assistantContent =
-                  '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":8}}';
+                  '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":32}}';
               } else if (currentInstruction.includes("把石镐拿在手上")) {
                 assistantContent =
                   '{"type":"skill_call","reply":"收到，我先把石镐拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}';
@@ -1952,7 +1952,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             message_id: "msg-online-collect",
             priority: "normal",
             skill: "collect",
-            params: { itemName: "cobblestone", radius: 8 },
+            params: { itemName: "cobblestone", radius: 32 },
           }),
         }),
         options: {

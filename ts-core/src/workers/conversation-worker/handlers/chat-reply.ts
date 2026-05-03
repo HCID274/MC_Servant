@@ -13,6 +13,7 @@ import {
   normalizeGeneratedReply,
   normalizeMemoryContext,
 } from "../helpers.js";
+import { createChatPromptSnapshotContext } from "../shared-context.js";
 import type {
   ConversationWorkerRuntimeDependencies,
   ConversationWorkerRuntimeEvent,
@@ -36,16 +37,35 @@ export async function handleChatReplyRoute(input: {
       currentMessageId: input.task.message.message_id,
     });
     const memoryContext = await readMemoryContext(input);
-    const generatedReply = normalizeGeneratedReply(
-      (await input.dependencies.replyGenerator?.({
-        task: input.task,
-        triage: input.triage,
-        route: input.route,
-        ...(stateContext === undefined ? {} : { state_context: stateContext }),
-        ...(recentContext === undefined ? {} : { recent_context: recentContext }),
-        ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
-      })) ?? `收到：${input.task.message.content}`,
-    );
+    const promptContext =
+      input.dependencies.replyGenerator === undefined
+        ? undefined
+        : await createChatPromptSnapshotContext({
+            task: input.task,
+            dependencies: input.dependencies,
+            ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+          });
+    let generatedReply: ReturnType<typeof normalizeGeneratedReply>;
+    try {
+      generatedReply = normalizeGeneratedReply(
+        (await input.dependencies.replyGenerator?.({
+          task: input.task,
+          triage: input.triage,
+          route: input.route,
+          ...(stateContext === undefined ? {} : { state_context: stateContext }),
+          ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+          ...(promptContext?.snapshot_context === undefined
+            ? {}
+            : { snapshot_context: promptContext.snapshot_context }),
+          ...(promptContext?.inventory_change_context === undefined
+            ? {}
+            : { inventory_change_context: promptContext.inventory_change_context }),
+          ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+        })) ?? `收到：${input.task.message.content}`,
+      );
+    } finally {
+      promptContext?.advanceInventoryBaseline();
+    }
     if (generatedReply.diagnostics !== undefined) {
       appendLlmDiagnosticEvent(input.events, input.task.bot_id, generatedReply.diagnostics);
     }
@@ -76,6 +96,9 @@ export async function handleChatReplyRoute(input: {
       contexts: {
         ...(stateContext === undefined ? {} : { state_context: stateContext }),
         ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+        ...(promptContext?.inventory_change_context === undefined
+          ? {}
+          : { inventory_change_context: promptContext.inventory_change_context }),
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
       },
       ...(generatedReply.diagnostics === undefined
@@ -122,6 +145,7 @@ async function appendConversationReplyLog(input: {
   readonly contexts: {
     readonly state_context?: string;
     readonly recent_context?: string;
+    readonly inventory_change_context?: string;
     readonly memory_context?: string;
   };
   readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;

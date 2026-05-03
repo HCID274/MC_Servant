@@ -101,7 +101,12 @@ export function createConversationSkillPlanFromTable(input: {
     );
   }
 
-  if (!strategy.guard(input.params)) {
+  const params =
+    strategy.skill === SKILL_DIRECTORY.collect
+      ? normalizeCollectPlanParams(input.params)
+      : input.params;
+
+  if (!strategy.guard(params)) {
     throw new ConversationLlmPlanError(`planner returned invalid ${strategy.skill} params`);
   }
 
@@ -109,7 +114,22 @@ export function createConversationSkillPlanFromTable(input: {
    * TypeScript（类型脚本） 无法在动态表查找后把 union（联合） 策略的 guard（守卫）
    * 与 buildPlan（构建器） 参数重新关联；断言集中在表边界，避免散落到每个技能分支。
    */
-  return strategy.buildPlan(input.reply, input.params as never);
+  return strategy.buildPlan(input.reply, params as never);
+}
+
+function normalizeCollectPlanParams(params: unknown): unknown {
+  if (!isRecord(params) || typeof params.itemName !== "string") {
+    return params;
+  }
+
+  const normalizedItemName = params.itemName.trim().toLowerCase();
+  if (normalizedItemName !== "item" && normalizedItemName !== "unknown") {
+    return params;
+  }
+
+  const { itemName: _itemName, ...rest } = params;
+
+  return Object.freeze(rest);
 }
 
 function createSkillPlanStrategy<TName extends OnlinePlanSkillName>(input: {
@@ -145,4 +165,8 @@ function isT046DisabledPlanSkill(
   return (
     typeof skill === "string" && (T046_DISABLED_PLAN_SKILLS as readonly string[]).includes(skill)
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

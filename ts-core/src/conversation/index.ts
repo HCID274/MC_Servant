@@ -27,5 +27,6 @@ export * from "./contracts.js";
 export * from "./triage.js";
 export * from "./chat.js";
 export * from "./planning.js";
+export * from "./inventory-diff-cache.js";
 export * from "./recent-context.js";
 export * from "./llm.js";

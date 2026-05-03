@@ -1,5 +1,6 @@
 import { createCancelTemplateReply, createConversationReply } from "../../conversation/chat.js";
 import type { ConversationCompositeTriage } from "../../conversation/contracts.js";
+import { createConversationInventoryDiffCache } from "../../conversation/inventory-diff-cache.js";
 import { createConversationRecentContextStore } from "../../conversation/recent-context.js";
 import {
   createConversationRouteDecision,
@@ -36,6 +37,8 @@ export function createConversationWorkerRuntime(input: {
     ...input.dependencies,
     recentContextStore:
       input.dependencies.recentContextStore ?? createConversationRecentContextStore(),
+    inventoryDiffCache:
+      input.dependencies.inventoryDiffCache ?? createConversationInventoryDiffCache(),
   });
   const createWorker = dependencies.createWorker ?? createDefaultConversationWorker;
 

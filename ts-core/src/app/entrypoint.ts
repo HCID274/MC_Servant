@@ -11,15 +11,14 @@ import {
   type ConversationLlmClient,
   type ConversationLlmDependencies,
   type ConversationLlmDiagnosticRecord,
-  createChatSnapshotContext,
   createConversationLlmClient,
   createConversationLlmConfig,
   createConversationRecentContextStore,
   createMessageTriage,
-  createPlannerSnapshotContext,
 } from "../conversation/index.js";
 import type { RuntimeEventType } from "../core-ports/events.js";
 import { createBotActorStateProjection } from "../core-ports/index.js";
+import type { EnvironmentSnapshot } from "../core-ports/observation.js";
 import {
   type LlmDiagnosticSummary,
   createLlmDiagnosticSummary,
@@ -401,26 +400,11 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     createOnlineConversationTriage(onlineLlmClient);
   const llmReplyGenerator =
     input.dependencies?.conversationWorker?.replyGenerator ??
-    createOnlineConversationReplyGenerator(onlineLlmClient, {
-      readSnapshotContext: (recentContext) =>
-        createOnlineChatSnapshotContext({
-          runtime,
-          ...(latestOwnerPlayerName === undefined ? {} : { ownerName: latestOwnerPlayerName }),
-          ...(recentContext === undefined ? {} : { recentContext }),
-        }),
-    });
+    createOnlineConversationReplyGenerator(onlineLlmClient);
   let resourceService: ResourceServiceBoundary | null = null;
   const onlinePlanner =
     input.dependencies?.conversationWorker?.planner ??
-    createOnlineConversationPlanner(onlineLlmClient, {
-      readSnapshotContext: (resourceContext, recentContext) =>
-        createOnlinePlannerSnapshotContext({
-          runtime,
-          ...(latestOwnerPlayerName === undefined ? {} : { ownerName: latestOwnerPlayerName }),
-          ...(resourceContext === undefined ? {} : { resourceContext }),
-          ...(recentContext === undefined ? {} : { recentContext }),
-        }),
-    });
+    createOnlineConversationPlanner(onlineLlmClient);
 
   try {
     infrastructure = await createAppRuntimeResources(
@@ -556,6 +540,12 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         resourceContextProvider:
           input.dependencies?.conversationWorker?.resourceContextProvider ??
           createOnlineResourceContextProvider(() => resourceService),
+        environmentSnapshotProvider:
+          input.dependencies?.conversationWorker?.environmentSnapshotProvider ??
+          createOnlineConversationEnvironmentSnapshotProvider({
+            readRuntime: () => runtime,
+            readOwnerName: () => latestOwnerPlayerName,
+          }),
         interruptRuntimeSink,
         actorStateProjectionProvider,
         broadcastReplySink: async (reply) => {
@@ -722,24 +712,18 @@ function createOnlineConversationTriage(
  */
 function createOnlineConversationReplyGenerator(
   llm: ConversationLlmClient | undefined,
-  input: {
-    readonly readSnapshotContext: (recentContext?: string) => string | undefined;
-  },
 ): ConversationWorkerRuntimeDependencies["replyGenerator"] | undefined {
   if (llm === undefined) {
     return undefined;
   }
 
-  return async ({ task, memory_context, recent_context }) => {
-    const snapshotContext = input.readSnapshotContext(recent_context);
-
-    return llm.generateChatReply({
+  return async ({ task, memory_context, snapshot_context }) =>
+    llm.generateChatReply({
       message_id: task.message.message_id,
       message: task.message.content,
-      ...(snapshotContext === undefined ? {} : { snapshot_context: snapshotContext }),
+      ...(snapshot_context === undefined ? {} : { snapshot_context }),
       ...(memory_context === undefined ? {} : { memory_context }),
     });
-  };
 }
 
 /**
@@ -749,71 +733,51 @@ function createOnlineConversationReplyGenerator(
  */
 function createOnlineConversationPlanner(
   llm: ConversationLlmClient | undefined,
-  input: {
-    readonly readSnapshotContext: (resourceContext?: string, recentContext?: string) => string;
-  },
 ): ConversationWorkerRuntimeDependencies["planner"] | undefined {
   if (llm === undefined) {
     return undefined;
   }
 
-  return async ({ task, route, memory_context, resource_context, recent_context }) =>
+  return async ({ task, route, memory_context, snapshot_context }) =>
     llm.generateSkillPlan({
       message_id: task.message.message_id,
       message: task.message.content,
-      snapshot_context: input.readSnapshotContext(resource_context, recent_context),
+      snapshot_context:
+        snapshot_context ??
+        "online_runtime: observation unavailable; executable skills: goTo, collect",
       triage_reason: route.triage.reason,
       ...(memory_context === undefined ? {} : { memory_context }),
     });
 }
 
-/** 组装在线 planner（规划器） 的真实环境快照上下文。 */
-function createOnlinePlannerSnapshotContext<TBotId extends string>(input: {
-  readonly runtime: AppRuntimeCoreResources<TBotId> | undefined;
-  readonly ownerName?: string;
-  readonly resourceContext?: string;
-  readonly recentContext?: string;
-}): string {
-  if (input.runtime === undefined) {
-    return createPlannerSnapshotContext({
-      snapshot: null,
-      ...(input.resourceContext === undefined ? {} : { resourceContext: input.resourceContext }),
-      ...(input.recentContext === undefined ? {} : { recentContext: input.recentContext }),
+/** 创建在线 ConversationWorker（对话工作线程） prompt（提示词） 快照 provider（提供器）。 */
+function createOnlineConversationEnvironmentSnapshotProvider<TBotId extends string>(input: {
+  readonly readRuntime: () => AppRuntimeCoreResources<TBotId> | undefined;
+  readonly readOwnerName: () => string | undefined;
+}): NonNullable<ConversationWorkerRuntimeDependencies["environmentSnapshotProvider"]> {
+  return () => {
+    const ownerName = input.readOwnerName();
+
+    return readOnlineEnvironmentSnapshot({
+      runtime: input.readRuntime(),
+      ...(ownerName === undefined ? {} : { ownerName }),
     });
-  }
-
-  const observationInput = input.runtime.transport.readObservationInput(input.ownerName);
-  const snapshot =
-    observationInput === null
-      ? null
-      : input.runtime.observation.refreshFromMineflayer(observationInput);
-
-  return createPlannerSnapshotContext({
-    snapshot,
-    ...(input.resourceContext === undefined ? {} : { resourceContext: input.resourceContext }),
-    ...(input.recentContext === undefined ? {} : { recentContext: input.recentContext }),
-  });
+  };
 }
 
-function createOnlineChatSnapshotContext<TBotId extends string>(input: {
+function readOnlineEnvironmentSnapshot<TBotId extends string>(input: {
   readonly runtime: AppRuntimeCoreResources<TBotId> | undefined;
   readonly ownerName?: string;
-  readonly recentContext?: string;
-}): string | undefined {
+}): EnvironmentSnapshot | null {
   if (input.runtime === undefined) {
-    return undefined;
+    return null;
   }
 
   const observationInput = input.runtime.transport.readObservationInput(input.ownerName);
-  const snapshot =
-    observationInput === null
-      ? null
-      : input.runtime.observation.refreshFromMineflayer(observationInput);
 
-  return createChatSnapshotContext({
-    snapshot,
-    ...(input.recentContext === undefined ? {} : { recentContext: input.recentContext }),
-  });
+  return observationInput === null
+    ? null
+    : input.runtime.observation.refreshFromMineflayer(observationInput);
 }
 
 /** 创建在线 ResourceService（世界感知资源服务） 摘要 provider（提供器）。 */

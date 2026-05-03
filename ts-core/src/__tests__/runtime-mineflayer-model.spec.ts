@@ -827,12 +827,12 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await expect(
       transport.collect({
         itemName: "cobblestone",
-        radius: 8,
+        radius: 32,
       }),
     ).resolves.toMatchObject({
       skill: "collect",
       item_name: "cobblestone",
-      radius: 8,
+      radius: 32,
     });
     expect(collectBot.receivedMovements[0]).toMatchObject({
       canDig: false,
@@ -865,7 +865,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     await expect(
       transport.collect({
-        radius: 8,
+        radius: 32,
         timeoutMs: 300,
       }),
     ).rejects.toThrow("not_found");
@@ -908,7 +908,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     await expect(
       transport.collect({
-        radius: 8,
+        radius: 32,
         timeoutMs: 1000,
       }),
     ).resolves.toMatchObject({
@@ -953,7 +953,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     await expect(
       transport.collect({
-        radius: 8,
+        radius: 32,
         timeoutMs: 1000,
       }),
     ).resolves.toMatchObject({
@@ -997,7 +997,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await expect(
       transport.collect({
         itemName: "cobblestone",
-        radius: 8,
+        radius: 32,
       }),
     ).rejects.toThrow("despawned_or_collected_by_other");
   }, 10_000);
@@ -1045,13 +1045,60 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     });
   });
 
-  it("collect（捡拾） 只能选择 radius（搜索半径） 内的掉落物目标", async () => {
+  it("collect（捡拾） 应在 32 格未命中时自动扩到 64 格搜索", async () => {
     const collectBot = new FakeMineflayerBot();
     collectBot.entity.position = { x: 0, y: 64, z: 0 };
     let gotoCalls = 0;
     collectBot.entities.collectible = {
       id: 9,
-      position: { x: 12, y: 64, z: 0 },
+      position: { x: 40, y: 64, z: 0 },
+      item: {
+        name: "cobblestone",
+      },
+    };
+    collectBot.onGoto = () => {
+      gotoCalls += 1;
+      collectBot.inventoryItems.push({
+        name: "cobblestone",
+        count: 1,
+      });
+      collectBot.entities.collectible = undefined;
+    };
+
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-collect-radius-expand",
+      }),
+      {
+        createBot: () => collectBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    collectBot.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.collect({
+        itemName: "cobblestone",
+        radius: 32,
+        timeoutMs: 1000,
+      }),
+    ).resolves.toMatchObject({
+      radius: 64,
+      collected: [{ name: "cobblestone", count: 1 }],
+    });
+    expect(gotoCalls).toBe(1);
+  });
+
+  it("collect（捡拾） 只能选择最大 radius（搜索半径） 内的掉落物目标", async () => {
+    const collectBot = new FakeMineflayerBot();
+    collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    let gotoCalls = 0;
+    collectBot.entities.collectible = {
+      id: 9,
+      position: { x: 70, y: 64, z: 0 },
       item: {
         name: "cobblestone",
       },
@@ -1077,7 +1124,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await expect(
       transport.collect({
         itemName: "cobblestone",
-        radius: 8,
+        radius: 32,
         timeoutMs: 300,
       }),
     ).rejects.toThrow("not_found");

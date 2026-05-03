@@ -609,14 +609,14 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
           snapshot_ts: 101,
           priority: ExecPriority.Normal,
           skill: SKILL_DIRECTORY.collect,
-          params: { itemName: "cobblestone", radius: 8 },
+          params: { itemName: "cobblestone", radius: 32 },
         }),
       ),
     ).resolves.toMatchObject({
       result: {
         skill: "collect",
         item_name: "cobblestone",
-        radius: 8,
+        radius: 32,
       },
     });
     await expect(
@@ -632,7 +632,7 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
       ),
     ).rejects.toThrow(/not enabled in T-046/);
 
-    expect(executed).toEqual(["collect:cobblestone:8"]);
+    expect(executed).toEqual(["collect:cobblestone:32"]);
     expect(actor.getSnapshot().skill_executions).toEqual([
       {
         message_id: "msg-collect",

@@ -90,19 +90,31 @@ async function collectDrops(input: {
   const inventoryBefore = countInventoryByName(input.bot);
   let totalSteps = 0;
   const skipped: CollectSkillSkippedItem[] = [];
-  let sawTargetEntity = findCollectTargetEntities(input.bot, input.options).length > 0;
+  let options = input.options;
+  let sawTargetEntity = findCollectTargetEntities(input.bot, options).length > 0;
   let confirmedInventoryIncrease = false;
 
-  await moveToCollectCenterIfNeeded(input);
+  await moveToCollectCenterIfNeeded({
+    bot: input.bot,
+    pathfinder: input.pathfinder,
+    pathfinderModule: input.pathfinderModule,
+    options,
+  });
   totalSteps += 1;
 
   await delay(AUTO_COLLECT_SETTLE_MS);
-  const settledTargets = findCollectTargetEntities(input.bot, input.options);
+  let settledTargets = findCollectTargetEntities(input.bot, options);
   sawTargetEntity ||= settledTargets.length > 0;
-  const autoCollected = createCollectedDiff(input.options.itemName, inventoryBefore, input.bot);
+  const autoCollected = createCollectedDiff(options.itemName, inventoryBefore, input.bot);
+
+  if (!sawTargetEntity && options.radius < COLLECT_MAX_RADIUS) {
+    options = expandCollectDropsOptions(options);
+    settledTargets = findCollectTargetEntities(input.bot, options);
+    sawTargetEntity ||= settledTargets.length > 0;
+  }
 
   if (sawTargetEntity && autoCollected.length > 0 && settledTargets.length === 0) {
-    return createCollectResult(input.options, {
+    return createCollectResult(options, {
       bot: input.bot,
       collected: autoCollected,
       skipped,
@@ -110,16 +122,12 @@ async function collectDrops(input: {
     });
   }
 
-  while (Date.now() - startedAt < input.options.timeoutMs) {
-    const targets = findCollectTargetEntities(input.bot, input.options);
+  while (Date.now() - startedAt < options.timeoutMs) {
+    const targets = findCollectTargetEntities(input.bot, options);
     sawTargetEntity ||= targets.length > 0;
 
     if (targets.length === 0) {
-      const collectedSinceStart = createCollectedDiff(
-        input.options.itemName,
-        inventoryBefore,
-        input.bot,
-      );
+      const collectedSinceStart = createCollectedDiff(options.itemName, inventoryBefore, input.bot);
 
       if (sawTargetEntity && collectedSinceStart.length > 0) {
         confirmedInventoryIncrease = true;
@@ -133,7 +141,7 @@ async function collectDrops(input: {
     let madeProgress = false;
 
     for (const target of targets) {
-      if (Date.now() - startedAt >= input.options.timeoutMs) {
+      if (Date.now() - startedAt >= options.timeoutMs) {
         skipped.push(createSkippedItem(target.id, "timeout"));
         continue;
       }
@@ -143,9 +151,9 @@ async function collectDrops(input: {
         bot: input.bot,
         pathfinder: input.pathfinder,
         pathfinderModule: input.pathfinderModule,
-        ...(input.options.itemName === undefined ? {} : { itemName: input.options.itemName }),
+        ...(options.itemName === undefined ? {} : { itemName: options.itemName }),
         target,
-        deadlineMs: startedAt + input.options.timeoutMs,
+        deadlineMs: startedAt + options.timeoutMs,
       });
       totalSteps += 1;
 
@@ -169,10 +177,10 @@ async function collectDrops(input: {
     }
   }
 
-  const collected = createCollectedDiff(input.options.itemName, inventoryBefore, input.bot);
+  const collected = createCollectedDiff(options.itemName, inventoryBefore, input.bot);
 
   if (confirmedInventoryIncrease && collected.length > 0) {
-    return createCollectResult(input.options, {
+    return createCollectResult(options, {
       bot: input.bot,
       collected,
       skipped,
@@ -185,7 +193,7 @@ async function collectDrops(input: {
   }
 
   throw new Error(
-    `Mineflayer did not collect ${input.options.itemName ?? "any item"}; skipped=${formatSkippedItems(
+    `Mineflayer did not collect ${options.itemName ?? "any item"}; skipped=${formatSkippedItems(
       skipped,
     )}`,
   );
@@ -393,6 +401,16 @@ function normalizeCollectDropsOptions(
     useLiveBotCenter: params.center === undefined,
     radius,
     timeoutMs: params.timeoutMs ?? DEFAULT_COLLECT_TIMEOUT_MS,
+  });
+}
+
+function expandCollectDropsOptions(options: CollectDropsOptions): CollectDropsOptions {
+  return Object.freeze({
+    ...(options.itemName === undefined ? {} : { itemName: options.itemName }),
+    center: options.center,
+    useLiveBotCenter: options.useLiveBotCenter,
+    radius: COLLECT_MAX_RADIUS,
+    timeoutMs: options.timeoutMs,
   });
 }
 

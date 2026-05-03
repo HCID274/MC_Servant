@@ -628,6 +628,8 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
     expect(Object.keys(CONVERSATION_SKILL_PLAN_TABLE)).toEqual(["goTo", "collect"]);
     expect(messages[0]?.content).toContain(skillSection);
+    expect(messages[0]?.content).toContain("默认以环境快照 [主人] 坐标作为 collect.params.center");
+    expect(messages[0]?.content).toContain("执行层会在 32 未命中时自动扩到 64 搜索");
     expect(messages[0]?.content).toContain("<skill_name>");
     expect(messages[0]?.content).toContain("<param_name>");
     expect(messages[0]?.content).not.toContain('"blockName":"stone"');
@@ -638,8 +640,9 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
   it("应允许 collect（捡拾） 并拒绝 mine（挖掘） / equip（装备） 进入 T-046（任务四十六） 单技能规划结果", async () => {
     const responses = [
       '{"type":"skill_call","reply":"收到，我去挖石头","skill":"mine","params":{"blockName":"stone","count":2}}',
-      '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":8}}',
+      '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":32}}',
       '{"type":"skill_call","reply":"收到，我去捡附近掉落物","skill":"collect","params":{}}',
+      '{"type":"skill_call","reply":"收到，我去捡附近掉落物","skill":"collect","params":{"itemName":"item","center":{"x":1,"y":64,"z":2},"radius":32}}',
       '{"type":"skill_call","reply":"收到，我先把稿子拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}',
     ];
     const client = createConversationLlmClient(
@@ -690,7 +693,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       skill: "collect",
       params: {
         itemName: "cobblestone",
-        radius: 8,
+        radius: 32,
       },
     });
     await expect(
@@ -704,6 +707,23 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       skill: "collect",
       params: {},
     });
+    const placeholderNamePlan = await client.generateSkillPlan({
+      message_id: "msg-plan-collect-placeholder-name",
+      message: "把这个东西捡起来",
+      snapshot_context:
+        "online_runtime: T-046 only; executable skills: goTo, collect\n[主人] 位置:(1,64,2) 距离:3格 在线:是\n[附近掉落物] Item(item,1格)",
+    });
+    if (placeholderNamePlan.type !== "skill_call") {
+      throw new Error("expected collect skill plan");
+    }
+    expect(placeholderNamePlan).toMatchObject({
+      skill: "collect",
+      params: {
+        center: { x: 1, y: 64, z: 2 },
+        radius: 32,
+      },
+    });
+    expect(placeholderNamePlan.params).not.toHaveProperty("itemName");
     await expect(
       client.generateSkillPlan({
         message_id: "msg-plan-equip",

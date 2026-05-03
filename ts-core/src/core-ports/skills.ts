@@ -27,13 +27,13 @@ export const PHASE1_SKILL_NAMES = Object.freeze([
 ] as const);
 
 /** `collect`（捡拾） 允许的最小搜索半径。 */
-export const COLLECT_MIN_RADIUS = 8;
+export const COLLECT_MIN_RADIUS = 32;
 
 /** `collect`（捡拾） 默认搜索半径。 */
 export const COLLECT_DEFAULT_RADIUS = COLLECT_MIN_RADIUS;
 
 /** `collect`（捡拾） 允许的最大搜索半径。 */
-export const COLLECT_MAX_RADIUS = 32;
+export const COLLECT_MAX_RADIUS = 64;
 
 /** `equip`（装备） 技能允许的目标槽位。 */
 export const EQUIP_DESTINATIONS = Object.freeze([
@@ -85,7 +85,7 @@ export interface CollectSkillParams {
     /** 中心点 Z 坐标。 */
     readonly z: number;
   }>;
-  /** 可选搜索半径；默认 8，允许范围 8 到 32。 */
+  /** 可选搜索半径；默认 32，允许范围 32 到 64。 */
   readonly radius?: number;
   /** 可选执行超时毫秒数。 */
   readonly timeoutMs?: number;

@@ -106,3 +106,11 @@
 - C 审查结论: 曾打回 1 次 (BotActor（机器人执行代理）直接 import（导入） skills（技能）/sandbox（沙盒） formatter（格式化器）,app（应用）解析 recent context（最近上下文）业务 payload（载荷）);B（实现代理）改为 RuntimeRecentEventFormatter（运行时最近事件格式化器）端口注入,并把 sandbox finalize（沙盒终态）消费收敛到 conversation-worker（对话工作线程） sink（汇点） 后通过
 - 关键决策: recent context（最近上下文）使用进程内 round store（轮次存储）按 message_id（消息标识）聚合,10 整轮 LRU（最近最少使用）淘汰,渲染从旧到新且当前 user message（用户消息）不重复注入;超长 sandbox TS（沙盒 TypeScript）只截断代码块并保留同轮报错 / 执行结果;泛指捡拾 prompt（提示词）明确走无 itemName（物品名）的 collect（捡拾）,避免把 item/unknown（未知物）误当目标名
 - 架构冲突: 无
+
+## T-CTX-002 | 2026-05-03 | inventory diff cache（背包差异缓存）三路共享
+
+- 涉及模块: conversation（对话） inventory diff cache（背包差异缓存）,conversation/llm（对话大语言模型） Chat（闲聊）/Plan（规划）/Modify（修改） prompt（提示词）渲染,ConversationWorker（对话工作线程） shared context（共享上下文）构建层,app（应用） environment snapshot provider（环境快照提供器）装配,runtime/transport（运行时传输） collect（捡拾）半径执行修复
+- A 拆解依据: 用户要求按 §7.5 落地 bot_id（机器人标识）维度进程内 baseline（基线）缓存,Chat（闲聊）/Plan（规划）/Modify（修改） 三路在 prompt（提示词）构建时取当前 inventory（背包） 与 baseline（基线）计算 `[背包变化]`,prompt（提示词）渲染后、路径返回前立即推进 baseline（基线）;Cancel（取消）/Triage（分诊）不读写;不改 observation（观测）数据契约、不改 LLM protocol（大语言模型协议）、不动 Mineflayer（Minecraft 协议客户端）本体
+- C 审查结论: 通过;B（实现代理）交互中曾因实服 collect（捡拾）未执行有效动作返修,后续按用户补充边界把 collect（捡拾）默认半径调为 32、最大 64,并把 32 未命中后扩到 64 的搜索收敛在 runtime transport（运行时传输）执行层
+- 关键决策: inventory diff（背包差异）不放 observation（观测）事件时钟,而由 ConversationWorker（对话工作线程）共享上下文在 LLM（大语言模型）路径出口推进 baseline（基线）;`[背包变化]` 只渲染单 delta（增量）文本如 `oak_log+5, cobblestone-2`;泛指捡拾默认以主人坐标为 center（圆心）,执行层负责扩半径,避免让 LLM（大语言模型）编排二次 collect（捡拾）
+- 架构冲突: 无
