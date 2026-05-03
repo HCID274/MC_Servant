@@ -300,6 +300,12 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly enqueueExecTaskSink?: ConversationEnqueueExecTaskSink;
   /** 当前是否已有活跃任务。 */
   readonly hasActiveTask?: () => boolean;
+  /** 主人消息活跃心跳；BrainWorker（大脑工作线程） 会话静默检测只读消费。 */
+  readonly ownerMessageActivitySink?: (input: {
+    readonly bot_id: string;
+    readonly message_id: string;
+    readonly at: Date;
+  }) => void | Promise<void>;
   /** 可注入 BullMQ（任务队列） Worker 工厂。 */
   readonly createWorker?: CreateConversationBullmqWorker;
 }

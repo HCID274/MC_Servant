@@ -22,6 +22,7 @@ import { createBotActorStateProjection } from "../core-ports/index.js";
 import type { EnvironmentSnapshot } from "../core-ports/observation.js";
 import {
   type IntentEpochStore,
+  createPostgresBrainMemoryStore,
   createPostgresTaskEventPersister,
   createRedisIntentEpochStore,
 } from "../db/index.js";
@@ -30,6 +31,7 @@ import {
   createLlmDiagnosticSummary,
   createLocalConversationReplyLogSink,
   createLocalLlmDiagnosticLogSink,
+  createLocalTaskLogExcerptReader,
 } from "../diagnostics/index.js";
 import {
   type InterfaceBotStatusSnapshot,
@@ -50,12 +52,14 @@ import {
   type BotWorkerRuntimeDependencies,
   type BrainWorkerRuntime,
   type BrainWorkerRuntimeDependencies,
+  type BullmqQueueLike,
   type ConversationWorkerRuntime,
   type ConversationWorkerRuntimeDependencies,
   createBotWorkerRuntime,
   createBrainWorkerRuntime,
   createConversationBotWorkerActionSink,
   createConversationWorkerRuntime,
+  createOpenAiCompatibleBrainWorkerLlmClient,
   createOpenAiCompatibleEmbeddingGenerator,
 } from "../workers/index.js";
 import { createResourceService } from "../world-model/index.js";
@@ -393,6 +397,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   let latestLlmDiagnostic: LlmDiagnosticSummary | null = null;
   let latestIntentEpoch = 0;
   let latestOwnerPlayerName: string | undefined;
+  const latestOwnerMessageAtByBot = new Map<string, Date>();
   const replayStore = createOnlineEventReplayStore(input.bootstrap.bot_id);
   const recentContextStore =
     input.dependencies?.conversationWorker?.recentContextStore ??
@@ -490,6 +495,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       appendRealtimeEvent: appendOnlineRealtimeEvent,
       enqueueConversationTask: async ({ frame, receivedAt }) => {
         latestOwnerPlayerName = frame.player_name;
+        latestOwnerMessageAtByBot.set(input.bootstrap.bot_id, new Date(receivedAt));
         const intentEpoch = await intentEpochStore.next(input.bootstrap.bot_id);
         const controlDecision = matchInterfaceControlFastPath(frame.content);
 
@@ -574,6 +580,14 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       createPostgresTaskEventPersister({
         db: infrastructure.postgres.db,
       });
+    const brainMemoryStore = supportsPostgresBrainMemoryStore(infrastructure.postgres.db)
+      ? createPostgresBrainMemoryStore({
+          db: infrastructure.postgres.db,
+        })
+      : undefined;
+    const brainLlmClient =
+      input.dependencies?.brainWorker?.llm ??
+      createOnlineBrainWorkerLlmClient(input.bootstrap, input.dependencies?.llm);
 
     brainWorker = createBrainWorkerRuntime({
       queue: {
@@ -584,6 +598,39 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         ...(input.dependencies?.brainWorker ?? {}),
         generateEmbedding: brainEmbeddingGenerator,
         persistTaskEvent: taskEventPersister,
+        ...(brainLlmClient === undefined ? {} : { llm: brainLlmClient }),
+        ...(input.dependencies?.brainWorker?.loadRollingSummary !== undefined
+          ? { loadRollingSummary: input.dependencies.brainWorker.loadRollingSummary }
+          : brainMemoryStore === undefined
+            ? {}
+            : { loadRollingSummary: brainMemoryStore.loadRollingSummary }),
+        ...(input.dependencies?.brainWorker?.writeRollingSummary !== undefined
+          ? { writeRollingSummary: input.dependencies.brainWorker.writeRollingSummary }
+          : brainMemoryStore === undefined
+            ? {}
+            : { writeRollingSummary: brainMemoryStore.writeRollingSummary }),
+        ...(input.dependencies?.brainWorker?.updateTaskEventTakeaway !== undefined
+          ? { updateTaskEventTakeaway: input.dependencies.brainWorker.updateTaskEventTakeaway }
+          : brainMemoryStore === undefined
+            ? {}
+            : { updateTaskEventTakeaway: brainMemoryStore.updateTaskEventTakeaway }),
+        readTaskLogExcerpt:
+          input.dependencies?.brainWorker?.readTaskLogExcerpt ??
+          createLocalTaskLogExcerptReader({
+            baseDir: input.bootstrap.config.logs.baseDir,
+          }),
+        sessionSilence: {
+          ...(input.dependencies?.brainWorker?.sessionSilence ?? {}),
+          isBrainQueueIdle:
+            input.dependencies?.brainWorker?.sessionSilence?.isBrainQueueIdle ??
+            (() => isOnlineBrainQueueIdle(onlineServices.workers.brain.queue)),
+          hasActiveTask:
+            input.dependencies?.brainWorker?.sessionSilence?.hasActiveTask ??
+            (() => createdRuntime.actor.getSnapshot().current_task !== null),
+          getLastOwnerMessageAt:
+            input.dependencies?.brainWorker?.sessionSilence?.getLastOwnerMessageAt ??
+            ((botId) => latestOwnerMessageAtByBot.get(botId)),
+        },
       },
     });
     await brainWorker.start();
@@ -658,6 +705,11 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
           createOnlineConversationEnvironmentSnapshotProvider({
             readRuntime: () => runtime,
             readOwnerName: () => latestOwnerPlayerName,
+          }),
+        ownerMessageActivitySink:
+          input.dependencies?.conversationWorker?.ownerMessageActivitySink ??
+          ((activity) => {
+            latestOwnerMessageAtByBot.set(activity.bot_id, activity.at);
           }),
         interruptRuntimeSink,
         actorStateProjectionProvider,
@@ -1090,6 +1142,62 @@ function createOnlineBrainEmbeddingGenerator<TBotId extends string>(
       timeout_ms: 15_000,
     },
     fetchImpl === undefined ? {} : { fetch: fetchImpl },
+  );
+}
+
+/** 创建在线 BrainWorker（大脑工作线程） LLM（大语言模型） 客户端。 */
+function createOnlineBrainWorkerLlmClient<TBotId extends string>(
+  bootstrap: AppBootstrapContract<TBotId>,
+  llmDependencies: AppOnlineLlmDependencies | undefined,
+): BrainWorkerRuntimeDependencies["llm"] {
+  if (!bootstrap.llm.enabled) {
+    return undefined;
+  }
+
+  const apiKey = llmDependencies?.api_key;
+  if (apiKey === undefined) {
+    throw new Error("LLM_API_KEY must be injected for BrainWorker LLM");
+  }
+  const fetchImpl = llmDependencies?.fetch;
+
+  return createOpenAiCompatibleBrainWorkerLlmClient(
+    createConversationLlmConfig({
+      base_url: bootstrap.llm.base_url ?? "",
+      api_key: apiKey,
+      model: bootstrap.llm.model ?? "",
+      enable_thinking: bootstrap.llm.enable_thinking,
+      reasoning_effort: bootstrap.llm.reasoning_effort,
+      force_thinking_models: bootstrap.llm.force_thinking_models,
+      bot_name: bootstrap.bot_id,
+      owner_name: "主人",
+      timeout_ms: 15_000,
+    }),
+    fetchImpl === undefined ? {} : { fetch: fetchImpl },
+  );
+}
+
+/** 判断在线 brain（大脑） 队列是否空闲；不支持计数的测试替身按空闲处理。 */
+async function isOnlineBrainQueueIdle(queue: BullmqQueueLike): Promise<boolean> {
+  if (queue.getJobCounts === undefined) {
+    return true;
+  }
+
+  const counts = await queue.getJobCounts("active", "waiting", "delayed", "prioritized", "paused");
+
+  return Object.values(counts).every((count) => count === 0);
+}
+
+function supportsPostgresBrainMemoryStore(db: unknown): boolean {
+  const candidate = db as {
+    readonly select?: unknown;
+    readonly insert?: unknown;
+    readonly update?: unknown;
+  };
+
+  return (
+    typeof candidate.select === "function" &&
+    typeof candidate.insert === "function" &&
+    typeof candidate.update === "function"
   );
 }
 

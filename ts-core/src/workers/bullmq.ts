@@ -6,7 +6,7 @@
  * 3. 依赖注入：提供自定义 Queue 工厂注入能力，支持无真实 Redis 环境下的测试验证。
  */
 
-import { Queue, type QueueOptions } from "bullmq";
+import { type JobType, Queue, type QueueOptions } from "bullmq";
 
 import type { RedisClientLike, RedisRuntimeResource } from "../db/index.js";
 import type { BrainQueueName, ExecQueueName, MessageQueueName, WorkerQueueName } from "./queues.js";
@@ -25,6 +25,8 @@ export interface BullmqQueueLike<TName extends WorkerQueueName = WorkerQueueName
       priority?: number;
     }>,
   ): Promise<Readonly<{ id?: string | number }>>;
+  /** 读取队列计数，供 idle（空闲） 诊断和静默检测使用。 */
+  getJobCounts?(...types: readonly JobType[]): Promise<Readonly<Record<string, number>>>;
   /** 关闭队列句柄。 */
   close(): Promise<unknown>;
 }
@@ -89,6 +91,7 @@ function createBullmqQueue<TName extends WorkerQueueName>(input: {
         priority?: number;
       }>,
     ) => queue.add(name, data, options),
+    getJobCounts: async (...types: readonly JobType[]) => queue.getJobCounts(...types),
     close: async () => queue.close(),
   };
 

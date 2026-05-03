@@ -162,3 +162,11 @@
 - C 审查结论: 曾打回 2 次 (首次真实 embedding API（向量接口）未跑通且任务卡无法落库;二次返修只验证 probe（探测脚本）未接通 main（主入口）环境装配);B（实现代理）补齐主程 `EMBEDDING_*`（向量配置）装配并完成真实主程链路验证后通过
 - 关键决策: 选择独立 embedding endpoint（向量端点）配置,不复用 LLM（大语言模型） base_url（基础地址）硬拼路径;BotWorker（机器人工作线程）只产任务卡,BrainWorker（大脑工作线程）独占 embedding（向量嵌入）与落库,app（应用）只做依赖装配
 - 架构冲突: 无
+
+## T-BRAIN-003 | 2026-05-03 | A.5 滚动摘要维护与触发式 takeaway（要点）
+
+- 涉及模块: workers/brain-worker（大脑工作线程）,workers/brain-llm（大脑大语言模型客户端）,db/brain-memory（大脑记忆数据库端口）,diagnostics/task-log-reader（任务日志读取器）,app/entrypoint（应用入口）,conversation-worker（对话工作线程）主人消息 activity heartbeat（活跃心跳）
+- A 拆解依据: 用户要求按 05_DATA_SPEC.md §7-②/③ 落地 failed takeaway（失败要点）、session silence takeaway（会话静默要点）与 A.5 bot_rolling_summary（滚动摘要）追加/重压;BrainWorker（大脑工作线程）独占 B 层/A.5 写入,app（应用）只做依赖装配,ConversationWorker（对话工作线程）仅提供静默检测所需的主人消息心跳
+- C 审查结论: 通过
+- 关键决策: 选择注入式 LLM（大语言模型）端口、PostgreSQL（关系型数据库）端口与 JSONL（结构化日志）前 50 行读取器,不让 app（应用）解释 takeaway（要点）业务;失败 takeaway（要点）在 task_events（任务事件）插入后 update（更新）,滚动摘要超过 2000 字才触发同模型重压到 1000 字内,会话静默以主人消息心跳、brain queue（大脑队列）idle（空闲）与 BotActor（机器人执行代理）活跃任务三条件共同判定
+- 架构冲突: 无

@@ -40,6 +40,11 @@ export function createConversationWorkerRuntime(input: {
 
   const processTask = async (job: { readonly data: unknown }): Promise<void> => {
     const task = cloneWorkerTask(job.data);
+    await dependencies.ownerMessageActivitySink?.({
+      bot_id: task.bot_id,
+      message_id: task.message.message_id,
+      at: new Date(task.message.snapshot_ts),
+    });
     const triage = await (dependencies.triage?.({ task }) ?? createDefaultTriage());
     await handleCompositeTriage({
       task,
