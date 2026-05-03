@@ -12,6 +12,7 @@ import {
   createServerBridgeEventEnvelope,
   createSessionRecord,
   createWebMessageEnvelope,
+  matchInterfaceControlFastPath,
 } from "../index.js";
 import {
   createGameChatIngressDecision as createGameChatIngressDecisionFromInterfaces,
@@ -174,6 +175,19 @@ describe("interfaces ingress（入口） 契约", () => {
       channel: GAME_CHAT_CHANNEL,
       timestamp: "2026-04-14T00:14:00.000Z",
     });
+  });
+
+  it("应只精确匹配 control fast-path（控制快路径） 控制词", () => {
+    expect(matchInterfaceControlFastPath("取消")).toEqual({
+      command: "cancel",
+      reason: "control_cancel",
+    });
+    expect(matchInterfaceControlFastPath(" 别动 ")).toEqual({
+      command: "interrupt",
+      reason: "control_interrupt",
+    });
+    expect(matchInterfaceControlFastPath("取消一下")).toBeNull();
+    expect(matchInterfaceControlFastPath("先停下")).toBeNull();
   });
 
   it("应允许发送者标识与内部 owner_id（主人标识） 不同但已完成绑定解析的主人命令进入主线", () => {

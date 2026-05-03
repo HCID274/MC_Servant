@@ -1,3 +1,4 @@
+import { createRedisIntentEpochStore } from "../../db/index.js";
 import type { LlmDiagnosticSummary } from "../../diagnostics/index.js";
 import type {
   InterfaceBotStatusSnapshot,
@@ -8,11 +9,10 @@ import type {
 import {
   createInterfaceServerRuntime,
   createMessageAcceptedResponse,
-  matchInterfaceControlFastPath,
   createReplayResponse,
   createStatusResponse,
+  matchInterfaceControlFastPath,
 } from "../../interfaces/index.js";
-import { createRedisIntentEpochStore } from "../../db/index.js";
 import { createConversationWorkerTask, createWorkerBullmqRuntime } from "../../workers/index.js";
 import type { WorkerBullmqRuntime } from "../../workers/index.js";
 import { createAppDefaultInterfaceStatusSnapshot } from "./directories.js";

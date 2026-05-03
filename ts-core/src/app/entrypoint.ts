@@ -20,6 +20,7 @@ import {
 import type { RuntimeEventType } from "../core-ports/events.js";
 import { createBotActorStateProjection } from "../core-ports/index.js";
 import type { EnvironmentSnapshot } from "../core-ports/observation.js";
+import { type IntentEpochStore, createRedisIntentEpochStore } from "../db/index.js";
 import {
   type LlmDiagnosticSummary,
   createLlmDiagnosticSummary,
@@ -38,10 +39,6 @@ import {
   matchInterfaceControlFastPath,
   registerServerBridgeWsRoute,
 } from "../interfaces/index.js";
-import {
-  type IntentEpochStore,
-  createRedisIntentEpochStore,
-} from "../db/index.js";
 import { createConversationWorkerTask } from "../workers/contracts.js";
 import {
   type BotWorkerAction,
@@ -700,9 +697,9 @@ function createOnlineControlFastPathSink<TBotId extends string>(input: {
   readonly botId: TBotId;
   readonly readRuntime: () => AppRuntimeCoreResources<TBotId> | undefined;
   readonly appendRealtimeEvent: (event: Omit<RealtimeEventEnvelope, "seq">) => Promise<void>;
-  readonly customBroadcastSink?: NonNullable<
-    ConversationWorkerRuntimeDependencies["broadcastReplySink"]
-  > | undefined;
+  readonly customBroadcastSink?:
+    | NonNullable<ConversationWorkerRuntimeDependencies["broadcastReplySink"]>
+    | undefined;
 }): NonNullable<AppRuntimeServiceDependencies["controlFastPathSink"]> {
   return async (controlInput) => {
     if (controlInput.bot_id !== input.botId) {
@@ -727,9 +724,9 @@ async function handleOnlineControlFastPath<TBotId extends string>(input: {
   readonly decision: InterfaceControlFastPathDecision;
   readonly readRuntime: () => AppRuntimeCoreResources<TBotId> | undefined;
   readonly appendRealtimeEvent: (event: Omit<RealtimeEventEnvelope, "seq">) => Promise<void>;
-  readonly customBroadcastSink?: NonNullable<
-    ConversationWorkerRuntimeDependencies["broadcastReplySink"]
-  > | undefined;
+  readonly customBroadcastSink?:
+    | NonNullable<ConversationWorkerRuntimeDependencies["broadcastReplySink"]>
+    | undefined;
 }): Promise<void> {
   void input.content;
   const runtime = input.readRuntime();

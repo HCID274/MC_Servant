@@ -43,6 +43,7 @@ describe("interfaces（接口边界） 消息入队链路", () => {
         }),
       },
       now: () => messageTimes.shift() ?? "2026-04-15T00:00:07.000Z",
+      intentEpochStore: createMemoryIntentEpochStore(),
     });
 
     const firstResponse = await services.http.server.inject({
@@ -92,6 +93,7 @@ describe("interfaces（接口边界） 消息入队链路", () => {
         bot_id: "bot-msg",
         message_id: "msg-http-queue",
         content: "你好",
+        intent_epoch: 1,
       },
     });
     expect(addedJobs[0]?.data).toMatchObject({
@@ -103,6 +105,7 @@ describe("interfaces（接口边界） 消息入队链路", () => {
     expect(addedJobs[1]?.data).toMatchObject({
       message: {
         message_id: "msg-http-queue-2",
+        intent_epoch: 2,
         snapshot_ts: Date.parse("2026-04-15T00:00:06.000Z"),
       },
     });
@@ -110,3 +113,21 @@ describe("interfaces（接口边界） 消息入队链路", () => {
     await services.close();
   });
 });
+
+function createMemoryIntentEpochStore(): {
+  readonly next: () => Promise<number>;
+  readonly read: () => Promise<number>;
+} {
+  let epoch = 0;
+
+  return {
+    async next() {
+      epoch += 1;
+
+      return epoch;
+    },
+    async read() {
+      return epoch;
+    },
+  };
+}

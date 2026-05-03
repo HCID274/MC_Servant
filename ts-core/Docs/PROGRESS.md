@@ -130,3 +130,19 @@
 - C 审查结论: 通过;用户实服曾打回 1 次 (喊停/取消后 Bot（机器人）状态变为空闲但 Mineflayer pathfinder（寻路器）仍继续移动);B（实现代理）新增 `stopCurrentAction()`（停止当前动作） transport port（传输端口）并由 BotActor（机器人执行代理） interrupt（中断）时调用,用户确认手测通过
 - 关键决策: ConversationWorker（对话工作线程） 按 cancel（取消）→reply（回复）→action（动作） 顺序串联 composite（复合）片段,不新增 modify（修改）专用 handler（处理器）;停止物理动作收敛在 runtime transport（运行时传输）端口内调用 pathfinder（寻路器）停止与控制键清理,不让 ConversationWorker（对话工作线程）直接接触 Mineflayer（Minecraft 协议客户端）实现
 - 架构冲突: 无
+
+## T-CONV-003 | 2026-05-03 | control fast-path（控制快路径）入口接入与取消词去重
+
+- 涉及模块: interfaces（接口） control fast-path（控制快路径）匹配,app/bootstrap（应用装配） HTTP（超文本传输协议）消息入口,app/entrypoint（应用入口） server-bridge（服务端桥接）消息入口,BotActor（机器人执行代理） interrupt（中断）端口,ConversationWorker（对话工作线程） triage（分诊）创建器
+- A 拆解依据: 用户要求按 01_ARCHITECTURE.md §3.2/§3.3/§4.2 把“停 / 别动 / 取消”等精确 control（控制）词前移到 API gateway（接口网关）/消息接入层,命中后不入 `msg:{botId}` 队列,直接调用 BotActor.interrupt（机器人执行代理中断）并广播模板回复返回 202;同时删除 ConversationWorker（对话工作线程） triage（分诊）创建器里的重复取消词数组
+- C 审查结论: 通过
+- 关键决策: control（控制）词只在 interfaces（接口）边界做精确匹配,HTTP（超文本传输协议）与 server-bridge（服务端桥接）入口共享同一 matcher（匹配器）;命中后只走 BotActor（机器人执行代理）中断、模板 reply（回复）与 realtime/replay（实时/补拉）事件,不再让 triage（分诊）兜底短路或生成回复
+- 架构冲突: 无
+
+## T-CONV-004 | 2026-05-03 | intent_epoch（意图纪元）Redis INCR（缓存自增命令）单调源接入
+
+- 涉及模块: db（数据库/缓存） Redis（缓存） key（键）与 IntentEpochStore（意图纪元存储）端口,app/bootstrap（应用装配） HTTP（超文本传输协议）消息入口,app/entrypoint（应用入口） server-bridge（服务端桥接）入队,BotWorker（机器人工作线程） epoch（纪元）校验,BotActor（机器人执行代理） interrupt（中断）信号,status（状态）投影
+- A 拆解依据: 用户要求 `intent_epoch`（意图纪元）以 `Redis INCR bot:{botId}:intent_epoch`（缓存自增键）作为唯一单调源,贯穿消息接入层取号、ConversationMessageContext（对话消息上下文）装配、BotWorker（机器人工作线程）过期任务丢弃与 BotActor（机器人执行代理）中断信号;覆盖 01_ARCHITECTURE.md §9.2 中的 epoch（纪元）闸门
+- C 审查结论: 通过
+- 关键决策: 真实路径默认由 Redis INCR（缓存自增命令）取号、Redis GET（缓存读取命令）读当前 epoch（纪元）,测试路径通过同一 IntentEpochStore（意图纪元存储）端口注入内存实现;BotWorker（机器人工作线程）改为异步读取当前 epoch（纪元）,使 `job.intent_epoch < currentEpoch`（任务纪元小于当前纪元）丢弃闸门接上真实单调源
+- 架构冲突: 无

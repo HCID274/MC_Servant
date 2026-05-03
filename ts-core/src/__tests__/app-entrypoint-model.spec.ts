@@ -995,18 +995,9 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
 
       expect(queueAdds.map((item) => [item.queue, item.jobName, item.jobId])).toEqual([
         ["msg:bot-bridge-conversation", "conversation", "msg-svs-chat"],
-        ["msg:bot-bridge-conversation", "conversation", "msg-svs-cancel"],
       ]);
       expect(llmRequests).toHaveLength(2);
-      expect(interrupts).toEqual([
-        {
-          source: {
-            type: "triage",
-            intent_epoch: 0,
-          },
-          reason: "online_explicit_cancel",
-        },
-      ]);
+      expect(interrupts).toEqual([]);
       expect(replayBody.events.map((event: { type: string }) => event.type)).toEqual([
         "server_bridge.connected",
         "server_bridge.hello",
@@ -1014,7 +1005,6 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         "task.accepted",
         "chat.reply",
         "server_bridge.player_message",
-        "task.accepted",
         "chat.reply",
       ]);
       expect(replayBody.events).toContainEqual(
@@ -1353,7 +1343,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           payload: {
             job_id: "job-online",
             message_id: "msg-online-http",
-            epoch: 0,
+            epoch: 1,
           },
         },
       ],
@@ -2345,12 +2335,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     await runtime.close();
   });
 
-  it("应在真实在线入口保留 cancel（取消） 的分诊语义并跳过 LLM（大语言模型） 调用", async () => {
+  it("应在真实在线入口把 cancel（取消） 走 control fast-path（控制快路径） 且不入队", async () => {
     const llmRequests: Array<{ url: string; body: unknown }> = [];
-    const interrupts: unknown[] = [];
+    const queueAdds: unknown[] = [];
     const chats: string[] = [];
     const customBroadcasts: unknown[] = [];
-    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const bootstrap = createAppBootstrapContract({
       botId: "bot-cancel-online",
       now: "2026-04-24T10:00:00.000Z",
@@ -2410,7 +2399,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           workers: {
             createQueue: ({ name }) => ({
               name,
-              add: async () => ({ id: "job-online" }),
+              add: async (jobName, data, options) => {
+                queueAdds.push({ name, jobName, data, options });
+
+                return { id: "job-online" };
+              },
               close: async () => undefined,
             }),
           },
@@ -2446,43 +2439,32 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           broadcastReplySink: async (reply) => {
             customBroadcasts.push(reply);
           },
-          interruptRuntimeSink: async ({ signal }) => {
-            interrupts.push(signal);
-          },
-          createWorker: ({ processor: capturedProcessor }) => {
-            processor = capturedProcessor;
-
-            return {
-              close: async () => undefined,
-            };
-          },
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
         },
       },
     });
 
-    await processor?.({
-      data: createConversationWorkerTask({
+    const response = await runtime.services.http.server.inject({
+      method: "POST",
+      url: "/api/message",
+      payload: {
         bot_id: "bot-cancel-online",
-        message: {
-          bot_id: "bot-cancel-online",
-          message_id: "msg-online-cancel",
-          content: "取消",
-          intent_epoch: 2,
-          snapshot_ts: 1_713_952_800_001,
-        },
-      }),
+        message_id: "msg-online-cancel",
+        content: "取消",
+      },
     });
 
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({
+      accepted: true,
+      bot_id: "bot-cancel-online",
+      job_id: "msg-online-cancel",
+      message_id: "msg-online-cancel",
+    });
+    expect(queueAdds).toEqual([]);
     expect(llmRequests).toEqual([]);
-    expect(interrupts).toEqual([
-      {
-        source: {
-          type: "triage",
-          intent_epoch: 2,
-        },
-        reason: "online_explicit_cancel",
-      },
-    ]);
     expect(customBroadcasts).toEqual([
       {
         message_id: "msg-online-cancel",
@@ -2490,18 +2472,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       },
     ]);
     expect(chats).toEqual(["chat:好的，已经停下来了喵~"]);
-    expect(runtime.conversation_worker.getEvents()).toContainEqual({
-      type: "chat.reply",
-      bot_id: "bot-cancel-online",
-      message_id: "msg-online-cancel",
-      content: "好的，已经停下来了喵~",
-    });
-    expect(runtime.conversation_worker.getEvents()).toContainEqual({
-      type: "cancel.logged",
-      bot_id: "bot-cancel-online",
-      message_id: "msg-online-cancel",
-      reason: "online_explicit_cancel",
-    });
+    expect(runtime.conversation_worker.getEvents()).toEqual([]);
     const replayResponse = await runtime.services.http.server.inject({
       method: "GET",
       url: "/api/replay?bot_id=bot-cancel-online&after_seq=0&limit=10",
@@ -2519,6 +2490,16 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           },
         },
       ],
+    });
+    const statusResponse = await runtime.services.http.server.inject({
+      method: "GET",
+      url: "/api/status?bot_id=bot-cancel-online",
+    });
+
+    expect(statusResponse.json()).toMatchObject({
+      bot: {
+        intent_epoch: 1,
+      },
     });
 
     await runtime.close();

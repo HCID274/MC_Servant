@@ -17,6 +17,7 @@ import {
   createPostgresConnectionDescriptor,
   createPostgresRuntimePoolConfig,
   createRedisConnectionDescriptor,
+  createRedisIntentEpochStore,
   createRedisKeyCatalog,
   createRedisRuntimeClientOptions,
 } from "../index.js";
@@ -229,5 +230,36 @@ describe("db 与配置契约", () => {
         last_updated: 2,
       }),
     ).toThrow("current_task.job_id must be a non-empty string");
+  });
+
+  it("应通过 Redis INCR（缓存自增命令） 提供 intent_epoch（意图纪元） 单调源", async () => {
+    const calls: string[] = [];
+    let epoch = 0;
+    const store = createRedisIntentEpochStore({
+      client: {
+        async incr(key) {
+          calls.push(`incr:${key}`);
+          epoch += 1;
+
+          return epoch;
+        },
+        async get(key) {
+          calls.push(`get:${key}`);
+
+          return String(epoch);
+        },
+      },
+    });
+
+    await expect(store.read("bot-epoch")).resolves.toBe(0);
+    await expect(store.next("bot-epoch")).resolves.toBe(1);
+    await expect(store.next("bot-epoch")).resolves.toBe(2);
+    await expect(store.read("bot-epoch")).resolves.toBe(2);
+    expect(calls).toEqual([
+      "get:bot:bot-epoch:intent_epoch",
+      "incr:bot:bot-epoch:intent_epoch",
+      "incr:bot:bot-epoch:intent_epoch",
+      "get:bot:bot-epoch:intent_epoch",
+    ]);
   });
 });
