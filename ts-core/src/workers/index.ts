@@ -31,6 +31,7 @@ export const workersModuleBoundary = {
     "createBrainWorkerRuntime",
     "createOpenAiCompatibleEmbeddingGenerator",
     "createOpenAiCompatibleBrainWorkerLlmClient",
+    "scanBrainMemoryContentSafety",
   ],
 } satisfies ModuleBoundary;
 
@@ -42,3 +43,4 @@ export * from "./bot-worker.js";
 export * from "./brain-worker.js";
 export * from "./embedding-client.js";
 export * from "./brain-llm.js";
+export * from "./brain-memory-safety.js";

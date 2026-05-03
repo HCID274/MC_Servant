@@ -1,5 +1,6 @@
 import type { TaskFailedErrorSnapshot } from "../../core-ports/events.js";
 import type { ExecutionTaskKind } from "../../core-ports/foundation.js";
+import type { SnapshotPosition } from "../../core-ports/observation.js";
 import type { ExecPriority, TaskHistoryStatus } from "../../core-ports/tasking.js";
 import { assertNonEmptyString } from "../../domain/invariants.js";
 
@@ -56,6 +57,8 @@ export interface BrainTaskCard {
   readonly intent_epoch: number;
   /** 规划时快照时间戳。 */
   readonly snapshot_ts: number;
+  /** 主人发话时坐标；用于 BrainWorker（大脑工作线程） 解析“这里”等指示语。 */
+  readonly owner_position_at_message?: SnapshotPosition;
   /** 执行队列优先级。 */
   readonly priority: ExecPriority;
   /** 主人原文。 */
@@ -113,6 +116,9 @@ export function createBrainTaskCard(input: BrainTaskCard): BrainTaskCard {
     message_id: input.message_id,
     intent_epoch: input.intent_epoch,
     snapshot_ts: input.snapshot_ts,
+    ...(input.owner_position_at_message === undefined
+      ? {}
+      : { owner_position_at_message: cloneSnapshotPosition(input.owner_position_at_message) }),
     priority: input.priority,
     owner_text: input.owner_text,
     execution: Object.freeze({ ...input.execution }),
@@ -188,6 +194,14 @@ function assertFiniteNumber(value: number, name: string): void {
   if (!Number.isFinite(value)) {
     throw new Error(`${name} must be finite`);
   }
+}
+
+function cloneSnapshotPosition(position: SnapshotPosition): SnapshotPosition {
+  assertFiniteNumber(position.x, "owner_position_at_message.x");
+  assertFiniteNumber(position.y, "owner_position_at_message.y");
+  assertFiniteNumber(position.z, "owner_position_at_message.z");
+
+  return Object.freeze({ x: position.x, y: position.y, z: position.z });
 }
 
 function assertPositiveInteger(

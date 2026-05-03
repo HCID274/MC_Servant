@@ -1,5 +1,5 @@
 import { createChatSnapshotContext, createPlannerSnapshotContext } from "../../conversation/llm.js";
-import type { EnvironmentSnapshot } from "../../core-ports/observation.js";
+import type { EnvironmentSnapshot, SnapshotPosition } from "../../core-ports/observation.js";
 import type { ConversationWorkerTask } from "../contracts.js";
 import type { ConversationWorkerRuntimeDependencies } from "./types.js";
 
@@ -9,6 +9,8 @@ export interface ConversationPromptSnapshotContext {
   readonly snapshot_context?: string;
   /** `[背包变化]` 行内容；用于本地诊断日志。 */
   readonly inventory_change_context?: string;
+  /** ConversationWorker（对话工作线程） 同轮快照中的主人坐标。 */
+  readonly owner_position_at_message?: SnapshotPosition;
   /** prompt（提示词） 渲染完成后必须调用，用于推进 inventory baseline（背包基线）。 */
   advanceInventoryBaseline(): void;
 }
@@ -37,6 +39,7 @@ export async function createChatPromptSnapshotContext(input: {
     ...(inventoryDiffContext?.inventoryChangeContext === undefined
       ? {}
       : { inventory_change_context: inventoryDiffContext.inventoryChangeContext }),
+    ...createOwnerPositionAtMessageField(snapshot),
     advanceInventoryBaseline() {
       inventoryDiffContext?.advanceBaseline();
     },
@@ -66,10 +69,25 @@ export async function createPlanPromptSnapshotContext(input: {
     ...(inventoryDiffContext?.inventoryChangeContext === undefined
       ? {}
       : { inventory_change_context: inventoryDiffContext.inventoryChangeContext }),
+    ...createOwnerPositionAtMessageField(snapshot),
     advanceInventoryBaseline() {
       inventoryDiffContext?.advanceBaseline();
     },
   });
+}
+
+function createOwnerPositionAtMessageField(snapshot: EnvironmentSnapshot | null): {
+  readonly owner_position_at_message?: SnapshotPosition;
+} {
+  return snapshot?.owner?.position === undefined
+    ? {}
+    : {
+        owner_position_at_message: Object.freeze({
+          x: snapshot.owner.position.x,
+          y: snapshot.owner.position.y,
+          z: snapshot.owner.position.z,
+        }),
+      };
 }
 
 async function readEnvironmentSnapshot(input: {

@@ -47,6 +47,7 @@ export async function handlePlanExecRoute(input: {
   let resourceContext: string | undefined;
   let recentContext: string | undefined;
   let inventoryChangeContext: string | undefined;
+  let ownerPositionAtMessage = input.task.message.owner_position_at_message;
   try {
     recentContext = await readRecentContext(input);
     memoryContext = await readMemoryContext(input);
@@ -58,6 +59,7 @@ export async function handlePlanExecRoute(input: {
       ...(recentContext === undefined ? {} : { recent_context: recentContext }),
     });
     inventoryChangeContext = promptContext.inventory_change_context;
+    ownerPositionAtMessage ??= promptContext.owner_position_at_message;
 
     try {
       plan = await input.dependencies.planner({
@@ -203,6 +205,9 @@ export async function handlePlanExecRoute(input: {
     bot_id: input.task.bot_id,
     exec_job: execJob,
     owner_text: input.task.message.content,
+    ...(ownerPositionAtMessage === undefined
+      ? {}
+      : { owner_position_at_message: ownerPositionAtMessage }),
   });
   await input.dependencies.enqueueExecTaskSink({
     task: botTask,

@@ -9,9 +9,20 @@
 import { Worker, type WorkerOptions } from "bullmq";
 
 import {
+  BOT_MEMORY_CHAR_LIMITS,
+  type BotMemoryKind,
+  type BotMemorySnapshot,
   type BotRollingSummaryRecord,
+  type MemoryAuditDraft,
+  type MemoryCandidateDraft,
   type TaskEventDraft,
+  countBotMemoryChars,
   countRollingSummaryChars,
+  createEmptyBotMemorySnapshot,
+  createMemoryAuditDraft,
+  createMemoryAuditId,
+  createMemoryCandidateDraft,
+  createMemoryCandidateId,
   createTaskEventDraft,
   createTaskEventEmbeddingText,
   isPersistedTaskSummaryStatus,
@@ -19,6 +30,7 @@ import {
 import type { RedisClientLike } from "../db/index.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
 import type { BrainWorkerLlmClient } from "./brain-llm.js";
+import { scanBrainMemoryContentSafety } from "./brain-memory-safety.js";
 import { createBullmqPhysicalQueueName } from "./bullmq.js";
 import {
   type BrainWorkerTask,
@@ -30,6 +42,14 @@ import { type BrainQueueName, createBrainQueueName } from "./queues.js";
 const ROLLING_SUMMARY_COMPRESS_THRESHOLD_CHARS = 2000;
 const ROLLING_SUMMARY_COMPRESSED_MAX_CHARS = 1000;
 const DEFAULT_SESSION_SILENCE_MS = 5 * 60 * 1000;
+const MEMORY_AUTO_APPLY_CONFIDENCE = 0.85;
+const MEMORY_KEEP_PENDING_CONFIDENCE = 0.6;
+
+type MemoryPromotionResolution = Readonly<{
+  readonly op: MemoryAuditDraft["op"];
+  readonly content: string;
+  readonly reason?: string;
+}>;
 
 /** BrainWorker（大脑工作线程） 运行时事件。 */
 export type BrainWorkerRuntimeEvent =
@@ -68,6 +88,30 @@ export type BrainWorkerRuntimeEvent =
       readonly char_count: number;
       /** 是否触发了 LLM（大语言模型） 重压。 */
       readonly compressed: boolean;
+    }
+  | {
+      /** 事件类型。 */
+      readonly type: "brain.memory_candidate.recorded";
+      /** 目标 Bot 标识。 */
+      readonly bot_id: string;
+      /** memory_candidates（记忆候选） 主键。 */
+      readonly candidate_id: string;
+      /** 记忆类型。 */
+      readonly kind: BotMemoryKind;
+      /** 候选状态。 */
+      readonly status: MemoryCandidateDraft["status"];
+    }
+  | {
+      /** 事件类型。 */
+      readonly type: "brain.memory.promoted";
+      /** 目标 Bot 标识。 */
+      readonly bot_id: string;
+      /** memory_candidates（记忆候选） 主键。 */
+      readonly candidate_id: string;
+      /** 记忆类型。 */
+      readonly kind: BotMemoryKind;
+      /** 资产变更操作。 */
+      readonly op: MemoryAuditDraft["op"];
     }
   | {
       /** 事件类型。 */
@@ -124,6 +168,25 @@ export interface BrainWorkerRuntimeDependencies {
     readonly takeaway: string;
     readonly updated_at: string;
   }) => Promise<unknown>;
+  /** 读取 bot_memory（长期记忆） 三类资产。 */
+  readonly loadBotMemory?: (botId: string) => Promise<BotMemorySnapshot>;
+  /** 写入 bot_memory（长期记忆） 单类资产。 */
+  readonly writeBotMemory?: (input: {
+    readonly bot_id: string;
+    readonly kind: BotMemoryKind;
+    readonly content: string;
+    readonly updated_at: string;
+  }) => Promise<unknown>;
+  /** 写入 memory_candidates（记忆候选）。 */
+  readonly insertMemoryCandidate?: (draft: MemoryCandidateDraft) => Promise<unknown>;
+  /** 更新 memory_candidates（记忆候选） 状态。 */
+  readonly decideMemoryCandidate?: (input: {
+    readonly candidate_id: string;
+    readonly status: MemoryCandidateDraft["status"];
+    readonly decided_at: string;
+  }) => Promise<unknown>;
+  /** 追加 memory_audit（记忆审计）。 */
+  readonly appendMemoryAudit?: (draft: MemoryAuditDraft) => Promise<unknown>;
   /** 读取任务 JSONL（结构化日志） 前 50 行；缺省时用 task_card（任务卡） 兜底。 */
   readonly readTaskLogExcerpt?: (logRef: string) => Promise<string | undefined>;
   /** 会话静默 takeaway（要点） 调度配置。 */
@@ -298,6 +361,13 @@ export function createBrainWorkerRuntime(input: {
         emitEvent,
         now,
       });
+      await processMemoryCandidates({
+        task,
+        draft,
+        dependencies: input.dependencies,
+        emitEvent,
+        now,
+      });
       scheduleSessionTakeaway({
         task,
         dependencies: input.dependencies,
@@ -440,6 +510,196 @@ async function updateRollingSummary(input: {
   );
 }
 
+async function processMemoryCandidates(input: {
+  readonly task: BrainWorkerTask;
+  readonly draft: TaskEventDraft;
+  readonly dependencies: BrainWorkerRuntimeDependencies;
+  readonly emitEvent: (event: BrainWorkerRuntimeEvent) => Promise<void>;
+  readonly now: () => Date;
+}): Promise<void> {
+  const llm = input.dependencies.llm;
+  const insertMemoryCandidate = input.dependencies.insertMemoryCandidate;
+
+  if (llm === undefined || insertMemoryCandidate === undefined) {
+    return;
+  }
+
+  const existingMemory =
+    (await input.dependencies.loadBotMemory?.(input.task.payload.bot_id)) ??
+    createEmptyBotMemorySnapshot();
+  const ownerPosition = input.task.payload.task_card.owner_position_at_message;
+  const mutableMemory: Record<BotMemoryKind, string> = {
+    USER: existingMemory.USER,
+    MEMORY: existingMemory.MEMORY,
+    SKILL: existingMemory.SKILL,
+  };
+  const candidates = await llm.generateMemoryCandidates({
+    owner_text: input.task.payload.owner_text,
+    task_card: input.task.payload.task_card,
+    existing_memory: existingMemory,
+    ...(ownerPosition === undefined ? {} : { owner_position: ownerPosition }),
+  });
+
+  for (const [index, candidate] of candidates.entries()) {
+    const nowIso = input.now().toISOString();
+    const safety = scanBrainMemoryContentSafety(candidate.content);
+    const duplicate = containsExactMemoryLine(mutableMemory[candidate.kind], candidate.content);
+    const initialStatus =
+      candidate.confidence < MEMORY_KEEP_PENDING_CONFIDENCE || duplicate ? "rejected" : "pending";
+    const candidateReason = createMemoryCandidateReason({
+      reason: candidate.reason,
+      duplicate,
+      safety_reason: safety.safe ? undefined : safety.reason,
+    });
+    const candidateDraft = createMemoryCandidateDraft({
+      id: createMemoryCandidateId({
+        event_id: input.draft.id,
+        index,
+      }),
+      bot_id: input.task.payload.bot_id,
+      source_event_id: input.draft.id,
+      kind: candidate.kind,
+      content: candidate.content,
+      confidence: candidate.confidence,
+      ...(candidateReason === undefined ? {} : { reason: candidateReason }),
+      status: initialStatus,
+      created_at: nowIso,
+      ...(initialStatus === "rejected" ? { decided_at: nowIso } : {}),
+    });
+
+    await insertMemoryCandidate(candidateDraft);
+    await input.emitEvent(
+      Object.freeze({
+        type: "brain.memory_candidate.recorded" as const,
+        bot_id: candidateDraft.bot_id,
+        candidate_id: candidateDraft.id,
+        kind: candidateDraft.kind,
+        status: candidateDraft.status,
+      }),
+    );
+
+    if (
+      candidate.confidence >= MEMORY_AUTO_APPLY_CONFIDENCE &&
+      !duplicate &&
+      safety.safe &&
+      input.dependencies.writeBotMemory !== undefined &&
+      input.dependencies.decideMemoryCandidate !== undefined &&
+      input.dependencies.appendMemoryAudit !== undefined
+    ) {
+      mutableMemory[candidate.kind] = await promoteMemoryCandidate({
+        candidate: candidateDraft,
+        existing_content: mutableMemory[candidate.kind],
+        dependencies: input.dependencies,
+        emitEvent: input.emitEvent,
+        now: input.now,
+      });
+    }
+  }
+}
+
+async function promoteMemoryCandidate(input: {
+  readonly candidate: MemoryCandidateDraft;
+  readonly existing_content: string;
+  readonly dependencies: BrainWorkerRuntimeDependencies;
+  readonly emitEvent: (event: BrainWorkerRuntimeEvent) => Promise<void>;
+  readonly now: () => Date;
+}): Promise<string> {
+  const limit = BOT_MEMORY_CHAR_LIMITS[input.candidate.kind];
+  const appended = appendMemoryLine(input.existing_content, input.candidate.content);
+  const directOp: MemoryAuditDraft["op"] =
+    input.existing_content.trim().length === 0 ? "insert" : "patch";
+  const directResolution: MemoryPromotionResolution =
+    input.candidate.reason === undefined
+      ? {
+          op: directOp,
+          content: clampByChars(appended, limit),
+        }
+      : {
+          op: directOp,
+          content: clampByChars(appended, limit),
+          reason: input.candidate.reason,
+        };
+  const resolution =
+    countBotMemoryChars(appended) <= limit || input.dependencies.llm === undefined
+      ? directResolution
+      : await resolveMemoryOverflow({
+          candidate: input.candidate,
+          existing_content: input.existing_content,
+          appended_content: appended,
+          max_chars: limit,
+          llm: input.dependencies.llm,
+        });
+  const updatedAt = input.now().toISOString();
+  const afterContent = clampByChars(resolution.content.trim(), limit);
+
+  await input.dependencies.writeBotMemory?.({
+    bot_id: input.candidate.bot_id,
+    kind: input.candidate.kind,
+    content: afterContent,
+    updated_at: updatedAt,
+  });
+  await input.dependencies.appendMemoryAudit?.(
+    createMemoryAuditDraft({
+      id: createMemoryAuditId({
+        candidate_id: input.candidate.id,
+        op: resolution.op,
+        index: 0,
+      }),
+      bot_id: input.candidate.bot_id,
+      kind: input.candidate.kind,
+      op: resolution.op,
+      ...(input.existing_content.trim().length === 0
+        ? {}
+        : { before_content: input.existing_content }),
+      after_content: afterContent,
+      candidate_id: input.candidate.id,
+      ...(resolution.reason === undefined ? {} : { reason: resolution.reason }),
+      created_at: updatedAt,
+    }),
+  );
+  await input.dependencies.decideMemoryCandidate?.({
+    candidate_id: input.candidate.id,
+    status: "applied",
+    decided_at: updatedAt,
+  });
+  await input.emitEvent(
+    Object.freeze({
+      type: "brain.memory.promoted" as const,
+      bot_id: input.candidate.bot_id,
+      candidate_id: input.candidate.id,
+      kind: input.candidate.kind,
+      op: resolution.op,
+    }),
+  );
+
+  return afterContent;
+}
+
+async function resolveMemoryOverflow(input: {
+  readonly candidate: MemoryCandidateDraft;
+  readonly existing_content: string;
+  readonly appended_content: string;
+  readonly max_chars: number;
+  readonly llm: BrainWorkerLlmClient;
+}): Promise<MemoryPromotionResolution> {
+  const resolution = await input.llm.resolveMemoryCapacity({
+    kind: input.candidate.kind,
+    existing_content: input.existing_content,
+    candidate_content: input.candidate.content,
+    max_chars: input.max_chars,
+  });
+
+  if (resolution.op === "delete" && resolution.content.trim().length === 0) {
+    return Object.freeze({
+      op: "delete" as const,
+      content: removeOldestMemoryLines(input.appended_content, input.max_chars),
+      ...(resolution.reason === undefined ? {} : { reason: resolution.reason }),
+    });
+  }
+
+  return Object.freeze(resolution);
+}
+
 function scheduleSessionTakeaway(input: {
   readonly task: BrainWorkerTask;
   readonly dependencies: BrainWorkerRuntimeDependencies;
@@ -554,6 +814,53 @@ function appendRollingSummaryLine(content: string, line: string): string {
   const trimmedContent = content.trim();
 
   return trimmedContent.length === 0 ? line : `${trimmedContent}\n${line}`;
+}
+
+function appendMemoryLine(content: string, line: string): string {
+  const trimmedContent = content.trim();
+  const trimmedLine = line.trim();
+
+  return trimmedContent.length === 0 ? trimmedLine : `${trimmedContent}\n${trimmedLine}`;
+}
+
+function containsExactMemoryLine(content: string, line: string): boolean {
+  const normalizedLine = normalizeMemoryLine(line);
+
+  return content
+    .split("\n")
+    .map((entry) => normalizeMemoryLine(entry))
+    .some((entry) => entry === normalizedLine);
+}
+
+function normalizeMemoryLine(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
+}
+
+function createMemoryCandidateReason(input: {
+  readonly reason: string | undefined;
+  readonly duplicate: boolean;
+  readonly safety_reason: string | undefined;
+}): string | undefined {
+  const reasons = [
+    input.reason,
+    input.duplicate ? "exact_duplicate" : undefined,
+    input.safety_reason === undefined ? undefined : `safety:${input.safety_reason}`,
+  ].filter((reason): reason is string => reason !== undefined && reason.trim().length > 0);
+
+  return reasons.length === 0 ? undefined : reasons.join("; ");
+}
+
+function removeOldestMemoryLines(content: string, maxChars: number): string {
+  const lines = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  while (lines.length > 1 && countBotMemoryChars(lines.join("\n")) > maxChars) {
+    lines.shift();
+  }
+
+  return clampByChars(lines.join("\n"), maxChars);
 }
 
 function createRollingSummaryLine(taskCard: BrainWorkerTask["payload"]["task_card"]): string {

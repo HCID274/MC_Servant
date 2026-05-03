@@ -19,7 +19,7 @@ import {
 } from "../conversation/index.js";
 import type { RuntimeEventType } from "../core-ports/events.js";
 import { createBotActorStateProjection } from "../core-ports/index.js";
-import type { EnvironmentSnapshot } from "../core-ports/observation.js";
+import type { EnvironmentSnapshot, SnapshotPosition } from "../core-ports/observation.js";
 import {
   type IntentEpochStore,
   createPostgresBrainMemoryStore,
@@ -522,6 +522,10 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
             content: frame.content,
             intent_epoch: intentEpoch,
             snapshot_ts: parseServerBridgeTimestamp(receivedAt),
+            ...createOwnerPositionAtMessageField({
+              runtime,
+              ownerName: latestOwnerPlayerName,
+            }),
           },
         });
 
@@ -614,6 +618,31 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
           : brainMemoryStore === undefined
             ? {}
             : { updateTaskEventTakeaway: brainMemoryStore.updateTaskEventTakeaway }),
+        ...(input.dependencies?.brainWorker?.loadBotMemory !== undefined
+          ? { loadBotMemory: input.dependencies.brainWorker.loadBotMemory }
+          : brainMemoryStore === undefined
+            ? {}
+            : { loadBotMemory: brainMemoryStore.loadBotMemory }),
+        ...(input.dependencies?.brainWorker?.writeBotMemory !== undefined
+          ? { writeBotMemory: input.dependencies.brainWorker.writeBotMemory }
+          : brainMemoryStore === undefined
+            ? {}
+            : { writeBotMemory: brainMemoryStore.writeBotMemory }),
+        ...(input.dependencies?.brainWorker?.insertMemoryCandidate !== undefined
+          ? { insertMemoryCandidate: input.dependencies.brainWorker.insertMemoryCandidate }
+          : brainMemoryStore === undefined
+            ? {}
+            : { insertMemoryCandidate: brainMemoryStore.insertMemoryCandidate }),
+        ...(input.dependencies?.brainWorker?.decideMemoryCandidate !== undefined
+          ? { decideMemoryCandidate: input.dependencies.brainWorker.decideMemoryCandidate }
+          : brainMemoryStore === undefined
+            ? {}
+            : { decideMemoryCandidate: brainMemoryStore.decideMemoryCandidate }),
+        ...(input.dependencies?.brainWorker?.appendMemoryAudit !== undefined
+          ? { appendMemoryAudit: input.dependencies.brainWorker.appendMemoryAudit }
+          : brainMemoryStore === undefined
+            ? {}
+            : { appendMemoryAudit: brainMemoryStore.appendMemoryAudit }),
         readTaskLogExcerpt:
           input.dependencies?.brainWorker?.readTaskLogExcerpt ??
           createLocalTaskLogExcerptReader({
@@ -1018,6 +1047,26 @@ function readOnlineEnvironmentSnapshot<TBotId extends string>(input: {
   return observationInput === null
     ? null
     : input.runtime.observation.refreshFromMineflayer(observationInput);
+}
+
+function createOwnerPositionAtMessageField<TBotId extends string>(input: {
+  readonly runtime: AppRuntimeCoreResources<TBotId> | undefined;
+  readonly ownerName?: string;
+}): { readonly owner_position_at_message?: SnapshotPosition } {
+  const ownerPosition = readOnlineEnvironmentSnapshot({
+    runtime: input.runtime,
+    ...(input.ownerName === undefined ? {} : { ownerName: input.ownerName }),
+  })?.owner?.position;
+
+  return ownerPosition === undefined
+    ? {}
+    : {
+        owner_position_at_message: Object.freeze({
+          x: ownerPosition.x,
+          y: ownerPosition.y,
+          z: ownerPosition.z,
+        }),
+      };
 }
 
 /** 创建在线 ResourceService（世界感知资源服务） 摘要 provider（提供器）。 */

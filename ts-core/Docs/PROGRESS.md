@@ -170,3 +170,11 @@
 - C 审查结论: 通过
 - 关键决策: 选择注入式 LLM（大语言模型）端口、PostgreSQL（关系型数据库）端口与 JSONL（结构化日志）前 50 行读取器,不让 app（应用）解释 takeaway（要点）业务;失败 takeaway（要点）在 task_events（任务事件）插入后 update（更新）,滚动摘要超过 2000 字才触发同模型重压到 1000 字内,会话静默以主人消息心跳、brain queue（大脑队列）idle（空闲）与 BotActor（机器人执行代理）活跃任务三条件共同判定
 - 架构冲突: 无
+
+## T-BRAIN-004 | 2026-05-03 | Rubric（评分规则）候选识别与 bot_memory（长期记忆）自动提拔
+
+- 涉及模块: workers/brain-worker（大脑工作线程）,workers/brain-llm（大脑大语言模型客户端）,workers/brain-memory-safety（长期记忆安全扫描）,workers/contracts（工作线程契约）,workers/bot-worker（机器人工作线程）,workers/conversation-worker（对话工作线程）,db/brain-memory（大脑记忆数据库端口）,data/contracts/bot-memory（长期记忆数据契约）,data/contracts/task-event（任务事件契约）,app/entrypoint（应用入口）
+- A 拆解依据: 用户要求按 05_DATA_SPEC.md §7-④/⑤ 落地 C 层 memory_candidates（记忆候选）识别、confidence（置信度）阈值自动提拔到 bot_memory（长期记忆）、容量超限二次 LLM（大语言模型）决策、prompt injection（提示注入）/credential（凭证）安全降级与 memory_audit（记忆审计）;BrainWorker（大脑工作线程）是 C 层唯一业务写入者,app（应用）只做端口装配;返修要求“这里 / 基地”类指示语必须绑定主人发话时 snapshot（快照）坐标而非 BrainWorker（大脑工作线程）消费时 live snapshot（实时快照）
+- C 审查结论: 曾打回 1 次 (首次补“这里是家”时只在 BrainWorker（大脑工作线程）测试里硬编码坐标,且生产实现由 BrainWorker（大脑工作线程）延迟读取 live snapshot（实时快照）,异步消费后可能记录主人移动后的错误坐标);B（实现代理）改为在 message ingress（消息接入）/ConversationWorker（对话工作线程） prompt snapshot（提示词快照）捕获 owner_position_at_message（发话时主人坐标）,并经 BotWorkerTask（执行任务）与 BrainTaskCard（任务卡）结构化透传后通过
+- 关键决策: 选择 BrainWorker（大脑工作线程）统一编排 rubric（评分规则）识别、候选落库、提拔、容量决策和审计,PostgreSQL（关系型数据库）只通过 db/brain-memory（大脑记忆数据库端口）写入;安全扫描命中时保留 pending（待审核）候选但禁止自动提拔,容量超限交给同一 Brain LLM（大脑大语言模型）端口做 merge（合并）/replace（替换）/delete（删除）决策;“这里 / 这边 / 基地”坐标选择结构化字段透传,不选 live provider（实时提供器）,避免异步延迟污染长期记忆语义
+- 架构冲突: 无

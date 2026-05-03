@@ -21,9 +21,14 @@ import {
   startAppOnlineRuntime,
 } from "../app/index.js";
 import type { AppRuntimeCoreResources } from "../app/index.js";
+import {
+  createConversationCompositeTriage,
+  createSkillCallPlanDraft,
+} from "../conversation/index.js";
 import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import { ExecPriority, TaskHistoryStatus, createSandboxCodeJob } from "../core-ports/tasking.js";
 import { createBrainTaskCard } from "../data/index.js";
+import { ConversationPriority } from "../domain/contracts.js";
 import { SERVER_BRIDGE_PROTOCOL_VERSION } from "../interfaces/index.js";
 import {
   BotStatus,
@@ -34,6 +39,7 @@ import {
 } from "../runtime/index.js";
 import type { MineflayerBotHandle } from "../runtime/transport.js";
 import {
+  type BotWorkerTask,
   createBotWorkerActions,
   createBotWorkerTask,
   createBrainWorkerTask,
@@ -43,6 +49,15 @@ import type { BrainWorkerRuntimeDependencies } from "../workers/index.js";
 
 class FakeEntrypointMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-online";
+  readonly entity = {
+    id: "bot-online",
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+  };
+  readonly players: Record<
+    string,
+    { entity?: { id: string; username: string; position: { x: number; y: number; z: number } } }
+  > = {};
 
   constructor(private readonly events: string[]) {
     super();
@@ -55,6 +70,19 @@ class FakeEntrypointMineflayerBot extends EventEmitter implements MineflayerBotH
   quit(): void {
     this.events.push("mineflayer.quit");
     this.emit("end");
+  }
+
+  setOwnerPosition(
+    ownerName: string,
+    position: { readonly x: number; readonly y: number; readonly z: number },
+  ): void {
+    this.players[ownerName] = {
+      entity: {
+        id: ownerName,
+        username: ownerName,
+        position: { x: position.x, y: position.y, z: position.z },
+      },
+    };
   }
 }
 
@@ -462,6 +490,9 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const events: string[] = [];
     const embeddingRequests: Array<{ url: string; body: unknown }> = [];
     const persistedDrafts: unknown[] = [];
+    const appMemoryWrites: unknown[] = [];
+    const appCandidateWrites: unknown[] = [];
+    const appAuditWrites: unknown[] = [];
     let brainProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const bootstrap = createAppBootstrapContract({
       botId: "bot-online-brain",
@@ -492,6 +523,50 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           now: () => new Date("2026-05-03T01:00:00.000Z"),
           async persistTaskEvent(draft) {
             persistedDrafts.push(draft);
+          },
+          llm: {
+            model: "bl-auto",
+            async generateFailureTakeaway() {
+              throw new Error("failure takeaway should not run");
+            },
+            async generateSessionTakeaway() {
+              throw new Error("session takeaway should not run");
+            },
+            async compressRollingSummary(content) {
+              return content;
+            },
+            async generateMemoryCandidates() {
+              return [
+                {
+                  kind: "MEMORY",
+                  content: "主基地旁边有盾牌补给点",
+                  confidence: 0.9,
+                  reason: "稳定地点事实",
+                },
+              ];
+            },
+            async resolveMemoryCapacity() {
+              throw new Error("capacity should not run");
+            },
+          },
+          async loadBotMemory() {
+            return {
+              USER: "",
+              MEMORY: "",
+              SKILL: "",
+            };
+          },
+          async insertMemoryCandidate(candidate) {
+            appCandidateWrites.push(candidate);
+          },
+          async decideMemoryCandidate() {
+            return undefined;
+          },
+          async writeBotMemory(memory) {
+            appMemoryWrites.push(memory);
+          },
+          async appendMemoryAudit(audit) {
+            appAuditWrites.push(audit);
           },
           createWorker: ({ processor }) => {
             brainProcessor = processor;
@@ -619,6 +694,29 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         created_at: "2026-05-03T01:00:00.000Z",
       }),
     ]);
+    expect(appCandidateWrites).toMatchObject([
+      {
+        id: "memory-candidate:task-event:bot-online-brain:msg-online-brain:0",
+        kind: "MEMORY",
+        content: "主基地旁边有盾牌补给点",
+        status: "pending",
+      },
+    ]);
+    expect(appMemoryWrites).toEqual([
+      {
+        bot_id: "bot-online-brain",
+        kind: "MEMORY",
+        content: "主基地旁边有盾牌补给点",
+        updated_at: "2026-05-03T01:00:00.000Z",
+      },
+    ]);
+    expect(appAuditWrites).toMatchObject([
+      {
+        kind: "MEMORY",
+        op: "insert",
+        candidate_id: "memory-candidate:task-event:bot-online-brain:msg-online-brain:0",
+      },
+    ]);
     expect(runtime.brain_worker.getEvents()).toEqual([
       {
         type: "brain.task_event.persisted",
@@ -628,9 +726,274 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         event_id: "task-event:bot-online-brain:msg-online-brain",
         status: TaskHistoryStatus.Completed,
       },
+      {
+        type: "brain.memory_candidate.recorded",
+        bot_id: "bot-online-brain",
+        candidate_id: "memory-candidate:task-event:bot-online-brain:msg-online-brain:0",
+        kind: "MEMORY",
+        status: "pending",
+      },
+      {
+        type: "brain.memory.promoted",
+        bot_id: "bot-online-brain",
+        candidate_id: "memory-candidate:task-event:bot-online-brain:msg-online-brain:0",
+        kind: "MEMORY",
+        op: "insert",
+      },
     ]);
 
     await runtime.close();
+  });
+
+  it("应把 server-bridge 主人发话时坐标透传到 BrainWorker rubric（评分规则）", async () => {
+    const rubricInputs: unknown[] = [];
+    let fakeBot: FakeEntrypointMineflayerBot | undefined;
+    let conversationProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    let brainProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    let capturedBotTask: BotWorkerTask | undefined;
+    const serverBridge = createAppServerBridgeConfigFromEnvironment({
+      env: {
+        SERVER_BRIDGE_ACCESS_TOKEN: "local-dev-token",
+        SERVER_BRIDGE_CONVERSATION_ENABLED: "true",
+      },
+    });
+
+    if (serverBridge === undefined) {
+      throw new Error("test server bridge config must be enabled");
+    }
+
+    const runtime = await startAppOnlineRuntime({
+      bootstrap: createAppBootstrapContract({
+        botId: "bot-owner-position-memory",
+        now: "2026-05-03T00:00:00.000Z",
+      }),
+      dependencies: {
+        serverBridge: {
+          ...serverBridge,
+          now: () => "2026-05-03T00:00:10.000Z",
+        },
+        brainWorker: {
+          now: () => new Date("2026-05-03T00:01:00.000Z"),
+          async generateEmbedding() {
+            return [0.1, 0.2, 0.3];
+          },
+          async persistTaskEvent() {
+            return undefined;
+          },
+          llm: {
+            model: "bl-auto",
+            async generateFailureTakeaway() {
+              throw new Error("failure takeaway should not run");
+            },
+            async generateSessionTakeaway() {
+              throw new Error("session takeaway should not run");
+            },
+            async compressRollingSummary(content) {
+              return content;
+            },
+            async generateMemoryCandidates(input) {
+              rubricInputs.push(input);
+
+              return [
+                {
+                  kind: "MEMORY",
+                  content: "家的位置坐标：x=120, y=64, z=-300",
+                  confidence: 0.91,
+                  reason: "主人发话时站在这里",
+                },
+              ];
+            },
+            async resolveMemoryCapacity() {
+              throw new Error("capacity should not run");
+            },
+          },
+          async loadBotMemory() {
+            return {
+              USER: "",
+              MEMORY: "",
+              SKILL: "",
+            };
+          },
+          async insertMemoryCandidate() {
+            return undefined;
+          },
+          async decideMemoryCandidate() {
+            return undefined;
+          },
+          async writeBotMemory() {
+            return undefined;
+          },
+          async appendMemoryAudit() {
+            return undefined;
+          },
+          createWorker: ({ processor }) => {
+            brainProcessor = processor;
+
+            return {
+              close: async () => undefined,
+            };
+          },
+        },
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => undefined,
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => createFakeIntentEpochRedisClient(),
+            connectClient: async () => undefined,
+            closeClient: async () => undefined,
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async (_jobName, data, options) => {
+                if (name === "msg:bot-owner-position-memory") {
+                  setTimeout(() => {
+                    void conversationProcessor?.({ data });
+                  }, 0);
+                }
+                if (name === "bot:bot-owner-position-memory:exec") {
+                  capturedBotTask = data as BotWorkerTask;
+                }
+
+                return { id: String(options?.jobId ?? "job-online") };
+              },
+              close: async () => undefined,
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalListen = server.listen.bind(server);
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => originalListen({ host: "127.0.0.1", port: 0 });
+              server.close = async () => originalClose();
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              fakeBot = new FakeEntrypointMineflayerBot([]);
+              fakeBot.setOwnerPosition("Steve", { x: 120, y: 64, z: -300 });
+
+              setTimeout(() => fakeBot?.emit("spawn"), 0);
+
+              return fakeBot;
+            },
+          },
+        },
+        botWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+        conversationWorker: {
+          triage: () =>
+            createConversationCompositeTriage({
+              action: {
+                intent: "task",
+                priority: ConversationPriority.Normal,
+                reason: "主人在当前位置声明这里是家",
+              },
+            }),
+          planner: () =>
+            createSkillCallPlanDraft({
+              reply: "我记下这里",
+              skill: "collect",
+              params: { radius: 32 },
+            }),
+          createWorker: ({ processor }) => {
+            conversationProcessor = processor;
+
+            return {
+              close: async () => undefined,
+            };
+          },
+        },
+      },
+    });
+    const socket = new WebSocket(
+      `${runtime.listen_address.replace(/^http/, "ws")}/ws/server-bridge`,
+      {
+        headers: {
+          Authorization: "Bearer local-dev-token",
+        },
+      },
+    );
+
+    try {
+      await waitForWsOpen(socket);
+      socket.send(
+        JSON.stringify({
+          type: "hello",
+          protocol_version: SERVER_BRIDGE_PROTOCOL_VERSION,
+          mod_id: "mcservant",
+          mod_version: "0.4.0",
+          connected_at: "2026-05-03T00:00:01.000Z",
+          instance_id: "local-fabric-01",
+        }),
+      );
+      expect(JSON.parse(await readNextWsText(socket))).toMatchObject({
+        type: "ack",
+        ack_type: "hello",
+      });
+
+      socket.send(
+        JSON.stringify({
+          type: "player_message",
+          protocol_version: SERVER_BRIDGE_PROTOCOL_VERSION,
+          instance_id: "local-fabric-01",
+          message_id: "msg-owner-position-memory",
+          player_uuid: "00000000-0000-0000-0000-000000000001",
+          player_name: "Steve",
+          content: "这里是我们的家",
+          timestamp: "2026-05-03T00:00:03.000Z",
+        }),
+      );
+      expect(JSON.parse(await readNextWsText(socket))).toMatchObject({
+        type: "ack",
+        ack_type: "player_message",
+      });
+      await expect
+        .poll(() => capturedBotTask?.owner_position_at_message)
+        .toEqual({ x: 120, y: 64, z: -300 });
+
+      fakeBot?.setOwnerPosition("Steve", { x: 999, y: 70, z: 999 });
+      const terminalActions = createBotWorkerActions({
+        task: capturedBotTask as BotWorkerTask,
+        phase: "terminal",
+        status: TaskHistoryStatus.Completed,
+        total_steps: 1,
+        duration_ms: 1000,
+      });
+      const brainAction = terminalActions.find((action) => action.type === "enqueue_brain");
+
+      if (brainAction?.type !== "enqueue_brain") {
+        throw new Error("expected enqueue_brain action");
+      }
+
+      await brainProcessor?.({ data: brainAction.task });
+      expect(rubricInputs).toMatchObject([
+        {
+          owner_text: "这里是我们的家",
+          owner_position: { x: 120, y: 64, z: -300 },
+        },
+      ]);
+    } finally {
+      socket.close();
+      await waitForWsClose(socket);
+      await runtime.close();
+    }
   });
 
   it("应在真实在线入口组合 BotWorker（机器人工作线程） actionSink（动作汇点） 并写入 replay（补拉）", async () => {

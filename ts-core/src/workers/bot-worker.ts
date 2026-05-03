@@ -166,6 +166,9 @@ function cloneBotWorkerTask(data: unknown): BotWorkerTask {
     bot_id: candidate.bot_id,
     exec_job: cloneExecJob(candidate.exec_job),
     owner_text: candidate.owner_text,
+    ...(candidate.owner_position_at_message === undefined
+      ? {}
+      : { owner_position_at_message: candidate.owner_position_at_message }),
   });
 }
 /** 克隆底层执行任务。 */

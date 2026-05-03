@@ -17,6 +17,7 @@ import type {
   ConversationTemplateReply,
 } from "../conversation/contracts.js";
 import { ExecutionTaskKind } from "../core-ports/foundation.js";
+import type { SnapshotPosition } from "../core-ports/observation.js";
 import type { InterruptSignal } from "../core-ports/runtime.js";
 import {
   type ExecJob,
@@ -66,6 +67,7 @@ export interface ConversationWorkerTask {
     readonly content: string;
     readonly intent_epoch: number;
     readonly snapshot_ts: number;
+    readonly owner_position_at_message?: SnapshotPosition;
   }>;
 }
 
@@ -81,6 +83,8 @@ export interface BotWorkerTask {
   readonly exec_job: ExecJob;
   /** 主人原文，用于 BrainWorker（大脑工作线程） 写入 task_events.owner_text。 */
   readonly owner_text: string;
+  /** 主人发话时坐标；由接入层或 ConversationWorker（对话工作线程） 捕获后透传。 */
+  readonly owner_position_at_message?: SnapshotPosition;
 }
 
 /** BrainWorker（大脑工作线程） 的输入任务。 */
@@ -275,6 +279,13 @@ export function createConversationWorkerTask(input: {
     queue: createMessageQueueName(input.bot_id),
     message: Object.freeze({
       ...input.message,
+      ...(input.message.owner_position_at_message === undefined
+        ? {}
+        : {
+            owner_position_at_message: cloneSnapshotPosition(
+              input.message.owner_position_at_message,
+            ),
+          }),
     }),
   });
 }
@@ -291,6 +302,7 @@ export function createBotWorkerTask(input: {
   bot_id: string;
   exec_job: ExecJob;
   owner_text?: string;
+  owner_position_at_message?: SnapshotPosition;
 }): BotWorkerTask {
   assertNonEmptyString(input.bot_id, "bot_id");
   const ownerText = input.owner_text ?? input.exec_job.message_id;
@@ -302,6 +314,9 @@ export function createBotWorkerTask(input: {
     queue: createExecQueueName(input.bot_id),
     exec_job: input.exec_job,
     owner_text: ownerText,
+    ...(input.owner_position_at_message === undefined
+      ? {}
+      : { owner_position_at_message: cloneSnapshotPosition(input.owner_position_at_message) }),
   });
 }
 
@@ -614,6 +629,9 @@ export function createBotWorkerActions(
         message_id: input.task.exec_job.message_id,
         intent_epoch: input.task.exec_job.intent_epoch,
         snapshot_ts: input.task.exec_job.snapshot_ts,
+        ...(input.task.owner_position_at_message === undefined
+          ? {}
+          : { owner_position_at_message: input.task.owner_position_at_message }),
         priority: input.task.exec_job.priority,
         owner_text: input.task.owner_text,
         execution:
@@ -740,4 +758,12 @@ function createBrainTaskCardResult(
           : { log_ref: input.sandbox_result.log_ref }),
       });
   }
+}
+
+function cloneSnapshotPosition(position: SnapshotPosition): SnapshotPosition {
+  return Object.freeze({
+    x: position.x,
+    y: position.y,
+    z: position.z,
+  });
 }
