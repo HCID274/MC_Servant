@@ -147,6 +147,68 @@ describe("db 与 app 的真实 I/O 工厂边界", () => {
     ]);
   });
 
+  it("应让默认 Drizzle（数据库工具） 迁移器读取本地 migration（迁移） 文件", async () => {
+    const descriptor = createPostgresConnectionDescriptor(
+      createDataConfig({
+        env: {
+          PG_HOST: "pg.internal",
+          PG_DATABASE: "mc_servant",
+          PG_USER: "servant",
+        },
+      }).postgres,
+    );
+    const metadata = createDrizzleMigrationMetadata({ postgres: descriptor });
+    const lifecycle: string[] = [];
+
+    await runDrizzleMigrations({
+      metadata,
+      dependencies: {
+        postgres: {
+          createPool: () => ({
+            async connect() {
+              lifecycle.push("postgres.connect");
+              return {
+                release() {
+                  lifecycle.push("postgres.release");
+                },
+              };
+            },
+            async query(sql) {
+              lifecycle.push(`postgres.query:${sql}`);
+            },
+            async end() {
+              lifecycle.push("postgres.end");
+            },
+          }),
+          createDrizzle: () => ({
+            dialect: {
+              async migrate(
+                migrations: readonly {
+                  readonly sql: readonly string[];
+                  readonly folderMillis: number;
+                }[],
+                session: unknown,
+                config: { migrationsFolder: string },
+              ) {
+                lifecycle.push(
+                  `default-migrate:${config.migrationsFolder}:${String(session)}:${migrations.length}`,
+                );
+                lifecycle.push(`default-migrate-sql:${migrations[0]?.sql.join("\n").length ?? 0}`);
+              },
+            },
+            session: "fake-session",
+          }),
+        },
+      },
+    });
+
+    expect(lifecycle).toContain("default-migrate:src/db/migrations:fake-session:1");
+    expect(lifecycle.at(-1)).toBe("postgres.end");
+    expect(
+      Number(lifecycle.find((entry) => entry.startsWith("default-migrate-sql:"))?.split(":")[1]),
+    ).toBeGreaterThan(1000);
+  });
+
   it("应按应用装配顺序创建资源，并在关闭时按逆序释放", async () => {
     const bootstrap = createAppBootstrapContract({
       botId: "bot-runtime",

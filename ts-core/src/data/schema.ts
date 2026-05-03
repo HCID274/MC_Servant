@@ -9,13 +9,16 @@
 
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   bigint,
   bigserial,
+  check,
   index,
   integer,
   jsonb,
   pgSchema,
   primaryKey,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -26,10 +29,16 @@ import type { TaskFailedErrorSnapshot, TaskStatusEventPayload } from "../core-po
 import type { MessageTriage } from "../core-ports/foundation.js";
 import type { SkillCallJob } from "../core-ports/tasking.js";
 import {
+  BOT_MEMORY_KIND_VALUES,
   type BotConfigOverlay,
+  type BotMemoryKind,
   CHAT_MESSAGE_ROLES,
   DEFAULT_EMBEDDING_DIMENSIONS,
   MC_SERVANT_SCHEMA_NAME,
+  MEMORY_AUDIT_OP_VALUES,
+  MEMORY_CANDIDATE_STATUS_VALUES,
+  type MemoryAuditOp,
+  type MemoryCandidateStatus,
   PERSISTED_MESSAGE_SOURCES,
   type PersistedEventPayload,
   type PersistedEventType,
@@ -136,6 +145,41 @@ export const SESSION_SUMMARIES_SEARCH_INDEXES = [
   },
   {
     name: "idx_session_summary_emb",
+    method: "hnsw",
+    columns: ["embedding"],
+    operatorClass: "vector_cosine_ops",
+    with: {
+      m: 16,
+      ef_construction: 64,
+    },
+  },
+] as const satisfies readonly SearchIndexContract[];
+
+/** task_events 表的生成列契约。 */
+export const TASK_EVENTS_GENERATED_COLUMNS = [
+  {
+    name: "search_tsv",
+    dataType: "tsvector",
+    expression: "to_tsvector('simple', coalesce(owner_text, '') || ' ' || coalesce(takeaway, ''))",
+    stored: true,
+  },
+] as const satisfies readonly GeneratedColumnContract[];
+
+/** task_events 表的检索索引契约。 */
+export const TASK_EVENTS_SEARCH_INDEXES = [
+  {
+    name: "idx_task_events_fts",
+    method: "gin",
+    columns: ["search_tsv"],
+  },
+  {
+    name: "idx_task_events_trgm",
+    method: "gin",
+    columns: ["owner_text"],
+    operatorClass: "gin_trgm_ops",
+  },
+  {
+    name: "idx_task_events_embedding",
     method: "hnsw",
     columns: ["embedding"],
     operatorClass: "vector_cosine_ops",
@@ -297,6 +341,103 @@ export const taskHistoryTable = mcServantSchema.table(
   ],
 );
 
+/** task_events 表定义。 */
+export const taskEventsTable = mcServantSchema.table(
+  "task_events",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => taskHistoryTable.id),
+    botId: text("bot_id").notNull(),
+    messageId: text("message_id").notNull(),
+    ownerText: text("owner_text").notNull(),
+    taskCard: jsonb("task_card").notNull(),
+    takeaway: text("takeaway"),
+    embedding: vector("embedding", { dimensions: EMBEDDING_DIMENSIONS }),
+    logRef: text("log_ref"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("idx_task_events_bot_time").on(table.botId, table.createdAt)],
+);
+
+/** bot_rolling_summary 表定义。 */
+export const botRollingSummaryTable = mcServantSchema.table(
+  "bot_rolling_summary",
+  {
+    botId: text("bot_id").primaryKey(),
+    content: text("content").notNull().default(""),
+    charCount: integer("char_count").notNull().default(0),
+    llmModel: text("llm_model"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [check("bot_rolling_summary_char_count_nonnegative", sql`${table.charCount} >= 0`)],
+);
+
+/** bot_memory 表定义。 */
+export const botMemoryTable = mcServantSchema.table(
+  "bot_memory",
+  {
+    botId: text("bot_id").notNull(),
+    kind: text("kind").$type<BotMemoryKind>().notNull(),
+    content: text("content").notNull().default(""),
+    charCount: integer("char_count").notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.botId, table.kind] }),
+    checkInArray("bot_memory_kind_check", table.kind, BOT_MEMORY_KIND_VALUES),
+    check("bot_memory_char_count_nonnegative", sql`${table.charCount} >= 0`),
+  ],
+);
+
+/** memory_candidates 表定义。 */
+export const memoryCandidatesTable = mcServantSchema.table(
+  "memory_candidates",
+  {
+    id: text("id").primaryKey(),
+    botId: text("bot_id").notNull(),
+    sourceEventId: text("source_event_id").references(() => taskEventsTable.id),
+    kind: text("kind").$type<BotMemoryKind>().notNull(),
+    content: text("content").notNull(),
+    confidence: real("confidence").notNull(),
+    reason: text("reason"),
+    status: text("status").$type<MemoryCandidateStatus>().notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("idx_memory_candidates_bot_status").on(table.botId, table.status, table.createdAt),
+    checkInArray("memory_candidates_kind_check", table.kind, BOT_MEMORY_KIND_VALUES),
+    checkInArray("memory_candidates_status_check", table.status, MEMORY_CANDIDATE_STATUS_VALUES),
+    check(
+      "memory_candidates_confidence_range",
+      sql`${table.confidence} >= 0 AND ${table.confidence} <= 1`,
+    ),
+  ],
+);
+
+/** memory_audit 表定义。 */
+export const memoryAuditTable = mcServantSchema.table(
+  "memory_audit",
+  {
+    id: text("id").primaryKey(),
+    botId: text("bot_id").notNull(),
+    kind: text("kind").$type<BotMemoryKind>().notNull(),
+    op: text("op").$type<MemoryAuditOp>().notNull(),
+    beforeContent: text("before_content"),
+    afterContent: text("after_content"),
+    candidateId: text("candidate_id").references(() => memoryCandidatesTable.id),
+    reason: text("reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("idx_memory_audit_bot_time").on(table.botId, table.createdAt),
+    checkInArray("memory_audit_kind_check", table.kind, BOT_MEMORY_KIND_VALUES),
+    checkInArray("memory_audit_op_check", table.op, MEMORY_AUDIT_OP_VALUES),
+  ],
+);
+
 /**
  * 任务摘要与向量表。
  *
@@ -352,6 +493,11 @@ export const mcServantTables = {
   chatMessages: chatMessagesTable,
   eventLog: eventLogTable,
   taskHistory: taskHistoryTable,
+  taskEvents: taskEventsTable,
+  botRollingSummary: botRollingSummaryTable,
+  botMemory: botMemoryTable,
+  memoryCandidates: memoryCandidatesTable,
+  memoryAudit: memoryAuditTable,
   taskSummaries: taskSummariesTable,
   sessionSummaries: sessionSummariesTable,
 } as const;
@@ -365,10 +511,14 @@ export const mcServantTables = {
  */
 function checkInArray<TColumnName extends string>(
   name: string,
-  column: { name: TColumnName },
+  column: AnyPgColumn<{ name: TColumnName }>,
   values: readonly string[],
 ) {
-  return sql.raw(
-    `CONSTRAINT "${name}" CHECK ("${column.name}" IN (${values.map((value) => `'${value}'`).join(", ")}))`,
+  return check(
+    name,
+    sql`${column} IN (${sql.join(
+      values.map((value) => sql`${value}`),
+      sql`, `,
+    )})`,
   );
 }

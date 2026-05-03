@@ -23,6 +23,11 @@ export const MC_SERVANT_TABLE_NAMES = [
   "chat_messages",
   "event_log",
   "task_history",
+  "task_events",
+  "bot_rolling_summary",
+  "bot_memory",
+  "memory_candidates",
+  "memory_audit",
   "task_summaries",
   "session_summaries",
 ] as const;
@@ -83,6 +88,29 @@ export const TASK_SUMMARY_STATUS_VALUES = [
 
 /** task_summaries 表终态联合。 */
 export type TaskSummaryStatus = (typeof TASK_SUMMARY_STATUS_VALUES)[number];
+
+/** bot_memory / memory_candidates / memory_audit 允许的记忆类型。 */
+export const BOT_MEMORY_KIND_VALUES = ["USER", "MEMORY", "SKILL"] as const;
+
+/** bot_memory / memory_candidates / memory_audit 记忆类型联合。 */
+export type BotMemoryKind = (typeof BOT_MEMORY_KIND_VALUES)[number];
+
+/** memory_candidates 表允许的决策状态。 */
+export const MEMORY_CANDIDATE_STATUS_VALUES = [
+  "pending",
+  "applied",
+  "rejected",
+  "superseded",
+] as const;
+
+/** memory_candidates 表决策状态联合。 */
+export type MemoryCandidateStatus = (typeof MEMORY_CANDIDATE_STATUS_VALUES)[number];
+
+/** memory_audit 表允许的资产变更操作。 */
+export const MEMORY_AUDIT_OP_VALUES = ["insert", "patch", "merge", "replace", "delete"] as const;
+
+/** memory_audit 表资产变更操作联合。 */
+export type MemoryAuditOp = (typeof MEMORY_AUDIT_OP_VALUES)[number];
 
 /** task_history.interrupt_source 的持久化类型。 */
 export type PersistedInterruptSource = InterruptedTaskRecord["interrupt_source"];

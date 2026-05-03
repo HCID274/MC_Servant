@@ -146,3 +146,11 @@
 - C 审查结论: 通过
 - 关键决策: 真实路径默认由 Redis INCR（缓存自增命令）取号、Redis GET（缓存读取命令）读当前 epoch（纪元）,测试路径通过同一 IntentEpochStore（意图纪元存储）端口注入内存实现;BotWorker（机器人工作线程）改为异步读取当前 epoch（纪元）,使 `job.intent_epoch < currentEpoch`（任务纪元小于当前纪元）丢弃闸门接上真实单调源
 - 架构冲突: 无
+
+## T-BRAIN-001 | 2026-05-03 | PG schema（PostgreSQL 数据库模式）与 Drizzle（数据库 ORM）模型落地
+
+- 涉及模块: data（数据） schema（模式）与 table contracts（表契约）,db migrations（数据库迁移）,PostgreSQL（关系型数据库） extension（扩展）依赖,数据模型与迁移运行测试
+- A 拆解依据: 用户要求按 05_DATA_SPEC.md §2.3 落地 `task_events` / `bot_rolling_summary` / `bot_memory` / `memory_candidates` / `memory_audit` 五张 Brain（长期记忆）表,包含索引、约束、复合主键、`tsvector`（全文检索向量）生成列、`pg_trgm`（三元组索引扩展） GIN（倒排索引）和 HNSW（近邻搜索）向量索引;边界限定为 schema（模式）与 migration（迁移）,不触 LLM（大语言模型）或运行时业务链路
+- C 审查结论: 曾打回 1 次 (`0000` 初始 migration（迁移）只创建五张新表但外键引用旧九表,空库不可重放);B（实现代理）补齐完整初始 migration（迁移）后通过
+- 关键决策: 选择把仓库首个 `0000` migration（迁移）做成空库可重放的完整当前 schema（模式）,而不是伪装成五表增量;高级索引用原始 SQL（结构化查询语言）落在 migration（迁移）中,Drizzle（数据库 ORM）模型只声明可类型化结构,避免把 ORM（对象关系映射）不完整支持包装成业务抽象
+- 架构冲突: 无

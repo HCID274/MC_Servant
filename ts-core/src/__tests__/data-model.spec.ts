@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+
 import { getTableColumns, getTableName } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import {
+  BOT_MEMORY_KIND_VALUES,
   DEFAULT_LOGS_BASE_DIR,
   DEFAULT_UNCLOSED_TASK_LIMIT,
   EVENT_LOG_RETENTION_DAYS,
@@ -10,11 +13,15 @@ import {
   JSONL_RETENTION_DAYS,
   MC_SERVANT_SCHEMA_NAME,
   MC_SERVANT_TABLE_NAMES,
+  MEMORY_AUDIT_OP_VALUES,
+  MEMORY_CANDIDATE_STATUS_VALUES,
   PERSISTED_EVENT_TYPES,
   RUNTIME_EVENT_TYPES,
   SESSIONS_TOKEN_INDEX_CONTRACT,
   SESSION_SUMMARIES_GENERATED_COLUMNS,
   SESSION_SUMMARIES_SEARCH_INDEXES,
+  TASK_EVENTS_GENERATED_COLUMNS,
+  TASK_EVENTS_SEARCH_INDEXES,
   TASK_HISTORY_STATUS_VALUES,
   TASK_PERSISTENCE_WRITE_SEQUENCE,
   TASK_PROGRESS_EVENT_TYPE,
@@ -36,7 +43,7 @@ import {
 describe("data 持久化契约", () => {
   it("应声明 mc_servant 核心表结构出口", () => {
     expect(MC_SERVANT_SCHEMA_NAME).toBe("mc_servant");
-    expect(MC_SERVANT_TABLE_NAMES).toHaveLength(9);
+    expect(MC_SERVANT_TABLE_NAMES).toHaveLength(14);
     expect(getTableName(eventLogTable)).toBe("event_log");
     expect(getTableName(taskHistoryTable)).toBe("task_history");
     expect(Object.keys(getTableColumns(mcServantTables.eventLog))).toEqual([
@@ -64,6 +71,14 @@ describe("data 持久化契约", () => {
       TaskHistoryStatus.Discarded,
     ]);
     expect(ExecutionTaskKind.SkillCall).toBe("skill_call");
+    expect(BOT_MEMORY_KIND_VALUES).toEqual(["USER", "MEMORY", "SKILL"]);
+    expect(MEMORY_CANDIDATE_STATUS_VALUES).toEqual([
+      "pending",
+      "applied",
+      "rejected",
+      "superseded",
+    ]);
+    expect(MEMORY_AUDIT_OP_VALUES).toEqual(["insert", "patch", "merge", "replace", "delete"]);
   });
 
   it("应只接受安全的相对日志引用", () => {
@@ -172,6 +187,162 @@ describe("data 持久化契约", () => {
         },
       },
     ]);
+  });
+
+  it("应声明 Brain（长期记忆）五表的 Drizzle（数据库 ORM）模型出口", () => {
+    expect(MC_SERVANT_TABLE_NAMES).toHaveLength(14);
+    expect(MC_SERVANT_TABLE_NAMES).toEqual([
+      "owners",
+      "bots",
+      "owner_bots",
+      "sessions",
+      "chat_messages",
+      "event_log",
+      "task_history",
+      "task_events",
+      "bot_rolling_summary",
+      "bot_memory",
+      "memory_candidates",
+      "memory_audit",
+      "task_summaries",
+      "session_summaries",
+    ]);
+    expect(getTableName(mcServantTables.taskEvents)).toBe("task_events");
+    expect(Object.keys(getTableColumns(mcServantTables.taskEvents))).toEqual([
+      "id",
+      "taskId",
+      "botId",
+      "messageId",
+      "ownerText",
+      "taskCard",
+      "takeaway",
+      "embedding",
+      "logRef",
+      "createdAt",
+    ]);
+    expect(Object.keys(getTableColumns(mcServantTables.botRollingSummary))).toEqual([
+      "botId",
+      "content",
+      "charCount",
+      "llmModel",
+      "updatedAt",
+    ]);
+    expect(Object.keys(getTableColumns(mcServantTables.botMemory))).toEqual([
+      "botId",
+      "kind",
+      "content",
+      "charCount",
+      "updatedAt",
+    ]);
+    expect(Object.keys(getTableColumns(mcServantTables.memoryCandidates))).toEqual([
+      "id",
+      "botId",
+      "sourceEventId",
+      "kind",
+      "content",
+      "confidence",
+      "reason",
+      "status",
+      "createdAt",
+      "decidedAt",
+    ]);
+    expect(Object.keys(getTableColumns(mcServantTables.memoryAudit))).toEqual([
+      "id",
+      "botId",
+      "kind",
+      "op",
+      "beforeContent",
+      "afterContent",
+      "candidateId",
+      "reason",
+      "createdAt",
+    ]);
+  });
+
+  it("应声明 task_events 高级检索列与索引契约", () => {
+    expect(TASK_EVENTS_GENERATED_COLUMNS).toEqual([
+      {
+        name: "search_tsv",
+        dataType: "tsvector",
+        expression:
+          "to_tsvector('simple', coalesce(owner_text, '') || ' ' || coalesce(takeaway, ''))",
+        stored: true,
+      },
+    ]);
+    expect(TASK_EVENTS_SEARCH_INDEXES).toEqual([
+      {
+        name: "idx_task_events_fts",
+        method: "gin",
+        columns: ["search_tsv"],
+      },
+      {
+        name: "idx_task_events_trgm",
+        method: "gin",
+        columns: ["owner_text"],
+        operatorClass: "gin_trgm_ops",
+      },
+      {
+        name: "idx_task_events_embedding",
+        method: "hnsw",
+        columns: ["embedding"],
+        operatorClass: "vector_cosine_ops",
+        with: {
+          m: 16,
+          ef_construction: 64,
+        },
+      },
+    ]);
+  });
+
+  it("应提供包含 Brain（长期记忆）高级 PG（关系型数据库）结构的 migration（迁移） SQL（结构化查询语言）", () => {
+    const migrationSql = readFileSync(
+      new URL("../db/migrations/0000_brain_schema.sql", import.meta.url),
+      "utf8",
+    );
+    const journal = JSON.parse(
+      readFileSync(new URL("../db/migrations/meta/_journal.json", import.meta.url), "utf8"),
+    );
+
+    expect(journal.entries).toEqual([
+      expect.objectContaining({
+        idx: 0,
+        tag: "0000_brain_schema",
+        breakpoints: true,
+      }),
+    ]);
+    for (const tableName of MC_SERVANT_TABLE_NAMES) {
+      expect(migrationSql).toContain(`CREATE TABLE "mc_servant"."${tableName}"`);
+    }
+    expect(migrationSql.indexOf('CREATE TABLE "mc_servant"."owners"')).toBeLessThan(
+      migrationSql.indexOf('CREATE TABLE "mc_servant"."owner_bots"'),
+    );
+    expect(migrationSql.indexOf('CREATE TABLE "mc_servant"."bots"')).toBeLessThan(
+      migrationSql.indexOf('CREATE TABLE "mc_servant"."task_history"'),
+    );
+    expect(migrationSql.indexOf('CREATE TABLE "mc_servant"."task_history"')).toBeLessThan(
+      migrationSql.indexOf('CREATE TABLE "mc_servant"."task_events"'),
+    );
+    expect(migrationSql).toContain('CREATE TABLE "mc_servant"."task_events"');
+    expect(migrationSql).toContain('CREATE TABLE "mc_servant"."bot_rolling_summary"');
+    expect(migrationSql).toContain('CREATE TABLE "mc_servant"."bot_memory"');
+    expect(migrationSql).toContain('CREATE TABLE "mc_servant"."memory_candidates"');
+    expect(migrationSql).toContain('CREATE TABLE "mc_servant"."memory_audit"');
+    expect(migrationSql).toContain('"search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector');
+    expect(migrationSql).toContain(
+      'CREATE INDEX "idx_task_events_trgm" ON "mc_servant"."task_events" USING gin ("owner_text" gin_trgm_ops)',
+    );
+    expect(migrationSql).toContain(
+      'CREATE INDEX "idx_task_events_embedding" ON "mc_servant"."task_events" USING hnsw ("embedding" vector_cosine_ops) WITH (m = 16, ef_construction = 64)',
+    );
+    expect(migrationSql).toContain(
+      'CONSTRAINT "bot_memory_bot_id_kind_pk" PRIMARY KEY("bot_id","kind")',
+    );
+    expect(migrationSql).toContain(
+      'CONSTRAINT "memory_candidates_confidence_range" CHECK ("confidence" >= 0 AND "confidence" <= 1)',
+    );
+    expect(migrationSql).toContain(
+      "CONSTRAINT \"memory_audit_op_check\" CHECK (\"op\" IN ('insert', 'patch', 'merge', 'replace', 'delete'))",
+    );
   });
 
   it("应创建只读 task_summaries（任务摘要） 草案并拒绝 discarded（已丢弃） 与空摘要", () => {
