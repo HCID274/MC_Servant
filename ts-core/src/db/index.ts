@@ -14,6 +14,7 @@ export * from "./keys.js";
 export * from "./connection.js";
 export * from "./intent-epoch.js";
 export * from "./migrations.js";
+export * from "./task-events.js";
 
 /**
  * db 模块边界声明。
@@ -39,5 +40,6 @@ export const dbModuleBoundary = {
     "createRedisIntentEpochStore",
     "createDrizzleMigrationMetadata",
     "runDrizzleMigrations",
+    "createPostgresTaskEventPersister",
   ],
 } satisfies ModuleBoundary;

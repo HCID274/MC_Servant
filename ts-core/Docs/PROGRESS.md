@@ -154,3 +154,11 @@
 - C 审查结论: 曾打回 1 次 (`0000` 初始 migration（迁移）只创建五张新表但外键引用旧九表,空库不可重放);B（实现代理）补齐完整初始 migration（迁移）后通过
 - 关键决策: 选择把仓库首个 `0000` migration（迁移）做成空库可重放的完整当前 schema（模式）,而不是伪装成五表增量;高级索引用原始 SQL（结构化查询语言）落在 migration（迁移）中,Drizzle（数据库 ORM）模型只声明可类型化结构,避免把 ORM（对象关系映射）不完整支持包装成业务抽象
 - 架构冲突: 无
+
+## T-BRAIN-002 | 2026-05-03 | BotWorker（机器人工作线程）任务卡入队与 BrainWorker（大脑工作线程）写入 B 层
+
+- 涉及模块: workers/bot-worker（机器人工作线程）,workers/brain-worker（大脑工作线程）,workers/embedding-client（向量客户端）,app/main（主入口）,app/entrypoint（应用入口）,db/task-events（任务事件持久化）,data/contracts/task-event（任务事件契约）
+- A 拆解依据: 用户要求 BotWorker（机器人工作线程）在 success（成功）/failed（失败）/interrupted（中断）终态推送带 task_card（任务卡）的 brain（大脑）队列任务,由 BrainWorker（大脑工作线程）集中调用 embedding API（向量接口）并一次写入 PostgreSQL（关系型数据库） `task_events`（任务事件）;符合 01_ARCHITECTURE.md §3 三队列职责与 05_DATA_SPEC.md §7 BrainWorker（大脑工作线程）数据写入流
+- C 审查结论: 曾打回 2 次 (首次真实 embedding API（向量接口）未跑通且任务卡无法落库;二次返修只验证 probe（探测脚本）未接通 main（主入口）环境装配);B（实现代理）补齐主程 `EMBEDDING_*`（向量配置）装配并完成真实主程链路验证后通过
+- 关键决策: 选择独立 embedding endpoint（向量端点）配置,不复用 LLM（大语言模型） base_url（基础地址）硬拼路径;BotWorker（机器人工作线程）只产任务卡,BrainWorker（大脑工作线程）独占 embedding（向量嵌入）与落库,app（应用）只做依赖装配
+- 架构冲突: 无

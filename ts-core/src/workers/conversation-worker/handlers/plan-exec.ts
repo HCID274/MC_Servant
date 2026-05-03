@@ -202,6 +202,7 @@ export async function handlePlanExecRoute(input: {
   const botTask = createBotWorkerTask({
     bot_id: input.task.bot_id,
     exec_job: execJob,
+    owner_text: input.task.message.content,
   });
   await input.dependencies.enqueueExecTaskSink({
     task: botTask,

@@ -127,7 +127,7 @@ describe("data 持久化契约", () => {
       { order: 7, phase: "terminal", target: "task_history" },
       { order: 8, phase: "terminal", target: "event_log" },
       { order: 9, phase: "terminal", target: "brain_queue" },
-      { order: 10, phase: "brain_summary", target: "task_summaries" },
+      { order: 10, phase: "brain_summary", target: "task_events" },
     ]);
   });
 

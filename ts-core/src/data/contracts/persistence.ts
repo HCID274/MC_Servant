@@ -16,6 +16,7 @@ export const PERSISTENCE_TARGETS = [
   "event_log",
   "jsonl",
   "brain_queue",
+  "task_events",
   "task_summaries",
   "session_summaries",
 ] as const;
@@ -122,10 +123,10 @@ export const TASK_PERSISTENCE_WRITE_SEQUENCE = Object.freeze([
   Object.freeze({
     order: 10,
     phase: "brain_summary",
-    target: "task_summaries",
+    target: "task_events",
     store: "postgres",
     operation: "insert",
-    description: "BrainWorker 异步生成 task_summaries",
+    description: "BrainWorker 异步写入 task_events 任务卡",
   }),
 ] as const satisfies readonly PersistenceWriteStep[]);
 

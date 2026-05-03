@@ -518,6 +518,30 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
       "enqueue_brain",
       "persist_sandbox_experience",
     ]);
+    expect(
+      [completedActions, failedActions, interruptedActions]
+        .map((actions) => actions.find((action) => action.type === "enqueue_brain"))
+        .map((action) => (action?.type === "enqueue_brain" ? action.task.payload.status : null)),
+    ).toEqual([
+      TaskHistoryStatus.Completed,
+      TaskHistoryStatus.Failed,
+      TaskHistoryStatus.Interrupted,
+    ]);
+    expect(completedActions.find((action) => action.type === "enqueue_brain")).toMatchObject({
+      type: "enqueue_brain",
+      task: {
+        payload: {
+          owner_text: "msg-worker-sandbox-exp",
+          task_card: {
+            execution: {
+              type: "sandbox_code",
+              code_ref: "sandbox/2026-04-26/msg-worker-sandbox-exp.code.ts",
+            },
+          },
+          log_ref: "sandbox/2026-04-26/msg-worker-sandbox-exp.jsonl",
+        },
+      },
+    });
     expect(failedActions.at(-1)).toMatchObject({
       type: "persist_sandbox_experience",
       experience: {

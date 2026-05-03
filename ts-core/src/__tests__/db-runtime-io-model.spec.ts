@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ExecPriority,
+  ExecutionTaskKind,
+  TaskHistoryStatus,
   createAppBootstrapContract,
   createAppRuntimeResources,
+  createBrainTaskCard,
   createDataConfig,
   createDrizzleMigrationMetadata,
   createPostgresConnectionDescriptor,
   createPostgresRuntimeResource,
+  createPostgresTaskEventPersister,
   createRedisConnectionDescriptor,
   createRedisRuntimeResource,
+  createTaskEventDraft,
   runDrizzleMigrations,
 } from "../index.js";
 
@@ -87,6 +93,63 @@ describe("db 与 app 的真实 I/O 工厂边界", () => {
     await resource.close();
 
     expect(lifecycle).toEqual(["redis.connect:null", "redis.quit"]);
+  });
+
+  it("应通过 Drizzle（数据库 ORM） insert（插入） 端口写入 task_events（任务事件）", async () => {
+    const inserts: unknown[] = [];
+    const persist = createPostgresTaskEventPersister({
+      db: {
+        insert: () => ({
+          values: async (row: unknown) => {
+            inserts.push(row);
+          },
+        }),
+      },
+    });
+
+    await persist(
+      createTaskEventDraft({
+        task_id: "msg-task-event",
+        bot_id: "bot-db",
+        message_id: "msg-task-event",
+        owner_text: "去捡盾牌",
+        task_card: createBrainTaskCard({
+          task_id: "msg-task-event",
+          message_id: "msg-task-event",
+          intent_epoch: 3,
+          snapshot_ts: 100,
+          priority: ExecPriority.Normal,
+          owner_text: "去捡盾牌",
+          execution: {
+            type: ExecutionTaskKind.SkillCall,
+            skill: "collect",
+            params: {
+              itemName: "shield",
+              radius: 32,
+            },
+          },
+          result: {
+            status: TaskHistoryStatus.Completed,
+            total_steps: 1,
+            duration_ms: 1200,
+          },
+        }),
+        embedding: [0.1, 0.2],
+        created_at: "2026-04-26T01:00:00.000Z",
+      }),
+    );
+
+    expect(inserts).toEqual([
+      expect.objectContaining({
+        id: "task-event:bot-db:msg-task-event",
+        taskId: "msg-task-event",
+        botId: "bot-db",
+        messageId: "msg-task-event",
+        ownerText: "去捡盾牌",
+        embedding: [0.1, 0.2],
+        createdAt: new Date("2026-04-26T01:00:00.000Z"),
+      }),
+    ]);
   });
 
   it("应复用同一份 PostgreSQL（关系型数据库） 描述符执行迁移并先确保扩展", async () => {

@@ -20,7 +20,11 @@ import {
 import type { RuntimeEventType } from "../core-ports/events.js";
 import { createBotActorStateProjection } from "../core-ports/index.js";
 import type { EnvironmentSnapshot } from "../core-ports/observation.js";
-import { type IntentEpochStore, createRedisIntentEpochStore } from "../db/index.js";
+import {
+  type IntentEpochStore,
+  createPostgresTaskEventPersister,
+  createRedisIntentEpochStore,
+} from "../db/index.js";
 import {
   type LlmDiagnosticSummary,
   createLlmDiagnosticSummary,
@@ -44,11 +48,15 @@ import {
   type BotWorkerAction,
   type BotWorkerRuntime,
   type BotWorkerRuntimeDependencies,
+  type BrainWorkerRuntime,
+  type BrainWorkerRuntimeDependencies,
   type ConversationWorkerRuntime,
   type ConversationWorkerRuntimeDependencies,
   createBotWorkerRuntime,
+  createBrainWorkerRuntime,
   createConversationBotWorkerActionSink,
   createConversationWorkerRuntime,
+  createOpenAiCompatibleEmbeddingGenerator,
 } from "../workers/index.js";
 import { createResourceService } from "../world-model/index.js";
 import type { ResourceServiceBoundary } from "../world-model/index.js";
@@ -137,12 +145,30 @@ export interface AppOnlineLlmDependencies extends ConversationLlmDependencies {
   readonly api_key?: string;
 }
 
+/** 真实在线 BrainWorker（大脑工作线程） embedding（向量）依赖注入集合。 */
+export interface AppOnlineEmbeddingDependencies {
+  /** 完整 embeddings endpoint（向量端点），例如 https://host/v1/embeddings。 */
+  readonly endpoint_url?: string;
+  /** OpenAI compatible（OpenAI 兼容） base URL（基础地址）。 */
+  readonly base_url?: string;
+  /** embedding API（向量接口）密钥；缺省时复用 LLM（大语言模型）密钥。 */
+  readonly api_key?: string;
+  /** embedding model（向量模型）；缺省时复用 LLM（大语言模型）模型。 */
+  readonly model?: string;
+  /** 可注入 fetch（网络请求）实现。 */
+  readonly fetch?: typeof fetch;
+}
+
 /** 真实在线启动入口依赖注入集合。 */
 export interface AppOnlineEntrypointDependencies extends AppProcessRuntimeDependencies {
   /** ConversationWorker（对话工作线程） 依赖注入。 */
   readonly conversationWorker?: Partial<ConversationWorkerRuntimeDependencies>;
   /** BotWorker（机器人工作线程） 依赖注入。 */
   readonly botWorker?: Omit<BotWorkerRuntimeDependencies, "actor">;
+  /** BrainWorker（大脑工作线程） 依赖注入。 */
+  readonly brainWorker?: Partial<BrainWorkerRuntimeDependencies>;
+  /** BrainWorker（大脑工作线程） embedding（向量）在线装配依赖注入。 */
+  readonly embedding?: AppOnlineEmbeddingDependencies;
   /** LLM（大语言模型） 依赖注入。 */
   readonly llm?: AppOnlineLlmDependencies;
   /** Server Bridge（服务端桥接） WebSocket 接收端配置。 */
@@ -185,6 +211,8 @@ export interface AppOnlineRuntime<TBotId extends string = string> {
   readonly conversation_worker: ConversationWorkerRuntime;
   /** BotWorker（机器人工作线程） 运行时。 */
   readonly bot_worker: BotWorkerRuntime;
+  /** BrainWorker（大脑工作线程） 运行时。 */
+  readonly brain_worker: BrainWorkerRuntime;
   /** 按真实在线关闭顺序回收资源。 */
   close(): Promise<void>;
 }
@@ -360,6 +388,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   let services: AppRuntimeServices<TBotId> | undefined;
   let runtime: AppRuntimeCoreResources<TBotId> | undefined;
   let botWorker: BotWorkerRuntime | undefined;
+  let brainWorker: BrainWorkerRuntime | undefined;
   let conversationWorker: ConversationWorkerRuntime | undefined;
   let latestLlmDiagnostic: LlmDiagnosticSummary | null = null;
   let latestIntentEpoch = 0;
@@ -533,6 +562,32 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     const actorStateProjectionProvider =
       input.dependencies?.conversationWorker?.actorStateProjectionProvider ??
       createOnlineConversationActorStateProjectionProvider(createdRuntime.actor);
+    const brainEmbeddingGenerator =
+      input.dependencies?.brainWorker?.generateEmbedding ??
+      createOnlineBrainEmbeddingGenerator(
+        input.bootstrap,
+        input.dependencies?.llm,
+        input.dependencies?.embedding,
+      );
+    const taskEventPersister =
+      input.dependencies?.brainWorker?.persistTaskEvent ??
+      createPostgresTaskEventPersister({
+        db: infrastructure.postgres.db,
+      });
+
+    brainWorker = createBrainWorkerRuntime({
+      queue: {
+        name: services.workers.brain.name,
+        connection: infrastructure.redis.client,
+      },
+      dependencies: {
+        ...(input.dependencies?.brainWorker ?? {}),
+        generateEmbedding: brainEmbeddingGenerator,
+        persistTaskEvent: taskEventPersister,
+      },
+    });
+    await brainWorker.start();
+    input.write?.(`TS Core BrainWorker ready: ${brainWorker.queue_name}`);
 
     botWorker = createBotWorkerRuntime({
       queue: {
@@ -547,6 +602,18 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
           (() => intentEpochStore.read(input.bootstrap.bot_id)),
         actionSink: async (action) => {
           await input.dependencies?.botWorker?.actionSink?.(action);
+
+          if (action.type === "enqueue_brain") {
+            const addBrainTask = onlineServices.workers.brain.queue.add;
+
+            if (typeof addBrainTask !== "function") {
+              throw new Error("brain queue does not support add");
+            }
+
+            await addBrainTask("brain", action.task, {
+              jobId: action.task.payload.message_id,
+            });
+          }
 
           const realtimeEvent = createRealtimeEventFromBotWorkerAction({
             action,
@@ -624,6 +691,10 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     const createdInfrastructure = infrastructure;
     const createdServices = services;
     const createdBotWorker = botWorker;
+    if (brainWorker === undefined) {
+      throw new Error("BrainWorker must be initialized before online runtime returns");
+    }
+    const createdBrainWorker = brainWorker;
     const createdConversationWorker = conversationWorker;
 
     return Object.freeze({
@@ -633,11 +704,13 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       services: createdServices,
       runtime: createdRuntime,
       bot_worker: createdBotWorker,
+      brain_worker: createdBrainWorker,
       conversation_worker: createdConversationWorker,
       async close(): Promise<void> {
         await closeOnlineRuntimeInOrder({
           runtime: createdRuntime,
           botWorker: createdBotWorker,
+          brainWorker: createdBrainWorker,
           conversationWorker: createdConversationWorker,
           services: createdServices,
           infrastructure: createdInfrastructure,
@@ -648,6 +721,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     await closeOnlineRuntimeInOrder({
       runtime,
       botWorker,
+      brainWorker,
       conversationWorker,
       services,
       infrastructure,
@@ -980,6 +1054,45 @@ function createOnlineConversationLlmClient<TBotId extends string>(
   );
 }
 
+/** 创建在线 BrainWorker（大脑工作线程） embedding API（向量接口） 生成器。 */
+function createOnlineBrainEmbeddingGenerator<TBotId extends string>(
+  bootstrap: AppBootstrapContract<TBotId>,
+  llmDependencies: AppOnlineLlmDependencies | undefined,
+  embeddingDependencies: AppOnlineEmbeddingDependencies | undefined,
+): BrainWorkerRuntimeDependencies["generateEmbedding"] {
+  const hasExplicitEmbeddingEndpoint =
+    embeddingDependencies?.endpoint_url !== undefined ||
+    embeddingDependencies?.base_url !== undefined;
+
+  if (!bootstrap.llm.enabled && !hasExplicitEmbeddingEndpoint) {
+    return async () => {
+      throw new Error("LLM must be enabled for BrainWorker embedding");
+    };
+  }
+
+  const apiKey = embeddingDependencies?.api_key ?? llmDependencies?.api_key;
+  const model = embeddingDependencies?.model ?? bootstrap.llm.model ?? "";
+
+  if (apiKey === undefined) {
+    throw new Error("LLM_API_KEY must be injected for BrainWorker embedding");
+  }
+
+  const fetchImpl = embeddingDependencies?.fetch ?? llmDependencies?.fetch;
+
+  return createOpenAiCompatibleEmbeddingGenerator(
+    {
+      ...(embeddingDependencies?.endpoint_url === undefined
+        ? { base_url: embeddingDependencies?.base_url ?? bootstrap.llm.base_url ?? "" }
+        : { endpoint_url: embeddingDependencies.endpoint_url }),
+      api_key: apiKey,
+      model,
+      dimensions: bootstrap.config.embedding.dimensions,
+      timeout_ms: 15_000,
+    },
+    fetchImpl === undefined ? {} : { fetch: fetchImpl },
+  );
+}
+
 /**
  * 渲染最小 LLM（大语言模型） 诊断摘要。
  *
@@ -1257,6 +1370,7 @@ async function appendServerBridgeEnvelope<TBotId extends string>(input: {
 async function closeOnlineRuntimeInOrder(input: {
   runtime: AppRuntimeCoreResources | undefined;
   botWorker: BotWorkerRuntime | undefined;
+  brainWorker: BrainWorkerRuntime | undefined;
   conversationWorker: ConversationWorkerRuntime | undefined;
   services: AppRuntimeServices | undefined;
   infrastructure: AppRuntimeResources | undefined;
@@ -1266,6 +1380,7 @@ async function closeOnlineRuntimeInOrder(input: {
   for (const close of [
     () => input.conversationWorker?.close(),
     () => input.botWorker?.close(),
+    () => input.brainWorker?.close(),
     () => input.runtime?.close(),
     () => input.services?.close(),
     () => input.infrastructure?.close(),

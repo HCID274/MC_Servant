@@ -21,7 +21,9 @@ import {
   startAppOnlineRuntime,
 } from "../app/index.js";
 import type { AppRuntimeCoreResources } from "../app/index.js";
+import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import { ExecPriority, TaskHistoryStatus, createSandboxCodeJob } from "../core-ports/tasking.js";
+import { createBrainTaskCard } from "../data/index.js";
 import { SERVER_BRIDGE_PROTOCOL_VERSION } from "../interfaces/index.js";
 import {
   BotStatus,
@@ -34,8 +36,10 @@ import type { MineflayerBotHandle } from "../runtime/transport.js";
 import {
   createBotWorkerActions,
   createBotWorkerTask,
+  createBrainWorkerTask,
   createConversationWorkerTask,
 } from "../workers/contracts.js";
+import type { BrainWorkerRuntimeDependencies } from "../workers/index.js";
 
 class FakeEntrypointMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-online";
@@ -91,6 +95,16 @@ function createFakeIntentEpochRedisClient(initialEpoch = 0): {
     async get() {
       return String(epoch);
     },
+  };
+}
+
+function createNoopBrainWorkerDependencies(): Partial<BrainWorkerRuntimeDependencies> {
+  return {
+    generateEmbedding: async () => [0.1],
+    persistTaskEvent: async () => undefined,
+    createWorker: () => ({
+      close: async () => undefined,
+    }),
   };
 }
 
@@ -310,6 +324,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        brainWorker: createNoopBrainWorkerDependencies(),
         infrastructure: {
           postgres: {
             createPool: () => ({
@@ -443,6 +458,181 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     ]);
   });
 
+  it("应在在线入口用显式 embedding endpoint（向量端点）驱动 BrainWorker（大脑工作线程）持久化 task_events（任务事件）", async () => {
+    const events: string[] = [];
+    const embeddingRequests: Array<{ url: string; body: unknown }> = [];
+    const persistedDrafts: unknown[] = [];
+    let brainProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-online-brain",
+      now: "2026-05-03T00:00:00.000Z",
+      env: {
+        EMBEDDING_DIMENSIONS: "3",
+      },
+    });
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        embedding: {
+          endpoint_url: "https://embedding.local/v1/embeddings",
+          api_key: "sk-embedding",
+          model: "text-embedding-v4",
+          fetch: async (url, init) => {
+            embeddingRequests.push({
+              url: String(url),
+              body: JSON.parse(String(init?.body)),
+            });
+
+            return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }), {
+              status: 200,
+            });
+          },
+        },
+        brainWorker: {
+          now: () => new Date("2026-05-03T01:00:00.000Z"),
+          async persistTaskEvent(draft) {
+            persistedDrafts.push(draft);
+          },
+          createWorker: ({ processor }) => {
+            brainProcessor = processor;
+            events.push("brain.worker.start");
+
+            return {
+              close: async () => {
+                events.push("brain.worker.close");
+              },
+            };
+          },
+        },
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => {
+                events.push("postgres.close");
+              },
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => {
+              events.push("postgres.ready");
+            },
+          },
+          redis: {
+            createClient: () => createFakeIntentEpochRedisClient(),
+            connectClient: async () => {
+              events.push("redis.ready");
+            },
+            closeClient: async () => {
+              events.push("redis.close");
+            },
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async () => ({ id: "job-online-brain" }),
+              close: async () => {
+                events.push(`queue.close:${name}`);
+              },
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+
+              server.listen = async () => "http://127.0.0.1:0";
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeEntrypointMineflayerBot(events);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        botWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+        conversationWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+      },
+    });
+
+    await brainProcessor?.({
+      data: createBrainWorkerTask({
+        bot_id: "bot-online-brain",
+        message_id: "msg-online-brain",
+        intent_epoch: 3,
+        status: TaskHistoryStatus.Completed,
+        owner_text: "把这个东西捡起来",
+        task_card: createBrainTaskCard({
+          task_id: "msg-online-brain",
+          message_id: "msg-online-brain",
+          intent_epoch: 3,
+          snapshot_ts: 100,
+          priority: ExecPriority.Normal,
+          owner_text: "把这个东西捡起来",
+          execution: {
+            type: ExecutionTaskKind.SkillCall,
+            skill: "collect",
+            params: {},
+          },
+          result: {
+            status: TaskHistoryStatus.Completed,
+            duration_ms: 1000,
+            total_steps: 1,
+          },
+        }),
+      }),
+    });
+
+    expect(embeddingRequests).toEqual([
+      {
+        url: "https://embedding.local/v1/embeddings",
+        body: {
+          model: "text-embedding-v4",
+          input: "把这个东西捡起来",
+          dimensions: 3,
+        },
+      },
+    ]);
+    expect(persistedDrafts).toEqual([
+      expect.objectContaining({
+        id: "task-event:bot-online-brain:msg-online-brain",
+        task_id: "msg-online-brain",
+        bot_id: "bot-online-brain",
+        message_id: "msg-online-brain",
+        owner_text: "把这个东西捡起来",
+        embedding: [0.1, 0.2, 0.3],
+        created_at: "2026-05-03T01:00:00.000Z",
+      }),
+    ]);
+    expect(runtime.brain_worker.getEvents()).toEqual([
+      {
+        type: "brain.task_event.persisted",
+        bot_id: "bot-online-brain",
+        message_id: "msg-online-brain",
+        task_id: "msg-online-brain",
+        event_id: "task-event:bot-online-brain:msg-online-brain",
+        status: TaskHistoryStatus.Completed,
+      },
+    ]);
+
+    await runtime.close();
+  });
+
   it("应在真实在线入口组合 BotWorker（机器人工作线程） actionSink（动作汇点） 并写入 replay（补拉）", async () => {
     const customActions: string[] = [];
     let botProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
@@ -454,6 +644,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        brainWorker: createNoopBrainWorkerDependencies(),
         infrastructure: {
           postgres: {
             createPool: () => ({
@@ -591,6 +782,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        brainWorker: createNoopBrainWorkerDependencies(),
         serverBridge: {
           ...serverBridge,
           now: () => "2026-04-27T00:00:10.000Z",
@@ -811,6 +1003,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        brainWorker: createNoopBrainWorkerDependencies(),
         llm: {
           api_key: "sk-local-dev",
           fetch: async (url, init) => {
@@ -1093,6 +1286,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        brainWorker: createNoopBrainWorkerDependencies(),
         llm: {
           api_key: "sk-local-dev",
           fetch: async (url, init) => {
@@ -1427,6 +1621,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        brainWorker: createNoopBrainWorkerDependencies(),
         llm: {
           api_key: "sk-local-dev",
           fetch: async () => {
@@ -1569,6 +1764,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        brainWorker: createNoopBrainWorkerDependencies(),
         llm: {
           api_key: "sk-local-dev",
           fetch: async () =>
@@ -1721,6 +1917,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        brainWorker: createNoopBrainWorkerDependencies(),
         llm: {
           api_key: "sk-local-dev",
           fetch: async (url, init) => {
@@ -1930,6 +2127,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        brainWorker: createNoopBrainWorkerDependencies(),
         llm: {
           api_key: "sk-local-dev",
           fetch: async (url, init) => {
@@ -2169,6 +2367,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        brainWorker: createNoopBrainWorkerDependencies(),
         llm: {
           api_key: "sk-local-dev",
           fetch: async (url, init) => {
@@ -2353,6 +2552,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     const runtime = await startAppOnlineRuntime({
       bootstrap,
       dependencies: {
+        brainWorker: createNoopBrainWorkerDependencies(),
         llm: {
           api_key: "sk-local-dev",
           fetch: async (url, init) => {

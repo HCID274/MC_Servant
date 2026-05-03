@@ -16,6 +16,7 @@ import type {
   ConversationRouteDecision,
   ConversationTemplateReply,
 } from "../conversation/contracts.js";
+import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import type { InterruptSignal } from "../core-ports/runtime.js";
 import {
   type ExecJob,
@@ -23,6 +24,7 @@ import {
   TaskHistoryStatus,
   type TaskTerminalStatus,
 } from "../core-ports/tasking.js";
+import { type BrainTaskCard, type TaskEventDraft, createBrainTaskCard } from "../data/contracts.js";
 import type { SandboxExperienceDraft } from "../diagnostics/contracts.js";
 import { createSandboxExperienceDraft } from "../diagnostics/logs.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
@@ -43,7 +45,7 @@ import {
   createMessageQueueName,
 } from "./queues.js";
 
-/** 允许进入 BrainWorker（摘要工作线程） 的终态集合。 */
+/** 允许进入 BrainWorker（大脑工作线程） 的终态集合。 */
 export type BrainTaskStatus =
   | TaskHistoryStatus.Completed
   | TaskHistoryStatus.Failed
@@ -77,9 +79,11 @@ export interface BotWorkerTask {
   readonly queue: ExecQueueName;
   /** 可消费的执行任务。 */
   readonly exec_job: ExecJob;
+  /** 主人原文，用于 BrainWorker（大脑工作线程） 写入 task_events.owner_text。 */
+  readonly owner_text: string;
 }
 
-/** BrainWorker（摘要工作线程） 的输入任务。 */
+/** BrainWorker（大脑工作线程） 的输入任务。 */
 export interface BrainWorkerTask {
   /** Worker 类型。 */
   readonly worker: "brain";
@@ -95,6 +99,12 @@ export interface BrainWorkerTask {
     readonly intent_epoch: number;
     /** 终态状态。 */
     readonly status: BrainTaskStatus;
+    /** 主人原文。 */
+    readonly owner_text: string;
+    /** 结构化任务卡。 */
+    readonly task_card: BrainTaskCard;
+    /** JSONL（结构化日志） 引用。 */
+    readonly log_ref?: string;
   }>;
 }
 
@@ -227,16 +237,16 @@ export type BotWorkerAction =
   | EnqueueBrainAction
   | PersistSandboxExperienceAction;
 
-/** BrainWorker（摘要工作线程） 产出的摘要持久化动作。 */
-export interface PersistTaskSummaryAction {
+/** BrainWorker（大脑工作线程） 产出的 task_events（任务事件） 持久化动作。 */
+export interface PersistTaskEventAction {
   /** 动作类型。 */
-  readonly type: "persist_task_summary";
-  /** 原始摘要输入载荷。 */
-  readonly payload: BrainWorkerTask["payload"];
+  readonly type: "persist_task_event";
+  /** task_events（任务事件） 写入草案。 */
+  readonly draft: TaskEventDraft;
 }
 
-/** BrainWorker（摘要工作线程） 输出动作联合。 */
-export type BrainWorkerAction = PersistTaskSummaryAction;
+/** BrainWorker（大脑工作线程） 输出动作联合。 */
+export type BrainWorkerAction = PersistTaskEventAction;
 
 /**
  * 创建对话工作线程（ConversationWorker）的输入任务。
@@ -280,14 +290,18 @@ export function createConversationWorkerTask(input: {
 export function createBotWorkerTask(input: {
   bot_id: string;
   exec_job: ExecJob;
+  owner_text?: string;
 }): BotWorkerTask {
   assertNonEmptyString(input.bot_id, "bot_id");
+  const ownerText = input.owner_text ?? input.exec_job.message_id;
+  assertNonEmptyString(ownerText, "owner_text");
 
   return Object.freeze({
     worker: "bot",
     bot_id: input.bot_id,
     queue: createExecQueueName(input.bot_id),
     exec_job: input.exec_job,
+    owner_text: ownerText,
   });
 }
 
@@ -304,9 +318,26 @@ export function createBrainWorkerTask(input: {
   message_id: string;
   intent_epoch: number;
   status: BrainTaskStatus;
+  owner_text: string;
+  task_card: BrainTaskCard;
+  log_ref?: string;
 }): BrainWorkerTask {
   assertNonEmptyString(input.bot_id, "bot_id");
   assertNonEmptyString(input.message_id, "message_id");
+  assertNonEmptyString(input.owner_text, "owner_text");
+  const taskCard = createBrainTaskCard(input.task_card);
+  if (taskCard.message_id !== input.message_id) {
+    throw new Error("task_card.message_id must match message_id");
+  }
+  if (taskCard.intent_epoch !== input.intent_epoch) {
+    throw new Error("task_card.intent_epoch must match intent_epoch");
+  }
+  if (taskCard.owner_text !== input.owner_text) {
+    throw new Error("task_card.owner_text must match owner_text");
+  }
+  if (taskCard.result.status !== input.status) {
+    throw new Error("task_card.result.status must match status");
+  }
 
   return Object.freeze({
     worker: "brain",
@@ -316,6 +347,9 @@ export function createBrainWorkerTask(input: {
       message_id: input.message_id,
       intent_epoch: input.intent_epoch,
       status: input.status,
+      owner_text: input.owner_text,
+      task_card: taskCard,
+      ...(input.log_ref === undefined ? {} : { log_ref: input.log_ref }),
     }),
   });
 }
@@ -575,6 +609,28 @@ export function createBotWorkerActions(
         }
       })();
 
+      const taskCard = createBrainTaskCard({
+        task_id: input.task.exec_job.message_id,
+        message_id: input.task.exec_job.message_id,
+        intent_epoch: input.task.exec_job.intent_epoch,
+        snapshot_ts: input.task.exec_job.snapshot_ts,
+        priority: input.task.exec_job.priority,
+        owner_text: input.task.owner_text,
+        execution:
+          input.task.exec_job.type === ExecutionTaskKind.SkillCall
+            ? {
+                type: ExecutionTaskKind.SkillCall,
+                skill: input.task.exec_job.skill,
+                params: input.task.exec_job.params as Readonly<Record<string, unknown>>,
+              }
+            : {
+                type: ExecutionTaskKind.SandboxCode,
+                ...(input.sandbox_result?.code_ref === undefined
+                  ? {}
+                  : { code_ref: input.sandbox_result.code_ref }),
+              },
+        result: createBrainTaskCardResult(input),
+      });
       const actions: BotWorkerAction[] = [
         Object.freeze({
           type: "emit_task_lifecycle",
@@ -588,6 +644,11 @@ export function createBotWorkerActions(
             message_id: input.task.exec_job.message_id,
             intent_epoch: input.task.exec_job.intent_epoch,
             status: input.status,
+            owner_text: input.task.owner_text,
+            task_card: taskCard,
+            ...(input.sandbox_result?.log_ref === undefined
+              ? {}
+              : { log_ref: input.sandbox_result.log_ref }),
           }),
         }),
       ];
@@ -631,21 +692,52 @@ export function createBotWorkerActions(
   }
 }
 
-/**
- * 根据摘要工作线程的输入生成最小持久化动作。
- *
- * 指令生成：生成 persist_task_summary 指令，标志着任务摘要已就绪并可进行物理持久化。
- *
- * @param input 包含摘要任务的输入
- * @returns 动作数组
- */
+/** 根据 BrainWorker（大脑工作线程） 的 task_events（任务事件） 草案生成最小持久化动作。 */
 export function createBrainWorkerActions(input: {
-  task: BrainWorkerTask;
+  draft: TaskEventDraft;
 }): readonly BrainWorkerAction[] {
   return Object.freeze([
     Object.freeze({
-      type: "persist_task_summary",
-      payload: input.task.payload,
+      type: "persist_task_event",
+      draft: input.draft,
     }),
   ]);
+}
+
+function createBrainTaskCardResult(
+  input: Extract<Parameters<typeof createBotWorkerActions>[0], { phase: "terminal" }>,
+): BrainTaskCard["result"] {
+  switch (input.status) {
+    case TaskHistoryStatus.Completed:
+      return Object.freeze({
+        status: TaskHistoryStatus.Completed,
+        total_steps: input.total_steps,
+        duration_ms: input.duration_ms,
+        ...(input.sandbox_result?.log_ref === undefined
+          ? {}
+          : { log_ref: input.sandbox_result.log_ref }),
+      });
+    case TaskHistoryStatus.Failed:
+      return Object.freeze({
+        status: TaskHistoryStatus.Failed,
+        total_steps: input.total_steps,
+        duration_ms: input.duration_ms,
+        error: input.error,
+        ...(input.last_step === undefined ? {} : { last_step: input.last_step }),
+        ...(input.sandbox_result?.log_ref === undefined
+          ? {}
+          : { log_ref: input.sandbox_result.log_ref }),
+      });
+    case TaskHistoryStatus.Interrupted:
+      return Object.freeze({
+        status: TaskHistoryStatus.Interrupted,
+        total_steps: input.total_steps,
+        duration_ms: input.duration_ms,
+        reason: input.reason,
+        interrupt_source: input.interrupt_source as Readonly<Record<string, unknown>>,
+        ...(input.sandbox_result?.log_ref === undefined
+          ? {}
+          : { log_ref: input.sandbox_result.log_ref }),
+      });
+  }
 }

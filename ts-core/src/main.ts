@@ -1,4 +1,11 @@
-import { createAppServerBridgeConfigFromEnvironment } from "./app/bootstrap/env.js";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  createAppEmbeddingConfigFromEnvironment,
+  createAppServerBridgeConfigFromEnvironment,
+} from "./app/bootstrap/env.js";
+import type { AppOnlineEntrypointDependencies } from "./app/entrypoint.js";
 import {
   createAppBootstrapContract,
   createAppExternalAuthSecretFromEnvironment,
@@ -64,6 +71,32 @@ function formatStartupError(error: unknown): string {
   return "TS Core bootstrap failed: unknown error\n";
 }
 
+/** 从环境变量组装在线主程依赖。 */
+export function createAppOnlineRuntimeDependenciesFromEnvironment(input: {
+  env: Readonly<Record<string, string>>;
+}): AppOnlineEntrypointDependencies {
+  const env = input.env;
+  const serverBridge = createAppServerBridgeConfigFromEnvironment({ env });
+  const embedding = createAppEmbeddingConfigFromEnvironment({ env });
+  const apiKey = createAppLlmApiKeyFromEnvironment({ env });
+  const externalAuthSecret = createAppExternalAuthSecretFromEnvironment({ env });
+
+  return Object.freeze({
+    llm: apiKey === undefined ? {} : { api_key: apiKey },
+    runtime: externalAuthSecret === undefined ? {} : { externalAuthSecret },
+    ...(serverBridge === undefined ? {} : { serverBridge }),
+    ...(embedding === undefined ? {} : { embedding }),
+  });
+}
+
+function isMainModule(input: { moduleUrl: string; argv1: string | undefined }): boolean {
+  if (input.argv1 === undefined) {
+    return false;
+  }
+
+  return fileURLToPath(input.moduleUrl) === resolve(input.argv1);
+}
+
 /**
  * 应用主入口点。
  *
@@ -79,22 +112,9 @@ async function main(): Promise<void> {
       now: new Date().toISOString(),
       env,
     });
-    const serverBridge = createAppServerBridgeConfigFromEnvironment({ env });
     const runtime = await startAppOnlineRuntime({
       bootstrap,
-      dependencies: {
-        llm: (() => {
-          const apiKey = createAppLlmApiKeyFromEnvironment({ env });
-
-          return apiKey === undefined ? {} : { api_key: apiKey };
-        })(),
-        runtime: (() => {
-          const externalAuthSecret = createAppExternalAuthSecretFromEnvironment({ env });
-
-          return externalAuthSecret === undefined ? {} : { externalAuthSecret };
-        })(),
-        ...(serverBridge === undefined ? {} : { serverBridge }),
-      },
+      dependencies: createAppOnlineRuntimeDependenciesFromEnvironment({ env }),
       write: (message) => {
         process.stdout.write(`${message}\n`);
       },
@@ -120,4 +140,6 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+if (isMainModule({ moduleUrl: import.meta.url, argv1: process.argv[1] })) {
+  void main();
+}

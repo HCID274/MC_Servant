@@ -23,6 +23,7 @@ import {
   createMessageTriage,
   createSandboxCodePlanDraft,
   createSkillCallPlanDraft,
+  createTaskEventDraft,
   createWorkerQueueCatalog,
   ensureReplyEndsWithMeow,
   shouldSearchConversationMemory,
@@ -307,6 +308,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
         snapshot_ts: 161,
         priority: ExecPriority.Normal,
       }),
+      owner_text: "帮我装备石镐",
     });
     const botActions = createBotWorkerActions({
       task: botTask,
@@ -326,7 +328,15 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     }
 
     const brainActions = createBrainWorkerActions({
-      task: enqueueBrainAction.task,
+      draft: createTaskEventDraft({
+        task_id: enqueueBrainAction.task.payload.task_card.task_id,
+        bot_id: enqueueBrainAction.task.payload.bot_id,
+        message_id: enqueueBrainAction.task.payload.message_id,
+        owner_text: enqueueBrainAction.task.payload.owner_text,
+        task_card: enqueueBrainAction.task.payload.task_card,
+        embedding: [0.1],
+        created_at: "2026-04-26T00:00:00.000Z",
+      }),
     });
 
     expect(ensureReplyEndsWithMeow("好的")).toBe("好的喵~");
@@ -342,7 +352,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
       "enqueue_brain",
     ]);
     expect(lifecycleAction.lifecycle.status).toBe(TaskHistoryStatus.Completed);
-    expect(brainActions[0]?.type).toBe("persist_task_summary");
+    expect(brainActions[0]?.type).toBe("persist_task_event");
   });
 
   it("应让 BotWorker（机器人工作线程） 将 started / discarded / terminal 分流，并阻止 discarded（已丢弃） 进入 BrainWorker", () => {

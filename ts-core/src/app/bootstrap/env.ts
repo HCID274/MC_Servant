@@ -15,6 +15,18 @@ export interface AppServerBridgeEnvironmentConfig {
   readonly heartbeatTimeoutMs?: number;
 }
 
+/** BrainWorker（大脑工作线程） embedding（向量） 环境变量解析结果。 */
+export interface AppEmbeddingEnvironmentConfig {
+  /** 完整 embeddings endpoint（向量端点）。 */
+  readonly endpoint_url?: string;
+  /** OpenAI compatible（OpenAI 兼容） base URL（基础地址）。 */
+  readonly base_url?: string;
+  /** embedding API（向量接口）密钥。 */
+  readonly api_key: string;
+  /** embedding model（向量模型）。 */
+  readonly model?: string;
+}
+
 /**
  * 将未知输入转换为可选的普通对象。
  *
@@ -154,6 +166,48 @@ export function createAppServerBridgeConfigFromEnvironment(input: {
     conversationEnabled,
     ...(path === undefined ? {} : { path }),
     ...(heartbeatTimeoutMs === undefined ? {} : { heartbeatTimeoutMs }),
+  });
+}
+
+/**
+ * 从环境变量解析 BrainWorker（大脑工作线程） embedding（向量） 配置。
+ *
+ * 任一 EMBEDDING_*（向量配置）出现时即视为启用独立 embedding（向量）装配，
+ * 必须显式提供 endpoint/base_url（端点/基础地址） 与 api_key（密钥），避免回退到 LLM
+ * base_url（大语言模型基础地址）后再次打到不支持 embeddings（向量）的网关。
+ */
+export function createAppEmbeddingConfigFromEnvironment(input: {
+  env: DataConfigEnvironment;
+}): AppEmbeddingEnvironmentConfig | undefined {
+  const endpointUrl = readOptionalString(input.env, "EMBEDDING_ENDPOINT_URL");
+  const baseUrl = readOptionalString(input.env, "EMBEDDING_BASE_URL");
+  const apiKey = readOptionalString(input.env, "EMBEDDING_API_KEY");
+  const model = readOptionalString(input.env, "EMBEDDING_MODEL");
+  const hasAnyConfig =
+    endpointUrl !== undefined ||
+    baseUrl !== undefined ||
+    apiKey !== undefined ||
+    model !== undefined;
+
+  if (!hasAnyConfig) {
+    return undefined;
+  }
+
+  if (endpointUrl === undefined && baseUrl === undefined) {
+    throw new Error(
+      "EMBEDDING_ENDPOINT_URL or EMBEDDING_BASE_URL must be configured when embedding is enabled",
+    );
+  }
+
+  if (apiKey === undefined) {
+    throw new Error("EMBEDDING_API_KEY must be configured when embedding is enabled");
+  }
+
+  return Object.freeze({
+    ...(endpointUrl === undefined ? {} : { endpoint_url: endpointUrl }),
+    ...(baseUrl === undefined ? {} : { base_url: baseUrl }),
+    api_key: apiKey,
+    ...(model === undefined ? {} : { model }),
   });
 }
 

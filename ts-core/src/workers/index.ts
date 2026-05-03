@@ -29,6 +29,7 @@ export const workersModuleBoundary = {
     "createConversationWorkerRuntime",
     "createBotWorkerRuntime",
     "createBrainWorkerRuntime",
+    "createOpenAiCompatibleEmbeddingGenerator",
   ],
 } satisfies ModuleBoundary;
 
@@ -38,3 +39,4 @@ export * from "./contracts.js";
 export * from "./conversation-worker.js";
 export * from "./bot-worker.js";
 export * from "./brain-worker.js";
+export * from "./embedding-client.js";

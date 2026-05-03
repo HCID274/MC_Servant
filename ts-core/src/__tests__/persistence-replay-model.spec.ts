@@ -249,7 +249,7 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
       "event_log",
       "brain_queue",
     ]);
-    expect(brainPlan.map((step) => step.target)).toEqual(["task_summaries", "session_summaries"]);
+    expect(brainPlan.map((step) => step.target)).toEqual(["task_events", "session_summaries"]);
     expect(detection.open_tasks).toEqual([
       {
         job_id: "task-open",
