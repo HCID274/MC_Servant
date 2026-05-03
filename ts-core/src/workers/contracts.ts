@@ -11,7 +11,6 @@ import type {
   ConversationCancelRouteDecision,
   ConversationChatRouteDecision,
   ConversationLlmReply,
-  ConversationModifyRouteDecision,
   ConversationPlanRouteDecision,
   ConversationReply,
   ConversationRouteDecision,
@@ -184,12 +183,12 @@ export interface ConversationCancelWorkerActionInput {
   readonly reply: ConversationTemplateReply;
 }
 
-/** `plan`（规划） / `modify`（修改） 路由对应的 Worker 动作输入。 */
+/** `plan`（规划） 路由对应的 Worker 动作输入。 */
 export interface ConversationExecWorkerActionInput {
   /** 目标 Bot 标识。 */
   readonly bot_id: string;
   /** 已解析的规划类路由。 */
-  readonly route: ConversationPlanRouteDecision | ConversationModifyRouteDecision;
+  readonly route: ConversationPlanRouteDecision;
   /** 当前意图纪元。 */
   readonly intent_epoch: number;
   /** 已构造好的开场回复。 */
@@ -341,11 +340,9 @@ export function createInterruptSignalFromRoute(input: {
   const reason =
     input.route.kind === "cancel_interrupt"
       ? "cancel"
-      : input.route.kind === "modify_interrupt_then_plan"
-        ? "modify"
-        : input.route.kind === "plan_exec"
-          ? input.route.triage.reason
-          : "interrupt";
+      : input.route.kind === "plan_exec"
+        ? input.route.triage.reason
+        : "interrupt";
 
   return Object.freeze({
     source: {
@@ -409,7 +406,6 @@ export function createConversationWorkerActions(
       );
       break;
     case "plan_exec":
-    case "modify_interrupt_then_plan":
       if (!("exec_job" in input)) {
         throw new Error("planning route requires exec_job");
       }

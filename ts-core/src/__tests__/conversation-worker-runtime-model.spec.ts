@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   createConversationCompositeTriage,
   createConversationRecentContextStore,
-  createMessageTriage,
 } from "../conversation/index.js";
 import {
   ConversationLlmChatError,
@@ -30,6 +29,34 @@ import {
   createConversationWorkerRuntime,
 } from "../workers/conversation-worker.js";
 import { createConversationWorkerMemoryContext } from "../workers/conversation-worker/helpers.js";
+
+function createCompositeChatTriage() {
+  return createConversationCompositeTriage({
+    reply: {},
+  });
+}
+
+function createCompositeTaskTriage(input: {
+  readonly priority: ConversationPriority;
+  readonly reason: string;
+}) {
+  return createConversationCompositeTriage({
+    action: {
+      intent: "task",
+      priority: input.priority,
+      reason: input.reason,
+    },
+  });
+}
+
+function createCompositeCancelTriage(reason: string) {
+  return createConversationCompositeTriage({
+    cancel: {
+      priority: "interrupt",
+      reason,
+    },
+  });
+}
 
 describe("ConversationWorker（对话工作线程） 真实运行时", () => {
   it("应由 conversation（对话） 侧 sink（汇点） 消费 sandbox finalize（沙盒终态） 并写入最近上下文", async () => {
@@ -94,12 +121,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             close: async () => undefined,
           };
         },
-        triage: () =>
-          createMessageTriage({
-            intent: "chat",
-            priority: "normal",
-            reason: "unit_chat",
-          }),
+        triage: () => createCompositeChatTriage(),
         actorStateProjectionProvider: () => {
           projectionCalls += 1;
 
@@ -218,12 +240,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             close: async () => undefined,
           };
         },
-        triage: () =>
-          createMessageTriage({
-            intent: "chat",
-            priority: "normal",
-            reason: "unit_chat",
-          }),
+        triage: () => createCompositeChatTriage(),
         actorStateProjectionProvider: () =>
           createBotActorStateProjection({
             status: BotStatus.IDLE,
@@ -272,25 +289,19 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     expect(recentContexts[1]).not.toContain("你刚刚捡到了什么");
   });
 
-  it("应让 Chat / Plan / Modify（三路） 按路径出口顺序递推 inventory diff（背包差异） baseline（基线）", async () => {
+  it("应让 Chat / Plan / Plan（三路） 按路径出口顺序递推 inventory diff（背包差异） baseline（基线）", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const inventoryChanges: Array<string | undefined> = [];
     const snapshotContexts: string[] = [];
     const triages = [
-      createMessageTriage({
-        intent: "chat",
-        priority: "normal",
-        reason: "unit_chat_inventory",
-      }),
-      createMessageTriage({
-        intent: "task",
+      createCompositeChatTriage(),
+      createCompositeTaskTriage({
         priority: ConversationPriority.Normal,
         reason: "unit_plan_inventory",
       }),
-      createMessageTriage({
-        intent: "modify",
+      createCompositeTaskTriage({
         priority: ConversationPriority.Urgent,
-        reason: "unit_modify_inventory",
+        reason: "unit_replace_inventory",
       }),
     ];
     const snapshots = [
@@ -318,13 +329,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             close: async () => undefined,
           };
         },
-        triage: () =>
-          triages.shift() ??
-          createMessageTriage({
-            intent: "chat",
-            priority: "normal",
-            reason: "unit_inventory_fallback",
-          }),
+        triage: () => triages.shift() ?? createCompositeChatTriage(),
         environmentSnapshotProvider: () => {
           const snapshot = snapshots.shift();
 
@@ -365,7 +370,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     for (const message of [
       { id: "msg-inventory-chat", content: "现在背包如何" },
       { id: "msg-inventory-plan", content: "去坐标 1 64 -3" },
-      { id: "msg-inventory-modify", content: "改成快点过去" },
+      { id: "msg-inventory-replace", content: "改成快点过去" },
     ]) {
       await processor?.({
         data: createConversationWorkerTask({
@@ -396,16 +401,8 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     let snapshotReads = 0;
     const inventoryChanges: Array<string | undefined> = [];
     const triages = [
-      createMessageTriage({
-        intent: "cancel",
-        priority: "interrupt",
-        reason: "unit_cancel_inventory",
-      }),
-      createMessageTriage({
-        intent: "chat",
-        priority: "normal",
-        reason: "unit_chat_after_cancel",
-      }),
+      createCompositeCancelTriage("unit_cancel_inventory"),
+      createCompositeChatTriage(),
     ];
     const runtime = createConversationWorkerRuntime({
       queue: {
@@ -420,13 +417,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             close: async () => undefined,
           };
         },
-        triage: () =>
-          triages.shift() ??
-          createMessageTriage({
-            intent: "chat",
-            priority: "normal",
-            reason: "unit_cancel_inventory_fallback",
-          }),
+        triage: () => triages.shift() ?? createCompositeChatTriage(),
         environmentSnapshotProvider: () => {
           snapshotReads += 1;
 
@@ -481,12 +472,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             close: async () => undefined,
           };
         },
-        triage: () =>
-          createMessageTriage({
-            intent: "chat",
-            priority: "normal",
-            reason: "unit_chat_projection_failed",
-          }),
+        triage: () => createCompositeChatTriage(),
         actorStateProjectionProvider: () => {
           throw new Error("projection source unavailable");
         },
@@ -533,12 +519,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             close: async () => undefined,
           };
         },
-        triage: () =>
-          createMessageTriage({
-            intent: "chat",
-            priority: "normal",
-            reason: "unit_chat_memory",
-          }),
+        triage: () => createCompositeChatTriage(),
         memoryContextProvider: (input) => {
           memoryCalls.push(input);
 
@@ -615,7 +596,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
         intent_epoch: 9,
         message_content: "你还记得上次的矿洞吗",
         route_kind: "chat_reply",
-        query_reason: "unit_chat_memory",
+        query_reason: "composite_reply",
         limit: 5,
         char_budget: 800,
       }),
@@ -640,12 +621,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             close: async () => undefined,
           };
         },
-        triage: () =>
-          createMessageTriage({
-            intent: "cancel",
-            priority: "interrupt",
-            reason: "owner_cancel",
-          }),
+        triage: () => createCompositeCancelTriage("owner_cancel"),
         replyGenerator: () => {
           throw new Error("cancel route must not call reply generator");
         },
@@ -689,7 +665,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             type: "triage",
             intent_epoch: 2,
           },
-          reason: "cancel",
+          reason: "owner_cancel",
         },
       },
     ]);
@@ -724,8 +700,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           };
         },
         triage: () =>
-          createMessageTriage({
-            intent: "task",
+          createCompositeTaskTriage({
             priority: ConversationPriority.Normal,
             reason: "needs_planner",
           }),
@@ -788,8 +763,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           };
         },
         triage: () =>
-          createMessageTriage({
-            intent: "task",
+          createCompositeTaskTriage({
             priority: ConversationPriority.Urgent,
             reason: "llm_task_goto",
           }),
@@ -876,8 +850,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           };
         },
         triage: () =>
-          createMessageTriage({
-            intent: "task",
+          createCompositeTaskTriage({
             priority: ConversationPriority.Normal,
             reason: "unit_plan_memory",
           }),
@@ -967,9 +940,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
               reason: "owner_composite_cancel",
               priority: "interrupt",
             },
-            reply: {
-              content: "知道了",
-            },
+            reply: {},
             action: {
               intent: "task",
               priority: ConversationPriority.Urgent,
@@ -1131,8 +1102,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           };
         },
         triage: () =>
-          createMessageTriage({
-            intent: "task",
+          createCompositeTaskTriage({
             priority: ConversationPriority.Normal,
             reason: "llm_task_invalid_plan",
           }),
@@ -1196,8 +1166,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           };
         },
         triage: () =>
-          createMessageTriage({
-            intent: "task",
+          createCompositeTaskTriage({
             priority: ConversationPriority.Normal,
             reason: "llm_task_mine",
           }),
@@ -1264,8 +1233,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           };
         },
         triage: () =>
-          createMessageTriage({
-            intent: "task",
+          createCompositeTaskTriage({
             priority: ConversationPriority.Normal,
             reason: "llm_task_disabled_skill",
           }),
@@ -1347,8 +1315,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           };
         },
         triage: () =>
-          createMessageTriage({
-            intent: "task",
+          createCompositeTaskTriage({
             priority: ConversationPriority.Normal,
             reason: "unit_plan_error_log",
           }),
@@ -1401,12 +1368,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             close: async () => undefined,
           };
         },
-        triage: () =>
-          createMessageTriage({
-            intent: "chat",
-            priority: "normal",
-            reason: "unit_chat_error",
-          }),
+        triage: () => createCompositeChatTriage(),
         replyGenerator: () => {
           throw new ConversationLlmChatError(
             "upstream overload",

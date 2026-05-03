@@ -76,6 +76,8 @@ export type InterruptSource =
       type: "control";
       /** 控制命令。 */
       command: "interrupt" | "cancel";
+      /** 触发该控制中断的意图纪元。 */
+      intent_epoch?: number;
     }
   | ReflexInterruptSource
   | {

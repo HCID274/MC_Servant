@@ -640,6 +640,39 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await transport.disconnect("test shutdown");
   });
 
+  it("stopCurrentAction（停止当前动作） 应停止 pathfinder（寻路器） 并清理控制键", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entities.owner = {
+      id: "owner",
+      name: "player",
+      username: "Steve",
+      position: { x: 1, y: 80, z: 1 },
+    };
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-stop-current-action",
+        version: "1.20.4",
+      }),
+      {
+        createBot: () => bot,
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    bot.emit("spawn");
+    await connectPromise;
+
+    transport.stopCurrentAction();
+
+    expect(bot.resetGoals).toEqual([null]);
+    expect(bot.pathfinderStops).toBe(1);
+    expect(bot.clearedControlStates).toBe(1);
+    expect(bot.entities.owner).toBeDefined();
+
+    await transport.disconnect("test shutdown");
+  });
+
   it("应从 transport（传输层） 采样 planner（规划器） 所需 observation（观测）输入", async () => {
     const createdBots: FakeMineflayerBot[] = [];
     const transport = createMineflayerRuntimeTransport(

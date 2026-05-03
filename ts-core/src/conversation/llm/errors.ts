@@ -1,5 +1,20 @@
 import type { ConversationLlmDiagnosticRecord } from "./types.js";
 
+export class ConversationLlmTriageError extends Error {
+  /** 失败时已生成的诊断摘要。 */
+  readonly diagnostics: ConversationLlmDiagnosticRecord;
+
+  constructor(
+    message: string,
+    diagnostics: ConversationLlmDiagnosticRecord,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "ConversationLlmTriageError";
+    this.diagnostics = diagnostics;
+  }
+}
+
 export class ConversationLlmChatError extends Error {
   /** 失败时已生成的诊断摘要。 */
   readonly diagnostics: ConversationLlmDiagnosticRecord;

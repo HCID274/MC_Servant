@@ -1,22 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  BotStatus,
   type ConversationPlanningTriage,
   ConversationPriority,
   type ConversationSandboxCodePlanDraft,
   type ConversationSkillCallPlanDraft,
   ExecPriority,
   ExecutionTaskKind,
-  MessageSource,
   TaskHistoryStatus,
   createBotWorkerActions,
   createBotWorkerTask,
   createBrainWorkerActions,
   createCancelTemplateReply,
   createConversationCompositeTriage,
-  createConversationCompositeTriageFromMessageTriage,
-  createConversationPlanningContext,
   createConversationReply,
   createConversationRouteDecision,
   createConversationWorkerActions,
@@ -41,7 +37,7 @@ const invalidSandboxPlanType: ConversationSandboxCodePlanDraft["type"] =
   ExecutionTaskKind.SkillCall;
 void invalidSandboxPlanType;
 
-// @ts-expect-error 规划上下文只接受 `task`（任务） / `modify`（修改） 意图。
+// @ts-expect-error 规划上下文只接受 `task`（任务） 意图。
 const invalidPlanningIntent: ConversationPlanningTriage["intent"] = "cancel";
 void invalidPlanningIntent;
 
@@ -73,31 +69,17 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     expect(route.queue_behavior).toBe("none");
   });
 
-  it("应创建强类型 composite triage（复合分诊） 并兼容旧单 intent（意图） 输入", () => {
+  it("应创建强类型 composite triage（复合分诊） 并拒绝 reply 正文", () => {
     const composite = createConversationCompositeTriage({
       cancel: {
         reason: "先停下",
         priority: "interrupt",
       },
-      reply: "知道了",
+      reply: {},
       action: {
         intent: "task",
         priority: "urgent",
         reason: "继续规划新动作",
-      },
-    });
-    const legacy = createConversationCompositeTriageFromMessageTriage(
-      createMessageTriage({
-        intent: "task",
-        priority: "normal",
-        reason: "旧结构任务",
-      }),
-    );
-    const modifyFallback = createConversationCompositeTriage({
-      action: {
-        intent: "modify",
-        priority: "urgent",
-        reason: "不允许在线 modify 半通路",
       },
     });
 
@@ -106,25 +88,18 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
         reason: "先停下",
         priority: "interrupt",
       },
-      reply: {
-        content: "知道了",
-      },
+      reply: {},
       action: {
         intent: "task",
         priority: "urgent",
         reason: "继续规划新动作",
       },
     });
-    expect(legacy).toEqual({
-      action: {
-        intent: "task",
-        priority: "normal",
-        reason: "旧结构任务",
-      },
-    });
-    expect(modifyFallback).toEqual({
-      reply: {},
-    });
+    expect(() =>
+      createConversationCompositeTriage({
+        reply: Object.fromEntries([["content", "知道了"]]) as Record<string, never>,
+      }),
+    ).toThrow(/reply must be an empty object/);
   });
 
   it("应让 skill_call（技能调用） / sandbox_code（沙箱代码） 双路径严格对齐现有执行契约", () => {
@@ -162,7 +137,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     expect(sandboxJob.type).toBe(ExecutionTaskKind.SandboxCode);
   });
 
-  it("应将 cancel（取消） 与 modify（修改） 分流为不同的中断桥接行为", () => {
+  it("应将抢占式 task（任务） 映射为 interrupt_then_enqueue（中断后入队）", () => {
     const cancelRoute = createConversationRouteDecision({
       triage: createMessageTriage({
         intent: "cancel",
@@ -172,11 +147,11 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
       message: "取消",
       has_active_task: true,
     });
-    const modifyRoute = createConversationRouteDecision({
+    const taskRoute = createConversationRouteDecision({
       triage: createMessageTriage({
-        intent: "modify",
-        priority: "urgent",
-        reason: "owner_modify",
+        intent: "task",
+        priority: "interrupt",
+        reason: "owner_replace_task",
       }),
       message: "改成砍两棵树",
       has_active_task: true,
@@ -184,8 +159,8 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     if (cancelRoute.kind !== "cancel_interrupt") {
       throw new Error("expected cancel_interrupt route");
     }
-    if (modifyRoute.kind !== "modify_interrupt_then_plan") {
-      throw new Error("expected modify_interrupt_then_plan route");
+    if (taskRoute.kind !== "plan_exec") {
+      throw new Error("expected plan_exec route");
     }
     const cancelActions = createConversationWorkerActions({
       bot_id: "bot-008",
@@ -193,9 +168,9 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
       intent_epoch: 9,
       reply: createCancelTemplateReply(),
     });
-    const modifyActions = createConversationWorkerActions({
+    const taskActions = createConversationWorkerActions({
       bot_id: "bot-008",
-      route: modifyRoute,
+      route: taskRoute,
       intent_epoch: 10,
       reply: createConversationReply({
         mode: "llm",
@@ -219,18 +194,18 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
       "interrupt_runtime",
       "broadcast_reply",
     ]);
-    expect(modifyRoute.kind).toBe("modify_interrupt_then_plan");
-    expect(modifyActions.map((action) => action.type)).toEqual([
+    expect(taskRoute.queue_behavior).toBe("interrupt_then_enqueue");
+    expect(taskActions.map((action) => action.type)).toEqual([
       "interrupt_runtime",
       "broadcast_reply",
       "enqueue_exec",
       "emit_task_lifecycle",
     ]);
-    expect(modifyActions[3]?.type).toBe("emit_task_lifecycle");
-    if (modifyActions[3]?.type !== "emit_task_lifecycle") {
+    expect(taskActions[3]?.type).toBe("emit_task_lifecycle");
+    if (taskActions[3]?.type !== "emit_task_lifecycle") {
       throw new Error("expected accepted lifecycle action");
     }
-    expect(modifyActions[3].lifecycle.status).toBe(TaskHistoryStatus.Accepted);
+    expect(taskActions[3].lifecycle.status).toBe(TaskHistoryStatus.Accepted);
   });
 
   it("应拒绝给 cancel（取消） 路径传入非 template（模板） 回复", () => {
@@ -275,7 +250,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     ).toThrow(/bot_id must match message\.bot_id/);
   });
 
-  it("应把优先级映射到队列侧行为，并在 modify 规划时要求被中断任务摘要", () => {
+  it("应把优先级映射到队列侧行为", () => {
     const interruptTaskRoute = createConversationRouteDecision({
       triage: createMessageTriage({
         intent: "task",
@@ -302,26 +277,6 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     }
     expect(interruptTaskRoute.exec_priority).toBe(ExecPriority.Urgent);
     expect(normalTaskRoute.queue_behavior).toBe("enqueue_only");
-    expect(() =>
-      createConversationPlanningContext({
-        message: {
-          bot_id: "bot-008",
-          message_id: "msg-ctx",
-          content: "改一下",
-          source: MessageSource.Web,
-          intent_epoch: 11,
-          snapshot_ts: 150,
-          bot_status: BotStatus.EXECUTING,
-          created_at: "2026-04-14T00:00:00.000Z",
-        },
-        triage: {
-          intent: "modify",
-          priority: ConversationPriority.Urgent,
-          reason: "modify",
-        },
-        snapshot_context: "[Bot] 位置:(0,64,0)",
-      }),
-    ).toThrow(/interrupted_task/);
   });
 
   it("应为聊天回复、记忆检索与 Bot/Brain Worker 输出动作提供纯函数边界", () => {

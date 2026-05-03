@@ -47,14 +47,14 @@ ConversationWorker 消费 `msg:{botId}` 队列，产出物推入 `bot:{botId}:ex
 ║                                        ║
 ║  输入：消息 + 最近 3 轮原始对话          ║
 ║        + Bot 状态一行摘要               ║
-║  输出：MessageTriage JSON              ║
+║  输出：ConversationCompositeTriage JSON ║
 ║  Token 预算：输入 ~400, 输出 ~80       ║
 ║  延迟预期：300-800ms                    ║
 ╚═══════════════════╤════════════════════╝
                     │
           ┌─────────┼────────────┐
           ▼         ▼            ▼
-        chat    task/modify     cancel
+        chat       task        cancel
           │         │            │
           ▼         │            ▼
 ╔═══════════════╗   │    直接调 botActor.interrupt()
@@ -103,11 +103,11 @@ Stage 1 判定 `intent: cancel` 时，不需要第二次 LLM 调用。Conversati
 你是一个消息分类器。根据用户消息和上下文，判断用户的意图类别和紧迫度。
 只输出 JSON，不要输出其他内容。
 
-意图分类规则：
-- chat：闲聊、问候、问问题、情感表达、与 Minecraft 游戏操作无关的对话
-- task：要求 Bot 执行游戏内动作（采集、移动、制造、跟随等）
-- modify：要求修改当前正在执行的任务（改目标、改数量、加条件）
-- cancel：要求停止当前任务（但不是一般性的"不要"——只有明确指向当前动作的停止指令）
+输出片段规则：
+- reply：可选。闲聊、问候、问问题、情感表达、与 Minecraft 游戏操作无关的对话；只输出空对象 `{}`
+- action：可选。要求 Bot 执行游戏内动作（采集、移动、制造、跟随等）；`intent` 固定为 `task`
+- cancel：可选。要求停止当前任务（但不是一般性的"不要"——只有明确指向当前动作的停止指令）
+- 修改当前任务：不再有独立 intent，必须表达为 `cancel + action`
 
 紧迫度规则：
 - interrupt：必须立刻中止当前动作（"快跑"、"停下"、"别打了"）
@@ -116,7 +116,7 @@ Stage 1 判定 `intent: cancel` 时，不需要第二次 LLM 调用。Conversati
 - background：低优先级（"有空的话"、"之后帮我"）
 
 输出格式：
-{"intent":"chat|task|modify|cancel","priority":"interrupt|urgent|normal|background","reason":"一句话说明判断依据"}
+{"cancel":{"reason":"一句话原因","priority":"interrupt|queued"},"reply":{},"action":{"intent":"task","priority":"interrupt|urgent|normal|background","reason":"一句话说明判断依据"}}
 ```
 
 ### 3.2 User Prompt 模板
@@ -132,8 +132,21 @@ Bot 状态：{idle|正在执行:{当前任务简述}}
 ### 3.3 Triage 输出类型
 
 ```typescript
+interface ConversationCompositeTriage {
+  cancel?: {
+    reason: string
+    priority: 'interrupt' | 'queued'
+  }
+  reply?: Record<string, never>
+  action?: {
+    intent: 'task'
+    priority: 'interrupt' | 'urgent' | 'normal' | 'background'
+    reason: string
+  }
+}
+
 interface MessageTriage {
-  intent: 'chat' | 'task' | 'modify' | 'cancel'
+  intent: 'chat' | 'task' | 'cancel'
   priority: 'interrupt' | 'urgent' | 'normal' | 'background'
   reason: string
 }
@@ -141,15 +154,16 @@ interface MessageTriage {
 
 ### 3.4 Triage 容错
 
-LLM 输出解析失败时的兜底策略：
+LLM 输出解析失败时的诊断策略：
 
 | 情况 | 处置 |
 |------|------|
-| JSON 解析失败 | 回退为 `{ intent: 'chat', priority: 'normal' }` |
-| intent 值非法 | 回退为 `'chat'` |
-| priority 值非法 | 回退为 `'normal'` |
+| JSON 解析失败 | 写入 LLM diagnostics JSONL 并抛出分诊错误 |
+| 输出旧 `{ intent, priority, reason }` | 写入 LLM diagnostics JSONL 并抛出分诊错误 |
+| `reply` 携带正文 | 写入 LLM diagnostics JSONL 并抛出分诊错误 |
+| `action.intent` 非 `task` | 写入 LLM diagnostics JSONL 并抛出分诊错误 |
 
-回退永远偏向安全侧——宁可把任务当闲聊（最多延迟执行），不能把闲聊当中断（打断正在执行的任务）。
+分诊失败不再静默回退为 `{ reply: {} }`，由 diagnostics 日志保留原始 prompt 和错误摘要，避免把 schema 漂移误当成闲聊。
 
 ---
 
@@ -837,7 +851,7 @@ FTS 权重高于向量检索。理由：MC 场景中，"钻石矿"、"苦力怕"
 const RECALL_TRIGGERS = ['上次', '之前', '还记得', '那个', '以前', '昨天', '刚才']
 
 function shouldSearchMemory(message: string, intent: string): boolean {
-  if (intent === 'task' || intent === 'modify') return true
+  if (intent === 'task') return true
   return RECALL_TRIGGERS.some(t => message.includes(t))
 }
 ```
@@ -1001,62 +1015,42 @@ msg:{botId} 队列取出 job（用户消息）
     │
 3. ══ Stage 1: Triage LLM 调用 ══
     │  输入：状态摘要 + 3 轮对话 + 当前消息
-    │  输出：MessageTriage { intent, priority, reason }
+    │  输出：ConversationCompositeTriage { cancel?, reply?, action? }
     │
-4. 分支路由：
+4. 复合片段派发：
     │
-    ├─ intent === 'cancel'
+    ├─ cancel 存在
     │   → botActor.interrupt(...)
     │   → 广播模板回复
-    │   → done
     │
-    ├─ intent === 'chat'
+    ├─ reply 存在
     │   → 条件记忆检索（有回忆语义时）
     │   → ══ Stage 2-Chat LLM 调用 ══
     │   → 广播回复
-    │   → done
     │
-    ├─ intent === 'task'
+    └─ action 存在
     │   → 并发：记忆检索 + 拉取任务历史索引 + 获取环境快照
     │   → 判断：单 skill 可映射？
     │       ├─ 是 → ══ Stage 2-Plan (skill_call) LLM 调用 ══
     │       └─ 否 → ══ Stage 2-Plan (sandbox_code) LLM 调用 ══
     │   → 解析输出
-    │   → 广播开场回复
+    │   → 若前面已广播 reply/cancel 模板，则不重复广播开场回复
     │   → 推入 exec 队列
     │   → done
-    │
-    └─ intent === 'modify'
-        → botActor.interrupt(...)  // 先停当前任务
-        → 并发：记忆检索 + 拉取任务历史索引 + 获取环境快照
-        → ══ Stage 2-Plan LLM 调用 ══ （prompt 额外注入被中断任务的信息）
-        → 广播回复
-        → 推入 exec 队列
-        → done
 ```
 
 ---
 
-## 13. modify 意图的特殊处理
+## 13. 修改语义：cancel + task
 
-modify 的本质是 cancel + new。与 ARCHITECTURE.md 第 11.4 节一致：不做旧计划与新计划的 diff。
+修改诉求不再有独立 intent。分诊层只表达两个片段：`cancel` 负责中断当前任务，`action.intent='task'` 负责进入新规划。与 ARCHITECTURE.md 第 11.4 节一致：不做旧计划与新计划的 diff。
 
 处理流程：
 
-1. 调 `botActor.interrupt({ source: { type: 'triage', intent_epoch }, reason: 'modify' })`
-2. 获取被中断任务的信息（从 event_log 拉取最近的 `task.started` 事件）
-3. 将被中断任务信息注入 Stage 2-Plan 的 prompt：
-
-```
-# 被中断的任务
-之前在执行：{被中断任务的 intent 描述}
-执行到：{最后一步的 step.progress}
-现在主人要求修改为：{当前消息}
-
-请基于当前环境快照重新规划，不要延续旧计划。
-```
-
-4. LLM 基于当前状态生成全新计划
+1. Stage 1-Triage 输出 `{"cancel":{...},"action":{"intent":"task",...}}`
+2. ConversationWorker 先调用 `botActor.interrupt({ source: { type: 'triage', intent_epoch }, reason: cancel.reason })`
+3. ConversationWorker 再按普通 `task` 片段构建 Stage 2-Plan prompt
+4. LLM 基于当前环境快照生成全新计划，不注入旧任务 diff 或被中断任务摘要
 
 ---
 

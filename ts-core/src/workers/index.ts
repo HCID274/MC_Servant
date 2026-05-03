@@ -13,7 +13,7 @@ export const workersModuleBoundary = {
   moduleName: "workers",
   responsibilities: [
     "统一三队列命名规则、Worker 输入任务与输出动作契约",
-    "桥接 cancel、modify 与抢占式 task 到运行时中断协议",
+    "桥接 cancel 与抢占式 task 到运行时中断协议",
   ],
   placeholderExports: [
     "workersModuleBoundary",

@@ -1,10 +1,8 @@
 import { Worker, type WorkerOptions } from "bullmq";
 
 import { createConversationReply } from "../../conversation/chat.js";
+import type { ConversationCompositeTriage } from "../../conversation/contracts.js";
 import type { ConversationGeneratedReply } from "../../conversation/llm.js";
-import { createMessageTriage } from "../../conversation/triage.js";
-import { ConversationPriority } from "../../core-ports/foundation.js";
-import type { MessageTriage } from "../../core-ports/foundation.js";
 import type { BotActorStateProjection } from "../../core-ports/runtime.js";
 import { ExecPriority } from "../../core-ports/tasking.js";
 import {
@@ -31,11 +29,9 @@ export function createDefaultConversationWorker(input: {
 }
 /** 生成默认的对话意图分诊结果。 */
 
-export function createDefaultTriage(): MessageTriage {
-  return createMessageTriage({
-    intent: "chat",
-    priority: ConversationPriority.Normal,
-    reason: "conversation_worker_fallback",
+export function createDefaultTriage(): ConversationCompositeTriage {
+  return Object.freeze({
+    reply: Object.freeze({}),
   });
 }
 /** 克隆并校验对话任务数据。 */

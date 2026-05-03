@@ -1,6 +1,7 @@
 import type { DataConfig, DataConfigEnvironment } from "../../data/index.js";
 import type {
   DrizzleMigrationMetadata,
+  IntentEpochStore,
   PostgresConnectionDescriptor,
   PostgresRuntimeDependencies,
   PostgresRuntimeResource,
@@ -11,6 +12,7 @@ import type {
 } from "../../db/index.js";
 import type { LlmDiagnosticSummary, createDiagnosticsCatalog } from "../../diagnostics/index.js";
 import type {
+  InterfaceControlFastPathDecision,
   API_ROUTE_DEFINITIONS,
   HealthResponse,
   InterfaceBotStatusSnapshot,
@@ -338,6 +340,17 @@ export interface AppRuntimeServiceDependencies {
   ) => readonly RealtimeEventEnvelope[] | Promise<readonly RealtimeEventEnvelope[]>;
   /** 最近一次 LLM（大语言模型） 调用摘要源。 */
   readonly latestLlmDiagnostic?: () => LlmDiagnosticSummary | null;
+  /** intent_epoch（意图纪元） 单调源；真实路径使用 Redis INCR（缓存自增命令）。 */
+  readonly intentEpochStore?: IntentEpochStore;
+  /** control fast-path（控制快路径） 命中后的副作用收口。 */
+  readonly controlFastPathSink?: (input: {
+    readonly bot_id: string;
+    readonly message_id: string;
+    readonly content: string;
+    readonly intent_epoch: number;
+    readonly received_at: string;
+    readonly decision: InterfaceControlFastPathDecision;
+  }) => void | Promise<void>;
   /** 追加运行中只读事件。 */
   readonly appendRealtimeEvent?: (
     event: Omit<RealtimeEventEnvelope, "seq">,

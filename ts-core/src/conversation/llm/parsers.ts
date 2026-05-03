@@ -1,6 +1,6 @@
 import type { ConversationCompositeTriage } from "../contracts.js";
 import { createSandboxCodePlanDraft } from "../planning.js";
-import { createConversationCompositeTriageFromRecord, createMessageTriage } from "../triage.js";
+import { createConversationCompositeTriageFromRecord } from "../triage.js";
 import { ConversationLlmPlanError, ConversationLlmSkillNotEnabledError } from "./errors.js";
 import type { OpenAiCompatibleChatCompletionResponse } from "./http.js";
 import { createConversationSkillPlanFromTable } from "./skill-plan-table.js";
@@ -28,20 +28,7 @@ export function extractAssistantReply(payload: OpenAiCompatibleChatCompletionRes
   throw new Error("LLM response does not contain assistant text");
 }
 
-/** 解析分诊阶段返回。 */
-export function parseConversationTriage(content: string): ReturnType<typeof createMessageTriage> {
-  const record = parseJsonRecord(content);
-
-  return createMessageTriage({
-    ...(typeof record.intent === "string" ? { intent: record.intent } : {}),
-    ...(typeof record.priority === "string" ? { priority: record.priority } : {}),
-    ...(typeof record.reason === "string"
-      ? { reason: record.reason }
-      : { reason: "llm_triage_fallback" }),
-  });
-}
-
-/** 解析复合分诊阶段返回，兼容旧 `{intent, priority, reason}`（旧分诊结构）。 */
+/** 解析复合分诊阶段返回。 */
 export function parseConversationCompositeTriage(content: string): ConversationCompositeTriage {
   return createConversationCompositeTriageFromRecord(parseJsonRecord(content));
 }

@@ -83,7 +83,7 @@ export type ExecutionTaskEnvelope = TaskEnvelope<ExecutionTaskKind>;
 /** 对话分诊结果结构，用于描述意图与紧迫度判断。 */
 export interface MessageTriage {
   /** 意图分类。 */
-  intent: "chat" | "task" | "modify" | "cancel";
+  intent: "chat" | "task" | "cancel";
   /** 紧迫度分类。 */
   priority: ConversationPriority;
   /** 判断依据。 */

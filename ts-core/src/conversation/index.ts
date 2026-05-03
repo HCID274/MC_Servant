@@ -10,7 +10,7 @@ export const conversationModuleBoundary = {
   moduleName: "conversation",
   responsibilities: [
     "承载 ConversationWorker 的分诊、闲聊、规划与纯路由契约",
-    "统一 task、modify、cancel 三类对话意图的纯函数边界",
+    "统一 task、cancel 与 composite triage 三类对话路由的纯函数边界",
   ],
   placeholderExports: [
     "conversationModuleBoundary",

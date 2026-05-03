@@ -51,6 +51,7 @@ function createFakeTransport(input?: {
     readonly itemName: string;
     readonly destination?: "hand" | "off-hand" | "head" | "torso" | "legs" | "feet";
   }) => Promise<void> | void;
+  stopCurrentAction?: () => void;
   worldReady?: boolean;
 }): MineflayerRuntimeTransport<"bot-actor"> {
   let connected = false;
@@ -112,6 +113,9 @@ function createFakeTransport(input?: {
       await input?.equip?.(params);
 
       return createEquipSkillExecutionResult(params);
+    },
+    stopCurrentAction() {
+      input?.stopCurrentAction?.();
     },
     getSnapshot() {
       return Object.freeze({
@@ -736,6 +740,56 @@ describe("BotActor（机器人执行代理） 脊髓反射入口", () => {
     releaseMove?.();
     await expect(execution).rejects.toThrow(/interrupted/);
     expect(actor.getSnapshot().emitted_events).not.toContain("task.completed");
+  });
+
+  it("triage cancel（分诊取消） 应立即停止当前 Mineflayer（Minecraft 协议客户端） 动作", async () => {
+    let releaseMove: (() => void) | undefined;
+    let stopCalls = 0;
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        goTo: async () => {
+          await new Promise<void>((resolve) => {
+            releaseMove = resolve;
+          });
+        },
+        stopCurrentAction: () => {
+          stopCalls += 1;
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+    });
+
+    await actor.start();
+    const execution = actor.executeSkill(
+      createSkillCallJob({
+        message_id: "msg-running-cancel",
+        intent_epoch: 1,
+        snapshot_ts: 100,
+        priority: ExecPriority.Normal,
+        skill: SKILL_DIRECTORY.goTo,
+        params: { x: 1, y: 64, z: -3 },
+      }),
+    );
+
+    await actor.interrupt({
+      source: {
+        type: "triage",
+        intent_epoch: 2,
+      },
+      reason: "owner_cancel",
+    });
+
+    expect(stopCalls).toBe(1);
+    expect(actor.getSnapshot().status).toBe(BotStatus.IDLE);
+    expect(actor.getSnapshot().current_task).toBeNull();
+
+    releaseMove?.();
+    await expect(execution).rejects.toThrow(/interrupted/);
   });
 
   it("应把 Emergency/Falling（紧急/坠落） 反射收口为 no_op（无操作）", async () => {

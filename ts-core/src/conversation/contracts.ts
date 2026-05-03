@@ -23,12 +23,7 @@ export const CONVERSATION_HISTORY_ROLES = ["owner", "bot"] as const;
 export type ConversationHistoryRole = (typeof CONVERSATION_HISTORY_ROLES)[number];
 
 /** 对话路由类型清单。 */
-export const CONVERSATION_ROUTE_KINDS = [
-  "chat_reply",
-  "plan_exec",
-  "cancel_interrupt",
-  "modify_interrupt_then_plan",
-] as const;
+export const CONVERSATION_ROUTE_KINDS = ["chat_reply", "plan_exec", "cancel_interrupt"] as const;
 
 /** 对话路由类型联合。 */
 export type ConversationRouteKind = (typeof CONVERSATION_ROUTE_KINDS)[number];
@@ -51,7 +46,7 @@ export const CONVERSATION_REPLY_MODES = ["llm", "template"] as const;
 export type ConversationReplyMode = (typeof CONVERSATION_REPLY_MODES)[number];
 
 /** 可进入规划阶段的意图集合。 */
-export const CONVERSATION_PLANNING_INTENTS = ["task", "modify"] as const;
+export const CONVERSATION_PLANNING_INTENTS = ["task"] as const;
 
 /** 规划意图联合类型。 */
 export type ConversationPlanningIntent = (typeof CONVERSATION_PLANNING_INTENTS)[number];
@@ -139,10 +134,7 @@ export interface ConversationCompositeCancel {
 }
 
 /** 复合分诊中的 reply（回复） 片段。 */
-export interface ConversationCompositeReply {
-  /** 历史兼容字段；运行时统一复用 Stage 2-Chat（第二阶段闲聊）生成器。 */
-  readonly content?: string;
-}
+export type ConversationCompositeReply = Readonly<Record<string, never>>;
 
 /** 复合分诊中的 action（动作） 片段，只表示需要进入 planner（规划器）。 */
 export interface ConversationCompositeAction {
@@ -164,18 +156,8 @@ export interface ConversationCompositeTriage {
   readonly action?: ConversationCompositeAction;
 }
 
-/** ConversationWorker（对话工作线程） 兼容的新旧分诊输出。 */
-export type ConversationTriageOutput = MessageTriage | ConversationCompositeTriage;
-
-/** `modify`（修改） 路径注入的被中断任务摘要。 */
-export interface InterruptedTaskSummary {
-  /** 被中断的消息标识。 */
-  readonly message_id: string;
-  /** 被中断任务的意图概述。 */
-  readonly intent_summary: string;
-  /** 可选最后一步进度。 */
-  readonly last_step?: string;
-}
+/** ConversationWorker（对话工作线程） 只消费复合分诊输出。 */
+export type ConversationTriageOutput = ConversationCompositeTriage;
 
 /** Stage 2（第二阶段） 规划上下文结构。 */
 export interface ConversationPlanningContext {
@@ -189,8 +171,6 @@ export interface ConversationPlanningContext {
   readonly task_history_context?: string;
   /** 可选记忆检索结果。 */
   readonly memory_context?: string;
-  /** `modify`（修改） 时的被中断任务摘要。 */
-  readonly interrupted_task?: InterruptedTaskSummary;
 }
 
 /** `llm`（大语言模型） 生成的对话回复结构。 */
@@ -291,27 +271,8 @@ export interface ConversationPlanRouteDecision {
   readonly needs_memory_search: true;
 }
 
-/** 修改后重规划路由结构。 */
-export interface ConversationModifyRouteDecision {
-  /** 路由类型。 */
-  readonly kind: "modify_interrupt_then_plan";
-  /** 队列侧行为。 */
-  readonly queue_behavior: "interrupt_then_enqueue";
-  /** 当前分诊结果。 */
-  readonly triage: ConversationTriageFor<"modify">;
-  /** 是否需要先中断。 */
-  readonly requires_interrupt: true;
-  /** 是否需要进入规划。 */
-  readonly requires_planning: true;
-  /** 进入执行队列时使用的优先级。 */
-  readonly exec_priority: ExecPriority;
-  /** `modify`（修改） 固定做记忆检索。 */
-  readonly needs_memory_search: true;
-}
-
 /** ConversationWorker（对话工作线程） 的纯路由结果联合。 */
 export type ConversationRouteDecision =
   | ConversationChatRouteDecision
   | ConversationCancelRouteDecision
-  | ConversationPlanRouteDecision
-  | ConversationModifyRouteDecision;
+  | ConversationPlanRouteDecision;

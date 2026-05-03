@@ -8,9 +8,11 @@ import type {
 import {
   createInterfaceServerRuntime,
   createMessageAcceptedResponse,
+  matchInterfaceControlFastPath,
   createReplayResponse,
   createStatusResponse,
 } from "../../interfaces/index.js";
+import { createRedisIntentEpochStore } from "../../db/index.js";
 import { createConversationWorkerTask, createWorkerBullmqRuntime } from "../../workers/index.js";
 import type { WorkerBullmqRuntime } from "../../workers/index.js";
 import { createAppDefaultInterfaceStatusSnapshot } from "./directories.js";
@@ -59,6 +61,11 @@ export async function createAppRuntimeServices<TBotId extends string>(
       dependencies.workers,
     );
     const replayEvents = dependencies.replayEvents;
+    const intentEpochStore =
+      dependencies.intentEpochStore ??
+      createRedisIntentEpochStore({
+        client: infrastructure.redis.client,
+      });
     created.http = createInterfaceServerRuntime(
       {
         bot_id: bootstrap.bot_id,
@@ -77,18 +84,39 @@ export async function createAppRuntimeServices<TBotId extends string>(
                 ),
             }),
           message: async (request) => {
+            const queuedAt = dependencies.now?.() ?? new Date().toISOString();
+            const intentEpoch = await intentEpochStore.next(bootstrap.bot_id);
+            const controlDecision = matchInterfaceControlFastPath(request.content);
+
+            if (controlDecision !== null && dependencies.controlFastPathSink !== undefined) {
+              await dependencies.controlFastPathSink({
+                bot_id: request.bot_id,
+                message_id: request.message_id,
+                content: request.content,
+                intent_epoch: intentEpoch,
+                received_at: queuedAt,
+                decision: controlDecision,
+              });
+
+              return createMessageAcceptedResponse({
+                botId: request.bot_id,
+                jobId: request.message_id,
+                messageId: request.message_id,
+                queuedAt,
+              });
+            }
+
             if (typeof created.workers?.conversation.queue.add !== "function") {
               throw new Error("conversation queue does not support add");
             }
 
-            const queuedAt = dependencies.now?.() ?? new Date().toISOString();
             const task = createConversationWorkerTask({
               bot_id: bootstrap.bot_id,
               message: {
                 bot_id: request.bot_id,
                 message_id: request.message_id,
                 content: request.content,
-                intent_epoch: 0,
+                intent_epoch: intentEpoch,
                 snapshot_ts: Date.parse(queuedAt),
               },
             });

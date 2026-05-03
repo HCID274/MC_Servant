@@ -1,8 +1,8 @@
-import { createConversationCompositeTriage, createMessageTriage } from "../triage.js";
 import {
   ConversationLlmChatError,
   ConversationLlmPlanError,
   ConversationLlmSkillNotEnabledError,
+  ConversationLlmTriageError,
   isConversationLlmSkillNotEnabledError,
 } from "./errors.js";
 import {
@@ -10,11 +10,7 @@ import {
   createConversationPlanMessages,
   createConversationTriageMessages,
 } from "./messages.js";
-import {
-  parseConversationCompositeTriage,
-  parseConversationSkillPlan,
-  parseConversationTriage,
-} from "./parsers.js";
+import { parseConversationCompositeTriage, parseConversationSkillPlan } from "./parsers.js";
 import { executeStage } from "./stage.js";
 import type {
   ConversationLlmChatInput,
@@ -47,34 +43,11 @@ export function createConversationLlmClient(
         message_id: input.message_id,
         messages,
         parse: parseConversationCompositeTriage,
-        onFailure: () =>
-          createConversationCompositeTriage({
-            reply: {},
-          }),
-      });
-
-      return result.value;
-    },
-    async generateTriage(
-      input: ConversationLlmTriageInput,
-    ): Promise<ReturnType<typeof createMessageTriage>> {
-      const messages = createConversationTriageMessages(input);
-
-      const result = await executeStage({
-        config,
-        fetchImpl,
-        now,
-        onDiagnostic: dependencies.onDiagnostic,
-        stage: "triage",
-        message_id: input.message_id,
-        messages,
-        parse: parseConversationTriage,
-        onFailure: () =>
-          createMessageTriage({
-            intent: "chat",
-            priority: "normal",
-            reason: "llm_triage_fallback",
-          }),
+        onFailure: ({ error, diagnostics, errorSnapshot }) => {
+          throw new ConversationLlmTriageError(errorSnapshot.message, diagnostics, {
+            cause: error,
+          });
+        },
       });
 
       return result.value;

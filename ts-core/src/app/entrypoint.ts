@@ -11,10 +11,11 @@ import {
   type ConversationLlmClient,
   type ConversationLlmDependencies,
   type ConversationLlmDiagnosticRecord,
+  createCancelTemplateReply,
+  createConversationCompositeTriage,
   createConversationLlmClient,
   createConversationLlmConfig,
   createConversationRecentContextStore,
-  createMessageTriage,
 } from "../conversation/index.js";
 import type { RuntimeEventType } from "../core-ports/events.js";
 import { createBotActorStateProjection } from "../core-ports/index.js";
@@ -23,17 +24,24 @@ import {
   type LlmDiagnosticSummary,
   createLlmDiagnosticSummary,
   createLocalConversationReplyLogSink,
+  createLocalLlmDiagnosticLogSink,
 } from "../diagnostics/index.js";
 import {
   type InterfaceBotStatusSnapshot,
+  type InterfaceControlFastPathDecision,
   type RealtimeEventEnvelope,
   type ServerBridgeEventEnvelope,
   type ServerBridgePlayerMessageFrame,
   type ServerBridgeWsRouteOptions,
   createInterfaceBotStatusSnapshot,
   createRealtimeEventEnvelope,
+  matchInterfaceControlFastPath,
   registerServerBridgeWsRoute,
 } from "../interfaces/index.js";
+import {
+  type IntentEpochStore,
+  createRedisIntentEpochStore,
+} from "../db/index.js";
 import { createConversationWorkerTask } from "../workers/contracts.js";
 import {
   type BotWorkerAction,
@@ -53,6 +61,7 @@ import {
   type AppProcessRuntimeDependencies,
   type AppRuntimeCoreResources,
   type AppRuntimeResources,
+  type AppRuntimeServiceDependencies,
   type AppRuntimeServices,
   createAppRuntimeCoreResources,
   createAppRuntimeResources,
@@ -356,6 +365,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   let botWorker: BotWorkerRuntime | undefined;
   let conversationWorker: ConversationWorkerRuntime | undefined;
   let latestLlmDiagnostic: LlmDiagnosticSummary | null = null;
+  let latestIntentEpoch = 0;
   let latestOwnerPlayerName: string | undefined;
   const replayStore = createOnlineEventReplayStore(input.bootstrap.bot_id);
   const recentContextStore =
@@ -412,15 +422,33 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       input.dependencies?.infrastructure,
     );
     input.write?.("TS Core infrastructure ready");
+    const intentEpochStore = createTrackedIntentEpochStore({
+      store:
+        input.dependencies?.services?.intentEpochStore ??
+        createRedisIntentEpochStore({
+          client: infrastructure.redis.client,
+        }),
+      onRead: (value) => {
+        latestIntentEpoch = Math.max(latestIntentEpoch, value);
+      },
+    });
 
     services = await createAppRuntimeServices(input.bootstrap, infrastructure, {
       ...(input.dependencies?.services ?? {}),
+      intentEpochStore,
+      controlFastPathSink: createOnlineControlFastPathSink({
+        botId: input.bootstrap.bot_id,
+        readRuntime: () => runtime,
+        appendRealtimeEvent: appendOnlineRealtimeEvent,
+        customBroadcastSink: input.dependencies?.conversationWorker?.broadcastReplySink,
+      }),
       statusSnapshot: () =>
         createOnlineInterfaceStatusSnapshot({
           bootstrap: input.bootstrap,
           runtime,
           botWorker,
           conversationWorker,
+          intentEpoch: latestIntentEpoch,
           latestLlmDiagnostic,
           lastEventSeq: replayStore.getLastSeq(),
         }),
@@ -436,13 +464,31 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       appendRealtimeEvent: appendOnlineRealtimeEvent,
       enqueueConversationTask: async ({ frame, receivedAt }) => {
         latestOwnerPlayerName = frame.player_name;
+        const intentEpoch = await intentEpochStore.next(input.bootstrap.bot_id);
+        const controlDecision = matchInterfaceControlFastPath(frame.content);
+
+        if (controlDecision !== null) {
+          await handleOnlineControlFastPath({
+            bot_id: input.bootstrap.bot_id,
+            message_id: frame.message_id,
+            content: frame.content,
+            intent_epoch: intentEpoch,
+            received_at: receivedAt,
+            decision: controlDecision,
+            readRuntime: () => runtime,
+            appendRealtimeEvent: appendOnlineRealtimeEvent,
+            customBroadcastSink: input.dependencies?.conversationWorker?.broadcastReplySink,
+          });
+          return;
+        }
+
         const task = createConversationWorkerTask({
           bot_id: input.bootstrap.bot_id,
           message: {
             bot_id: input.bootstrap.bot_id,
             message_id: frame.message_id,
             content: frame.content,
-            intent_epoch: 0,
+            intent_epoch: intentEpoch,
             snapshot_ts: parseServerBridgeTimestamp(receivedAt),
           },
         });
@@ -499,6 +545,9 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       dependencies: {
         ...(input.dependencies?.botWorker ?? {}),
         actor: createdRuntime.actor,
+        currentIntentEpoch:
+          input.dependencies?.botWorker?.currentIntentEpoch ??
+          (() => intentEpochStore.read(input.bootstrap.bot_id)),
         actionSink: async (action) => {
           await input.dependencies?.botWorker?.actionSink?.(action);
 
@@ -627,6 +676,95 @@ function createOnlineConversationInterruptRuntimeSink<TBotId extends string>(
   };
 }
 
+function createTrackedIntentEpochStore(input: {
+  readonly store: IntentEpochStore;
+  readonly onRead: (value: number) => void;
+}): IntentEpochStore {
+  return Object.freeze({
+    async next(botId: string) {
+      const value = await input.store.next(botId);
+      input.onRead(value);
+
+      return value;
+    },
+    async read(botId: string) {
+      const value = await input.store.read(botId);
+      input.onRead(value);
+
+      return value;
+    },
+  });
+}
+
+function createOnlineControlFastPathSink<TBotId extends string>(input: {
+  readonly botId: TBotId;
+  readonly readRuntime: () => AppRuntimeCoreResources<TBotId> | undefined;
+  readonly appendRealtimeEvent: (event: Omit<RealtimeEventEnvelope, "seq">) => Promise<void>;
+  readonly customBroadcastSink?: NonNullable<
+    ConversationWorkerRuntimeDependencies["broadcastReplySink"]
+  > | undefined;
+}): NonNullable<AppRuntimeServiceDependencies["controlFastPathSink"]> {
+  return async (controlInput) => {
+    if (controlInput.bot_id !== input.botId) {
+      throw new Error("control fast-path bot_id must match online runtime bot");
+    }
+
+    await handleOnlineControlFastPath({
+      ...controlInput,
+      readRuntime: input.readRuntime,
+      appendRealtimeEvent: input.appendRealtimeEvent,
+      customBroadcastSink: input.customBroadcastSink,
+    });
+  };
+}
+
+async function handleOnlineControlFastPath<TBotId extends string>(input: {
+  readonly bot_id: TBotId;
+  readonly message_id: string;
+  readonly content: string;
+  readonly intent_epoch: number;
+  readonly received_at: string;
+  readonly decision: InterfaceControlFastPathDecision;
+  readonly readRuntime: () => AppRuntimeCoreResources<TBotId> | undefined;
+  readonly appendRealtimeEvent: (event: Omit<RealtimeEventEnvelope, "seq">) => Promise<void>;
+  readonly customBroadcastSink?: NonNullable<
+    ConversationWorkerRuntimeDependencies["broadcastReplySink"]
+  > | undefined;
+}): Promise<void> {
+  void input.content;
+  const runtime = input.readRuntime();
+
+  if (runtime === undefined) {
+    throw new Error("control fast-path requires online runtime actor");
+  }
+
+  await runtime.actor.interrupt({
+    source: {
+      type: "control",
+      command: input.decision.command,
+      intent_epoch: input.intent_epoch,
+    },
+    reason: input.decision.reason,
+  });
+
+  const reply = createCancelTemplateReply();
+  const broadcast = Object.freeze({
+    message_id: input.message_id,
+    content: reply.reply,
+  });
+
+  await input.customBroadcastSink?.(broadcast);
+  await runtime.actor.broadcastReply(broadcast);
+  await input.appendRealtimeEvent(
+    createRealtimeEventFromConversationReply({
+      botId: input.bot_id,
+      messageId: input.message_id,
+      content: reply.reply,
+      createdAt: input.received_at,
+    }),
+  );
+}
+
 /**
  * 为真实在线入口创建 BotActor（机器人执行代理） 只读状态投影提供器。
  *
@@ -662,36 +800,15 @@ export function createOnlineConversationActorStateProjectionProvider<TBotId exte
 /**
  * 为真实在线入口创建最小分诊器。
  *
- * 在线最短闭环仍需保留 cancel（取消） 的模板中断语义；因此这里先锁住显式取消文本，
- * 其余消息则交给真实 LLM（大语言模型） 做最小 triage（分诊）；若未启用 LLM（大语言模型），再安全回退为普通 chat（闲聊）。
+ * control fast-path（控制快路径） 已在入口层处理；这里仅负责把剩余消息交给真实 LLM（大语言模型） 做最小 triage（分诊）。
  */
 function createOnlineConversationTriage(
   llm: ConversationLlmClient | undefined,
 ): ConversationWorkerRuntimeDependencies["triage"] {
   return async ({ task }) => {
-    const normalizedContent = task.message.content.trim().replaceAll(/\s+/gu, "");
-    const isExplicitCancel =
-      normalizedContent === "取消" ||
-      normalizedContent === "停" ||
-      normalizedContent === "停止" ||
-      normalizedContent === "停下" ||
-      normalizedContent === "停下来" ||
-      normalizedContent === "先停下" ||
-      normalizedContent === "先停一下";
-
-    if (isExplicitCancel) {
-      return createMessageTriage({
-        intent: "cancel",
-        priority: "interrupt",
-        reason: "online_explicit_cancel",
-      });
-    }
-
     if (llm === undefined) {
-      return createMessageTriage({
-        intent: "chat",
-        priority: "normal",
-        reason: "online_chat_fallback",
+      return createConversationCompositeTriage({
+        reply: {},
       });
     }
 
@@ -837,6 +954,10 @@ function createOnlineConversationLlmClient<TBotId extends string>(
     throw new Error("LLM_API_KEY must be injected for online runtime");
   }
   const apiKey = dependencies.api_key;
+  const localDiagnosticLogSink = createLocalLlmDiagnosticLogSink({
+    baseDir: bootstrap.config.logs.baseDir,
+    sensitiveValues: [apiKey],
+  });
 
   return createConversationLlmClient(
     createConversationLlmConfig({
@@ -854,6 +975,7 @@ function createOnlineConversationLlmClient<TBotId extends string>(
       ...dependencies,
       onDiagnostic: async (record) => {
         onDiagnosticSummary(record);
+        await localDiagnosticLogSink(record);
         write?.(renderLlmDiagnosticMessage(record, [apiKey]));
         await dependencies?.onDiagnostic?.(record);
       },
@@ -992,6 +1114,7 @@ function createOnlineInterfaceStatusSnapshot<TBotId extends string>(input: {
   readonly runtime: AppRuntimeCoreResources<TBotId> | undefined;
   readonly botWorker: BotWorkerRuntime | undefined;
   readonly conversationWorker: ConversationWorkerRuntime | undefined;
+  readonly intentEpoch: number;
   readonly latestLlmDiagnostic: LlmDiagnosticSummary | null;
   readonly lastEventSeq: number;
 }): InterfaceBotStatusSnapshot {
@@ -1007,7 +1130,7 @@ function createOnlineInterfaceStatusSnapshot<TBotId extends string>(input: {
   return createInterfaceBotStatusSnapshot({
     bot_id: input.bootstrap.bot_id,
     status: actorSnapshot?.status ?? input.bootstrap.runtime.initial_status,
-    intent_epoch: 0,
+    intent_epoch: input.intentEpoch,
     last_event_seq: input.lastEventSeq,
     updated_at: new Date().toISOString(),
     ...(transportSnapshot === undefined

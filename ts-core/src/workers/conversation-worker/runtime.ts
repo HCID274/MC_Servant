@@ -2,11 +2,7 @@ import { createCancelTemplateReply, createConversationReply } from "../../conver
 import type { ConversationCompositeTriage } from "../../conversation/contracts.js";
 import { createConversationInventoryDiffCache } from "../../conversation/inventory-diff-cache.js";
 import { createConversationRecentContextStore } from "../../conversation/recent-context.js";
-import {
-  createConversationRouteDecision,
-  createMessageTriage,
-  isMessageTriageOutput,
-} from "../../conversation/triage.js";
+import { createConversationRouteDecision, createMessageTriage } from "../../conversation/triage.js";
 import { ConversationPriority } from "../../core-ports/foundation.js";
 import type { InterruptSignal } from "../../core-ports/runtime.js";
 import { handleCancelInterruptRoute } from "./handlers/cancel-interrupt.js";
@@ -45,51 +41,12 @@ export function createConversationWorkerRuntime(input: {
   const processTask = async (job: { readonly data: unknown }): Promise<void> => {
     const task = cloneWorkerTask(job.data);
     const triage = await (dependencies.triage?.({ task }) ?? createDefaultTriage());
-    if (!isMessageTriageOutput(triage)) {
-      await handleCompositeTriage({
-        task,
-        triage,
-        dependencies,
-        events,
-      });
-
-      return;
-    }
-
-    const route = createConversationRouteDecision({
+    await handleCompositeTriage({
+      task,
       triage,
-      message: task.message.content,
-      has_active_task: dependencies.hasActiveTask?.() ?? false,
+      dependencies,
+      events,
     });
-
-    switch (route.kind) {
-      case "chat_reply":
-        await handleChatReplyRoute({
-          task,
-          triage,
-          route,
-          dependencies,
-          events,
-        });
-        break;
-      case "cancel_interrupt":
-        await handleCancelInterruptRoute({
-          task,
-          route,
-          dependencies,
-          events,
-        });
-        break;
-      case "plan_exec":
-      case "modify_interrupt_then_plan":
-        await handlePlanExecRoute({
-          task,
-          route,
-          dependencies,
-          events,
-        });
-        break;
-    }
   };
 
   return Object.freeze({

@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { EventEmitter } from "node:events";
 import Fastify from "fastify";
@@ -72,6 +74,24 @@ function readNextWsText(socket: WebSocket): Promise<string> {
     });
     socket.once("error", reject);
   });
+}
+
+function createFakeIntentEpochRedisClient(initialEpoch = 0): {
+  readonly incr: () => Promise<number>;
+  readonly get: () => Promise<string>;
+} {
+  let epoch = initialEpoch;
+
+  return {
+    async incr() {
+      epoch += 1;
+
+      return epoch;
+    },
+    async get() {
+      return String(epoch);
+    },
+  };
 }
 
 describe("app entrypoint（应用启动入口） 骨架", () => {
@@ -303,7 +323,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             },
           },
           redis: {
-            createClient: () => ({}),
+            createClient: () => createFakeIntentEpochRedisClient(),
             connectClient: async () => {
               events.push("redis.ready");
             },
@@ -443,7 +463,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             warmupPool: async () => undefined,
           },
           redis: {
-            createClient: () => ({}),
+            createClient: () => createFakeIntentEpochRedisClient(),
             connectClient: async () => undefined,
             closeClient: async () => undefined,
           },
@@ -585,7 +605,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             warmupPool: async () => undefined,
           },
           redis: {
-            createClient: () => ({}),
+            createClient: () => createFakeIntentEpochRedisClient(),
             connectClient: async () => undefined,
             closeClient: async () => undefined,
           },
@@ -805,9 +825,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
                     messages?: Array<{ role: string; content: string }>;
                   });
             const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
-            const assistantContent = userMessage.includes("Bot 状态：")
-              ? '{"intent":"chat","priority":"normal","reason":"svs_chat"}'
-              : "你好呀";
+            const assistantContent = userMessage.includes("Bot 状态：") ? '{"reply":{}}' : "你好呀";
 
             return new Response(
               JSON.stringify({
@@ -843,7 +861,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             warmupPool: async () => undefined,
           },
           redis: {
-            createClient: () => ({}),
+            createClient: () => createFakeIntentEpochRedisClient(),
             connectClient: async () => undefined,
             closeClient: async () => undefined,
           },
@@ -986,7 +1004,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             type: "triage",
             intent_epoch: 0,
           },
-          reason: "cancel",
+          reason: "online_explicit_cancel",
         },
       ]);
       expect(replayBody.events.map((event: { type: string }) => event.type)).toEqual([
@@ -1100,7 +1118,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
                   });
             const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
             const assistantContent = userMessage.includes("Bot 状态：")
-              ? '{"intent":"chat","priority":"normal","reason":"普通闲聊"}'
+              ? '{"reply":{}}'
               : "当然可以，我在这里";
 
             return new Response(
@@ -1136,7 +1154,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             warmupPool: async () => undefined,
           },
           redis: {
-            createClient: () => ({}),
+            createClient: () => createFakeIntentEpochRedisClient(),
             connectClient: async () => undefined,
             closeClient: async () => undefined,
           },
@@ -1437,7 +1455,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             warmupPool: async () => undefined,
           },
           redis: {
-            createClient: () => ({}),
+            createClient: () => createFakeIntentEpochRedisClient(),
             connectClient: async () => undefined,
             closeClient: async () => undefined,
           },
@@ -1524,11 +1542,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       expect(statusBody).toMatchObject({
         bot: {
           llm: {
-            stage: "chat",
+            stage: "triage",
             message_id: "msg-online-error",
             status: "error",
             model: "bl-auto",
-            log_ref: "llm/2026-04-24/chat-msg-online-error.jsonl",
+            log_ref: "llm/2026-04-24/triage-msg-online-error.jsonl",
             error_summary: expect.stringContaining("<redacted>"),
           },
         },
@@ -1541,6 +1559,157 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       expect(writes.join("\n")).not.toContain("sk-local-dev");
     } finally {
       await runtime.close();
+    }
+  });
+
+  it("应在真实在线入口把 triage（分诊） 解析失败落盘到 llm（大语言模型） JSONL（结构化日志）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const logsDir = await mkdtemp(join(tmpdir(), "ts-core-llm-diagnostics-"));
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-llm-parse-log-online",
+      now: "2026-04-24T10:00:00.000Z",
+      env: {
+        LOGS_DIR: logsDir,
+        LLM_BASE_URL: "http://127.0.0.1:8045/v1",
+        LLM_API_KEY: "sk-local-dev",
+        LLM_MODEL: "bl-auto",
+      },
+    });
+
+    const runtime = await startAppOnlineRuntime({
+      bootstrap,
+      dependencies: {
+        llm: {
+          api_key: "sk-local-dev",
+          fetch: async () =>
+            new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content:
+                        '{"intent":"task","priority":"urgent","reason":"旧单层 triage 输出"}',
+                    },
+                  },
+                ],
+              }),
+              {
+                status: 200,
+                headers: {
+                  "content-type": "application/json",
+                },
+              },
+            ),
+          now: () => new Date("2026-04-24T10:00:00.000Z"),
+        },
+        infrastructure: {
+          postgres: {
+            createPool: () => ({
+              end: async () => undefined,
+            }),
+            createDrizzle: () => ({}),
+            warmupPool: async () => undefined,
+          },
+          redis: {
+            createClient: () => createFakeIntentEpochRedisClient(),
+            connectClient: async () => undefined,
+            closeClient: async () => undefined,
+          },
+        },
+        services: {
+          workers: {
+            createQueue: ({ name }) => ({
+              name,
+              add: async () => ({ id: "job-online" }),
+              close: async () => undefined,
+            }),
+          },
+          http: {
+            createServer: () => {
+              const server = Fastify();
+              const originalClose = server.close.bind(server);
+
+              server.listen = async () => "http://127.0.0.1:0";
+              server.close = async () => originalClose();
+
+              return server;
+            },
+          },
+        },
+        runtime: {
+          transport: {
+            createBot: () => {
+              const bot = new FakeEntrypointMineflayerBot([]);
+
+              setTimeout(() => bot.emit("spawn"), 0);
+
+              return bot;
+            },
+          },
+        },
+        botWorker: {
+          createWorker: () => ({
+            close: async () => undefined,
+          }),
+        },
+        conversationWorker: {
+          createWorker: ({ processor: capturedProcessor }) => {
+            processor = capturedProcessor;
+
+            return {
+              close: async () => undefined,
+            };
+          },
+        },
+      },
+    });
+
+    try {
+      if (processor === undefined) {
+        throw new Error("conversation processor must be captured");
+      }
+
+      await expect(
+        processor({
+          data: createConversationWorkerTask({
+            bot_id: "bot-llm-parse-log-online",
+            message: {
+              bot_id: "bot-llm-parse-log-online",
+              message_id: "msg-online-parse-error",
+              content: "api_key=sk-local-dev 去 10 64 -5",
+              intent_epoch: 1,
+              snapshot_ts: 1_713_952_800_000,
+            },
+          }),
+        }),
+      ).rejects.toThrow("triage must use composite schema");
+
+      const logPath = join(logsDir, "llm", "2026-04-24", "triage-msg-online-parse-error.jsonl");
+      const logText = await readFile(logPath, "utf8");
+      const logLines = logText
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as unknown);
+
+      expect(logLines).toHaveLength(4);
+      expect(logLines[0]).toMatchObject({
+        stage: "triage",
+        model: "bl-auto",
+        msg_id: "msg-online-parse-error",
+      });
+      expect(logLines[3]).toMatchObject({
+        meta: {
+          ok: false,
+        },
+        err: {
+          message: "triage must use composite schema",
+        },
+      });
+      expect(logText).toContain("<redacted>");
+      expect(logText).not.toContain("sk-local-dev");
+    } finally {
+      await runtime.close();
+      await rm(logsDir, { recursive: true, force: true });
     }
   });
 
@@ -1609,7 +1778,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             warmupPool: async () => undefined,
           },
           redis: {
-            createClient: () => ({}),
+            createClient: () => createFakeIntentEpochRedisClient(),
             connectClient: async () => undefined,
             closeClient: async () => undefined,
           },
@@ -1787,7 +1956,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
             const currentInstruction = userMessage.split("主人的指令：").at(-1) ?? userMessage;
             let assistantContent =
-              '{"intent":"task","priority":"normal","reason":"主人给了明确技能指令"}';
+              '{"action":{"intent":"task","priority":"normal","reason":"主人给了明确技能指令"}}';
 
             if (userMessage.includes("主人的指令：")) {
               if (currentInstruction.includes("挖两块石头")) {
@@ -1834,7 +2003,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             warmupPool: async () => undefined,
           },
           redis: {
-            createClient: () => ({}),
+            createClient: () => createFakeIntentEpochRedisClient(),
             connectClient: async () => undefined,
             closeClient: async () => undefined,
           },
@@ -1993,12 +2162,12 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     await runtime.close();
   });
 
-  it("应在真实在线入口把 modify（修改） 分诊结果降级为 chat（闲聊），而不是误走规划", async () => {
+  it("应在真实在线入口把修改诉求表达为 cancel（取消） + task（任务） 并进入新规划", async () => {
     const llmRequests: Array<{ url: string; body: unknown }> = [];
     const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const bootstrap = createAppBootstrapContract({
-      botId: "bot-modify-online",
+      botId: "bot-replace-online",
       now: "2026-04-24T10:00:00.000Z",
       env: {
         LLM_BASE_URL: "http://127.0.0.1:8045/v1",
@@ -2020,8 +2189,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
 
             const assistantContent =
               llmRequests.length === 1
-                ? '{"intent":"modify","priority":"urgent","reason":"主人要求修改当前移动目标"}'
-                : "好的，我先记下这个修改请求喵~";
+                ? '{"cancel":{"reason":"主人要求替换当前移动目标","priority":"interrupt"},"action":{"intent":"task","priority":"urgent","reason":"主人要求去新坐标"}}'
+                : '{"type":"skill_call","reply":"收到，我改去新的目标坐标","skill":"goTo","params":{"x":10,"y":64,"z":-5}}';
 
             return new Response(
               JSON.stringify({
@@ -2052,7 +2221,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             warmupPool: async () => undefined,
           },
           redis: {
-            createClient: () => ({}),
+            createClient: () => createFakeIntentEpochRedisClient(),
             connectClient: async () => undefined,
             closeClient: async () => undefined,
           },
@@ -2111,10 +2280,10 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
 
     await processor?.({
       data: createConversationWorkerTask({
-        bot_id: "bot-modify-online",
+        bot_id: "bot-replace-online",
         message: {
-          bot_id: "bot-modify-online",
-          message_id: "msg-online-modify",
+          bot_id: "bot-replace-online",
+          message_id: "msg-online-replace",
           content: "把刚才的目标改成去 10 64 -5",
           intent_epoch: 4,
           snapshot_ts: 1_713_952_800_003,
@@ -2123,18 +2292,42 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     expect(llmRequests).toHaveLength(2);
-    expect(queueAdds).toEqual([]);
-    expect(runtime.conversation_worker.getEvents()).not.toContainEqual(
-      expect.objectContaining({
-        type: "task.accepted",
-        message_id: "msg-online-modify",
-      }),
-    );
+    expect(queueAdds).toHaveLength(1);
+    expect(queueAdds[0]).toMatchObject({
+      name: "bot:bot-replace-online:exec",
+      jobName: "bot",
+      data: {
+        bot_id: "bot-replace-online",
+        exec_job: {
+          message_id: "msg-online-replace",
+          skill: "goTo",
+          params: { x: 10, y: 64, z: -5 },
+          priority: "urgent",
+        },
+      },
+      options: {
+        jobId: "msg-online-replace",
+        priority: 1,
+      },
+    });
+    expect(runtime.conversation_worker.getEvents()).toContainEqual({
+      type: "cancel.logged",
+      bot_id: "bot-replace-online",
+      message_id: "msg-online-replace",
+      reason: "主人要求替换当前移动目标",
+    });
+    expect(runtime.conversation_worker.getEvents()).toContainEqual({
+      type: "task.accepted",
+      bot_id: "bot-replace-online",
+      message_id: "msg-online-replace",
+      skill: "goTo",
+      priority: "urgent",
+    });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "chat.reply",
-      bot_id: "bot-modify-online",
-      message_id: "msg-online-modify",
-      content: "好的，我先记下这个修改请求喵~",
+      bot_id: "bot-replace-online",
+      message_id: "msg-online-replace",
+      content: "好的，已经停下来了喵~",
     });
     expect(llmRequests[1]).toEqual({
       url: "http://127.0.0.1:8045/v1/chat/completions",
@@ -2143,7 +2336,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         messages: expect.arrayContaining([
           expect.objectContaining({
             role: "user",
-            content: "[主人] 把刚才的目标改成去 10 64 -5",
+            content: expect.stringContaining("主人的指令：把刚才的目标改成去 10 64 -5"),
           }),
         ]),
       }),
@@ -2208,7 +2401,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             warmupPool: async () => undefined,
           },
           redis: {
-            createClient: () => ({}),
+            createClient: () => createFakeIntentEpochRedisClient(),
             connectClient: async () => undefined,
             closeClient: async () => undefined,
           },
@@ -2287,7 +2480,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           type: "triage",
           intent_epoch: 2,
         },
-        reason: "cancel",
+        reason: "online_explicit_cancel",
       },
     ]);
     expect(customBroadcasts).toEqual([

@@ -1,7 +1,7 @@
 /**
  * 对话规划与任务转换逻辑。
  *
- * 1. 规划上下文构建：封装并校验进入 LLM 规划阶段所需的上下文信息，确保 modify 等特殊意图的完整性。
+ * 1. 规划上下文构建：封装并校验进入 LLM 规划阶段所需的上下文信息。
  * 2. 规划产物工厂：提供标准化的技能调用（SkillCall）和沙箱代码（SandboxCode）规划草案生成函数。
  * 3. 跨层对接：负责将对话层的规划产物（PlanDraft）转换为执行层可直接消费的任务对象（ExecJob）。
  */
@@ -29,7 +29,7 @@ import type {
  * 创建对话规划上下文。
  *
  * 1. 规划边界校验（Planning Boundary Validation）：封装并校验进入 LLM 规划阶段所需的上下文信息。
- * 2. 数据完整性：确保 modify 等特殊意图必须携带被中断任务的信息，防止 LLM 在信息缺失的情况下进行错误规划。
+ * 2. 数据完整性：确保规划输入满足 Stage 2-Plan（第二阶段规划） 的最小契约。
  * 3. 状态约束：强制要求所有规划输入必须经过克隆（Readonly），防止规划过程中意外修改原始消息状态。
  *
  * @param input 规划上下文输入
@@ -43,10 +43,6 @@ export function createConversationPlanningContext(
   assertNonEmptyString(input.message.content, "message.content");
   assertNonEmptyString(input.snapshot_context, "snapshot_context");
   assertNonEmptyString(input.triage.reason, "triage.reason");
-
-  if (input.triage.intent === "modify" && input.interrupted_task === undefined) {
-    throw new Error("modify planning context must include interrupted_task");
-  }
 
   return cloneReadonlyValue(input);
 }

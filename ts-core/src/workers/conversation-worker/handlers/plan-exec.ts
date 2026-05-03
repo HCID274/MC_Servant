@@ -27,13 +27,10 @@ import type {
   ConversationWorkerRuntimeEvent,
 } from "../types.js";
 
-/** 处理 plan_exec（规划执行） 与 modify_interrupt_then_plan（修改后规划） 路由。 */
+/** 处理 plan_exec（规划执行） 路由。 */
 export async function handlePlanExecRoute(input: {
   readonly task: ConversationWorkerTask;
-  readonly route: Extract<
-    ConversationRouteDecision,
-    { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
-  >;
+  readonly route: Extract<ConversationRouteDecision, { readonly kind: "plan_exec" }>;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
   readonly events: ConversationWorkerRuntimeEvent[];
   readonly suppressPlanReply?: boolean;
@@ -148,8 +145,7 @@ export async function handlePlanExecRoute(input: {
           type: "triage",
           intent_epoch: input.task.message.intent_epoch,
         },
-        reason:
-          input.route.kind === "modify_interrupt_then_plan" ? "modify" : input.route.triage.reason,
+        reason: input.route.triage.reason,
       },
     });
   }
@@ -246,10 +242,7 @@ async function readRecentContext(input: {
 /** 按规划类 route（路由） 读取 ResourceService（世界感知资源服务） 摘要；provider（提供器） 失败时降级为空上下文。 */
 async function readResourceContext(input: {
   readonly task: ConversationWorkerTask;
-  readonly route: Extract<
-    ConversationRouteDecision,
-    { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
-  >;
+  readonly route: Extract<ConversationRouteDecision, { readonly kind: "plan_exec" }>;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
 }): Promise<string | undefined> {
   if (input.dependencies.resourceContextProvider === undefined) {
@@ -273,10 +266,7 @@ async function readResourceContext(input: {
 /** 按规划类 route（路由） 读取 memory（记忆）；provider（提供器） 失败时降级为空上下文。 */
 async function readMemoryContext(input: {
   readonly task: ConversationWorkerTask;
-  readonly route: Extract<
-    ConversationRouteDecision,
-    { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
-  >;
+  readonly route: Extract<ConversationRouteDecision, { readonly kind: "plan_exec" }>;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
 }): Promise<string | undefined> {
   if (input.dependencies.memoryContextProvider === undefined) {
@@ -305,10 +295,7 @@ async function readMemoryContext(input: {
 async function pushPlanningFailure(
   input: {
     readonly task: ConversationWorkerTask;
-    readonly route?: Extract<
-      ConversationRouteDecision,
-      { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
-    >;
+    readonly route?: Extract<ConversationRouteDecision, { readonly kind: "plan_exec" }>;
     readonly dependencies: ConversationWorkerRuntimeDependencies;
     readonly events: ConversationWorkerRuntimeEvent[];
   },
@@ -375,10 +362,7 @@ async function pushPlanningFailure(
 
 async function appendConversationReplyLog(input: {
   readonly task: ConversationWorkerTask;
-  readonly route?: Extract<
-    ConversationRouteDecision,
-    { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
-  >;
+  readonly route?: Extract<ConversationRouteDecision, { readonly kind: "plan_exec" }>;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
   readonly reply_mode: "llm" | "template";
   readonly reply: string;

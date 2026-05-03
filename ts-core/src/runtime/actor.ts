@@ -637,6 +637,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
 
       if (currentExecution !== null) {
         currentExecution.interrupted = true;
+        input.transport.stopCurrentAction();
       }
 
       if (signal.source.type !== "reflex") {

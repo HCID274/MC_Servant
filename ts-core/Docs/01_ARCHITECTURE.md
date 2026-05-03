@@ -293,7 +293,7 @@ observation 模块持续监听 Mineflayer 游戏事件 + JAR Bridge 推送，维
 
 ```typescript
 interface MessageTriage {
-  intent: 'chat' | 'task' | 'modify' | 'cancel'
+  intent: 'chat' | 'task' | 'cancel'
   priority: 'interrupt' | 'urgent' | 'normal' | 'background'
   reason: string
 }

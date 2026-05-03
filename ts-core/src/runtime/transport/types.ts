@@ -353,6 +353,8 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   collect(params: Readonly<CollectSkillParams>): Promise<CollectSkillExecutionResult>;
   /** 通过受控背包能力执行 equip（装备）。 */
   equip(params: Readonly<EquipSkillParams>): Promise<EquipSkillExecutionResult>;
+  /** 停止当前 Mineflayer（Minecraft 协议客户端） 世界交互动作。 */
+  stopCurrentAction(): void;
   /** 围绕 Bot（机器人） 当前位置执行只读资源刷新。 */
   refreshAroundBot(
     resourceKey: string,

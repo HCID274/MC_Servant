@@ -14,13 +14,12 @@ import type {
   ConversationCancelRouteDecision,
   ConversationChatRouteDecision,
   ConversationCompositeTriage,
-  ConversationModifyRouteDecision,
   ConversationPlanRouteDecision,
   ConversationRouteDecision,
   ConversationTriageFor,
 } from "./contracts.js";
 
-const CONVERSATION_INTENTS = ["chat", "task", "modify", "cancel"] as const;
+const CONVERSATION_INTENTS = ["chat", "task", "cancel"] as const;
 const COMPOSITE_CANCEL_PRIORITIES = ["interrupt", "queued"] as const;
 
 /**
@@ -94,50 +93,13 @@ export function createMessageTriage(input: {
 }
 
 /**
- * 将旧单 intent（意图） 分诊适配成复合分诊。
- *
- * 兼容边界：旧 `chat`（闲聊） 不携带显式文本，因此转成空 reply（回复） 片段，
- * 交由现有 Stage 2-Chat（第二阶段闲聊） 继续注入 T-031 的状态上下文。
- */
-export function createConversationCompositeTriageFromMessageTriage(
-  triage: MessageTriage,
-): ConversationCompositeTriage {
-  switch (triage.intent) {
-    case "chat":
-      return Object.freeze({
-        reply: Object.freeze({}),
-      });
-    case "cancel":
-      return Object.freeze({
-        cancel: Object.freeze({
-          reason: triage.reason,
-          priority: "interrupt",
-        }),
-      });
-    case "task":
-      return Object.freeze({
-        action: Object.freeze({
-          intent: "task",
-          priority: triage.priority,
-          reason: triage.reason,
-        }),
-      });
-    case "modify":
-      return Object.freeze({
-        reply: Object.freeze({}),
-      });
-  }
-}
-
-/**
  * 创建复合分诊结构。
  *
- * 安全收口：`modify`（修改） 与未知 action（动作） 不会进入 planner（规划器），
- * 而是降级为普通 reply（回复），避免重新暴露“可分诊但不可正确规划”的半通路。
+ * `modify`（修改） 语义不再是独立 intent（意图），只能由 cancel（取消） + action（动作） 组合表达。
  */
 export function createConversationCompositeTriage(input: {
   readonly cancel?: { readonly reason?: string; readonly priority?: string } | null;
-  readonly reply?: string | { readonly content?: string } | null;
+  readonly reply?: Record<string, never> | null;
   readonly action?: {
     readonly intent?: string;
     readonly priority?: string;
@@ -175,51 +137,28 @@ export function createConversationCompositeTriageFromRecord(
   record: Record<string, unknown>,
 ): ConversationCompositeTriage {
   if (typeof record.intent === "string") {
-    return createConversationCompositeTriageFromMessageTriage(
-      createMessageTriage({
-        intent: record.intent,
-        ...(typeof record.priority === "string" ? { priority: record.priority } : {}),
-        ...(typeof record.reason === "string"
-          ? { reason: record.reason }
-          : { reason: "llm_triage_fallback" }),
-      }),
-    );
+    throw new Error("triage must use composite schema");
   }
 
   return createConversationCompositeTriage({
     ...(isRecord(record.cancel) ? { cancel: pickReasonPriority(record.cancel) } : {}),
-    ...(typeof record.reply === "string" || isRecord(record.reply)
-      ? { reply: createReplyInput(record.reply) }
-      : {}),
+    ...(isRecord(record.reply) ? { reply: createReplyInput(record.reply) } : {}),
     ...(isRecord(record.action) ? { action: pickActionInput(record.action) } : {}),
   });
 }
 
-/** 判断分诊输出是否为旧单 intent（意图） 结构。 */
-export function isMessageTriageOutput(value: unknown): value is MessageTriage {
-  return isRecord(value) && typeof value.intent === "string";
-}
-
 function createCompositeReply(
-  value: string | { readonly content?: string } | null | undefined,
+  value: Record<string, never> | null | undefined,
 ): ConversationCompositeTriage["reply"] {
   if (value === undefined || value === null) {
     return undefined;
   }
 
-  if (typeof value === "string") {
-    const content = value.trim();
-
-    return content.length === 0 ? Object.freeze({}) : Object.freeze({ content });
+  if (Object.keys(value).length > 0) {
+    throw new Error("triage reply must be an empty object");
   }
 
-  if (value.content === undefined) {
-    return Object.freeze({});
-  }
-
-  const content = value.content.trim();
-
-  return content.length === 0 ? Object.freeze({}) : Object.freeze({ content });
+  return Object.freeze({});
 }
 
 function createCompositeAction(
@@ -232,12 +171,8 @@ function createCompositeAction(
     return undefined;
   }
 
-  if (value.intent === "modify") {
-    return undefined;
-  }
-
   if (value.intent !== "task") {
-    return undefined;
+    throw new Error("triage action intent must be task");
   }
 
   return Object.freeze({
@@ -264,14 +199,12 @@ function pickReasonPriority(record: Record<string, unknown>): {
   };
 }
 
-function createReplyInput(
-  value: string | Record<string, unknown>,
-): string | { readonly content?: string } {
-  if (typeof value === "string") {
-    return value;
+function createReplyInput(value: Record<string, unknown>): Record<string, never> {
+  if (Object.keys(value).length > 0) {
+    throw new Error("triage reply must be an empty object");
   }
 
-  return typeof value.content === "string" ? { content: value.content } : {};
+  return {};
 }
 
 function pickActionInput(record: Record<string, unknown>): {
@@ -311,11 +244,10 @@ export function toConversationExecPriority(priority: ConversationPriority): Exec
  *
  * 1. 分光镜决策：接收分诊意图和系统活跃状态（has_active_task），产出具体的路由决策（RouteDecision）。
  * 2. 策略封装：将复杂的“什么时候该中断、什么时候该入队”的业务规则封装在纯函数中，便于单元测试。
- * 3. 路由分支：
+ * 3. route（路由） 分支：
  *    - chat: 触发闲聊回复，并判断是否需要检索记忆。
  *    - cancel: 强制中断当前任务，触发取消模板回复。
  *    - task: 若优先级为 Interrupt 且有活跃任务，则走“中断并入队”流程，否则直接入队。
- *    - modify: 固定走“中断并重规划”流程。
  *
  * @param input 包含分诊结果、原始消息和任务活跃状态的输入
  * @returns 路由决策
@@ -363,15 +295,5 @@ export function createConversationRouteDecision(input: {
         exec_priority: toConversationExecPriority(input.triage.priority),
         needs_memory_search: true,
       } satisfies ConversationPlanRouteDecision);
-    case "modify":
-      return Object.freeze({
-        kind: "modify_interrupt_then_plan",
-        queue_behavior: "interrupt_then_enqueue",
-        triage: toConversationTriageFor(input.triage, "modify"),
-        requires_interrupt: true,
-        requires_planning: true,
-        exec_priority: toConversationExecPriority(input.triage.priority),
-        needs_memory_search: true,
-      } satisfies ConversationModifyRouteDecision);
   }
 }

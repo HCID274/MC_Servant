@@ -1,8 +1,9 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
+import { redactLocalDiagnosticJsonText } from "./local-log-redaction.js";
+
 const CONVERSATION_LOG_DIRECTORY = "conversation";
-const REDACTED_SECRET = "<redacted>";
 
 /** 对话回复本地 JSONL（结构化日志） 行。 */
 export interface ConversationReplyDiagnosticLogInput {
@@ -51,7 +52,10 @@ export function createLocalConversationReplyLogSink(input: {
       : createdAt.toISOString().slice(0, 10);
     const directory = join(input.baseDir, CONVERSATION_LOG_DIRECTORY, dateBucket);
     const filePath = join(directory, `${sanitizeFileName(record.message_id)}.jsonl`);
-    const line = `${redactJson(JSON.stringify(record), input.sensitiveValues ?? [])}\n`;
+    const line = `${redactLocalDiagnosticJsonText(
+      JSON.stringify(record),
+      input.sensitiveValues ?? [],
+    )}\n`;
 
     await mkdir(directory, { recursive: true });
     await appendFile(filePath, line, "utf8");
@@ -62,31 +66,4 @@ function sanitizeFileName(value: string): string {
   const normalized = value.trim().replaceAll(/[^A-Za-z0-9._-]/g, "_");
 
   return normalized.length === 0 ? "unknown-message" : normalized;
-}
-
-function redactJson(value: string, sensitiveValues: readonly string[]): string {
-  return redactNamedSecretValues(redactKnownSensitiveValues(value, sensitiveValues));
-}
-
-function redactKnownSensitiveValues(value: string, sensitiveValues: readonly string[]): string {
-  return sensitiveValues.reduce((current, sensitiveValue) => {
-    const normalized = sensitiveValue.trim();
-
-    if (normalized.length === 0) {
-      return current;
-    }
-
-    return current.replace(new RegExp(escapeRegExp(normalized), "g"), REDACTED_SECRET);
-  }, value);
-}
-
-function redactNamedSecretValues(value: string): string {
-  return value.replace(
-    /\b(LLM_API_KEY|OPENAI_API_KEY|API_KEY|api_key|MC_EXTERNAL_AUTH_SECRET|password|passwd|pwd|secret)\s*[:=]\s*["']?([^"',;\s]+)/gi,
-    (_match: string, key: string) => `${key}=${REDACTED_SECRET}`,
-  );
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

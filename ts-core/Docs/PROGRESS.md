@@ -114,3 +114,19 @@
 - C 审查结论: 通过;B（实现代理）交互中曾因实服 collect（捡拾）未执行有效动作返修,后续按用户补充边界把 collect（捡拾）默认半径调为 32、最大 64,并把 32 未命中后扩到 64 的搜索收敛在 runtime transport（运行时传输）执行层
 - 关键决策: inventory diff（背包差异）不放 observation（观测）事件时钟,而由 ConversationWorker（对话工作线程）共享上下文在 LLM（大语言模型）路径出口推进 baseline（基线）;`[背包变化]` 只渲染单 delta（增量）文本如 `oak_log+5, cobblestone-2`;泛指捡拾默认以主人坐标为 center（圆心）,执行层负责扩半径,避免让 LLM（大语言模型）编排二次 collect（捡拾）
 - 架构冲突: 无
+
+## T-CONV-001 | 2026-05-03 | Triage（分诊）净化与 composite schema（复合结构）收敛
+
+- 涉及模块: conversation（对话） triage（分诊）/contracts（契约）/parsers（解析器）,conversation/llm（对话大语言模型） client（客户端）与 triage prompt（分诊提示词）,ConversationWorker（对话工作线程） composite dispatch（复合派发）,diagnostics（诊断） LLM JSONL（大语言模型结构化日志）本地落盘,app（应用）在线 LLM（大语言模型）装配
+- A 拆解依据: 用户要求 Stage 1-Triage（第一阶段分诊）只做路由,统一为唯一 composite schema（复合结构）,删除旧 `{intent, priority, reason}` 单层兼容与 `reply.content`（回复正文）,LLM（大语言模型）解析失败必须写 diagnostics JSONL（诊断结构化日志）,不再静默回退为 `{reply:{}}`;覆盖 A1/A2/A5 且需真实 LLM（大语言模型）验证
+- C 审查结论: 曾打回 1 次 (解析失败 diagnostics（诊断）只在内存回调与测试数组中存在,没有由在线主程写入本地 `logs/llm/...jsonl`);B（实现代理）补充 `createLocalLlmDiagnosticLogSink`（本地大语言模型诊断日志汇点）并由 app（应用）在线入口按 `record.log_ref`（记录日志引用）落盘后通过
+- 关键决策: 选择严格拒绝旧 schema（结构）与 `reply.content`（回复正文）,由 `ConversationLlmTriageError`（对话大语言模型分诊错误）携带 diagnostics（诊断）向上暴露;本地日志按 diagnostics（诊断）层校验后的 `log_ref`（日志引用）写 `record.lines`（记录行）,不在 app（应用）散落路径拼接,并复用统一脱敏 helper（辅助函数）
+- 架构冲突: 无
+
+## T-CONV-002 | 2026-05-03 | 删除 Modify（修改）路径并将修改语义降级为 cancel（取消）+ task（任务）
+
+- 涉及模块: conversation（对话） contracts（契约）/triage prompt（分诊提示词）/route factory（路由工厂）,ConversationWorker（对话工作线程） composite dispatch（复合派发）与 plan-exec handler（规划执行处理器）,Docs（文档） 01_ARCHITECTURE（架构）/04_CONVERSATION_SPEC（对话规范）,BotActor（机器人执行代理） interrupt（中断）,runtime/transport（运行时传输） Mineflayer（Minecraft 协议客户端）动作停止端口
+- A 拆解依据: 用户要求删除 `modify_interrupt_then_plan`（修改后中断再规划）专属路由,修改诉求统一由 composite triage（复合分诊） 的 `cancel + action(task)`（取消加任务动作）承载;ConversationWorker（对话工作线程） 不再有 modify（修改） handler（处理器）或 plan prompt（规划提示词）注入分支;文档同步删除 modify（修改）独立语义,且需实服验证先取消再下新任务
+- C 审查结论: 通过;用户实服曾打回 1 次 (喊停/取消后 Bot（机器人）状态变为空闲但 Mineflayer pathfinder（寻路器）仍继续移动);B（实现代理）新增 `stopCurrentAction()`（停止当前动作） transport port（传输端口）并由 BotActor（机器人执行代理） interrupt（中断）时调用,用户确认手测通过
+- 关键决策: ConversationWorker（对话工作线程） 按 cancel（取消）→reply（回复）→action（动作） 顺序串联 composite（复合）片段,不新增 modify（修改）专用 handler（处理器）;停止物理动作收敛在 runtime transport（运行时传输）端口内调用 pathfinder（寻路器）停止与控制键清理,不让 ConversationWorker（对话工作线程）直接接触 Mineflayer（Minecraft 协议客户端）实现
+- 架构冲突: 无

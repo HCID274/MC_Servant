@@ -105,11 +105,6 @@ export function createConversationPlanMessages(
           ? []
           : [`任务历史：${input.task_history_context}`]),
         ...(input.memory_context === undefined ? [] : [`记忆摘要：${input.memory_context}`]),
-        ...(input.interrupted_task === undefined
-          ? []
-          : [
-              `被中断任务：message_id=${input.interrupted_task.message_id}; summary=${input.interrupted_task.intent_summary}${input.interrupted_task.last_step === undefined ? "" : `; last_step=${input.interrupted_task.last_step}`}`,
-            ]),
         `主人的指令：${input.message}`,
       ].join("\n"),
     }),

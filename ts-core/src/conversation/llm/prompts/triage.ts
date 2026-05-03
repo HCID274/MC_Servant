@@ -7,7 +7,7 @@ export const TRIAGE_SYSTEM_PROMPT = [
   "- reply：可选。需要进入普通回复时只输出空对象 {}，不得输出回复正文。",
   '- action：可选。用户要求 Bot 执行游戏内动作时输出 {"intent":"task","priority":"interrupt|urgent|normal|background","reason":"一句话原因"}',
   "固定语义：如果同一句话同时包含停止、回复和新动作，三个字段可以同时出现。",
-  "禁止输出 modify；修改当前任务也先降级为 reply，不要进入 action。",
+  "禁止输出 modify；修改当前任务必须表达为 cancel + action，例如把当前任务改成去某处，应输出 cancel 与 action。",
   "不要在 action 中生成技能名、坐标参数、代码或 Minecraft 事实，具体执行参数由后续 planner 生成。",
   "分诊只做路由判断，不生成聊天正文；聊天正文必须交给 Stage 2-Chat 生成。",
   "紧迫度规则：",

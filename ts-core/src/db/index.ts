@@ -12,6 +12,7 @@ import type { ModuleBoundary } from "../domain/contracts.js";
 export * from "./contracts.js";
 export * from "./keys.js";
 export * from "./connection.js";
+export * from "./intent-epoch.js";
 export * from "./migrations.js";
 
 /**
@@ -35,6 +36,7 @@ export const dbModuleBoundary = {
     "createRedisConnectionDescriptor",
     "createRedisRuntimeResource",
     "createRedisKeyCatalog",
+    "createRedisIntentEpochStore",
     "createDrizzleMigrationMetadata",
     "runDrizzleMigrations",
   ],

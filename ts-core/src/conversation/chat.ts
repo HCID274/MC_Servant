@@ -64,7 +64,7 @@ export function ensureReplyEndsWithMeow(text: string): string {
  *
  * 检索启发式决策（Heuristic Search Decision）：定义判断消息是否需要关联历史记忆的逻辑规则。
  *
- * 性能平衡：避免对所有闲聊消息进行昂贵的向量检索，仅在用户显式提到历史（触发词）或执行复杂任务（task/modify）时开启。
+ * 性能平衡：避免对所有闲聊消息进行昂贵的向量检索，仅在用户显式提到历史（触发词）或执行复杂任务时开启。
  *
  * @param input 包含消息文本和分诊意图的输入
  * @returns 是否需要检索
@@ -73,7 +73,7 @@ export function shouldSearchConversationMemory(input: {
   message: string;
   triage: Pick<MessageTriage, "intent">;
 }): boolean {
-  if (input.triage.intent === "task" || input.triage.intent === "modify") {
+  if (input.triage.intent === "task") {
     return true;
   }
 

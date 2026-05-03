@@ -6,9 +6,7 @@ import type {
   ConversationReplyMode,
   ConversationSandboxCodePlanDraft,
   ConversationSkillCallPlanDraft,
-  InterruptedTaskSummary,
 } from "../contracts.js";
-import type { createMessageTriage } from "../triage.js";
 
 export interface ConversationLlmConfig {
   /** OpenAI 兼容基础地址。 */
@@ -115,8 +113,6 @@ export interface ConversationLlmPlanInput {
   readonly task_history_context?: string;
   /** 可选记忆摘要。 */
   readonly memory_context?: string;
-  /** modify（修改） 时的被中断任务摘要。 */
-  readonly interrupted_task?: InterruptedTaskSummary;
 }
 
 /** 闲聊调用成功结果。 */
@@ -158,10 +154,6 @@ export interface ConversationLlmDependencies {
 export interface ConversationLlmClient {
   /** 基于真实 OpenAI 兼容接口执行 Stage 1-Composite Triage（复合分诊）。 */
   generateCompositeTriage(input: ConversationLlmTriageInput): Promise<ConversationCompositeTriage>;
-  /** 基于真实 OpenAI 兼容接口执行 Stage 1-Triage（分诊）。 */
-  generateTriage(
-    input: ConversationLlmTriageInput,
-  ): Promise<ReturnType<typeof createMessageTriage>>;
   /** 基于真实 OpenAI 兼容接口生成闲聊回复。 */
   generateChatReply(input: ConversationLlmChatInput): Promise<ConversationLlmChatResult>;
   /** 基于真实 OpenAI 兼容接口生成最小单技能 `skill_call`（技能调用） 规划。 */

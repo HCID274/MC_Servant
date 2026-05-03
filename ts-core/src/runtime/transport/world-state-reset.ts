@@ -52,13 +52,19 @@ export function attachMineflayerWorldStateReset(bot: MineflayerBotHandle): () =>
 }
 
 function resetMineflayerWorldState(bot: MineflayerBotHandle): void {
+  stopMineflayerActiveControl(bot);
+  const mutableBot = bot as MutableMineflayerBotState;
+  resetPlayerEntityLinks(mutableBot.players);
+  resetEntityIndex(mutableBot);
+}
+
+/** 停止 Mineflayer（Minecraft 协议客户端） 当前移动/控制状态，用于 cancel（取消） 与世界切换清理。 */
+export function stopMineflayerActiveControl(bot: MineflayerBotHandle): void {
   bot.pathfinder?.setGoal?.(null);
   bot.pathfinder?.stop?.();
 
   const mutableBot = bot as MutableMineflayerBotState;
   mutableBot.clearControlStates?.();
-  resetPlayerEntityLinks(mutableBot.players);
-  resetEntityIndex(mutableBot);
 }
 
 function resetPlayerEntityLinks(players: MutableMineflayerBotState["players"] | undefined): void {

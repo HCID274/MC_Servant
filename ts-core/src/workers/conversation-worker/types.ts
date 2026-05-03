@@ -206,10 +206,7 @@ export type ConversationWorkerPlanner = (input: {
   /** 已收紧到可规划意图的分诊结果。 */
   readonly triage: ConversationPlanningTriage;
   /** 已收紧到规划分支的路由。 */
-  readonly route: Extract<
-    ConversationRouteDecision,
-    { readonly kind: "plan_exec" | "modify_interrupt_then_plan" }
-  >;
+  readonly route: Extract<ConversationRouteDecision, { readonly kind: "plan_exec" }>;
   /** 可选记忆摘要。 */
   readonly memory_context?: string;
   /** 可选资源摘要。 */

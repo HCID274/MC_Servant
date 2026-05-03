@@ -111,7 +111,7 @@ export interface BotWorkerRuntimeDependencies {
   /** BotActor（机器人执行代理） 单写者入口。 */
   readonly actor: Pick<BotActorRuntime, "executeSkill" | "executeSandboxCode">;
   /** 当前意图纪元，用于丢弃过期任务。 */
-  readonly currentIntentEpoch?: () => number;
+  readonly currentIntentEpoch?: () => number | Promise<number>;
   /** 当前时钟，单位毫秒。 */
   readonly now?: () => number;
   /** 生命周期动作汇点，后续可接入 event_log（事件日志） 或 realtime（实时推送）。 */
@@ -341,7 +341,7 @@ export function createBotWorkerRuntime(input: {
 
   const processTask = async (job: { readonly data: unknown }): Promise<void> => {
     const task = cloneBotWorkerTask(job.data);
-    const currentEpoch = input.dependencies.currentIntentEpoch?.() ?? 0;
+    const currentEpoch = (await input.dependencies.currentIntentEpoch?.()) ?? 0;
 
     if (
       task.exec_job.type === ExecutionTaskKind.SkillCall &&

@@ -120,6 +120,10 @@ export interface PostgresRuntimeResource {
 export interface RedisClientLike {
   /** 建立真实连接。 */
   connect?(): Promise<unknown>;
+  /** Redis INCR（缓存自增命令），用于 intent_epoch（意图纪元） 单调取号。 */
+  incr?(key: string): Promise<number> | number;
+  /** Redis GET（缓存读取命令），用于读取当前 intent_epoch（意图纪元）。 */
+  get?(key: string): Promise<string | null> | string | null;
   /** 平滑关闭连接。 */
   quit?(): Promise<unknown>;
   /** 强制断开连接。 */

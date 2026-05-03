@@ -4,6 +4,7 @@ import {
   CONVERSATION_SKILL_PLAN_TABLE,
   ConversationLlmPlanError,
   ConversationLlmSkillNotEnabledError,
+  ConversationLlmTriageError,
   createChatSnapshotContext,
   createConversationLlmClient,
   createConversationLlmConfig,
@@ -38,7 +39,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
                 {
                   message: {
                     content:
-                      '{"intent":"task","priority":"urgent","reason":"主人给了明确坐标移动指令"}',
+                      '{"action":{"intent":"task","priority":"urgent","reason":"主人给了明确坐标移动指令"}}',
                   },
                 },
               ],
@@ -54,7 +55,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       },
     );
 
-    const result = await client.generateTriage({
+    const result = await client.generateCompositeTriage({
       message_id: "msg-triage",
       message: "请去坐标 x=10 y=64 z=-5",
       bot_summary: "idle",
@@ -62,9 +63,11 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     });
 
     expect(result).toEqual({
-      intent: "task",
-      priority: "urgent",
-      reason: "主人给了明确坐标移动指令",
+      action: {
+        intent: "task",
+        priority: "urgent",
+        reason: "主人给了明确坐标移动指令",
+      },
     });
     expect(capturedRequests).toEqual([
       {
@@ -112,7 +115,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
                 {
                   message: {
                     content:
-                      '{"cancel":{"reason":"主人要求先停下","priority":"interrupt"},"reply":{"content":"知道了"},"action":{"intent":"task","priority":"urgent","reason":"主人要求去坐标"}}',
+                      '{"cancel":{"reason":"主人要求先停下","priority":"interrupt"},"reply":{},"action":{"intent":"task","priority":"urgent","reason":"主人要求去坐标"}}',
                   },
                 },
               ],
@@ -138,9 +141,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         reason: "主人要求先停下",
         priority: "interrupt",
       },
-      reply: {
-        content: "知道了",
-      },
+      reply: {},
       action: {
         intent: "task",
         priority: "urgent",
@@ -149,7 +150,8 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     });
   });
 
-  it("应把旧单 intent（意图） triage（分诊） 输出适配为 composite（复合） action（动作）", async () => {
+  it("应拒绝旧单 intent（意图） triage（分诊） 输出并写入 diagnostics（诊断）", async () => {
+    const diagnostics: unknown[] = [];
     const client = createConversationLlmClient(
       createConversationLlmConfig({
         base_url: "http://127.0.0.1:8045/v1",
@@ -160,6 +162,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         timeout_ms: 15_000,
       }),
       {
+        onDiagnostic: (record) => diagnostics.push(record),
         fetch: async () =>
           new Response(
             JSON.stringify({
@@ -187,16 +190,18 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         message_id: "msg-legacy-triage",
         message: "去 10 64 -5",
       }),
-    ).resolves.toEqual({
-      action: {
-        intent: "task",
-        priority: "urgent",
-        reason: "主人给了明确坐标移动指令",
-      },
+    ).rejects.toBeInstanceOf(ConversationLlmTriageError);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({
+      stage: "triage",
+      message_id: "msg-legacy-triage",
+      ok: false,
+      error_summary: "triage must use composite schema",
     });
   });
 
-  it("应在 triage（分诊） 返回非法 JSON 时安全回退为 chat/normal", async () => {
+  it("应在 triage（分诊） 返回非法 JSON 时抛出带 diagnostics（诊断） 的错误", async () => {
+    const diagnostics: unknown[] = [];
     const client = createConversationLlmClient(
       createConversationLlmConfig({
         base_url: "http://127.0.0.1:8045/v1",
@@ -207,6 +212,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         timeout_ms: 15_000,
       }),
       {
+        onDiagnostic: (record) => diagnostics.push(record),
         fetch: async () =>
           new Response(
             JSON.stringify({
@@ -229,14 +235,23 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     );
 
     await expect(
-      client.generateTriage({
+      client.generateCompositeTriage({
         message_id: "msg-triage-fallback",
         message: "随便聊聊",
       }),
-    ).resolves.toEqual({
-      intent: "chat",
-      priority: "normal",
-      reason: "llm_triage_fallback",
+    ).rejects.toMatchObject({
+      name: "ConversationLlmTriageError",
+      diagnostics: {
+        stage: "triage",
+        message_id: "msg-triage-fallback",
+        ok: false,
+      },
+    });
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({
+      stage: "triage",
+      message_id: "msg-triage-fallback",
+      ok: false,
     });
   });
 
@@ -252,6 +267,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).toContain("reply");
     expect(messages[0]?.content).toContain("action");
     expect(messages[0]?.content).toContain("禁止输出 modify");
+    expect(messages[0]?.content).toContain("cancel + action");
     expect(messages[0]?.content).not.toContain("- modify：");
   });
 

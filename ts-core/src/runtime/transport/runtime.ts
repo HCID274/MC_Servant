@@ -50,7 +50,10 @@ import type {
 } from "./types.js";
 import { attachMineflayerEntityVelocityCompatibility } from "./velocity-compat.js";
 import { canReadMineflayerBlockAt, readMineflayerBlockAt } from "./world-reader.js";
-import { attachMineflayerWorldStateReset } from "./world-state-reset.js";
+import {
+  attachMineflayerWorldStateReset,
+  stopMineflayerActiveControl,
+} from "./world-state-reset.js";
 
 const DEFAULT_MINEFLAYER_CONNECT_TIMEOUT_MS = 30_000;
 const DEFAULT_RESOURCE_SCAN_COUNT = 512;
@@ -180,6 +183,13 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
     async equip(params: Readonly<EquipSkillParams>) {
       const currentBot = ensureWorldInteractionReady("equip");
       return executeMineflayerEquip({ bot: currentBot, params });
+    },
+    stopCurrentAction(): void {
+      if (bot === null || state !== "connected") {
+        return;
+      }
+
+      stopMineflayerActiveControl(bot);
     },
     async refreshAroundBot(
       resourceKey: string,
