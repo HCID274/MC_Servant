@@ -27,8 +27,11 @@
 │  │   ├─ chat_messages       对话历史                        │
 │  │   ├─ event_log           全量事件流                       │
 │  │   ├─ task_history        任务记录                        │
-│  │   ├─ task_summaries      Level 1 摘要 + embedding        │
-│  │   └─ session_summaries   Level 2 聚合摘要                │
+│  │   ├─ task_events         B 层任务卡 + embedding（按需召回）│
+│  │   ├─ bot_rolling_summary A.5 滚动摘要（每 bot 一行,常驻）  │
+│  │   ├─ bot_memory          C 层资产（USER/MEMORY/SKILL）    │
+│  │   ├─ memory_candidates   候选池 + 自动提拔状态            │
+│  │   └─ memory_audit        资产层变更审计                   │
 │  │                                                          │
 │  └─ 外部认证源（部署相关，只读适配）                           │
 │      └─ 例如 EasyAuth + SQLite                                │
@@ -249,176 +252,227 @@ CREATE INDEX idx_task_bot_status ON mc_servant.task_history (bot_id, status);
 
 ---
 
-#### task_summaries
+#### task_events
 
 ```sql
-CREATE TABLE mc_servant.task_summaries (
+CREATE TABLE mc_servant.task_events (
   id              TEXT PRIMARY KEY,              -- UUID v7
   task_id         TEXT NOT NULL REFERENCES mc_servant.task_history(id),
   bot_id          TEXT NOT NULL,
-  intent          TEXT NOT NULL,                 -- 一句话意图描述
-  status          TEXT NOT NULL,                 -- completed / failed / interrupted
-  summary         TEXT NOT NULL,                 -- Level 1 摘要（50-150 字）
-  embedding       vector(1024),                  -- pgvector 向量（BrainWorker 异步填充）
-  log_ref         TEXT,                          -- 冗余字段，快速定位原始日志
+  message_id      TEXT NOT NULL,                 -- 触发任务的主人消息
+  owner_text      TEXT NOT NULL,                 -- 主人原句
+  task_card       JSONB NOT NULL,                -- 结构化任务卡（plan/skills/coords/inventory_diff/result/...）
+  takeaway        TEXT,                          -- 触发式 LLM 摘要：失败根因 / 会话级 takeaway
+  embedding       vector(1024),                  -- BrainWorker 写入时一并生成
+  log_ref         TEXT,                          -- 指向原始 JSONL
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 全文搜索索引
-ALTER TABLE mc_servant.task_summaries
-  ADD COLUMN summary_tsv TSVECTOR
+-- 全文搜索：owner_text + takeaway 一起索引
+ALTER TABLE mc_servant.task_events
+  ADD COLUMN search_tsv TSVECTOR
   GENERATED ALWAYS AS (
-    to_tsvector('simple', summary)
+    to_tsvector('simple', coalesce(owner_text, '') || ' ' || coalesce(takeaway, ''))
   ) STORED;
 
-CREATE INDEX idx_summary_fts       ON mc_servant.task_summaries USING gin (summary_tsv);
-
--- 向量搜索索引（HNSW，Phase 1 数据量小，IVFFlat 不如 HNSW）
-CREATE INDEX idx_summary_embedding ON mc_servant.task_summaries
+CREATE INDEX idx_task_events_fts       ON mc_servant.task_events USING gin (search_tsv);
+CREATE INDEX idx_task_events_trgm      ON mc_servant.task_events USING gin (owner_text gin_trgm_ops);
+CREATE INDEX idx_task_events_embedding ON mc_servant.task_events
   USING hnsw (embedding vector_cosine_ops)
   WITH (m = 16, ef_construction = 64);
-
-CREATE INDEX idx_summary_bot_time  ON mc_servant.task_summaries (bot_id, created_at DESC);
+CREATE INDEX idx_task_events_bot_time  ON mc_servant.task_events (bot_id, created_at DESC);
 ```
 
-**tsvector 配置说明**：使用 `'simple'` 字典而非 `'chinese'`。理由：PG 内置不含中文分词器，`zhparser` 等第三方扩展需要额外安装和维护。`'simple'` 对中文做逐字切分，在短文本（50-150 字摘要）上配合 LIKE 前缀匹配已经够用。Phase 2 如果 FTS 精度不足，再引入 `pg_bigm` 或 `zhparser`。
+B 层全档：每个完成的任务（含 success / failed / interrupted）BrainWorker 写一行。**结构化字段直接列入**（不靠 LLM 抽取），自由文本（owner_text / takeaway）走 embedding。`takeaway` 仅在失败任务或会话收尾跑触发式 LLM 摘要，普通成功任务为 NULL。
+
+**tsvector 配置说明**：使用 `'simple'` 字典逐字切分中文，配合 `pg_trgm` 三元组索引覆盖关键词召回；语义召回走 `embedding`。
 
 **HNSW 索引参数**：`m=16, ef_construction=64` 是 pgvector 官方推荐的小数据集默认值。10 万条以内性能 < 10ms。
 
 ---
 
-#### session_summaries
+#### bot_rolling_summary
 
 ```sql
-CREATE TABLE mc_servant.session_summaries (
+CREATE TABLE mc_servant.bot_rolling_summary (
+  bot_id          TEXT PRIMARY KEY,
+  content         TEXT NOT NULL DEFAULT '',      -- A.5 滚动摘要块（≤2000 字, 软上限 1000 字）
+  char_count      INTEGER NOT NULL DEFAULT 0,
+  llm_model       TEXT,                          -- 最近一次重压所用模型标识
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+A.5 层。每个 bot 一行。BrainWorker 是唯一写入方：BotWorker 任务完成 → BrainWorker 写完任务卡后，把 50-100 字摘要追加到 `content`；当 `char_count > 2000` 时触发整块 LLM 重压回 1000 字内。被挤掉的旧摘要直接丢弃，不回流 B 层。ConversationWorker 每次组装 prompt 时只读不写。
+
+---
+
+#### bot_memory
+
+```sql
+CREATE TABLE mc_servant.bot_memory (
+  bot_id          TEXT NOT NULL,
+  kind            TEXT NOT NULL,                 -- 'USER' | 'MEMORY' | 'SKILL'
+  content         TEXT NOT NULL DEFAULT '',
+  char_count      INTEGER NOT NULL DEFAULT 0,
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (bot_id, kind)
+);
+```
+
+C 层资产，按 bot 隔离。三种 `kind`：
+
+| kind | 内容 | 字符上限 | 写入触发 |
+|------|------|---------|---------|
+| `USER` | 主人偏好、沟通风格 | 1375 | 候选 confidence ≥ 0.85 自动提拔 |
+| `MEMORY` | 项目/世界稳定事实（坐标、地标命名） | 2200 | 同上 |
+| `SKILL` | 复用 SOP 流程模板（非 ts skill） | 单条上限由 BrainWorker 视情况定 | 同上 |
+
+超容量时不硬塞，BrainWorker 跑二次 LLM 调用做"合并 / 替换 / 删除最旧"。任何写入都同步进 `memory_audit`。
+
+---
+
+#### memory_candidates
+
+```sql
+CREATE TABLE mc_servant.memory_candidates (
   id              TEXT PRIMARY KEY,              -- UUID v7
   bot_id          TEXT NOT NULL,
-  summary         TEXT NOT NULL,                 -- Level 2 聚合摘要（≤100 字）
-  task_ids        TEXT[] NOT NULL,               -- 指向被聚合的 task_summaries
-  embedding       vector(1024),
+  source_event_id TEXT REFERENCES mc_servant.task_events(id),  -- 候选来源
+  kind            TEXT NOT NULL,                 -- 'USER' | 'MEMORY' | 'SKILL'
+  content         TEXT NOT NULL,
+  confidence      REAL NOT NULL,                 -- rubric 打分 [0,1]
+  reason          TEXT,                          -- LLM 给出的入选理由
+  status          TEXT NOT NULL DEFAULT 'pending', -- pending | applied | rejected | superseded
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_at      TIMESTAMPTZ
+);
+
+CREATE INDEX idx_memory_candidates_bot_status ON mc_servant.memory_candidates (bot_id, status, created_at DESC);
+```
+
+候选池。BrainWorker 处理每个任务卡时跑一次 rubric LLM 调用，产出 0~N 条候选写入此表。阈值规则：
+
+- `confidence ≥ 0.85` → 立刻自动写入 `bot_memory`（包括必要的合并 / 替换），同步标记 `status=applied`
+- `0.6 ≤ confidence < 0.85` → 留 `status=pending`，主人 `/memory review` 时才看到
+- `< 0.6` → 不入库
+
+冲突或被新候选覆盖时，旧条目标 `status=superseded`。
+
+---
+
+#### memory_audit
+
+```sql
+CREATE TABLE mc_servant.memory_audit (
+  id              TEXT PRIMARY KEY,              -- UUID v7
+  bot_id          TEXT NOT NULL,
+  kind            TEXT NOT NULL,                 -- 'USER' | 'MEMORY' | 'SKILL'
+  op              TEXT NOT NULL,                 -- 'insert' | 'patch' | 'merge' | 'replace' | 'delete'
+  before_content  TEXT,
+  after_content   TEXT,
+  candidate_id    TEXT REFERENCES mc_servant.memory_candidates(id),
+  reason          TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-ALTER TABLE mc_servant.session_summaries
-  ADD COLUMN summary_tsv TSVECTOR
-  GENERATED ALWAYS AS (
-    to_tsvector('simple', summary)
-  ) STORED;
-
-CREATE INDEX idx_session_summary_fts ON mc_servant.session_summaries USING gin (summary_tsv);
-CREATE INDEX idx_session_summary_emb ON mc_servant.session_summaries
-  USING hnsw (embedding vector_cosine_ops)
-  WITH (m = 16, ef_construction = 64);
-CREATE INDEX idx_session_summary_bot ON mc_servant.session_summaries (bot_id, created_at DESC);
+CREATE INDEX idx_memory_audit_bot_time ON mc_servant.memory_audit (bot_id, created_at DESC);
 ```
 
-Level 2 摘要。BrainWorker 定期聚合产出。`task_ids` 数组保留回溯链路——需要细节时沿着 `task_ids` 查 `task_summaries`，再沿 `log_ref` 查原始 JSONL。
+C 层资产任何变更（自动提拔 / 容量驱动的合并 / Curator 归档）都写一行审计。坐标类事实新值覆盖旧值时旧值进 `before_content`；偏好类同理。
 
 ---
 
 ### 2.4 Drizzle ORM Schema 示例
 
-完整 Drizzle schema 文件放在 `src/db/schema/` 目录下，每个表一个文件。此处给出关键表的 Drizzle 定义示例：
+完整 Drizzle schema 文件放在 `src/db/schema/` 目录下，每个表一个文件。此处给出 `task_events` 的 Drizzle 定义示例：
 
 ```typescript
-// src/db/schema/task-summaries.ts
-import { pgTable, text, timestamp, index } from 'drizzle-orm/pg-core'
-import { vector } from 'drizzle-orm/pg-core'  // drizzle-orm 原生 pgvector 支持
+// src/db/schema/task-events.ts
+import { pgTable, text, jsonb, timestamp, index } from 'drizzle-orm/pg-core'
+import { vector } from 'drizzle-orm/pg-core'
 
-export const taskSummaries = pgTable('task_summaries', {
+export const taskEvents = pgTable('task_events', {
   id:         text('id').primaryKey(),
   taskId:     text('task_id').notNull(),
   botId:      text('bot_id').notNull(),
-  intent:     text('intent').notNull(),
-  status:     text('status').notNull(),
-  summary:    text('summary').notNull(),
+  messageId:  text('message_id').notNull(),
+  ownerText:  text('owner_text').notNull(),
+  taskCard:   jsonb('task_card').notNull(),
+  takeaway:   text('takeaway'),
   embedding:  vector('embedding', { dimensions: 1024 }),
   logRef:     text('log_ref'),
   createdAt:  timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-  botTimeIdx: index('idx_summary_bot_time').on(table.botId, table.createdAt),
+  botTimeIdx: index('idx_task_events_bot_time').on(table.botId, table.createdAt),
 }))
 ```
 
-tsvector 生成列和 GIN/HNSW 索引通过 Drizzle 的 `sql` 原始 SQL 在 migration 文件中创建，不在 schema 定义中——Drizzle 对这些高级特性的声明式支持尚不完善。
+`bot_rolling_summary`、`bot_memory`、`memory_candidates`、`memory_audit` 的 Drizzle 文件类似处理，按表一一对应。
+
+tsvector 生成列、`pg_trgm` 索引、HNSW 索引、PRIMARY KEY 复合主键等高级特性通过 Drizzle 的 `sql` 原始 SQL 在 migration 文件中创建，不在 schema 定义中——Drizzle 对这些声明式支持尚不完善。
 
 ---
 
 ## 3. 记忆检索查询
 
-### 3.1 混合检索 SQL
+记忆检索不是每次对话都跑，而是 Stage 2-Chat / Stage 2-Plan 的 LLM 通过 `search()` 工具按需发起的 tool calling（详见 CONVERSATION_SPEC.md §9）。本节只定义 brain 层的 SQL 实现。
 
-ConversationWorker 发起的混合检索，一条 SQL 完成两路合并：
+### 3.1 search() 工具的 SQL 实现
+
+Brain 暴露给 ConversationWorker 的接口：
+
+```ts
+brain.search({
+  bot_id: string,
+  query: string,
+  kinds?: ('task' | 'takeaway')[],   // 默认两者都查
+  top_k?: number                     // 默认 5,上限 10
+}): Promise<{ hits: SearchHit[] }>
+```
+
+底层一条 SQL 完成 FTS + 向量两路 RRF（Reciprocal Rank Fusion）合并：
 
 ```sql
 WITH fts AS (
-  SELECT id, task_id, intent, status, summary, created_at,
-         ts_rank(summary_tsv, plainto_tsquery('simple', $2)) AS fts_rank
-  FROM mc_servant.task_summaries
+  SELECT id, task_id, owner_text, takeaway, task_card, created_at,
+         row_number() OVER (ORDER BY ts_rank(search_tsv, plainto_tsquery('simple', $2)) DESC) AS r
+  FROM mc_servant.task_events
   WHERE bot_id = $1
-    AND summary_tsv @@ plainto_tsquery('simple', $2)
-  ORDER BY fts_rank DESC
-  LIMIT 5
+    AND search_tsv @@ plainto_tsquery('simple', $2)
+  LIMIT 10
 ),
 vec AS (
-  SELECT id, task_id, intent, status, summary, created_at,
-         1 - (embedding <=> $3::vector) AS vec_score
-  FROM mc_servant.task_summaries
+  SELECT id, task_id, owner_text, takeaway, task_card, created_at,
+         row_number() OVER (ORDER BY embedding <=> $3::vector) AS r
+  FROM mc_servant.task_events
   WHERE bot_id = $1
     AND embedding IS NOT NULL
   ORDER BY embedding <=> $3::vector
-  LIMIT 5
+  LIMIT 10
 ),
 merged AS (
-  SELECT *,
-         COALESCE(fts_rank, 0) * 0.6 + COALESCE(vec_score, 0) * 0.4 AS hybrid_score
+  SELECT id, task_id, owner_text, takeaway, task_card, created_at,
+         SUM(1.0 / (60 + r)) AS rrf_score
   FROM (
-    SELECT id, task_id, intent, status, summary, created_at,
-           fts_rank, NULL::float AS vec_score FROM fts
+    SELECT * FROM fts
     UNION ALL
-    SELECT id, task_id, intent, status, summary, created_at,
-           NULL::float AS fts_rank, vec_score FROM vec
+    SELECT * FROM vec
   ) combined
+  GROUP BY id, task_id, owner_text, takeaway, task_card, created_at
 )
-SELECT DISTINCT ON (id)
-  id, task_id, intent, status, summary, created_at, hybrid_score
+SELECT id, task_id, owner_text, takeaway, task_card, created_at, rrf_score
 FROM merged
-ORDER BY id, hybrid_score DESC  -- 去重时保留高分
-```
-
-外层再按 `hybrid_score DESC` 排序取 Top-N：
-
-```sql
-SELECT * FROM (
-  -- 上面的 CTE
-) deduped
-ORDER BY hybrid_score DESC
+ORDER BY rrf_score DESC
 LIMIT $4
 ```
 
-### 3.2 FTS 短路优化
+RRF 常数 60 是行业默认值，对短文本召回稳定。返回的 `task_card` 由 ConversationWorker 截断成 `snippet`（不超过 300 字 / hit），所有 hit 的总字数受调用层 2000 字上限约束。
 
-```typescript
-async function hybridSearch(
-  botId: string,
-  query: string,
-  queryEmbedding: number[],
-  limit: number
-): Promise<MemoryEntry[]> {
-  // 1. 先发 FTS
-  const ftsResults = await ftsSearch(botId, query, 5)
+### 3.2 短路优化
 
-  // 2. 如果 FTS 已有 ≥3 条高置信度结果，跳过向量检索
-  const highConfidence = ftsResults.filter(r => r.ftsRank > 0.3)
-  if (highConfidence.length >= 3) {
-    return highConfidence.slice(0, limit)
-  }
-
-  // 3. 否则并发向量检索 + 合并
-  const vecResults = await vectorSearch(botId, queryEmbedding, 5)
-  return mergeAndRank(ftsResults, vecResults, limit)
-}
-```
+- **缓存命中跳过**：当 A.5 块 + C 层 MEMORY/USER 已经包含答案时，Stage 2 LLM 不会发 `search()`——这一步是 LLM 的判断结果，不需要 SQL 层做命中预测
+- **FTS 高置信短路**：若 FTS 路返回 ≥3 条 `ts_rank > 0.3`，可直接返回这些命中跳过向量召回，节省 embedding API 调用（实现侧优化，对调用方透明）
 
 ---
 
@@ -548,8 +602,11 @@ class JsonlWriter {
 | chat_messages | 无限期保留 | 数据量小（每天几百条），是对话记忆的源 |
 | event_log | 保留 30 天 | 断线补拉和审计需要近期数据，30 天前的可清理 |
 | task_history | 无限期保留 | 条数少（每天几十条），是任务索引的源 |
-| task_summaries | 无限期保留 | RAG 检索的核心数据，不能删 |
-| session_summaries | 无限期保留 | 同上 |
+| task_events | 无限期保留 | B 层 RAG 的核心数据，不能删 |
+| bot_rolling_summary | 无限期保留 | A.5 常驻摘要，每 bot 一行 |
+| bot_memory | 无限期保留 | C 层资产，长期事实 |
+| memory_candidates | pending 保留 30 天，applied/rejected/superseded 保留 90 天后归档 | 候选过期可清理 |
+| memory_audit | 保留 180 天 | 审计追溯需要 |
 
 ### 5.2 冷数据（JSONL 文件）
 
@@ -640,60 +697,110 @@ LIMIT 5
 
 ## 7. BrainWorker 数据写入流
 
-BrainWorker 从 `brain` 队列取出任务后的写入顺序：
+BrainWorker 是 A.5 / B 层 / C 层的统一写入者。从 `brain` 队列取出任务卡（由 BotWorker 任务完成时入队）后顺序执行：
 
 ```
-BrainWorker 取出压缩任务
+BrainWorker 取出任务卡
     │
     ▼
-1. 读取 task_history 记录（获取 log_ref）
+① 写 task_events（B 层全档）
+    - 结构化字段直接列入 task_card jsonb
+    - owner_text + takeaway 跑 embedding API,一次写入,避免二次 update
+    - takeaway 此时为 NULL（普通成功任务）
     │
-2. 读取 JSONL 原始日志（通过 log_ref）
+    ▼
+② 触发式 takeaway（仅以下场景调 LLM,普通成功任务跳过）
+    - result = failed → 跑根因摘要,update task_events.takeaway
+    - 会话收尾静默 5 分钟（且期间无活跃任务、无新主人消息）
+      → 跑会话级 takeaway,合并到本会话最后一条 task_events
     │
-3. 调用 LLM 生成摘要（50-150 字）
+    ▼
+③ 更新 A.5 滚动摘要块
+    - 把任务卡的一句话摘要（50~100 字）追加到 bot_rolling_summary.content
+    - 更新 char_count
+    - 若 char_count > 2000 → 触发整块 LLM 重压回 ≤1000 字
+    - 重压所用模型与 ConversationWorker 调用一致（不另起便宜模型）
+    - 旧内容直接丢弃,不回流 B 层
     │
-4. 调用 Embedding API 生成向量
+    ▼
+④ Rubric 候选识别（每个任务卡都跑,模型与 ③ 同）
+    - 输入：task_card + owner_text + 既有 bot_memory（去重参考）
+    - 输出：0~N 条 { kind, content, confidence, reason }
+    - 全部写入 memory_candidates 表
     │
-5. 写入 task_summaries 表
-    │  （summary + embedding 一次写入，避免二次更新）
-    │
-6. 检查是否需要 Level 2 聚合
-    │  条件：同 bot 的 Level 1 摘要累计 >10 条且未被聚合
-    │
-    ├─ 不需要 → done
-    │
-    └─ 需要 → 调用 LLM 聚合摘要
-              → 调用 Embedding API
-              → 写入 session_summaries 表
-              → done
+    ▼
+⑤ 自动提拔（高置信无感写入）
+    - confidence ≥ 0.85 → 写入 bot_memory
+    - 容量超限 → 跑二次 LLM 调用做"合并/替换/删除最旧"
+    - 拒绝精确重复
+    - 扫 prompt injection / 凭证类内容,命中则降级为 pending
+    - 任何写入同步追加 memory_audit 一行
+    - candidate.status 标记 applied
+    - 0.6 ≤ confidence < 0.85 留 pending
+    - < 0.6 标记 rejected
 ```
 
-### 7.1 BrainWorker 的 LLM Prompt（摘要生成）
+### 7.1 触发式 takeaway 的 LLM Prompt
+
+仅在 `result = failed` 或 会话收尾静默 5 分钟时调用：
 
 ```
-将以下任务执行日志压缩为一段 50-150 字的中文摘要。
+基于以下任务执行日志,用一句中文写出"下次该注意什么":
 
 要求：
-- 保留：做了什么、结果如何、遇到了什么问题、关键地点/物品
-- 去掉：具体坐标数字、重复的中间步骤、时间戳
-- 如果任务失败或被中断，必须说明原因
+- 保留：失败根因 / 关键决策点 / 应规避的前置条件
+- 去掉：坐标数字、时间戳、中间步骤
+- 不超过 80 字
 
 日志：
-{JSONL 内容，截取最多 50 行}
+{JSONL 内容,截取最多 50 行}
 ```
 
-### 7.2 BrainWorker 的 LLM Prompt（Level 2 聚合）
+### 7.2 A.5 整块重压的 LLM Prompt
+
+`char_count > 2000` 时触发：
 
 ```
-将以下多个任务摘要聚合为一段 ≤100 字的会话概要。
+将以下流水摘要重新压缩为一段 ≤1000 字的中文摘要,作为 Bot 的"近期记忆"。
 
 要求：
-- 概括这段时间内 Bot 的主要活动和成果
-- 保留关键事件和转折点
-- 去掉重复描述
+- 保留：近期反复出现的事实、未完成的事项、最近的失败/教训
+- 去掉：重复描述、过于细节的步骤
+- 输出纯流水形式,不分 section,按时间从旧到新
 
-任务摘要列表：
-{Level 1 摘要列表}
+原文：
+{bot_rolling_summary.content}
+```
+
+事实类信息（坐标、地标命名、主人偏好）若反复出现,应由 ④ Rubric 识别 + ⑤ 自动提拔到 `bot_memory`,不依赖 A.5 二次保险。
+
+### 7.3 Rubric 候选识别的 LLM Prompt
+
+```
+你是记忆筛选器。判断当前任务是否产生了值得长期保留的资产。
+
+输入：
+- 主人原句：{owner_text}
+- 任务卡：{task_card 摘要}
+- 已有 USER：{bot_memory.USER}
+- 已有 MEMORY：{bot_memory.MEMORY}
+- 已有 SKILL：{bot_memory.SKILL}
+
+只输出 JSON。允许 0~N 条候选,每条结构：
+{
+  "kind": "USER" | "MEMORY" | "SKILL",
+  "content": "...",
+  "confidence": 0.0~1.0,
+  "reason": "..."
+}
+
+判断规则（学 Hermes,只存"以后还会用到的稳定事实"）：
+- 主人偏好/沟通风格 → USER
+- 世界/项目稳定事实（坐标、地标命名）→ MEMORY
+- 复用 SOP 流程模板（不是 ts skill,是流程套路）→ SKILL
+- 一次性任务结果、临时日志、TS 源码、背包 diff → 不提拔（confidence < 0.6 或不输出）
+- 与现有条目冲突或更新 → 输出 kind 相同的新条目,reason 写"覆盖旧值因为...",由提拔层处理覆盖
+- 精确重复已有条目 → 不输出
 ```
 
 ---
@@ -754,8 +861,12 @@ interface BotStateCache {
 6. JSONL append × N                         ← 每步
 7. task_history UPDATE (status=completed/failed/interrupted)  ← 结束时
 8. event_log INSERT (task.completed/failed/interrupted)       ← 同上
-9. brain 队列 push                          ← 同上
-10. task_summaries INSERT                    ← BrainWorker 异步
+9. brain 队列 push（带任务卡 payload）        ← 同上
+10. task_events INSERT (含 embedding)          ← BrainWorker 异步
+11. task_events UPDATE takeaway              ← BrainWorker 触发式（失败/会话收尾才跑）
+12. bot_rolling_summary UPDATE              ← BrainWorker 异步追加 + 必要时整块重压
+13. memory_candidates INSERT × N            ← BrainWorker rubric 打分
+14. bot_memory UPSERT + memory_audit INSERT ← BrainWorker 自动提拔（confidence ≥ 0.85）
 ```
 
 ### 9.2 事务边界

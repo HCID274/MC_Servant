@@ -159,7 +159,7 @@ T-039（任务三十九） 已确认走 **方案 Y（捆绑串行）**：把 `pl
 
 **⑦ 持久化 — PostgreSQL + Drizzle ORM + pgvector + JSONL**
 
-PG 是唯一业务真理源。Drizzle ORM 提供轻量 SQL 生成，无性能黑盒。pgvector 作为 PG 原生插件提供向量检索能力。高频执行日志走 JSONL 本地文件追加，PG 只存摘要索引和文件指针（字段命名为 `log_ref`，不绑死本地路径语义）。
+PG 是唯一业务真理源。Drizzle ORM 提供轻量 SQL 生成，无性能黑盒。pgvector 作为 PG 原生插件提供向量检索能力。高频执行日志走 JSONL 本地文件追加，PG 存任务卡（B 层 `task_events`）、A.5 滚动摘要、C 层资产（USER/MEMORY/SKILL）、候选池与审计流水（按 bot_id 隔离）；JSONL 只存原始执行轨迹,通过 `log_ref` 指针关联（不绑死本地路径语义）。
 
 ---
 
@@ -171,7 +171,7 @@ PG 是唯一业务真理源。Drizzle ORM 提供轻量 SQL 生成，无性能黑
 |--------|------------|------|----------|
 | `msg:{botId}` | ConversationWorker | 意图分析、优先级判定、回复生成、代码规划 | 可并发（LLM I/O 等待不阻塞事件循环） |
 | `bot:{botId}:exec` | BotWorker | 沙箱执行、Mineflayer 物理动作 | **严格串行**（单写者独占） |
-| `brain` | BrainWorker | 摘要压缩、Embedding 向量化、深度推理 | 全局池 |
+| `brain` | BrainWorker | 任务卡入库（B 层）、A.5 滚动摘要维护、C 层资产候选识别与自动提拔 | 全局池 |
 
 ### 3.2 全链路数据流
 
@@ -214,9 +214,10 @@ PG 是唯一业务真理源。Drizzle ORM 提供轻量 SQL 生成，无性能黑
           │          │
           │          │ 任务完成 → 推入 brain 队列
           │          ▼
-          │   ┌──────────────┐
-          │   │ BrainWorker  │ ← 全局池
-          │   │ 摘要 + 向量化 │
+          │   ┌──────────────────┐
+          │   │ BrainWorker      │ ← 全局池
+          │   │ 任务卡入库 + A.5   │
+          │   │ 滚动摘要 + 候选提拔│
           │   └──────┬───────┘
           │          │
           │          ▼
@@ -841,7 +842,7 @@ TS Core（TypeScript 单核心） 在跨边界数据上固定以下命名规则�
 | 10 | Event Protocol（event_log + 断线补拉） | db, interfaces |
 | 11 | Ingress Idempotency（message_id + intent_epoch） | interfaces, workers |
 | 12 | 扩充 cutTree / collect / equip | skills |
-| 13 | 双轨 Worker + BrainWorker 摘要压缩 | workers |
+| 13 | 双轨 Worker + BrainWorker 长期记忆四层（A.5 滚动 / B 层任务卡 / C 层资产 / 候选提拔） | workers |
 | 14 | 网页轻量聊天面板 + 双端同步 | interfaces |
 | 15 | owner 与 bot 单绑定关系 | db, data |
 | 16 | JAR 插件通信基础 | interfaces/server-bridge |

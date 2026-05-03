@@ -688,15 +688,16 @@ Bot：<reply 原文>
 
 #### 7.6.5 与 §7.5 / §8 的边界
 
-| 维度 | [最近上下文] (§7.6) | inventory diff (§7.5) | task_summaries (§8) |
-|------|--------------------|------------------------|---------------------|
-| 时效 | 实时，合并即写 | 同步，prompt 渲染时算 | 异步，BrainWorker 压缩 |
-| 内容 | 对话 + 沙盒 + 执行结果时间线 | 背包净变化 | 自然语言任务摘要 |
-| 存储 | ConversationWorker 进程内对话队列 + BotActor 进程内 `recent_events` | ConversationWorker 进程内缓存 | PG 持久化 |
-| 重启 | 清空 | 等同首次对话 | 保留 |
-| 用途 | 「刚才对话和执行链路发生了什么」 | 「背包多了啥少了啥」 | 「上次 / 上周做过啥」 |
+| 维度 | A 层最近上下文 (§7.6) | inventory diff (§7.5) | A.5 滚动摘要 (§8.2) | B 层任务卡 (§8.3) | C 层资产 (§8.4) |
+|------|----------------------|------------------------|---------------------|-------------------|------------------|
+| 时效 | 实时，合并即写 | 同步，prompt 渲染时算 | 异步，BrainWorker 追加 + 触发重压 | 异步，BrainWorker 写入 | 异步，BrainWorker 自动提拔 |
+| 内容 | 对话 + 沙盒 + 执行结果时间线 | 背包净变化 | 近期事件的有损流水摘要 | 任务卡全档 + embedding | 主人偏好 / 世界事实 / 复用 SOP |
+| 存储 | ConversationWorker 进程内 + BotActor 进程内 `recent_events` | ConversationWorker 进程内缓存 | PG `bot_rolling_summary` | PG `task_events` | PG `bot_memory` |
+| 注入 prompt | 永远（最近 5 轮） | 永远 | 永远（≤1000 字） | 仅 `search()` 工具召回时 | 永远 |
+| 重启 | 清空（恢复后从 PG 拉对话） | 等同首次对话 | 保留 | 保留 | 保留 |
+| 用途 | 刚才对话和执行链路发生了什么 | 背包多了啥少了啥 | 今天/这周大概记得什么 | 上次 / 上周做过的具体细节 | 长期一直该知道的事实 |
 
-三者互不替代：[最近上下文] 解释「对话和执行链路发生了什么」；inventory diff 回答「当前背包相对上次上下文净变化」；§8 异步摘要服务跨会话长期记忆。
+五者互不替代,各自职责清晰：A 层是"刚才说了什么",inventory diff 是"刚才动了什么",A.5 是"近期大概记得什么"（有损但常驻）,B 层是"按需翻档案",C 层是"长期不变的事实清单"。详细分工见 §8。
 
 #### 7.6.6 不变量
 
@@ -706,163 +707,196 @@ Bot：<reply 原文>
 - ConversationWorker 不得调用 LLM 总结 skill 结果或对话内容作为回退路径。
 - BotActor 是 `recent_events` 的 single writer；ConversationWorker 是对话轮一侧的 single writer。**两侧不得交叉写**。
 - 当前用户输入不重复进 `[最近上下文]`；当前 prompt 之后才完成的事件下一轮再渲染。
-- `recent_events` 不进 §8 异步通路的写入源；长期记忆链路独立设计（T-MEM-001 评估）。
+- `recent_events` 不直接写入 §8 长期记忆链路；任务卡是唯一进入 B 层 / A.5 / 候选层的事实源（详见 §8）。
 
 ---
 
-## 8. 任务历史索引系统
+## 8. 长期记忆架构
 
 ### 8.1 设计目标
 
-任务执行的 JSONL 日志动辄几百行。LLM 不需要看全部细节——它需要的是：**发生了什么、结果如何、有什么值得记住的**。
+每次新会话不从零开始：让 Bot 自动带上"我知道你是谁、你的项目是什么、最近做过什么、长期不变的事实有哪些"——但又**不让 prompt 无限膨胀**。
 
-BrainWorker 的摘要压缩产出的就是这种索引。ConversationWorker 在组装 prompt 时，从 PG 拉取最近任务的摘要索引。
+借鉴 Hermes Agent 的三层心智模型，结合本项目"skill 自带结构化轨迹（ts 源码 + 背包 diff + 坐标）"的现实：取消"每次任务由 LLM 总结一句话"的旧设计，换成下面四层错位互补的体系。
 
-### 8.2 索引层级：三级压缩
+### 8.2 A.5 滚动摘要块（近期记忆,常驻）
+
+**作用**：承担"今天 / 这周大概记得什么"的有损中期记忆。永远注入 prompt。
+
+- 存储：PG `bot_rolling_summary`,每 bot 一行
+- 写入者：BrainWorker 独家维护
+- 写入触发：BotWorker 任务完成 → BrainWorker 写完 B 层任务卡 → 把任务卡的 50~100 字摘要追加到 `content`
+- 字数管理：软上限 1000 字,硬上限 2000 字
+  - `char_count > 2000` → 触发整块 LLM 重压回 ≤1000 字
+  - 重压所用模型与 ConversationWorker 调用一致
+  - 被挤掉的旧摘要直接丢弃,**不回流 B 层**（B 层已有原始任务卡）
+- 注入位置：所有三个 LLM 阶段（Triage / Chat / Plan）
+
+A.5 不分层（不拆 [FACTS] / [FLOW]）。事实类信息的长期保留靠 C 层提拔机制（§8.4）,不在 A.5 内做二次保险——若某条事实在 A.5 反复出现却没被提拔,说明 rubric 阈值或 BrainWorker 漏判,应修那里。
+
+### 8.3 B 层任务卡（全档,按需召回）
+
+**作用**：完整任务执行档案。不进 prompt,通过 `search()` 工具按需召回。
+
+- 存储：PG `task_events`,结构化字段直接列入 + `owner_text` / `takeaway` 走 embedding
+- 写入者：BrainWorker
+- 写入时机：BotWorker 任务完成时推任务卡进 brain 队列,BrainWorker 一次写入 `task_card jsonb` + `embedding`
+- LLM 调用约束（**触发式,不是逐条**）：
+  - `result = failed` → 必跑根因 takeaway,update `takeaway` 字段
+  - 会话收尾静默 5 分钟（**前提**：5 分钟内无活跃任务、无新主人消息）→ 跑会话级 takeaway,合并到本会话最后一条 task_events
+  - 普通成功任务跳过 LLM,`takeaway = NULL`
+- 召回路径：见 §9 `search()` 工具
+
+### 8.4 C 层资产（长期事实,常驻）
+
+**作用**：跨会话不变的长期事实清单,永远注入 prompt。三类：
+
+| kind | 内容 | 字符上限 | 例子 |
+|------|------|---------|------|
+| `USER` | 主人偏好、沟通风格 | 1375 | "主人喜欢直接给坐标,不要罗嗦" |
+| `MEMORY` | 世界 / 项目稳定事实 | 2200 | "主基地 x=120 y=64 z=-300","东林指 x=380 附近橡木林" |
+| `SKILL` | 复用 SOP 流程模板（**非 ts skill,是流程套路**） | 视情况 | "挖钻石前置：检查铁镐 → 检查火把 → 检查背包空间" |
+
+存储：PG `bot_memory`,主键 `(bot_id, kind)`。注入位置：USER + MEMORY 三阶段都注入,SKILL 仅 Stage 2-Plan 注入（Triage / Chat 不需要流程套路）。
+
+**自动提拔机制（无感写入,主人不参与）**：
 
 ```
-Level 0: 原始 JSONL 日志
-         每步一行，完整记录动作、目标、结果、耗时
-         存储：本地文件系统
-         用途：Debug、回溯
-
-Level 1: 任务摘要（BrainWorker 产出）
-         一段 50-150 字的自然语言摘要
-         存储：PG task_summaries 表
-         用途：ConversationWorker prompt 注入、RAG 检索
-
-Level 2: 会话索引（BrainWorker 定期聚合）
-         多个任务摘要进一步压缩为一段 ≤100 字的会话概要
-         存储：PG session_summaries 表
-         用途：长时间跨度的上下文恢复
+BrainWorker 处理每个任务卡时跑一次 rubric LLM 调用
+    ↓
+产出 0~N 条候选 { kind, content, confidence, reason }
+    ↓
+全部写入 memory_candidates 表
+    ↓
+按 confidence 阈值分流：
+  ≥ 0.85 → 立刻写入 bot_memory（含必要的合并/替换）
+            容量超限 → 二次 LLM 调用做"合并 / 替换 / 删除最旧"
+            拒绝精确重复
+            扫 prompt injection / 凭证类内容,命中则降级 pending
+            同步追加 memory_audit 一行
+            候选 status = applied
+  0.6 ~ 0.85 → 留 pending,主人 /memory review 时才看
+  < 0.6 → status = rejected
 ```
 
-### 8.3 ConversationWorker 的索引拉取策略
+冲突处理：坐标 / 偏好类新值覆盖旧值,旧值进 audit log；流程类做差异 patch。Rubric prompt 详见 DATA_SPEC.md §7.3。
 
-```typescript
-async function buildTaskHistoryContext(botId: string, budget: number): Promise<string> {
-  // 1. 拉最近 5 条 Level 1 摘要
-  const summaries = await db.query(`
-    SELECT task_id, intent, status, summary, created_at
-    FROM task_summaries
-    WHERE bot_id = $1
-    ORDER BY created_at DESC
-    LIMIT 5
-  `, [botId])
+### 8.5 不进任何长期记忆层的内容
 
-  // 2. 拼接，逐条检查预算
-  let result = ''
-  let tokenCount = 0
+明确排除（学 Hermes "memory 只存稳定事实,不存这次发生了什么"）：
 
-  for (const s of summaries) {
-    const line = `[${s.status}] ${s.intent}: ${s.summary}`
-    const lineTokens = estimateTokens(line)
+- 一次性任务结果、临时 TODO、completed-work logs → 已在 B 层任务卡里,不再进 A.5 / C 层
+- 沙盒 TS 源码、背包 diff 数值、具体时间戳 → 留在 A 层 `recent_events` + B 层 `task_card`,不提拔
+- 当前会话的进度、未完成的步骤 → A 层窗口承担
 
-    if (tokenCount + lineTokens > budget) {
-      // 超预算：截断当前条目为一句话
-      const truncated = `[${s.status}] ${s.intent}: ${s.summary.slice(0, 30)}…`
-      result += truncated + '\n'
-      break
-    }
+### 8.6 Curator 后台维护（防资产层腐烂）
 
-    result += line + '\n'
-    tokenCount += lineTokens
-  }
+周期 cron 任务（每天一次）：
 
-  return result
-}
-```
-
-### 8.4 Level 2 会话索引的触发条件
-
-BrainWorker 在以下条件满足时触发 Level 1 → Level 2 聚合：
-
-- 同一 session 内 Level 1 摘要累计超过 10 条
-- 或者 Level 1 摘要总字符数超过 1500 字
-
-聚合产出一条 ≤100 字的 Level 2 概要，保留指向原始 Level 1 摘要的 `task_id` 列表。LLM 如果需要细节，可以通过 `api.memory.recallTaskDetails()` 回溯到 Level 1 甚至 Level 0。
+- 扫 `bot_memory` 中长期未被引用的条目 → 标 stale 状态（Phase 1 仅打标,不归档）
+- 扫 `memory_candidates` 中 pending 超 30 天的 → 自动 rejected
+- 扫 `memory_audit` 超 180 天的 → 归档清理
+- Phase 2 可加：辅助模型审查、合并近义条目（受 Hermes Curator 启发,但需限制只能用 memory + skills 工具,不能乱用 shell / web）
 
 ---
 
-## 9. 记忆检索集成
+## 9. B 层召回：search() 工具与多轮 tool calling
 
-### 9.1 混合检索架构
+### 9.1 设计原则
 
-```
-用户消息到达 ConversationWorker
-    │
-    ├─ 提取检索查询（直接用用户消息原文，不做额外转写）
-    │
-    ├─ 并发发起两路检索：
-    │
-    │   ┌──────────────────┐    ┌──────────────────┐
-    │   │  全文检索 (FTS)   │    │  向量检索          │
-    │   │                  │    │                    │
-    │   │  PG tsvector     │    │  Embedding API     │
-    │   │  关键词精确命中   │    │  → pgvector 余弦   │
-    │   │  Top-5           │    │  Top-5             │
-    │   └────────┬─────────┘    └────────┬───────────┘
-    │            │                       │
-    │            └───────────┬───────────┘
-    │                        │
-    │                        ▼
-    │               ┌────────────────┐
-    │               │  合并去重排序   │
-    │               │                │
-    │               │  1. 两路结果合并 │
-    │               │  2. 按 task_id  │
-    │               │     去重       │
-    │               │  3. 混合评分    │
-    │               │  4. 取 Top-3   │
-    │               └────────┬───────┘
-    │                        │
-    │                        ▼
-    │               注入 LLM prompt 的记忆槽位
-    │               （≤200 token）
-```
+不再由 ConversationWorker 在调 LLM **之前** 预跑关键词匹配 / 条件检索（旧 `RECALL_TRIGGERS` 思路废弃）。改为：
 
-### 9.2 混合评分公式
+- Stage 2-Chat / Stage 2-Plan 暴露 `search()` 工具给 LLM
+- 由 LLM 自己判断"A.5 + C 层够不够"——够则直接生成回复 / 计划,不够则发 `tool_use(search)`
+- 这是单次 chat / plan 请求生命周期内的多轮 tool calling,**不是再发起一次新请求**
 
-```typescript
-function hybridScore(ftsRank: number | null, vectorDistance: number | null): number {
-  const ftsScore = ftsRank != null ? ftsRank : 0
-  const vecScore = vectorDistance != null ? (1 - vectorDistance) : 0  // 余弦距离转相似度
+Stage 1-Triage **不暴露 search()**：分诊只判断路由（chat / cancel / task）,不需要历史细节,省一次 LLM 往返。
 
-  // FTS 命中权重更高：关键词精确匹配比语义模糊匹配更可信
-  return ftsScore * 0.6 + vecScore * 0.4
+### 9.2 search() 工具契约
+
+声明给 LLM 的工具描述：
+
+```ts
+{
+  name: "search",
+  description: "查找长期任务历史。仅在 A.5 滚动摘要 / C 层 MEMORY 不够回答主人问题时使用",
+  input_schema: {
+    type: "object",
+    properties: {
+      query:  { type: "string", description: "自然语言查询" },
+      kinds:  { type: "array",  items: { enum: ["task", "takeaway"] }, description: "默认两者都查" },
+      top_k:  { type: "integer", default: 5, maximum: 10 }
+    },
+    required: ["query"]
+  }
 }
 ```
 
-FTS 权重高于向量检索。理由：MC 场景中，"钻石矿"、"苦力怕"、"下矿"这些关键词的精确命中比语义相似度更可靠。向量检索是补充——处理"上次那个很危险的洞穴"这类没有明确关键词的模糊回忆。
+ConversationWorker 接收到 `tool_use(search)` 时调用 brain 层 SQL（详见 DATA_SPEC.md §3.1）：
 
-### 9.3 检索时机
-
-不是每次 LLM 调用都做检索。只有以下场景触发：
-
-| 场景 | 是否检索 | 理由 |
-|------|---------|------|
-| Stage 1 Triage | **不检索** | 分诊不需要历史记忆 |
-| Stage 2-Chat | **条件检索** | 仅当消息包含回忆性语义时（"上次"、"之前"、"还记得"） |
-| Stage 2-Plan | **总是检索** | 任务规划需要历史上下文 |
-
-条件检索的触发词表（Phase 1 硬编码，后续可扩展）：
-
-```typescript
-const RECALL_TRIGGERS = ['上次', '之前', '还记得', '那个', '以前', '昨天', '刚才']
-
-function shouldSearchMemory(message: string, intent: string): boolean {
-  if (intent === 'task') return true
-  return RECALL_TRIGGERS.some(t => message.includes(t))
-}
+```ts
+brain.search({ bot_id, query, kinds, top_k })
+  → { hits: [{ task_card_summary, score, snippet, created_at }] }
 ```
 
-### 9.4 Embedding 调用优化
+返回的 hits 序列化为 JSON 作为 `tool_result` 追加到当前会话历史,**不是塞进 system prompt 重发**。
 
-Embedding API 调用是记忆检索的瓶颈（每次 50-200ms）。优化措施：
+### 9.3 多轮 tool calling 的硬性边界
 
-- FTS 和 Embedding API 并发调用（`Promise.all`），总延迟取决于较慢的那个
-- 如果 FTS 已经返回 ≥3 条高置信度结果（ftsRank > 0.3），可以跳过向量检索（短路优化，阈值与 DATA_SPEC.md 3.2 节一致）
-- Embedding 结果不缓存（用户每次提问不同，缓存命中率极低）
+| 限制 | 数值 | 理由 |
+|------|------|------|
+| 单次 chat / plan 请求内最大 `search()` 调用轮数 | **3** | 防 LLM 反复 search 不收敛 |
+| 单次 `search()` 返回 hits 总字数上限 | **2000 字** | 防 prompt 爆炸 |
+| 单条 hit snippet 上限 | 300 字 | 在总字数下保留多条命中 |
+| 超 3 轮的处置 | **强制停止 tool calling,LLM 基于已有上下文产出回复** | 不重试不报错,降级返回 |
+
+超字数处置：截断 + 提示 LLM "还有 N 条匹配,请细化 query 重试"——但这条提示也算入 3 轮配额。
+
+### 9.4 时序示意
+
+```
+ConversationWorker                      LLM
+    │                                     │
+    │  request #1                         │
+    │  ──────────────────────────────────▶│
+    │  messages: [system,                 │
+    │    user: A + A.5 + C + 主人消息]    │
+    │  tools: [search]                    │
+    │                                     │
+    │            ◀────────────────────────│
+    │            tool_use:                │
+    │              {name:"search",        │
+    │               input:{query:"东林"}} │
+    │                                     │
+    │  ▶ brain.search(...)                │
+    │  ▶ pg_trgm + pgvector RRF 召回      │
+    │  ▶ 拼 hits JSON (≤2000 字)          │
+    │                                     │
+    │  request #2(同一会话,轮次计数 +1) │
+    │  ──────────────────────────────────▶│
+    │  messages: [..., assistant tool_use,│
+    │             user tool_result:hits]  │
+    │                                     │
+    │            ◀────────────────────────│
+    │            最终 reply                │
+    │            (或继续 tool_use 直到第 3 轮强制停止)│
+```
+
+### 9.5 缓存命中跳过
+
+**不需要单独实现"命中判断"逻辑**：
+
+- A.5 / C 层永远在 prompt 里
+- 若内容已经包含答案,LLM 自然不会发 `search()` → 直接返回 reply
+- 这是"缓存命中跳过 RAG"的天然实现,由 LLM 自主判断,无需预跑关键词匹配
+
+### 9.6 Embedding 调用优化
+
+`search()` 内部的 embedding 优化（对调用方透明,实现细节见 DATA_SPEC.md §3.2）：
+
+- FTS 与 embedding API 并发发起
+- FTS 高置信短路：返回 ≥3 条 `ts_rank > 0.3` 时跳过向量召回
+- Embedding 结果不缓存（每次 query 不同,命中率极低）
 
 ---
 
@@ -876,11 +910,11 @@ ConversationWorker 维护每个 bot session 最近 N 轮原始对话，存储在
 
 ### 10.2 滑动窗口策略
 
-每次 LLM 调用只带最近 3 轮（6 条消息：3 user + 3 bot）。理由：
+每次 LLM 调用只带最近 **5 轮**（10 条消息：5 user + 5 bot）。理由：
 
-- MiniMax 模型对上下文窗口的利用效率在 3-5 轮后快速衰减
-- 超过 3 轮的历史通过任务索引和 RAG 检索覆盖
-- 3 轮 × 平均每轮 100 字 = ~300 字 ≈ ~150 token，在预算内
+- 5 轮覆盖典型多轮指令的上下文（"先做 X 再做 Y","等等改成 Z"）
+- 超过 5 轮的内容由 A.5 滚动摘要承载有损形态,B 层任务卡承载完整档案,通过 `search()` 按需召回
+- 5 轮 × 平均每轮 100 字 = ~500 字 ≈ ~250 token,在预算内
 
 ### 10.3 对话窗口拉取
 
@@ -1009,34 +1043,43 @@ function priorityToNumber(priority: string): number {
 msg:{botId} 队列取出 job（用户消息）
     │
     ▼
-1. 拉取最近 3 轮对话
+1. 拉取最近 5 轮对话（A 层）+ inventory diff
     │
-2. 获取 Bot 当前状态一行摘要
+2. 拉取 A.5 滚动摘要（PG bot_rolling_summary）
     │
-3. ══ Stage 1: Triage LLM 调用 ══
-    │  输入：状态摘要 + 3 轮对话 + 当前消息
+3. 拉取 C 层资产（PG bot_memory: USER + MEMORY,Plan 阶段额外拉 SKILL）
+    │
+4. 获取 Bot 当前状态一行摘要
+    │
+5. ══ Stage 1: Triage LLM 调用 ══（不暴露 search()）
+    │  输入：状态摘要 + A 层 + A.5 + C(USER+MEMORY) + 当前消息
     │  输出：ConversationCompositeTriage { cancel?, reply?, action? }
     │
-4. 复合片段派发：
+6. 复合片段派发：
     │
     ├─ cancel 存在
     │   → botActor.interrupt(...)
     │   → 广播模板回复
     │
     ├─ reply 存在
-    │   → 条件记忆检索（有回忆语义时）
-    │   → ══ Stage 2-Chat LLM 调用 ══
+    │   → ══ Stage 2-Chat LLM 调用（暴露 search()） ══
+    │     - 输入：A + A.5 + C(USER+MEMORY) + 当前消息
+    │     - LLM 自主决定是否发 search() 工具调用（≤3 轮,详见 §9）
+    │     - 命中 search 时:ConversationWorker 调 brain.search(),
+    │       将 hits JSON 作为 tool_result 追加到同一会话再次 invoke LLM
     │   → 广播回复
     │
     └─ action 存在
-    │   → 并发：记忆检索 + 拉取任务历史索引 + 获取环境快照
+    │   → 并发：拉取环境快照 + C 层 SKILL
     │   → 判断：单 skill 可映射？
-    │       ├─ 是 → ══ Stage 2-Plan (skill_call) LLM 调用 ══
-    │       └─ 否 → ══ Stage 2-Plan (sandbox_code) LLM 调用 ══
+    │       ├─ 是 → ══ Stage 2-Plan (skill_call) LLM 调用（暴露 search()） ══
+    │       └─ 否 → ══ Stage 2-Plan (sandbox_code) LLM 调用（暴露 search()） ══
+    │     - 输入：A + A.5 + C(USER+MEMORY+SKILL) + 环境快照 + 当前消息
+    │     - 多轮 tool calling 规则同 Stage 2-Chat
     │   → 解析输出
-    │   → 若前面已广播 reply/cancel 模板，则不重复广播开场回复
+    │   → 若前面已广播 reply/cancel 模板,则不重复广播开场回复
     │   → 推入 exec 队列
-    │   → done
+    │   → done（任务完成后 BotWorker 推任务卡进 brain 队列,详见 §8）
 ```
 
 ---
