@@ -423,7 +423,8 @@ observation 模块产出的 EnvironmentSnapshot 原始结构约 2000-5000 字符
 [装备] 头:{head} 身:{torso} 腿:{legs} 脚:{feet} 主手:{hand} 副手:{off_hand}
 [背包] {item1}x{count}, {item2}x{count}, ...（空槽不列）
 [背包变化] {item1}{+/-N}, {item2}{+/-N}, ...（详见 §7.5；首次对话或净变化为零时整行省略）
-[最近动作] {line1} | {line2} | ...（最新在前，最多 10 条；无事件时整行省略；详见 §7.6）
+[最近上下文]
+{最近 10 整轮对话与执行时间线，按 message_id 聚合，从旧到新排列；轮次为空时整段省略；详见 §7.6}
 [资源簇] tree={status}, ore={status}（详见 §7.4）
 [附近方块] {block1}x{count}(最近{dist}格), ...（Top-5，按距离排序）
 [附近生物] {entity1}({type},{dist}格), ...（敌对优先，Top-5）
@@ -438,11 +439,12 @@ observation 模块产出的 EnvironmentSnapshot 原始结构约 2000-5000 字符
 [主人] 位置:({x},{y},{z}) 距离:{N}格 在线:{是|否}
 [背包] {item1}x{count}, {item2}x{count}, ...（空槽不列）
 [背包变化] ...（净变化为零时整行省略）
-[最近动作] ...（无事件时整行省略）
+[最近上下文]
+{...对话与执行时间线；轮次为空时整段省略；详见 §7.6}
 [时间] {白天|夜晚}({timeOfDay})
 ```
 
-Chat 子集不含 `[装备] / [资源簇] / [附近方块] / [附近生物]`——闲聊不规划，无需局部地形或资源态势，token 预算收紧。
+Chat 子集不含 `[装备] / [资源簇] / [附近方块] / [附近生物]`——闲聊不规划，无需局部地形或资源态势，token 预算收紧。`[最近上下文]` 与全量模板共享同一时间线数据源（§7.6），渲染规则一致。
 
 #### 7.1.3 通用降级
 
@@ -457,14 +459,25 @@ Chat 子集不含 `[装备] / [资源簇] / [附近方块] / [附近生物]`—�
 [装备] 主手:stone_pickaxe
 [背包] oak_log x12, cobblestone x34, stick x8, crafting_table x1
 [背包变化] oak_log+5, cobblestone-2
-[最近动作] 砍伐 oak_log x6 | 已到达 (120,64,200) 附近 | 捡到 stick x2
+[最近上下文]
+主人：去捡盾牌
+Bot：我去捡盾牌。
+沙盒TS：
+```ts
+await collect("shield")
+```
+执行结果：collect 成功，捡到 shield x1
+
+主人：再去砍点橡木
+Bot：去砍橡木。
+执行结果：cutTree 成功，砍伐 oak_log x6
 [资源簇] tree=found(最近3格,2簇), ore=found(最近12格,1簇)
 [附近方块] oak_log x6(最近3格), stone x20(最近1格), coal_ore x3(最近8格), iron_ore x2(最近12格), dirt x15(最近1格)
 [附近生物] zombie(敌对,22格), cow(被动,8格), sheep(被动,15格)
 [时间] 白天(6000)
 ```
 
-约 400 字符 / ~200 token。仍在 400 token 预算内。
+`[最近上下文]` 段不做 token 预算精算，按 §7.6.2 容量规则限制为最近 10 整轮；超长沙盒 TS 由 §7.6.4 截断兜底。
 
 ### 7.3 主人坐标行
 
@@ -586,57 +599,100 @@ prompt 注入文本格式：`oak_log+5, cobblestone-2, iron_ingot+1`。所有 en
 
 ---
 
-### 7.6 recent_events 实时事件队列
+### 7.6 [最近上下文] 对话与执行时间线
 
-让 Bot 能确定性地回答"刚才你做了什么 / 刚捡到什么 / 失败了吗"——不依赖 LLM 总结，不依赖 §8 异步压缩通路，不依赖数据库，直接从 BotActor 内部事件流派生。
+让 LLM 在 Chat / Plan / Modify 路径接续对话时，能看到「最近几轮主人说了什么 / Bot 回了什么 / 沙盒怎么写的 / 实际执行结果如何」——不依赖 LLM 总结，不依赖 §8 异步压缩通路，不依赖数据库，由 ConversationWorker 与 BotActor 在现有事件链路上确定性合并产出。
 
-#### 7.6.1 协议规则
+#### 7.6.1 双 owner 与合并
+
+底层数据由两个 owner 各自记录，prompt 构建期由 ConversationWorker 合并渲染：
+
+| owner | 记录内容 | 触发时机 |
+|-------|---------|---------|
+| ConversationWorker | 主人原文 / Bot reply 原文 / 沙盒 TS 代码原文 / 沙盒报错（`error.message`） | 路由分发 / 回复广播 / 沙盒 finalize |
+| BotActor | `recent_events`：skill / sandbox 执行结果一行（确定性 formatter） | skill / sandbox 执行完成（成功 / 失败 / 中断 / 取消） |
+
+合并方式：
+
+- 聚合键 = 主人 `message_id`。同一 `message_id` 触发的所有事件（主人输入 / Bot reply / 沙盒 TS / 沙盒报错 / 执行结果）归为一轮。
+- 没有 `message_id` 的事件（reflex 反射、system 自发动作）单独成一轮，以 reflex / system 标识为聚合键，容量上同样算 1 整轮。
+- 同轮内按真实事件 timestamp 排序；不强制四要素齐全（chat-only 轮可能只有「主人 / Bot」，plan 轮可能有「主人 / Bot / 沙盒TS / 执行结果」）。
+- 跨轮按时间从旧到新排列。
+
+BotActor 通过 `BotActorStateProjection.recent_events: ReadonlyArray<{ message_id: string | null; line: string; timestamp: number }>` 投影只读暴露执行结果一侧。BotActor 仍是 `recent_events` 的 single writer；ConversationWorker 是对话轮一侧（主人 / Bot / 沙盒 TS / 沙盒报错）的 single writer。**两侧不得交叉写**（BotActor 不写对话轮，ConversationWorker 不写 `recent_events`）。
+
+#### 7.6.2 容量规则
 
 | 项 | 值 |
 |----|---|
-| 容量 | 最近 10 条，LRU 淘汰 |
-| 来源 | skill / sandbox 执行完成时（成功 / 失败 / 中断 / 取消）写入一条 |
-| 文本归属 | 由各 skill 模块自带 `formatRecentEventLine(result)` 生成确定性文本，不调用 LLM，不在 BotActor 集中 switch |
+| 容量 | 最近 **10 整轮**，LRU 淘汰 |
+| 淘汰粒度 | **整轮淘汰**——主人输入 / Bot reply / 沙盒 TS / 沙盒报错 / 执行结果作为原子单位一并丢弃，不允许只剩半轮 |
 | 持久化 | 无，进程内，重启清空 |
-| 投影 | 通过 `BotActorStateProjection.recent_events: ReadonlyArray<string>` 暴露给 ConversationWorker |
-| 消费方 | Chat / Plan / Modify 三路 prompt 渲染均可读 |
-| 写入者 | BotActor（single writer）；ConversationWorker 只读不改 |
-| 渲染顺序 | `[最近动作]` 行按最新在前排列，最多 10 条 |
+| 排序 | 渲染时按从旧到新排列 |
 
-#### 7.6.2 文本示例
+不做 token 预算精算；10 整轮 + 单条沙盒 TS 超阈值截断（§7.6.4）即可。
 
-成功：
+#### 7.6.3 渲染规则
 
-- collect → 「捡到 shield x1」
-- mine → 「挖到 iron_ore x3」
-- goTo → 「已到达 (10,64,20) 附近」
-- cutTree → 「砍伐 oak_log x6」
+- prompt 段名：`[最近上下文]`，位于 `[背包变化]` 之后、`[资源簇]` 之前（全量模板）；Chat 子集位置见 §7.1.2。
+- 渲染范围：**只渲染当前 prompt 之前已经完成的轮次**。当前 user message 由正常 user message 槽位提供，**不得**同时进入 `[最近上下文]`，否则与 user message 重复。
+- 缺失元素跳过对应行；不输出占位符。
+- 沙盒 TS 用 ` ```ts ... ``` ` 围栏多行包裹，其余各项单行渲染。
+- 字面格式（按真实 timestamp 排序，本示例展示典型顺序）：
 
-失败 / 中断 / 取消：
+```
+主人：<原文>
+Bot：<reply 原文>
+沙盒TS：
+```ts
+<TS 原文>
+```
+报错：<error.message，单行>
+执行结果：<recent_events 单行>
+```
 
-- mine 失败 → 「mine 失败：工具等级不足」
-- goTo 中断 → 「goTo 中断：被打断」
-- collect 取消 → 「collect 取消：用户撤销」
+- 报错行只贴 `error.message`，不贴 stack trace；skill 失败同样单行化（由 formatter 产出，例：`mine 失败：工具等级不足`）。
+- 整段无任何轮次时，`[最近上下文]` 段省略。
+- 轮与轮之间用一个空行分隔，便于 LLM 阅读。
 
-文本由 skill 决定，本节不规定字面格式，仅约束"短句 + 包含关键事实"。
+#### 7.6.4 沙盒 TS 代码超长截断
 
-#### 7.6.3 与 §7.5 / §8 的边界
+默认完整注入沙盒 TS 代码原文，**不做语义摘要、不调用 LLM 总结、不写规则猜代码含义**。仅以下安全阈值触发截断：
 
-| 维度 | recent_events (§7.6) | inventory diff (§7.5) | task_summaries (§8) |
-|------|----------------------|------------------------|---------------------|
-| 时效 | 实时，事件触发即写 | 同步，prompt 渲染时算 | 异步，BrainWorker 压缩 |
-| 内容 | skill 执行流水 | 背包净变化 | 自然语言任务摘要 |
-| 存储 | 进程内队列 | 进程内缓存 | PG 持久化 |
+- 单段 TS 代码 > 200 行 **或** > 8000 字符。
+- 触发后渲染：
+
+```
+沙盒TS：[代码 N 行/M 字超阈值，已截断，code_ref=<message_id>]
+```ts
+<截断后片段（保留前若干行）>
+```
+```
+
+- `code_ref` 取该轮主人 `message_id`（链路自带，不新增存储标识）；reflex / system 轮使用其聚合键。
+- 截断仅作用于 TS 代码块；同轮内的执行结果、报错行不允许被截断省略——用户原话「不能删执行结果」。
+
+#### 7.6.5 与 §7.5 / §8 的边界
+
+| 维度 | [最近上下文] (§7.6) | inventory diff (§7.5) | task_summaries (§8) |
+|------|--------------------|------------------------|---------------------|
+| 时效 | 实时，合并即写 | 同步，prompt 渲染时算 | 异步，BrainWorker 压缩 |
+| 内容 | 对话 + 沙盒 + 执行结果时间线 | 背包净变化 | 自然语言任务摘要 |
+| 存储 | ConversationWorker 进程内对话队列 + BotActor 进程内 `recent_events` | ConversationWorker 进程内缓存 | PG 持久化 |
 | 重启 | 清空 | 等同首次对话 | 保留 |
-| 用途 | "刚才做了啥" | "背包多了啥少了啥" | "上次 / 上周做过啥" |
+| 用途 | 「刚才对话和执行链路发生了什么」 | 「背包多了啥少了啥」 | 「上次 / 上周做过啥」 |
 
-三者互不替代：recent_events 不解释背包变化原因（skill 外的 give / pickup 由 §7.5 体现净 delta，但不解释来源）；§8 的异步摘要也不替代 §7.6 的实时性。
+三者互不替代：[最近上下文] 解释「对话和执行链路发生了什么」；inventory diff 回答「当前背包相对上次上下文净变化」；§8 异步摘要服务跨会话长期记忆。
 
-#### 7.6.4 不变量
+#### 7.6.6 不变量
 
 - skill 模块新增时，**必须**同处实现 `formatRecentEventLine`。缺失 formatter 应在测试或 review 阶段失败；运行时不得调用 LLM 兜底，也不得静默丢弃事件。
-- ConversationWorker 不得调用 LLM 总结 skill 结果作为回退路径。
-- recent_events 不进 §8 异步通路的写入源；长期记忆链路独立设计（T-MEM-001 评估）。
+- 沙盒 TS 注入 **不做** 摘要、不调用 LLM 总结、不写规则猜代码含义；唯一允许的偏离是 §7.6.4 的超长截断。
+- 沙盒报错只取 `error.message`，不接 stack trace，不做 LLM 改写。
+- ConversationWorker 不得调用 LLM 总结 skill 结果或对话内容作为回退路径。
+- BotActor 是 `recent_events` 的 single writer；ConversationWorker 是对话轮一侧的 single writer。**两侧不得交叉写**。
+- 当前用户输入不重复进 `[最近上下文]`；当前 prompt 之后才完成的事件下一轮再渲染。
+- `recent_events` 不进 §8 异步通路的写入源；长期记忆链路独立设计（T-MEM-001 评估）。
 
 ---
 
