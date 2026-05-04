@@ -810,17 +810,20 @@ BrainWorker 处理每个任务卡时跑一次 rubric LLM 调用
 
 ---
 
-## 9. B 层召回：search() 工具与多轮 tool calling
+## 9. B 层召回：并发廉价检索 + search() 工具
 
 ### 9.1 设计原则
 
-不再由 ConversationWorker 在调 LLM **之前** 预跑关键词匹配 / 条件检索（旧 `RECALL_TRIGGERS` 思路废弃）。改为：
+为避免把每轮链路扩成 `Triage LLM → ContextGate LLM → Chat/Plan LLM`,系统不新增默认 ContextGate LLM（上下文门控大语言模型）。检索策略分两段：
 
-- Stage 2-Chat / Stage 2-Plan 暴露 `search()` 工具给 LLM
-- 由 LLM 自己判断"A.5 + C 层够不够"——够则直接生成回复 / 计划,不够则发 `tool_use(search)`
-- 这是单次 chat / plan 请求生命周期内的多轮 tool calling,**不是再发起一次新请求**
+- 消息进入后,除 control fast-path（控制快路径）外,ConversationWorker 可与 Triage LLM（分诊大语言模型）并发启动 cheap speculative retrieval（廉价投机检索）。该检索只返回候选,不直接注入 prompt。
+- Triage（分诊）返回后,由 deterministic merge gate（确定性合并闸门）决定是否采用候选：简单 skill_call（技能调用）丢弃,记忆型 chat（闲聊）采用 memory（记忆）候选,复杂 sandbox plan（沙箱规划）采用 skill index（技能索引）/经验候选,上轮失败继续则强制加载失败上下文。
+- Stage 2-Chat / Stage 2-Plan 仍暴露 `search()` 工具给 LLM（大语言模型）,用于候选不足时的按需深查。
+- `search()` 是单次 chat / plan 请求生命周期内的多轮 tool calling（工具调用）,**不是再发起一次新任务请求**。
 
 Stage 1-Triage **不暴露 search()**：分诊只判断路由（chat / cancel / task）,不需要历史细节,省一次 LLM 往返。
+
+cheap speculative retrieval（廉价投机检索）允许使用本地 hot LRU（热点最近最少使用）、skill index（技能索引）、C 层 memory（记忆）关键词、最近失败任务索引、PostgreSQL FTS（全文检索）/ trigram（三元组模糊匹配）。默认不得跑 query embedding（查询向量嵌入）远程 API、LLM summarization（大语言模型摘要） 或加载大段 skill full content（技能全文）。详细闭环策略见 06_AGENTIC_MINE_IRON_SPEC.md。
 
 ### 9.2 search() 工具契约
 
@@ -894,11 +897,11 @@ ConversationWorker                      LLM
 
 ### 9.5 缓存命中跳过
 
-**不需要单独实现"命中判断"逻辑**：
+`search()`（检索）工具自身不需要单独实现"命中判断"逻辑：
 
 - A.5 / C 层永远在 prompt 里
 - 若内容已经包含答案,LLM 自然不会发 `search()` → 直接返回 reply
-- 这是"缓存命中跳过 RAG"的天然实现,由 LLM 自主判断,无需预跑关键词匹配
+- 这是"缓存命中跳过 RAG"的天然实现,由 LLM 自主判断,无需额外 ContextGate LLM（上下文门控大语言模型）
 
 ### 9.6 Embedding 调用优化
 

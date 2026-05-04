@@ -28,7 +28,7 @@ TS Core 是一套以 TypeScript 为唯一执行核心的 Minecraft Bot Agent 系
 | 2 | **聊天驱动** | 游戏端与网页端统一通过消息流驱动系统，消息是唯一的用户意图入口。 | 多入口导致意图冲突 |
 | 3 | **双端同步** | 网页/游戏消息、Bot 回复、执行进度全量同步广播。 | 两端状态不一致 |
 | 4 | **本地执行闭环** | Bot 物理动作在本地完成。禁止"本地 → 云 LLM → 本地执行"的同步阻塞绕路。 | 网络抖动导致 Bot 僵死 |
-| 5 | **最小闭环优先** | Phase 1 只做一主一 Bot、基础技能、轻面板。不做 craft/place/drop、多 Bot、多 Owner。 | 范围膨胀 |
+| 5 | **最小闭环优先** | Phase 1 只做一主一 Bot 与"木头 → 工具链 → 石镐 → 铁矿"Agent 闭环；craft/place/equip/mine 仅按 06_AGENTIC_MINE_IRON_SPEC.md 的最小边界启用。不做通用百科、复杂 UI、多 Bot、多 Owner。 | 范围膨胀 |
 
 ---
 
@@ -835,15 +835,15 @@ TS Core（TypeScript 单核心） 在跨边界数据上固定以下命名规则�
 | 3 | BotActor 状态机 + AbortController 中断协议 | runtime |
 | 4 | 三队列模型 + ConversationWorker / BotWorker / BrainWorker | workers |
 | 5 | isolated-vm 沙箱 + Facade API + esbuild 转译 | sandbox |
-| 6 | 最小 skill 闭环（goTo + mine） | skills |
+| 6 | 最小 skill 闭环（goTo + cutTree + collect + craft/place/equip/mine 最小工具链） | skills |
 | 7 | observation 基础 + 脊髓反射规则表 | observation, runtime |
 | 8 | world-model 基础（minecraft-data 集成） | world-model |
 | 9 | diagnostics + JSONL 日志体系 | diagnostics |
-| 10 | Event Protocol（event_log + 断线补拉） | db, interfaces |
+| 10 | Event Protocol 基础（event_log 基础写入；增强补拉推迟） | db, interfaces |
 | 11 | Ingress Idempotency（message_id + intent_epoch） | interfaces, workers |
 | 12 | 扩充 cutTree / collect / equip | skills |
 | 13 | 双轨 Worker + BrainWorker 长期记忆四层（A.5 滚动 / B 层任务卡 / C 层资产 / 候选提拔） | workers |
-| 14 | 网页轻量聊天面板 + 双端同步 | interfaces |
+| 14 | 网页轻量聊天入口 + 双端消息同步基础 | interfaces |
 | 15 | owner 与 bot 单绑定关系 | db, data |
 | 16 | JAR 插件通信基础 | interfaces/server-bridge |
 
@@ -851,8 +851,9 @@ TS Core（TypeScript 单核心） 在跨边界数据上固定以下命名规则�
 
 - 继续修补旧系统 / 保留 Python 主线
 - 多 Bot、多 Owner 权限体系、语音
-- craft / place / drop 技能
+- 通用 craft / place / drop 技能；当前只允许 06_AGENTIC_MINE_IRON_SPEC.md 定义的最小 craft/place/equip/mine 边界
 - 复杂控制台、复杂 recovery 总线
+- realtime / event_log / UI 增强（见 DEMO_DEBT.md）
 - 云上部署、CDN、域名
 - 预生成模板池（Phase 2 优化）
 
