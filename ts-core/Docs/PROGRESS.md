@@ -234,3 +234,11 @@
 - C 审查结论: 曾打回 1 次 (首次返修仍吞掉 collect（捡拾）异常,且公共 `collect`（捡拾）参数校验仍拒绝 `radius: 8`);B（实现代理）移除吞错逻辑、区分规划建议最小半径 32 与显式调用最小半径 1,并补齐失败回归测试后通过
 - 关键决策: 树木簇推荐目标改为最低合法原木,避免 `GoalNear`（近距离目标）要求 Bot（机器人）靠近高处树冠;`cutTree`（砍树）每轮挖掘后强制调用无 `itemName`（物品名）过滤的 collect（捡拾）,以树簇中心和半径 8 清扫范围内全部掉落物,collect（捡拾）失败直接让任务失败并暴露原始错误
 - 架构冲突: 无
+
+## T-055 | 2026-05-04 | 最小 CraftService（合成服务）与 Mineflayer（Minecraft 客户端库）合成适配
+
+- 涉及模块: domain（领域） CraftService（合成服务）,core-ports（核心端口）工具链失败码,runtime/transport（运行时传输层） Mineflayer（Minecraft 客户端库）合成适配,运行时与技能契约测试
+- A 拆解依据: 用户要求实现 Phase 1（第一阶段）最小合成能力,支持 planks（木板）、stick/sticks（木棍）、crafting_table（工作台）、wooden_pickaxe（木镐）、stone_pickaxe（石镐）;配方、材料数量、是否需要工作台必须来自 Mineflayer（Minecraft 客户端库）/minecraft-data（Minecraft 数据库）/runtime（运行时）校验;边界限定 Domain（领域服务）、Runtime（运行时）、Skills（技能基础能力）、Inventory（背包状态）,不做通用 RecipeService（配方服务）、不做熔炼、不碰 LLM（大语言模型） prompt（提示词）
+- C 审查结论: 通过
+- 关键决策: CraftService（合成服务）只做 allowlist（白名单）目标边界与 `sticks`（木棍复数）别名归一化,不写材料数量或配方形状;实际 recipe（配方）选择、材料检查、crafting table（工作台）需求判断和 craft（合成）执行下沉到 runtime/transport（运行时传输层）消费 Mineflayer（Minecraft 客户端库）/minecraft-data（Minecraft 数据库）事实;planks（木板）泛化目标通过注册表事实候选收敛,拿不到事实时结构化失败
+- 架构冲突: 无

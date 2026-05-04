@@ -6,12 +6,15 @@ import type {
 import type {
   CollectSkillExecutionResult,
   CollectSkillParams,
+  CraftCapabilityParams,
   EquipSkillExecutionResult,
   EquipSkillParams,
   GoToSkillExecutionResult,
   GoToSkillParams,
   MineSkillExecutionResult,
   MineSkillParams,
+  ToolchainCapabilityData,
+  ToolchainCapabilityResult,
 } from "../../core-ports/skills.js";
 
 /** Mineflayer（Minecraft 协议客户端） 传输连接状态清单。 */
@@ -113,12 +116,62 @@ export interface MineflayerBlockHandle {
 
 /** Mineflayer（Minecraft 协议客户端） 物品句柄最小结构。 */
 export interface MineflayerItemHandle {
+  /** 物品数字标识。 */
+  readonly type?: number;
   /** 标准物品名称。 */
   readonly name?: string;
   /** 可读展示名。 */
   readonly displayName?: string;
   /** 物品堆叠数量。 */
   readonly count?: number;
+}
+
+/** Mineflayer（Minecraft 协议客户端） recipe（配方） 条目最小结构。 */
+export interface MineflayerRecipeItemHandle {
+  /** 物品数字标识。 */
+  readonly id: number;
+  /** 物品 metadata（元数据）；现代版本通常为 null。 */
+  readonly metadata?: number | null;
+  /** recipe delta（配方差异） 中正数表示产出，负数表示消耗。 */
+  readonly count: number;
+}
+
+/** Mineflayer（Minecraft 协议客户端） recipe（配方） 最小结构。 */
+export interface MineflayerRecipeHandle {
+  /** 配方结果。 */
+  readonly result: MineflayerRecipeItemHandle;
+  /** 合成前后物品差异，由 prismarine-recipe（配方库） 从 minecraft-data（Minecraft 数据库） 计算。 */
+  readonly delta?: readonly MineflayerRecipeItemHandle[];
+  /** 是否需要 crafting table（工作台）。 */
+  readonly requiresTable?: boolean;
+}
+
+/** Mineflayer（Minecraft 协议客户端） registry（注册表） 物品事实最小结构。 */
+export interface MineflayerRegistryItemFact {
+  /** 物品数字标识。 */
+  readonly id: number;
+  /** 标准物品名。 */
+  readonly name?: string;
+  /** 可选修复材料；来自 minecraft-data（Minecraft 数据库），用于识别 planks（木板）候选。 */
+  readonly repairWith?: readonly string[];
+}
+
+/** Mineflayer（Minecraft 协议客户端） registry（注册表） 方块事实最小结构。 */
+export interface MineflayerRegistryBlockFact {
+  /** 方块数字标识。 */
+  readonly id: number;
+  /** 标准方块名。 */
+  readonly name?: string;
+}
+
+/** Mineflayer（Minecraft 协议客户端） registry（注册表） 最小结构。 */
+export interface MineflayerRegistryFacts {
+  /** 按标准名索引的物品事实。 */
+  readonly itemsByName?: Readonly<Record<string, MineflayerRegistryItemFact | undefined>>;
+  /** 按数字标识索引的物品事实。 */
+  readonly items?: Readonly<Record<string, MineflayerRegistryItemFact | undefined>>;
+  /** 按标准名索引的方块事实。 */
+  readonly blocksByName?: Readonly<Record<string, MineflayerRegistryBlockFact | undefined>>;
 }
 
 /** Mineflayer（Minecraft 协议客户端） 实体句柄最小结构。 */
@@ -200,6 +253,29 @@ export interface MineflayerMiningPort {
   canSeeBlock?(block: MineflayerBlockHandle): boolean;
 }
 
+/** Mineflayer（Minecraft 协议客户端） 合成能力端口。 */
+export interface MineflayerCraftingPort {
+  /** 查询当前材料与工作台条件下可合成的配方。 */
+  recipesFor?(
+    itemType: number,
+    metadata: number | null,
+    minResultCount: number | null,
+    craftingTable: MineflayerBlockHandle | boolean | null,
+  ): readonly MineflayerRecipeHandle[];
+  /** 查询目标物品的全部配方；只按工作台可用性过滤。 */
+  recipesAll?(
+    itemType: number,
+    metadata: number | null,
+    craftingTable: MineflayerBlockHandle | boolean | null,
+  ): readonly MineflayerRecipeHandle[];
+  /** 执行真实 Mineflayer craft（合成）。 */
+  craft?(
+    recipe: MineflayerRecipeHandle,
+    count?: number,
+    craftingTable?: MineflayerBlockHandle,
+  ): Promise<void>;
+}
+
 /** Mineflayer（Minecraft 协议客户端） 实体查询能力端口。 */
 export interface MineflayerEntityPort {
   /** 当前世界实体索引。 */
@@ -236,6 +312,7 @@ export interface MineflayerBotHandle
     MineflayerChatPort,
     MineflayerMovementPort,
     MineflayerMiningPort,
+    MineflayerCraftingPort,
     MineflayerEntityPort,
     MineflayerInventoryPort {}
 
@@ -361,6 +438,10 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   collect(params: Readonly<CollectSkillParams>): Promise<CollectSkillExecutionResult>;
   /** 通过受控背包能力执行 equip（装备）。 */
   equip(params: Readonly<EquipSkillParams>): Promise<EquipSkillExecutionResult>;
+  /** 通过受控背包与 Mineflayer recipe（配方）能力执行 craft（合成）。 */
+  craft(
+    params: Readonly<CraftCapabilityParams>,
+  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
   /** 停止当前 Mineflayer（Minecraft 协议客户端） 世界交互动作。 */
   stopCurrentAction(): void;
   /** 围绕 Bot（机器人） 当前位置执行只读资源刷新。 */

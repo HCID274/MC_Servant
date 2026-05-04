@@ -18,6 +18,7 @@ import type {
 } from "../../core-ports/runtime.js";
 import type {
   CollectSkillParams,
+  CraftCapabilityParams,
   EquipSkillParams,
   GoToSkillParams,
   MineSkillParams,
@@ -25,6 +26,7 @@ import type {
 import { assertNonEmptyString, cloneReadonlyValue } from "../../domain/invariants.js";
 import { attachMineflayerBlockWorldCompatibility } from "./block-world-compat.js";
 import { executeMineflayerCollect } from "./collect.js";
+import { executeMineflayerCraft } from "./craft.js";
 import { executeMineflayerDigBlockAt } from "./dig-block.js";
 import { executeMineflayerEquip } from "./equip.js";
 import { executeMineflayerGoTo } from "./go-to.js";
@@ -197,6 +199,14 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
       const currentBot = ensureWorldInteractionReady("equip");
       return executeMineflayerEquip({ bot: currentBot, params });
     },
+    async craft(params: Readonly<CraftCapabilityParams>) {
+      const currentBot = ensureWorldInteractionReady("craft");
+      return executeMineflayerCraft({
+        bot: currentBot,
+        params,
+        worldKey: createMineflayerWorldKey(currentBot),
+      });
+    },
     stopCurrentAction(): void {
       if (bot === null || state !== "connected") {
         return;
@@ -289,7 +299,7 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
   }
 
   function ensureWorldInteractionReady(
-    skill: "goTo" | "mine" | "digBlockAt" | "collect" | "equip",
+    skill: "goTo" | "mine" | "digBlockAt" | "collect" | "equip" | "craft",
   ): MineflayerBotHandle {
     if (state !== "connected" || bot === null) {
       throw new Error(`Mineflayer transport must be connected before ${skill}`);

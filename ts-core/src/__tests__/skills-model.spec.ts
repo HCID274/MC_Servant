@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CRAFT_SERVICE_ALLOWED_TARGETS,
   ExecPriority,
   ExecutionTaskKind,
   FORBIDDEN_TOOLCHAIN_DEMO_NAMES,
@@ -14,6 +15,7 @@ import {
   TOOLCHAIN_FAILURE_CODES,
   type ToolchainCapabilityName,
   type ToolchainCapabilityResult,
+  createCraftService,
   createPhase1SkillRegistry,
   createSkillCall,
   createSkillCallJob,
@@ -133,6 +135,8 @@ describe("skills 模块契约", () => {
       expect.arrayContaining([
         "missing_materials",
         "missing_crafting_table",
+        "recipe_not_found",
+        "runtime_craft_failed",
         "cannot_place",
         "not_equipped",
         "resource_not_found",
@@ -144,6 +148,56 @@ describe("skills 模块契约", () => {
     expect(failureResult.error.code).toBe("missing_materials");
     expect(successResult.ok).toBe(true);
     expect(successResult.data.completed_count).toBe(1);
+  });
+
+  it("CraftService（合成服务） 应只做 allowlist（白名单） 边界并委托 runtime（运行时） 校验事实", async () => {
+    const calls: unknown[] = [];
+    const craftService = createCraftService({
+      runtime: {
+        async craft(params) {
+          calls.push(params);
+          return {
+            ok: true,
+            data: {
+              world_key: "minecraft:overworld",
+              completed_count: params.count,
+              item_name: params.itemName,
+            },
+          };
+        },
+      },
+    });
+
+    await expect(craftService.craft({ itemName: "sticks", count: 2 })).resolves.toEqual({
+      ok: true,
+      data: {
+        world_key: "minecraft:overworld",
+        completed_count: 2,
+        item_name: "stick",
+      },
+    });
+    await expect(craftService.craft({ itemName: "iron_ingot", count: 1 })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "unsupported_capability",
+      },
+    });
+    await expect(craftService.craft({ itemName: "stick", count: 0 })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "unsupported_capability",
+      },
+    });
+
+    expect(CRAFT_SERVICE_ALLOWED_TARGETS).toEqual([
+      "planks",
+      "stick",
+      "sticks",
+      "crafting_table",
+      "wooden_pickaxe",
+      "stone_pickaxe",
+    ]);
+    expect(calls).toEqual([{ itemName: "stick", count: 2 }]);
   });
 
   it("应让 skill_call 构造与运行时任务共享同一套强类型目录", () => {

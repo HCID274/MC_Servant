@@ -137,6 +137,8 @@ export const TOOLCHAIN_FAILURE_CODES = Object.freeze([
   "missing_materials",
   "missing_crafting_table",
   "crafting_table_unavailable",
+  "recipe_not_found",
+  "runtime_craft_failed",
   "cannot_place",
   "not_equipped",
   "resource_not_found",

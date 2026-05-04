@@ -37,4 +37,5 @@ export const domainModuleBoundary = {
 } satisfies ModuleBoundary;
 
 export * from "./contracts.js";
+export * from "./craft-service.js";
 export * from "./invariants.js";

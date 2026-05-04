@@ -42,6 +42,7 @@ import {
   createMineflayerRuntimeTransport,
   createMineflayerTransportDescriptor,
   createObservationRuntimeCache,
+  executeMineflayerCraft,
   readMineflayerBlockAt,
 } from "../index.js";
 import type {
@@ -49,6 +50,7 @@ import type {
   MineflayerBotHandle,
   MineflayerEntityHandle,
   MineflayerItemHandle,
+  MineflayerRecipeHandle,
 } from "../runtime/transport.js";
 
 class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
@@ -70,6 +72,67 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
       cobblestone: {
         id: 1,
       },
+      wooden_pickaxe: {
+        id: 2,
+        repairWith: ["oak_planks", "birch_planks"],
+      },
+      oak_planks: {
+        id: 3,
+      },
+      birch_planks: {
+        id: 4,
+      },
+      birch_log: {
+        id: 5,
+      },
+      stick: {
+        id: 6,
+      },
+      crafting_table: {
+        id: 7,
+      },
+      stone_pickaxe: {
+        id: 8,
+      },
+    },
+    items: {
+      "1": {
+        id: 1,
+        name: "cobblestone",
+      },
+      "2": {
+        id: 2,
+        name: "wooden_pickaxe",
+      },
+      "3": {
+        id: 3,
+        name: "oak_planks",
+      },
+      "4": {
+        id: 4,
+        name: "birch_planks",
+      },
+      "5": {
+        id: 5,
+        name: "birch_log",
+      },
+      "6": {
+        id: 6,
+        name: "stick",
+      },
+      "7": {
+        id: 7,
+        name: "crafting_table",
+      },
+      "8": {
+        id: 8,
+        name: "stone_pickaxe",
+      },
+    },
+    blocksByName: {
+      crafting_table: {
+        id: 7,
+      },
     },
   };
   readonly game = {
@@ -82,6 +145,12 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly resourceBlocks: MineflayerBlockHandle[] = [];
   readonly inventoryItems: MineflayerItemHandle[] = [];
   readonly entities: Record<string, MineflayerEntityHandle | undefined> = {};
+  readonly craftRecipes = new Map<number, MineflayerRecipeHandle[]>();
+  readonly craftCalls: {
+    readonly recipe: MineflayerRecipeHandle;
+    readonly count: number | undefined;
+    readonly table: MineflayerBlockHandle | undefined;
+  }[] = [];
   readonly inventory = {
     items: (): readonly MineflayerItemHandle[] => this.inventoryItems,
   };
@@ -186,6 +255,35 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     return block.name !== "blocked_log";
   }
 
+  recipesAll(
+    itemType: number,
+    _metadata: number | null,
+    craftingTable: MineflayerBlockHandle | boolean | null,
+  ): readonly MineflayerRecipeHandle[] {
+    return (this.craftRecipes.get(itemType) ?? []).filter(
+      (recipe) => recipe.requiresTable !== true || Boolean(craftingTable),
+    );
+  }
+
+  recipesFor(
+    itemType: number,
+    metadata: number | null,
+    minResultCount: number | null,
+    craftingTable: MineflayerBlockHandle | boolean | null,
+  ): readonly MineflayerRecipeHandle[] {
+    return this.recipesAll(itemType, metadata, craftingTable).filter((recipe) =>
+      this.hasRecipeMaterials(recipe, minResultCount ?? 1),
+    );
+  }
+
+  async craft(
+    recipe: MineflayerRecipeHandle,
+    count?: number,
+    craftingTable?: MineflayerBlockHandle,
+  ): Promise<void> {
+    this.craftCalls.push({ recipe, count, table: craftingTable });
+  }
+
   nearestEntity(
     matcher: (entity: MineflayerEntityHandle) => boolean,
   ): MineflayerEntityHandle | null {
@@ -220,6 +318,21 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     this.closed = true;
     this.emit("end");
   }
+
+  private hasRecipeMaterials(recipe: MineflayerRecipeHandle, minResultCount: number): boolean {
+    const craftRuns = Math.max(1, Math.ceil(minResultCount / Math.max(1, recipe.result.count)));
+
+    return (recipe.delta ?? [])
+      .filter((delta) => delta.count < 0)
+      .every((delta) => this.countInventoryByType(delta.id) >= Math.abs(delta.count) * craftRuns);
+  }
+
+  private countInventoryByType(type: number): number {
+    return this.inventoryItems.reduce(
+      (sum, item) => sum + (item.type === type ? (item.count ?? 0) : 0),
+      0,
+    );
+  }
 }
 
 describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () => {
@@ -250,6 +363,148 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     ).toMatchObject({
       name: "sample_floor",
     });
+  });
+
+  it("craft（合成） 应用 Mineflayer recipe（配方） 从现有背包合成 planks（木板） 泛化目标", async () => {
+    const bot = new FakeMineflayerBot();
+    const oakRecipe: MineflayerRecipeHandle = {
+      result: { id: 3, count: 4 },
+      delta: [
+        { id: 11, count: -1 },
+        { id: 3, count: 4 },
+      ],
+      requiresTable: false,
+    };
+    const birchRecipe: MineflayerRecipeHandle = {
+      result: { id: 4, count: 4 },
+      delta: [
+        { id: 5, count: -1 },
+        { id: 4, count: 4 },
+      ],
+      requiresTable: false,
+    };
+    bot.inventoryItems.push({ type: 5, name: "birch_log", count: 1 });
+    bot.craftRecipes.set(3, [oakRecipe]);
+    bot.craftRecipes.set(4, [birchRecipe]);
+
+    const result = await executeMineflayerCraft({
+      bot,
+      params: { itemName: "planks", count: 4 },
+      worldKey: "minecraft:overworld",
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        world_key: "minecraft:overworld",
+        completed_count: 4,
+        item_name: "birch_planks",
+      },
+    });
+    expect(bot.craftCalls).toEqual([{ recipe: birchRecipe, count: 1, table: undefined }]);
+  });
+
+  it("craft（合成） 应区分缺材料与缺 crafting table（工作台）", async () => {
+    const missingMaterialBot = new FakeMineflayerBot();
+    const stonePickaxeRecipe: MineflayerRecipeHandle = {
+      result: { id: 8, count: 1 },
+      delta: [
+        { id: 1, count: -3 },
+        { id: 6, count: -2 },
+        { id: 8, count: 1 },
+      ],
+      requiresTable: true,
+    };
+    missingMaterialBot.resourceBlocks.push({
+      type: 7,
+      name: "crafting_table",
+      position: { x: 1, y: 64, z: 1 },
+    });
+    missingMaterialBot.inventoryItems.push({ type: 6, name: "stick", count: 2 });
+    missingMaterialBot.craftRecipes.set(8, [stonePickaxeRecipe]);
+
+    await expect(
+      executeMineflayerCraft({
+        bot: missingMaterialBot,
+        params: { itemName: "stone_pickaxe", count: 1 },
+        worldKey: "minecraft:overworld",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "missing_materials",
+      },
+    });
+
+    const missingTableBot = new FakeMineflayerBot();
+    missingTableBot.inventoryItems.push(
+      { type: 4, name: "birch_planks", count: 3 },
+      { type: 6, name: "stick", count: 2 },
+    );
+    missingTableBot.craftRecipes.set(2, [
+      {
+        result: { id: 2, count: 1 },
+        delta: [
+          { id: 4, count: -3 },
+          { id: 6, count: -2 },
+          { id: 2, count: 1 },
+        ],
+        requiresTable: true,
+      },
+    ]);
+
+    await expect(
+      executeMineflayerCraft({
+        bot: missingTableBot,
+        params: { itemName: "wooden_pickaxe", count: 1 },
+        worldKey: "minecraft:overworld",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "missing_crafting_table",
+      },
+    });
+  });
+
+  it("craft（合成） 有 crafting table（工作台） 时应调用 Mineflayer craft（合成）", async () => {
+    const bot = new FakeMineflayerBot();
+    const recipe: MineflayerRecipeHandle = {
+      result: { id: 2, count: 1 },
+      delta: [
+        { id: 4, count: -3 },
+        { id: 6, count: -2 },
+        { id: 2, count: 1 },
+      ],
+      requiresTable: true,
+    };
+    const tableBlock: MineflayerBlockHandle = {
+      type: 7,
+      name: "crafting_table",
+      position: { x: 1, y: 64, z: 1 },
+    };
+    bot.resourceBlocks.push(tableBlock);
+    bot.inventoryItems.push(
+      { type: 4, name: "birch_planks", count: 3 },
+      { type: 6, name: "stick", count: 2 },
+    );
+    bot.craftRecipes.set(2, [recipe]);
+
+    await expect(
+      executeMineflayerCraft({
+        bot,
+        params: { itemName: "wooden_pickaxe", count: 1 },
+        worldKey: "minecraft:overworld",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {
+        world_key: "minecraft:overworld",
+        completed_count: 1,
+        item_name: "wooden_pickaxe",
+      },
+    });
+    expect(bot.craftCalls).toEqual([{ recipe, count: 1, table: tableBlock }]);
   });
 
   it("应通过可注入工厂完成连接、spawn（生成） 与断开生命周期", async () => {
