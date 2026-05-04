@@ -528,7 +528,11 @@ Bot：去砍橡木。
 | 刷新方式 | 异步：以 `bot.position_now` 为新圆心，扫半径 16，刷新成功后 P0 推进为当前位置 |
 | 聚类语义 | 先按具体 `block_name` 分组，再用 26 邻域 BFS 连通聚类；不同原木 / 矿石类型默认不混簇 |
 | 缓存更新 | 方块变化只更新当前 `world_key` 桶；移除变化方块，空簇删除，断裂簇重新 BFS 切分 |
+| 树木分类 | `cutTree` 只消费 ResourceService 当前 `world_key` 下的 `tree` 簇；原木语义来自 runtime refresh 的 `semantic_roles` / tag 事实，不按方块名后缀猜测；不可挖 / 不可达 / 非原木 / 空簇 / 无合法目标输出 rejected 结构 |
+| 可挖语义 | `is_diggable` 表示方块 / 工具 / 世界规则下可挖，不包含 Mineflayer `canDigBlock` 的当前 5.1 格手边距离限制 |
+| 树木选择 | 按 accepted 树木簇的推荐目标距离升序累计 `log_count`，满足用户需求即返回；缓存不足时复用 16→32→64 阶梯刷新 |
 | 资源 key 集合 | Phase 1 锁定 `tree`、`ore` 两个 key，并行刷新 |
+| 资源 key 解析 | `tree` 是 TS Core 公共资源键；runtime/transport 负责把它解析到 Mineflayer / minecraft-data 的原木 tag 事实，refresh 返回仍保留 `resource_keys=["tree"]` |
 | 登录初扫 | Bot 登录瞬间以登录位置为初始圆心，异步触发一次半径 16 扫描；不阻塞登录流程 |
 | 对话等待 | ConversationWorker 在 plan 路径读取 resource_context 时，必须 `await` 当前 in-flight 刷新 Promise（若有）再读缓存 |
 

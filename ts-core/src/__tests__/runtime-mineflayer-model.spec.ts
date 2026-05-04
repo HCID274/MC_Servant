@@ -157,6 +157,27 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     );
   }
 
+  canDigBlock(block: MineflayerBlockHandle): boolean {
+    const botPosition = this.entity.position;
+    const blockPosition = block.position;
+
+    if (botPosition === undefined || blockPosition === undefined || block.diggable === false) {
+      return false;
+    }
+
+    return (
+      Math.hypot(
+        blockPosition.x - botPosition.x,
+        blockPosition.y + 0.5 - (botPosition.y + 1.65),
+        blockPosition.z - botPosition.z,
+      ) <= 5.1
+    );
+  }
+
+  canSeeBlock(block: MineflayerBlockHandle): boolean {
+    return block.name !== "blocked_log";
+  }
+
   nearestEntity(
     matcher: (entity: MineflayerEntityHandle) => boolean,
   ): MineflayerEntityHandle | null {
@@ -745,7 +766,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await transport.disconnect("test shutdown");
   });
 
-  it("资源刷新不得把 tree（树木类） 硬编码映射到其他 tag（标签）", async () => {
+  it("资源刷新应把 tree（树木类） 公共键解析到 logs（原木） tag（标签）事实且不把当前挖掘距离混入可挖事实", async () => {
     const createdBots: FakeMineflayerBot[] = [];
     const transport = createMineflayerRuntimeTransport(
       createMineflayerTransportDescriptor({
@@ -763,8 +784,9 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
           bot.resourceBlocks.push({
             name: "sample_runtime_block",
             type: 7,
-            position: { x: 1, y: 64, z: 0 },
+            position: { x: 8, y: 64, z: 0 },
             tags: ["logs"],
+            diggable: true,
           });
           createdBots.push(bot);
 
@@ -779,9 +801,19 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await connectPromise;
 
     await expect(transport.refreshAroundBot("tree", 16)).resolves.toMatchObject({
-      status: "unsupported_resource_key",
-      blocks: [],
-      diagnostics: ["unsupported_resource_key:tree"],
+      status: "found",
+      resource_key: "tree",
+      blocks: [
+        {
+          block_name: "sample_runtime_block",
+          resource_keys: ["tree"],
+          resource_tags: ["logs"],
+          semantic_roles: ["cut_tree_log"],
+          is_diggable: true,
+          is_reachable: true,
+          target_diagnostics: [],
+        },
+      ],
     });
 
     await transport.disconnect("test shutdown");

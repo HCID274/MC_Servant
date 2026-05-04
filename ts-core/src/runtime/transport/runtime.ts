@@ -12,6 +12,7 @@ import type {
 } from "../../core-ports/observation.js";
 import type {
   ResourceRefreshRadius,
+  RuntimeResourceBlockSemanticRole,
   RuntimeResourceBlockSummary,
   RuntimeResourceRefreshResult,
 } from "../../core-ports/runtime.js";
@@ -369,6 +370,7 @@ async function executeMineflayerResourceRefresh(input: {
     .filter((block) => blockMatchesResourceKey(input.bot, block, input.resourceKey))
     .map((block) =>
       createRuntimeResourceBlockSummary({
+        bot: input.bot,
         block,
         origin,
         resourceKey: input.resourceKey,
@@ -458,11 +460,15 @@ function createRuntimeResourceRefreshResult(input: {
 }
 
 function createRuntimeResourceBlockSummary(input: {
+  readonly bot: MineflayerBotHandle;
   readonly block: MineflayerBlockHandle;
   readonly origin: { readonly x: number; readonly y: number; readonly z: number };
   readonly resourceKey: string;
 }): RuntimeResourceBlockSummary {
   const position = input.block.position ?? input.origin;
+  const targetDiagnostics: string[] = [];
+  const isDiggable = canDigRuntimeResourceBlock(input.block, targetDiagnostics);
+  const isReachable = canReachRuntimeResourceBlock(input.bot, input.block, targetDiagnostics);
 
   return cloneReadonlyValue({
     block_name: input.block.name ?? "unknown",
@@ -477,6 +483,11 @@ function createRuntimeResourceBlockSummary(input: {
       position.z - input.origin.z,
     ),
     resource_keys: [input.resourceKey],
+    resource_tags: createRuntimeResourceTags(input.bot.registry, input.block),
+    semantic_roles: createRuntimeResourceSemanticRoles(input.bot.registry, input.block),
+    is_diggable: isDiggable,
+    is_reachable: isReachable,
+    target_diagnostics: targetDiagnostics,
   });
 }
 
@@ -763,8 +774,11 @@ function blockMatchesResourceKey(
 ): boolean {
   const blockName = block.name ?? "";
   const normalizedResourceKey = stripMinecraftNamespace(resourceKey);
+  const lookupNames = createResourceKeyLookupNames(resourceKey);
 
-  if (blockName === resourceKey || blockName === normalizedResourceKey) {
+  if (
+    lookupNames.some((name) => blockName === name || blockName === stripMinecraftNamespace(name))
+  ) {
     return true;
   }
 
@@ -786,6 +800,72 @@ function blockHasRuntimeResourceTag(
   const registryTagValues = getRegistryResourceTagIds(registry, resourceKey);
 
   return registryTagValues.some((value) => value === block.type || value === block.name);
+}
+
+function createRuntimeResourceSemanticRoles(
+  registry: unknown,
+  block: MineflayerBlockHandle,
+): readonly RuntimeResourceBlockSemanticRole[] {
+  return blockHasRuntimeResourceTag(registry, block, "logs")
+    ? Object.freeze(["cut_tree_log"] as const)
+    : Object.freeze([]);
+}
+
+function canDigRuntimeResourceBlock(block: MineflayerBlockHandle, diagnostics: string[]): boolean {
+  if (block.diggable === false) {
+    diagnostics.push("not_diggable");
+    return false;
+  }
+
+  if (block.diggable === true) {
+    return true;
+  }
+
+  diagnostics.push("diggable_fact_unavailable");
+  return false;
+}
+
+function canReachRuntimeResourceBlock(
+  bot: MineflayerBotHandle,
+  block: MineflayerBlockHandle,
+  diagnostics: string[],
+): boolean {
+  if (typeof bot.canSeeBlock === "function") {
+    const canSee = bot.canSeeBlock(block);
+
+    if (!canSee) {
+      diagnostics.push("can_see_block_false");
+    }
+
+    return canSee;
+  }
+
+  diagnostics.push("reachability_fact_unavailable");
+  return false;
+}
+
+function createRuntimeResourceTags(
+  registry: unknown,
+  block: MineflayerBlockHandle,
+): readonly string[] {
+  const tags = new Set(readBlockDirectTags(block.tags));
+  const registryRecord = asRecord(registry);
+  const blockTags =
+    asRecord(registryRecord?.blockTags) ??
+    asRecord(registryRecord?.blocksByTag) ??
+    asRecord(asRecord(registryRecord?.tags)?.blocks);
+
+  if (blockTags !== undefined) {
+    for (const [tagName, value] of Object.entries(blockTags)) {
+      const entries = normalizeRegistryTagValue(value);
+
+      if (entries.some((entry) => entry === block.type || entry === block.name)) {
+        tags.add(tagName);
+      }
+    }
+  }
+
+  return Object.freeze([...tags].sort());
 }
 
 function registryCanResolveResourceKey(registry: unknown, resourceKey: string): boolean {
@@ -846,7 +926,22 @@ function createResourceKeyLookupNames(resourceKey: string): readonly string[] {
     names.add(`minecraft:${resourceKey}`);
   }
 
+  for (const alias of readRuntimeResourceKeyAliases(resourceKey)) {
+    names.add(alias);
+    names.add(stripMinecraftNamespace(alias));
+
+    if (!alias.includes(":")) {
+      names.add(`minecraft:${alias}`);
+    }
+  }
+
   return Object.freeze([...names]);
+}
+
+function readRuntimeResourceKeyAliases(resourceKey: string): readonly string[] {
+  const normalizedResourceKey = stripMinecraftNamespace(resourceKey);
+
+  return normalizedResourceKey === "tree" ? Object.freeze(["logs"] as const) : Object.freeze([]);
 }
 
 function normalizeRegistryTagValue(value: unknown): readonly (number | string)[] {

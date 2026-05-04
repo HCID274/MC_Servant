@@ -33,9 +33,22 @@ export interface RuntimeResourceBlockSummary {
   readonly distance: number;
   /** 匹配到的资源键。 */
   readonly resource_keys: readonly string[];
+  /** runtime（运行时） 从 Mineflayer / minecraft-data 提供的方块 tag（标签）语义。 */
+  readonly resource_tags?: readonly string[];
+  /** runtime（运行时） 判定出的资源语义角色。 */
+  readonly semantic_roles?: readonly RuntimeResourceBlockSemanticRole[];
+  /** 方块 / 工具 / 世界规则下是否可挖；不得包含 Bot（机器人） 当前手边距离限制。 */
+  readonly is_diggable?: boolean;
+  /** 当前只读候选点能力判定下是否可达。 */
+  readonly is_reachable?: boolean;
+  /** 候选目标诊断。 */
+  readonly target_diagnostics?: readonly string[];
   /** 可选资源簇标识。 */
   readonly cluster_key?: string;
 }
+
+/** runtime（运行时） 提供给 world-model（世界模型） 的资源语义角色。 */
+export type RuntimeResourceBlockSemanticRole = "cut_tree_log";
 
 /** runtime（运行时） 只读资源刷新结果。 */
 export interface RuntimeResourceRefreshResult {

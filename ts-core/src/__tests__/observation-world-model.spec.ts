@@ -776,6 +776,247 @@ describe("observation 与 world-model 契约", () => {
     expect(resourceService.query("tree").status).toBe("stale_snapshot");
   });
 
+  it("ResourceService（世界感知资源服务） 应把原木资源簇分类为 cutTree（砍树） 可用树木簇", async () => {
+    const resourceService = createResourceService({
+      now: () => 1_712_000_500,
+      worldKeyPort: {
+        getCurrentWorldKey: () => "multiworld:resource",
+      },
+      refreshPort: {
+        async refreshAroundBot(resourceKey, radius) {
+          return {
+            resource_key: resourceKey,
+            radius,
+            status: "found",
+            world_key: "multiworld:resource",
+            snapshot_version: "tree-classify",
+            scanned_at: 1_712_000_500,
+            origin: { x: 0, y: 64, z: 0 },
+            blocks: [
+              {
+                block_name: "modded_trunk",
+                position: { x: 4, y: 64, z: 0 },
+                distance: 4,
+                resource_keys: ["tree"],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+              {
+                block_name: "modded_trunk",
+                position: { x: 4, y: 65, z: 0 },
+                distance: 4.2,
+                resource_keys: ["tree"],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+              {
+                block_name: "oak_leaves",
+                position: { x: 4, y: 67, z: 0 },
+                distance: 5,
+                resource_keys: ["tree"],
+                semantic_roles: [],
+                is_diggable: true,
+                is_reachable: true,
+              },
+            ],
+            diagnostics: [],
+          };
+        },
+      },
+    });
+
+    await resourceService.refresh("tree", 16);
+    const classification = resourceService.classifyTreeClusters();
+
+    expect(classification).toMatchObject({
+      status: "found",
+      world_key: "multiworld:resource",
+      snapshot_version: "tree-classify",
+    });
+    expect(classification.accepted).toHaveLength(1);
+    expect(classification.accepted[0]).toMatchObject({
+      world_key: "multiworld:resource",
+      log_block_name: "modded_trunk",
+      log_count: 2,
+      reason: "reachable_diggable_cut_tree_log",
+      recommended_target: {
+        block_name: "modded_trunk",
+        position: { x: 4, y: 64, z: 0 },
+      },
+    });
+    expect(classification.accepted[0]?.logs).toEqual([
+      { x: 4, y: 64, z: 0 },
+      { x: 4, y: 65, z: 0 },
+    ]);
+    expect(classification.rejected).toEqual([
+      expect.objectContaining({
+        block_name: "oak_leaves",
+        candidate_count: 1,
+        reason: "not_cut_tree_log",
+      }),
+    ]);
+    expect(Object.isFrozen(classification.accepted[0]?.recommended_target.position)).toBe(true);
+  });
+
+  it("ResourceService（世界感知资源服务） 应结构化拒绝不可达或不可挖的树木候选", () => {
+    const resourceService = createResourceService({
+      worldKeyPort: {
+        getCurrentWorldKey: () => "multiworld:resource",
+      },
+      initialClusters: [
+        {
+          resource_key: "tree",
+          cluster_id: "tree-missing-target",
+          snapshot_version: "tree-invalid",
+          world_key: "multiworld:resource",
+          block_name: "oak_log",
+          refresh_radius: 16,
+          refreshed_at: 1_712_000_600,
+          centroid: { x: 8, y: 64, z: 8 },
+          blocks: [{ x: 8, y: 64, z: 8 }],
+          block_count: 1,
+          nearest_distance: 8,
+          average_distance: 8,
+          recommended_candidate: {
+            block_name: "oak_log",
+            position: { x: 8, y: 64, z: 8 },
+            distance: 8,
+            score: 10,
+            is_exposed: false,
+            semantic_roles: ["cut_tree_log"],
+            is_diggable: true,
+            is_reachable: false,
+            target_diagnostics: ["can_see_block_false"],
+          },
+          candidates: [
+            {
+              block_name: "oak_log",
+              position: { x: 8, y: 64, z: 8 },
+              distance: 8,
+              score: 10,
+              is_exposed: false,
+              semantic_roles: ["cut_tree_log"],
+              is_diggable: true,
+              is_reachable: false,
+              target_diagnostics: ["can_see_block_false"],
+            },
+          ],
+        },
+      ],
+    });
+    const classification = resourceService.classifyTreeClusters();
+
+    expect(classification.accepted).toEqual([]);
+    expect(classification.rejected).toEqual([
+      expect.objectContaining({
+        cluster_id: "tree-missing-target",
+        block_name: "oak_log",
+        candidate_count: 1,
+        reason: "unreachable",
+      }),
+    ]);
+  });
+
+  it("ResourceService（世界感知资源服务） 应按当前世界选择最近树木簇并在不足时阶梯刷新", async () => {
+    let currentWorldKey = "multiworld:resource";
+    const calls: Array<{ resourceKey: string; radius: number; worldKey: string }> = [];
+    const resourceService = createResourceService({
+      now: () => 1_712_000_700,
+      worldKeyPort: {
+        getCurrentWorldKey: () => currentWorldKey,
+      },
+      refreshPort: {
+        async refreshAroundBot(resourceKey, radius) {
+          calls.push({ resourceKey, radius, worldKey: currentWorldKey });
+
+          return {
+            resource_key: resourceKey,
+            radius,
+            status: radius === 16 ? "cache_miss" : "found",
+            world_key: currentWorldKey,
+            snapshot_version: `${currentWorldKey}:tree-select:${radius}`,
+            scanned_at: 1_712_000_700 + radius,
+            origin: { x: 0, y: 64, z: 0 },
+            blocks:
+              radius === 16
+                ? []
+                : [
+                    {
+                      block_name: "oak_log",
+                      position: { x: 8, y: 64, z: 0 },
+                      distance: 8,
+                      resource_keys: [resourceKey],
+                      semantic_roles: ["cut_tree_log"],
+                      is_diggable: true,
+                      is_reachable: true,
+                    },
+                    {
+                      block_name: "oak_log",
+                      position: { x: 8, y: 65, z: 0 },
+                      distance: 8.5,
+                      resource_keys: [resourceKey],
+                      semantic_roles: ["cut_tree_log"],
+                      is_diggable: true,
+                      is_reachable: true,
+                    },
+                    ...(radius === 64
+                      ? [
+                          {
+                            block_name: "birch_log",
+                            position: { x: 4, y: 64, z: 0 },
+                            distance: 4,
+                            resource_keys: [resourceKey],
+                            semantic_roles: ["cut_tree_log"],
+                            is_diggable: true,
+                            is_reachable: true,
+                          },
+                          {
+                            block_name: "birch_log",
+                            position: { x: 4, y: 65, z: 0 },
+                            distance: 4.5,
+                            resource_keys: [resourceKey],
+                            semantic_roles: ["cut_tree_log"],
+                            is_diggable: true,
+                            is_reachable: true,
+                          },
+                        ]
+                      : []),
+                  ],
+            diagnostics: radius === 16 ? ["cache_miss"] : [],
+          };
+        },
+      },
+    });
+
+    const selected = await resourceService.selectTreeClusters(3);
+
+    expect(calls).toEqual([
+      { resourceKey: "tree", radius: 16, worldKey: "multiworld:resource" },
+      { resourceKey: "tree", radius: 32, worldKey: "multiworld:resource" },
+      { resourceKey: "tree", radius: 64, worldKey: "multiworld:resource" },
+    ]);
+    expect(selected).toMatchObject({
+      status: "selected",
+      world_key: "multiworld:resource",
+      required_log_count: 3,
+      selected_log_count: 4,
+    });
+    expect(selected.selected.map((cluster) => cluster.log_block_name)).toEqual([
+      "birch_log",
+      "oak_log",
+    ]);
+    expect(selected.refresh_attempts.map((attempt) => attempt.radius)).toEqual([16, 32, 64]);
+
+    currentWorldKey = "minecraft:the_nether";
+    expect(resourceService.classifyTreeClusters()).toMatchObject({
+      status: "cache_miss",
+      world_key: "minecraft:the_nether",
+      accepted: [],
+    });
+  });
+
   it("ResourceService（世界感知资源服务） 应把 refreshPort（刷新端口） 异常转换为 runtime_unavailable（运行时不可用）", async () => {
     const resourceService = createResourceService({
       worldKeyPort: {

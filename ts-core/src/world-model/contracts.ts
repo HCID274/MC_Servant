@@ -7,7 +7,11 @@
  * 4. 决策支持：定义结果结构，为 Bot 决定去哪里采集资源提供结构化参考。
  */
 
-import type { ResourceRefreshRadius, RuntimeResourceRefreshResult } from "../core-ports/runtime.js";
+import type {
+  ResourceRefreshRadius,
+  RuntimeResourceBlockSemanticRole,
+  RuntimeResourceRefreshResult,
+} from "../core-ports/runtime.js";
 import type { SnapshotPosition } from "../observation/contracts.js";
 
 /** 资源画像，用于声明某类资源的查询参数边界。 */
@@ -36,6 +40,14 @@ export interface ResourceBlockCandidate {
   readonly score: number;
   /** 是否可直接接触。 */
   readonly is_exposed: boolean;
+  /** runtime（运行时） 判定出的资源语义角色。 */
+  readonly semantic_roles: readonly RuntimeResourceBlockSemanticRole[];
+  /** 当前工具 / 世界状态下是否可挖。 */
+  readonly is_diggable: boolean;
+  /** 当前只读候选能力判定下是否可达。 */
+  readonly is_reachable: boolean;
+  /** 候选目标诊断。 */
+  readonly target_diagnostics: readonly string[];
 }
 
 /** 资源簇摘要，用于表达同类资源的局部聚类结果。 */
@@ -187,6 +199,95 @@ export interface ResourceServiceCacheUpdateResult {
   readonly diagnostics: readonly string[];
 }
 
+/** 树木资源簇拒绝原因。 */
+export type TreeClusterRejectionReason =
+  | "not_cut_tree_log"
+  | "empty_log_cluster"
+  | "missing_recommended_target"
+  | "not_diggable"
+  | "unreachable";
+
+/** 可用于 cutTree（砍树） 的树木资源簇。 */
+export interface AcceptedTreeCluster {
+  /** 来源资源簇标识。 */
+  readonly cluster_id: string;
+  /** 当前世界 / 维度键。 */
+  readonly world_key: string | null;
+  /** 生成该摘要时的快照版本。 */
+  readonly snapshot_version: string;
+  /** 具体原木方块名。 */
+  readonly log_block_name: string;
+  /** 簇内原木坐标。 */
+  readonly logs: readonly Readonly<SnapshotPosition>[];
+  /** 预估原木数量。 */
+  readonly log_count: number;
+  /** 推荐挖掘目标。 */
+  readonly recommended_target: ResourceBlockCandidate;
+  /** 判定理由。 */
+  readonly reason: string;
+}
+
+/** 不可用于 cutTree（砍树） 的树木资源簇。 */
+export interface RejectedTreeCluster {
+  /** 来源资源簇标识。 */
+  readonly cluster_id: string;
+  /** 当前世界 / 维度键。 */
+  readonly world_key: string | null;
+  /** 生成该摘要时的快照版本。 */
+  readonly snapshot_version: string;
+  /** 具体方块名。 */
+  readonly block_name: string;
+  /** 候选数量。 */
+  readonly candidate_count: number;
+  /** 拒绝原因。 */
+  readonly reason: TreeClusterRejectionReason;
+}
+
+/** ResourceService（世界感知资源服务） 树木分类结果。 */
+export interface TreeClusterClassificationResult {
+  /** 查询状态。 */
+  readonly status: ResourceClusterQueryStatus;
+  /** 当前世界 / 维度键。 */
+  readonly world_key: string | null;
+  /** 查询对应的快照版本。 */
+  readonly snapshot_version: string | null;
+  /** 可用于 cutTree（砍树） 的树木簇。 */
+  readonly accepted: readonly AcceptedTreeCluster[];
+  /** 被分类器拒绝的树木资源簇。 */
+  readonly rejected: readonly RejectedTreeCluster[];
+  /** 可读诊断。 */
+  readonly diagnostics: readonly string[];
+}
+
+/** cutTree（砍树） 目标选择状态。 */
+export type TreeClusterSelectionStatus =
+  | "selected"
+  | "insufficient"
+  | "cache_miss"
+  | "runtime_unavailable"
+  | "unsupported_resource_key"
+  | "invalid_request";
+
+/** ResourceService（世界感知资源服务） cutTree（砍树） 目标选择结果。 */
+export interface TreeClusterSelectionResult {
+  /** 选择状态。 */
+  readonly status: TreeClusterSelectionStatus;
+  /** 当前世界 / 维度键。 */
+  readonly world_key: string | null;
+  /** 用户需求原木数量。 */
+  readonly required_log_count: number;
+  /** 已选择的预估原木数量。 */
+  readonly selected_log_count: number;
+  /** 距离优先选出的树木簇。 */
+  readonly selected: readonly AcceptedTreeCluster[];
+  /** 分类阶段拒绝的树木资源簇。 */
+  readonly rejected: readonly RejectedTreeCluster[];
+  /** 因缓存不足触发的刷新记录。 */
+  readonly refresh_attempts: readonly ResourceServiceRefreshResult[];
+  /** 可读诊断。 */
+  readonly diagnostics: readonly string[];
+}
+
 /** ResourceService（世界感知资源服务） 运行时刷新端口。 */
 export interface ResourceServiceRefreshPort {
   /** 围绕 Bot（机器人） 执行只读资源刷新。 */
@@ -213,6 +314,10 @@ export interface ResourceServiceBoundary {
   ): Promise<ResourceServiceRefreshResult>;
   /** 应用方块变化，更新当前世界内的资源簇缓存。 */
   applyBlockChanges(changes: readonly ResourceCacheBlockChange[]): ResourceServiceCacheUpdateResult;
+  /** 分类当前世界内可用于 cutTree（砍树） 的树木簇。 */
+  classifyTreeClusters(): TreeClusterClassificationResult;
+  /** 按需求数量选择最近的 cutTree（砍树） 树木簇，缓存不足时按半径阶梯刷新。 */
+  selectTreeClusters(requiredLogCount: number): Promise<TreeClusterSelectionResult>;
   /** 读取给 planner（规划器） 使用的短资源摘要。 */
   createPlannerSummary(resourceKeys: readonly string[], maxClustersPerKey?: number): string;
 }

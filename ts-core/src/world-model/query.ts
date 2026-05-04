@@ -15,8 +15,10 @@ import type {
 } from "../core-ports/runtime.js";
 import type { SnapshotPosition } from "../observation/contracts.js";
 import type {
+  AcceptedTreeCluster,
   BestResourceClusterResult,
   CandidateBlockSelectionResult,
+  RejectedTreeCluster,
   ResourceBlockCandidate,
   ResourceCacheBlockChange,
   ResourceClusterQueryResult,
@@ -27,6 +29,9 @@ import type {
   ResourceServiceRefreshPort,
   ResourceServiceRefreshResult,
   ResourceWorldKeyPort,
+  TreeClusterClassificationResult,
+  TreeClusterSelectionResult,
+  TreeClusterSelectionStatus,
   WorldModelQueryBoundary,
   WorldModelQueryContext,
   WorldModelRefreshBoundary,
@@ -81,6 +86,10 @@ function cloneCandidate(candidate: ResourceBlockCandidate): ResourceBlockCandida
   return Object.freeze({
     ...candidate,
     position: freezePosition(candidate.position),
+    semantic_roles: freezeReadonlyArray(candidate.semantic_roles ?? []),
+    is_diggable: candidate.is_diggable ?? false,
+    is_reachable: candidate.is_reachable ?? false,
+    target_diagnostics: freezeReadonlyArray(candidate.target_diagnostics ?? []),
   });
 }
 
@@ -132,6 +141,53 @@ function cloneResourceServiceCacheUpdateResult(
   return Object.freeze({
     ...result,
     resource_keys: freezeReadonlyArray(result.resource_keys),
+    diagnostics: freezeReadonlyArray(result.diagnostics),
+  });
+}
+
+function cloneAcceptedTreeCluster(cluster: AcceptedTreeCluster): AcceptedTreeCluster {
+  return Object.freeze({
+    ...cluster,
+    logs: freezeReadonlyArray(cluster.logs.map((position) => freezePosition(position))),
+    recommended_target: cloneCandidate(cluster.recommended_target),
+  });
+}
+
+function cloneRejectedTreeCluster(cluster: RejectedTreeCluster): RejectedTreeCluster {
+  return Object.freeze({
+    ...cluster,
+  });
+}
+
+function cloneTreeClusterClassificationResult(
+  result: TreeClusterClassificationResult,
+): TreeClusterClassificationResult {
+  return Object.freeze({
+    ...result,
+    accepted: freezeReadonlyArray(
+      result.accepted.map((cluster) => cloneAcceptedTreeCluster(cluster)),
+    ),
+    rejected: freezeReadonlyArray(
+      result.rejected.map((cluster) => cloneRejectedTreeCluster(cluster)),
+    ),
+    diagnostics: freezeReadonlyArray(result.diagnostics),
+  });
+}
+
+function cloneTreeClusterSelectionResult(
+  result: TreeClusterSelectionResult,
+): TreeClusterSelectionResult {
+  return Object.freeze({
+    ...result,
+    selected: freezeReadonlyArray(
+      result.selected.map((cluster) => cloneAcceptedTreeCluster(cluster)),
+    ),
+    rejected: freezeReadonlyArray(
+      result.rejected.map((cluster) => cloneRejectedTreeCluster(cluster)),
+    ),
+    refresh_attempts: freezeReadonlyArray(
+      result.refresh_attempts.map((attempt) => cloneResourceServiceRefreshResult(attempt)),
+    ),
     diagnostics: freezeReadonlyArray(result.diagnostics),
   });
 }
@@ -274,7 +330,11 @@ function createResourceCandidate(block: RuntimeResourceBlockSummary): ResourceBl
     position: freezePosition(block.position),
     distance: block.distance,
     score: Math.max(1, 64 - block.distance),
-    is_exposed: true,
+    is_exposed: block.is_reachable ?? false,
+    semantic_roles: freezeReadonlyArray(block.semantic_roles ?? []),
+    is_diggable: block.is_diggable ?? false,
+    is_reachable: block.is_reachable ?? false,
+    target_diagnostics: freezeReadonlyArray(block.target_diagnostics ?? []),
   });
 }
 
@@ -382,6 +442,148 @@ function selectRecommendedResourceCandidate(
   candidates: readonly ResourceBlockCandidate[],
 ): ResourceBlockCandidate | null {
   return sortResourceCandidatesForDig(candidates)[0] ?? null;
+}
+
+function isCutTreeLogCandidate(candidate: ResourceBlockCandidate): boolean {
+  return candidate.semantic_roles.includes("cut_tree_log");
+}
+
+function isLegalCutTreeCandidate(candidate: ResourceBlockCandidate): boolean {
+  return (
+    isCutTreeLogCandidate(candidate) &&
+    candidate.is_diggable === true &&
+    candidate.is_reachable === true
+  );
+}
+
+function sortAcceptedTreeClusters(
+  clusters: readonly AcceptedTreeCluster[],
+): readonly AcceptedTreeCluster[] {
+  return freezeReadonlyArray(
+    [...clusters].sort((left, right) => {
+      if (left.recommended_target.distance !== right.recommended_target.distance) {
+        return left.recommended_target.distance - right.recommended_target.distance;
+      }
+
+      if (left.log_count !== right.log_count) {
+        return right.log_count - left.log_count;
+      }
+
+      return left.cluster_id.localeCompare(right.cluster_id);
+    }),
+  );
+}
+
+function classifyTreeResourceClusters(input: {
+  readonly query: ResourceClusterQueryResult;
+}): TreeClusterClassificationResult {
+  const accepted: AcceptedTreeCluster[] = [];
+  const rejected: RejectedTreeCluster[] = [];
+
+  for (const cluster of input.query.clusters) {
+    const logCandidates = cluster.candidates.filter((candidate) =>
+      isCutTreeLogCandidate(candidate),
+    );
+
+    if (logCandidates.length === 0) {
+      rejected.push(
+        Object.freeze({
+          cluster_id: cluster.cluster_id,
+          world_key: cluster.world_key ?? input.query.world_key,
+          snapshot_version: cluster.snapshot_version,
+          block_name: cluster.block_name,
+          candidate_count: cluster.candidates.length,
+          reason: "not_cut_tree_log",
+        }),
+      );
+      continue;
+    }
+
+    if (cluster.block_count <= 0 || logCandidates.length === 0) {
+      rejected.push(
+        Object.freeze({
+          cluster_id: cluster.cluster_id,
+          world_key: cluster.world_key ?? input.query.world_key,
+          snapshot_version: cluster.snapshot_version,
+          block_name: cluster.block_name,
+          candidate_count: cluster.candidates.length,
+          reason: "empty_log_cluster",
+        }),
+      );
+      continue;
+    }
+
+    if (!logCandidates.some((candidate) => candidate.is_diggable)) {
+      rejected.push(
+        Object.freeze({
+          cluster_id: cluster.cluster_id,
+          world_key: cluster.world_key ?? input.query.world_key,
+          snapshot_version: cluster.snapshot_version,
+          block_name: cluster.block_name,
+          candidate_count: cluster.candidates.length,
+          reason: "not_diggable",
+        }),
+      );
+      continue;
+    }
+
+    if (!logCandidates.some((candidate) => candidate.is_reachable)) {
+      rejected.push(
+        Object.freeze({
+          cluster_id: cluster.cluster_id,
+          world_key: cluster.world_key ?? input.query.world_key,
+          snapshot_version: cluster.snapshot_version,
+          block_name: cluster.block_name,
+          candidate_count: cluster.candidates.length,
+          reason: "unreachable",
+        }),
+      );
+      continue;
+    }
+
+    const recommendedTarget =
+      sortResourceCandidatesForDig(
+        logCandidates.filter((candidate) => isLegalCutTreeCandidate(candidate)),
+      )[0] ?? null;
+
+    if (recommendedTarget === null) {
+      rejected.push(
+        Object.freeze({
+          cluster_id: cluster.cluster_id,
+          world_key: cluster.world_key ?? input.query.world_key,
+          snapshot_version: cluster.snapshot_version,
+          block_name: cluster.block_name,
+          candidate_count: cluster.candidates.length,
+          reason: "missing_recommended_target",
+        }),
+      );
+      continue;
+    }
+
+    accepted.push(
+      Object.freeze({
+        cluster_id: cluster.cluster_id,
+        world_key: cluster.world_key ?? input.query.world_key,
+        snapshot_version: cluster.snapshot_version,
+        log_block_name: cluster.block_name,
+        logs: freezeReadonlyArray(
+          logCandidates.map((candidate) => freezePosition(candidate.position)),
+        ),
+        log_count: logCandidates.length,
+        recommended_target: cloneCandidate(recommendedTarget),
+        reason: "reachable_diggable_cut_tree_log",
+      }),
+    );
+  }
+
+  return cloneTreeClusterClassificationResult({
+    status: input.query.status,
+    world_key: input.query.world_key,
+    snapshot_version: input.query.snapshot_version,
+    accepted: sortAcceptedTreeClusters(accepted),
+    rejected: freezeReadonlyArray(rejected),
+    diagnostics: input.query.diagnostics,
+  });
 }
 
 function createResourceClusterFromCandidates(input: {
@@ -658,81 +860,126 @@ export function createResourceService(
     });
   };
 
-  return Object.freeze({
-    query,
-    async refresh(
-      resourceKey: string,
-      radius: ResourceRefreshRadius,
-    ): Promise<ResourceServiceRefreshResult> {
-      const currentWorldKey = readWorldKey();
+  const refreshResource = async (
+    resourceKey: string,
+    radius: ResourceRefreshRadius,
+  ): Promise<ResourceServiceRefreshResult> => {
+    const currentWorldKey = readWorldKey();
 
-      if (!isResourceRefreshRadius(radius)) {
-        return cloneResourceServiceRefreshResult({
-          resource_key: resourceKey,
-          radius: null,
-          status: "invalid_radius",
-          world_key: currentWorldKey,
-          snapshot_version: null,
-          refreshed_at: null,
-          clusters: [],
-          diagnostics: [`invalid_radius:${String(radius)}`],
-        });
-      }
+    if (!isResourceRefreshRadius(radius)) {
+      return cloneResourceServiceRefreshResult({
+        resource_key: resourceKey,
+        radius: null,
+        status: "invalid_radius",
+        world_key: currentWorldKey,
+        snapshot_version: null,
+        refreshed_at: null,
+        clusters: [],
+        diagnostics: [`invalid_radius:${String(radius)}`],
+      });
+    }
 
-      if (input.refreshPort === undefined) {
-        return cloneResourceServiceRefreshResult({
-          resource_key: resourceKey,
-          radius,
-          status: "runtime_unavailable",
-          world_key: currentWorldKey,
-          snapshot_version: null,
-          refreshed_at: null,
-          clusters: [],
-          diagnostics: ["runtime_unavailable"],
-        });
-      }
-
-      let refresh: RuntimeResourceRefreshResult;
-
-      try {
-        refresh = await input.refreshPort.refreshAroundBot(resourceKey, radius);
-      } catch (error) {
-        return cloneResourceServiceRefreshResult({
-          resource_key: resourceKey,
-          radius,
-          status: "runtime_unavailable",
-          world_key: currentWorldKey,
-          snapshot_version: null,
-          refreshed_at: null,
-          clusters: [],
-          diagnostics: ["runtime_unavailable", `refresh_port_failed:${formatUnknownError(error)}`],
-        });
-      }
-
-      const clusters = createResourceClustersFromRuntimeRefresh(refresh);
-      const result: ResourceServiceRefreshResult = {
+    if (input.refreshPort === undefined) {
+      return cloneResourceServiceRefreshResult({
         resource_key: resourceKey,
         radius,
-        status: refresh.status,
-        world_key: refresh.world_key,
-        snapshot_version: refresh.snapshot_version,
-        refreshed_at: refresh.scanned_at,
-        clusters,
-        diagnostics: refresh.diagnostics,
-      };
-
-      cache.set(createResourceCacheKey(refresh.world_key, resourceKey), {
-        resource_key: resourceKey,
-        world_key: refresh.world_key,
-        snapshot_version: refresh.snapshot_version,
-        refresh_radius: radius,
-        refreshed_at: refresh.scanned_at,
-        clusters,
-        diagnostics: refresh.diagnostics,
+        status: "runtime_unavailable",
+        world_key: currentWorldKey,
+        snapshot_version: null,
+        refreshed_at: null,
+        clusters: [],
+        diagnostics: ["runtime_unavailable"],
       });
+    }
 
-      return cloneResourceServiceRefreshResult(result);
-    },
+    let refresh: RuntimeResourceRefreshResult;
+
+    try {
+      refresh = await input.refreshPort.refreshAroundBot(resourceKey, radius);
+    } catch (error) {
+      return cloneResourceServiceRefreshResult({
+        resource_key: resourceKey,
+        radius,
+        status: "runtime_unavailable",
+        world_key: currentWorldKey,
+        snapshot_version: null,
+        refreshed_at: null,
+        clusters: [],
+        diagnostics: ["runtime_unavailable", `refresh_port_failed:${formatUnknownError(error)}`],
+      });
+    }
+
+    const clusters = createResourceClustersFromRuntimeRefresh(refresh);
+    const result: ResourceServiceRefreshResult = {
+      resource_key: resourceKey,
+      radius,
+      status: refresh.status,
+      world_key: refresh.world_key,
+      snapshot_version: refresh.snapshot_version,
+      refreshed_at: refresh.scanned_at,
+      clusters,
+      diagnostics: refresh.diagnostics,
+    };
+
+    cache.set(createResourceCacheKey(refresh.world_key, resourceKey), {
+      resource_key: resourceKey,
+      world_key: refresh.world_key,
+      snapshot_version: refresh.snapshot_version,
+      refresh_radius: radius,
+      refreshed_at: refresh.scanned_at,
+      clusters,
+      diagnostics: refresh.diagnostics,
+    });
+
+    return cloneResourceServiceRefreshResult(result);
+  };
+
+  const classifyTrees = () => classifyTreeResourceClusters({ query: query("tree") });
+
+  const selectAcceptedTrees = (
+    accepted: readonly AcceptedTreeCluster[],
+    requiredLogCount: number,
+  ): readonly AcceptedTreeCluster[] => {
+    let selectedLogCount = 0;
+    const selected: AcceptedTreeCluster[] = [];
+
+    for (const cluster of accepted) {
+      if (selectedLogCount >= requiredLogCount) {
+        break;
+      }
+
+      selected.push(cluster);
+      selectedLogCount += cluster.log_count;
+    }
+
+    return freezeReadonlyArray(selected);
+  };
+
+  const createTreeSelectionResult = (input: {
+    readonly status: TreeClusterSelectionStatus;
+    readonly classification: TreeClusterClassificationResult;
+    readonly requiredLogCount: number;
+    readonly selected: readonly AcceptedTreeCluster[];
+    readonly refreshAttempts: readonly ResourceServiceRefreshResult[];
+    readonly diagnostics: readonly string[];
+  }): TreeClusterSelectionResult => {
+    const selectedLogCount = input.selected.reduce((sum, cluster) => sum + cluster.log_count, 0);
+
+    return cloneTreeClusterSelectionResult({
+      status: input.status,
+      world_key: input.classification.world_key,
+      required_log_count: input.requiredLogCount,
+      selected_log_count: selectedLogCount,
+      selected: input.selected,
+      rejected: input.classification.rejected,
+      refresh_attempts: input.refreshAttempts,
+      diagnostics: input.diagnostics,
+    });
+  };
+
+  return Object.freeze({
+    query,
+    refresh: refreshResource,
     applyBlockChanges(
       changes: readonly ResourceCacheBlockChange[],
     ): ResourceServiceCacheUpdateResult {
@@ -837,6 +1084,87 @@ export function createResourceService(
           removedBlockCount > 0
             ? ["resource_cache_updated"]
             : ["no_cached_resource_blocks_changed"],
+      });
+    },
+    classifyTreeClusters(): TreeClusterClassificationResult {
+      return classifyTrees();
+    },
+    async selectTreeClusters(requiredLogCount: number): Promise<TreeClusterSelectionResult> {
+      if (!Number.isSafeInteger(requiredLogCount) || requiredLogCount <= 0) {
+        return cloneTreeClusterSelectionResult({
+          status: "invalid_request",
+          world_key: readWorldKey(),
+          required_log_count: requiredLogCount,
+          selected_log_count: 0,
+          selected: [],
+          rejected: [],
+          refresh_attempts: [],
+          diagnostics: [`invalid_required_log_count:${String(requiredLogCount)}`],
+        });
+      }
+
+      let classification = classifyTrees();
+      let selected = selectAcceptedTrees(classification.accepted, requiredLogCount);
+      const refreshAttempts: ResourceServiceRefreshResult[] = [];
+
+      if (
+        classification.status === "found" &&
+        selected.reduce((sum, cluster) => sum + cluster.log_count, 0) >= requiredLogCount
+      ) {
+        return createTreeSelectionResult({
+          status: "selected",
+          classification,
+          requiredLogCount,
+          selected,
+          refreshAttempts,
+          diagnostics: ["selected_from_cache"],
+        });
+      }
+
+      for (const radius of RESOURCE_REFRESH_RADIUS_STEPS) {
+        const refresh = await refreshResource("tree", radius);
+        refreshAttempts.push(refresh);
+        classification = classifyTrees();
+        selected = selectAcceptedTrees(classification.accepted, requiredLogCount);
+
+        const selectedLogCount = selected.reduce((sum, cluster) => sum + cluster.log_count, 0);
+
+        if (selectedLogCount >= requiredLogCount) {
+          return createTreeSelectionResult({
+            status: "selected",
+            classification,
+            requiredLogCount,
+            selected,
+            refreshAttempts,
+            diagnostics: [`selected_after_refresh:${radius}`],
+          });
+        }
+
+        if (
+          refresh.status === "runtime_unavailable" ||
+          refresh.status === "unsupported_resource_key"
+        ) {
+          return createTreeSelectionResult({
+            status: refresh.status,
+            classification,
+            requiredLogCount,
+            selected,
+            refreshAttempts,
+            diagnostics: refresh.diagnostics,
+          });
+        }
+      }
+
+      return createTreeSelectionResult({
+        status: selected.length > 0 ? "insufficient" : "cache_miss",
+        classification,
+        requiredLogCount,
+        selected,
+        refreshAttempts,
+        diagnostics:
+          selected.length > 0
+            ? ["insufficient_tree_logs_after_refresh"]
+            : ["tree_cache_miss_after_refresh"],
       });
     },
     createPlannerSummary(

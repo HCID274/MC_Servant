@@ -107,6 +107,8 @@ export interface MineflayerBlockHandle {
   readonly position?: MineflayerVec3Like;
   /** runtime（运行时） 暴露的方块 tag（标签） 列表或索引。 */
   readonly tags?: readonly string[] | Readonly<Record<string, unknown>>;
+  /** Mineflayer / minecraft-data 提供的可挖事实。 */
+  readonly diggable?: boolean;
 }
 
 /** Mineflayer（Minecraft 协议客户端） 物品句柄最小结构。 */
@@ -192,6 +194,10 @@ export interface MineflayerMiningPort {
   blockAt?(position: MineflayerVec3Like): MineflayerBlockHandle | null | undefined;
   /** 挖掘指定方块。 */
   dig?(block: MineflayerBlockHandle): void | Promise<void>;
+  /** Mineflayer 原始 canDigBlock；包含当前手边距离限制，不用于资源刷新 is_diggable。 */
+  canDigBlock?(block: MineflayerBlockHandle): boolean;
+  /** 判断指定方块是否在当前视线候选内。 */
+  canSeeBlock?(block: MineflayerBlockHandle): boolean;
 }
 
 /** Mineflayer（Minecraft 协议客户端） 实体查询能力端口。 */

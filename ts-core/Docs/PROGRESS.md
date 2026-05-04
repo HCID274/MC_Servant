@@ -202,3 +202,11 @@
 - C 审查结论: 曾打回 1 次 (首次实现缺少生产 blockUpdate（方块更新）到 ResourceService（资源服务）的自动接线,且混入 plugin（服务端模组）/probe（探针）/WORKFLOW（工作流）越界 diff（差异）);B（实现代理）补齐 app（应用装配）事件接线并移出越界改动后通过
 - 关键决策: BFS（广度优先搜索）与断裂重切分保持在 world-model（世界模型）纯函数和 ResourceService（资源服务）内部,生产更新由 app（应用装配）把 Mineflayer（Minecraft 协议客户端） blockUpdate（方块更新）事件转成 ResourceCacheBlockChange（资源缓存方块变化）后调用公共接口;world_key（世界键）仍只通过 transport（传输层）端口读取,不在业务层解析维度或拼接世界名
 - 架构冲突: 无
+
+## T-052B | 2026-05-04 | 树木资源簇分类与 cutTree（砍树）目标选择
+
+- 涉及模块: core-ports/runtime（运行时核心端口）资源刷新契约,runtime/transport（运行时传输层）资源键解析与只读候选事实,world-model（世界模型）ResourceService（资源服务）树木分类/选择实现,Docs/04_CONVERSATION_SPEC.md（对话规格文档）,相关测试
+- A 拆解依据: 用户要求在 world-model（世界模型）/ResourceService（资源服务） 中把当前 world_key（世界键）隔离后的原木资源簇分类为可用于 cutTree（砍树） 的 accepted/rejected（接受/拒绝）结构,并按距离优先累计满足 requiredLogCount（所需原木数量）;边界允许 runtime/transport（运行时传输层）只读可达性/候选点能力和设计文档,不进入 plugin（服务端模组）、LLM（大语言模型）或正式 skill（技能）
+- C 审查结论: 曾打回 4 次 (首次缺少不可达/不可挖判定且在 world-model（世界模型）按方块名后缀猜原木;二次 `tree` 公共资源键未映射到 Mineflayer（Minecraft 协议客户端）/minecraft-data（Minecraft 数据库） logs tag（原木标签）事实;三次把 Mineflayer `canDigBlock`（能否挖方块）当前 5.1 格距离限制混入 `is_diggable`（可挖）资源事实;其间均未追加进度);B（实现代理）补齐 runtime（运行时） semantic_roles（语义角色）/is_diggable（可挖）/is_reachable（可达）事实、`tree`→`logs` 内部解析别名和 8 格外回归测试后通过
+- 关键决策: 保持 TS Core（TypeScript 核心）公共资源键为 `tree`,由 runtime/transport（运行时传输层）内部解析到 Minecraft（我的世界）原木 tag（标签）事实并返回 `resource_keys=["tree"]`;world-model（世界模型）只消费 `cut_tree_log`（砍树原木）语义角色、可挖事实和可达候选事实,不再按方块名猜测;`is_diggable`（可挖）只表达方块事实,不混入当前执行距离
+- 架构冲突: 无
