@@ -470,7 +470,9 @@ export function createLlmLogLine<TLine extends LlmJsonlLine>(input: TLine): TLin
     assertNonEmptyString(input.model, "model");
     assertNonEmptyString(input.msg_id, "msg_id");
   } else if ("role" in input) {
-    assertNonEmptyString(input.content, "content");
+    if (input.tool_calls === undefined || input.tool_calls.length === 0) {
+      assertNonEmptyString(input.content, "content");
+    }
   } else {
     assertPositiveNumber(input.meta.input_tokens, "meta.input_tokens");
     assertPositiveNumber(input.meta.output_tokens, "meta.output_tokens");

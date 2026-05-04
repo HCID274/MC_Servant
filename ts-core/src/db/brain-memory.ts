@@ -188,7 +188,9 @@ export function createPostgresBrainMemoryStore(input: {
       return db.insert(memoryCandidatesTable).values({
         id: normalized.id,
         botId: normalized.bot_id,
-        sourceEventId: normalized.source_event_id,
+        ...(normalized.source_event_id === undefined
+          ? {}
+          : { sourceEventId: normalized.source_event_id }),
         kind: normalized.kind,
         content: normalized.content,
         confidence: normalized.confidence,

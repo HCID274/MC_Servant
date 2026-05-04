@@ -42,6 +42,7 @@ export function createConversationChatMessages(
           ? {}
           : { snapshotContext: input.snapshot_context }),
         ...(input.memory_context === undefined ? {} : { memoryContext: input.memory_context }),
+        ...(input.brain_context === undefined ? {} : { brainContext: input.brain_context }),
         ...(input.state_context === undefined ? {} : { stateContext: input.state_context }),
       }),
     }),
@@ -74,6 +75,7 @@ export function createConversationTriageMessages(
       role: "user",
       content: [
         `Bot 状态：${input.bot_summary?.trim() || "idle"}`,
+        ...(input.brain_context === undefined ? [] : [`Brain上下文：\n${input.brain_context}`]),
         "---",
         ...(historyLines.length > 0 ? historyLines : ["[无最近对话]"]),
         "---",
@@ -105,6 +107,7 @@ export function createConversationPlanMessages(
           ? []
           : [`任务历史：${input.task_history_context}`]),
         ...(input.memory_context === undefined ? [] : [`记忆摘要：${input.memory_context}`]),
+        ...(input.brain_context === undefined ? [] : [`Brain上下文：\n${input.brain_context}`]),
         `主人的指令：${input.message}`,
       ].join("\n"),
     }),

@@ -480,7 +480,7 @@ export interface LlmDiagnosticSummary {
 }
 
 /** llm（大语言模型） transcript（原始对话记录） 允许的角色。 */
-export const LLM_TRANSCRIPT_ROLES = ["system", "user", "assistant"] as const;
+export const LLM_TRANSCRIPT_ROLES = ["system", "user", "assistant", "tool"] as const;
 
 /** llm（大语言模型） transcript（原始对话记录） 角色联合类型。 */
 export type LlmTranscriptRole = (typeof LLM_TRANSCRIPT_ROLES)[number];
@@ -505,6 +505,8 @@ export interface LlmTranscriptJsonlLine {
   readonly role: LlmTranscriptRole;
   /** 原始文本。 */
   readonly content: string;
+  /** assistant（助手） tool calls（工具调用） 原始结构；仅用于调试多轮 tool calling。 */
+  readonly tool_calls?: readonly unknown[];
 }
 
 /** llm（大语言模型） 通道的元信息行结构。 */

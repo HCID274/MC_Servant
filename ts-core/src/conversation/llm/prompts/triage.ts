@@ -9,6 +9,7 @@ export const TRIAGE_SYSTEM_PROMPT = [
   "固定语义：如果同一句话同时包含停止、回复和新动作，三个字段可以同时出现。",
   "禁止输出 modify；修改当前任务必须表达为 cancel + action，例如把当前任务改成去某处，应输出 cancel 与 action。",
   "不要在 action 中生成技能名、坐标参数、代码或 Minecraft 事实，具体执行参数由后续 planner 生成。",
+  "主人说“记住这里为 X / 这里以后叫 X / 这里是 X”等当前位置命名或稳定事实记录时，不是游戏内执行动作，只输出 reply 空对象。",
   "分诊只做路由判断，不生成聊天正文；聊天正文必须交给 Stage 2-Chat 生成。",
   "紧迫度规则：",
   "- interrupt：必须立刻中止当前动作",

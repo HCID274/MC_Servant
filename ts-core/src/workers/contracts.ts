@@ -52,6 +52,9 @@ export type BrainTaskStatus =
   | TaskHistoryStatus.Failed
   | TaskHistoryStatus.Interrupted;
 
+/** BrainWorker（大脑工作线程） 可处理的对话事实来源路由。 */
+export type BrainConversationFactRouteKind = "chat_reply" | "plan_exec";
+
 /** ConversationWorker（对话工作线程） 的输入任务。 */
 export interface ConversationWorkerTask {
   /** Worker 类型。 */
@@ -87,8 +90,8 @@ export interface BotWorkerTask {
   readonly owner_position_at_message?: SnapshotPosition;
 }
 
-/** BrainWorker（大脑工作线程） 的输入任务。 */
-export interface BrainWorkerTask {
+/** BrainWorker（大脑工作线程） 的任务终态输入。 */
+export interface BrainTaskEventWorkerTask {
   /** Worker 类型。 */
   readonly worker: "brain";
   /** 消费队列。 */
@@ -111,6 +114,38 @@ export interface BrainWorkerTask {
     readonly log_ref?: string;
   }>;
 }
+
+/** BrainWorker（大脑工作线程） 的对话事实候选输入。 */
+export interface BrainConversationFactWorkerTask {
+  /** Worker 类型。 */
+  readonly worker: "brain";
+  /** 消费队列。 */
+  readonly queue: BrainQueueName;
+  /** 对话事实候选载荷。 */
+  readonly payload: Readonly<{
+    /** 载荷类型。 */
+    readonly kind: "conversation_fact";
+    /** 目标 Bot 标识。 */
+    readonly bot_id: string;
+    /** 原始消息标识。 */
+    readonly message_id: string;
+    /** 意图纪元。 */
+    readonly intent_epoch: number;
+    /** 发话时快照时间戳。 */
+    readonly snapshot_ts: number;
+    /** 主人原文。 */
+    readonly owner_text: string;
+    /** 事实来源路由。 */
+    readonly route_kind: BrainConversationFactRouteKind;
+    /** Bot 当轮回复；用于 rubric（评分规则） 判断对话事实是否稳定。 */
+    readonly bot_reply?: string;
+    /** 主人发话时坐标；由接入层或 ConversationWorker（对话工作线程） 捕获后透传。 */
+    readonly owner_position_at_message?: SnapshotPosition;
+  }>;
+}
+
+/** BrainWorker（大脑工作线程） 的输入任务。 */
+export type BrainWorkerTask = BrainTaskEventWorkerTask | BrainConversationFactWorkerTask;
 
 /** ConversationWorker（对话工作线程） 产出的广播动作。 */
 export interface BroadcastReplyAction {
@@ -365,6 +400,41 @@ export function createBrainWorkerTask(input: {
       owner_text: input.owner_text,
       task_card: taskCard,
       ...(input.log_ref === undefined ? {} : { log_ref: input.log_ref }),
+    }),
+  });
+}
+
+/** 创建 BrainWorker（大脑工作线程） 的 conversation_fact（对话事实） 输入任务。 */
+export function createBrainConversationFactWorkerTask(input: {
+  bot_id: string;
+  message_id: string;
+  intent_epoch: number;
+  snapshot_ts: number;
+  owner_text: string;
+  route_kind: BrainConversationFactRouteKind;
+  bot_reply?: string;
+  owner_position_at_message?: SnapshotPosition;
+}): BrainConversationFactWorkerTask {
+  assertNonEmptyString(input.bot_id, "bot_id");
+  assertNonEmptyString(input.message_id, "message_id");
+  assertPositiveInteger(input.intent_epoch, "intent_epoch");
+  assertNonEmptyString(input.owner_text, "owner_text");
+
+  return Object.freeze({
+    worker: "brain",
+    queue: createBrainQueueName(),
+    payload: Object.freeze({
+      kind: "conversation_fact" as const,
+      bot_id: input.bot_id,
+      message_id: input.message_id,
+      intent_epoch: input.intent_epoch,
+      snapshot_ts: input.snapshot_ts,
+      owner_text: input.owner_text,
+      route_kind: input.route_kind,
+      ...(input.bot_reply === undefined ? {} : { bot_reply: input.bot_reply }),
+      ...(input.owner_position_at_message === undefined
+        ? {}
+        : { owner_position_at_message: cloneSnapshotPosition(input.owner_position_at_message) }),
     }),
   });
 }
@@ -761,9 +831,25 @@ function createBrainTaskCardResult(
 }
 
 function cloneSnapshotPosition(position: SnapshotPosition): SnapshotPosition {
+  assertFiniteNumber(position.x, "owner_position_at_message.x");
+  assertFiniteNumber(position.y, "owner_position_at_message.y");
+  assertFiniteNumber(position.z, "owner_position_at_message.z");
+
   return Object.freeze({
     x: position.x,
     y: position.y,
     z: position.z,
   });
+}
+
+function assertPositiveInteger(value: number, fieldName: string): void {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${fieldName} must be a positive integer`);
+  }
+}
+
+function assertFiniteNumber(value: number, fieldName: string): void {
+  if (!Number.isFinite(value)) {
+    throw new Error(`${fieldName} must be finite`);
+  }
 }

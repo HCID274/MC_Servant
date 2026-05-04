@@ -9,6 +9,7 @@ import {
   type BotMemorySnapshot,
   type BrainTaskCard,
 } from "../data/index.js";
+import { type BrainDiagnosticLogSink, createBrainDiagnosticLogRef } from "../diagnostics/index.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
 
 /** BrainWorker（大脑工作线程） 使用的 LLM（大语言模型） 端口。 */
@@ -49,8 +50,18 @@ export interface BrainSessionTakeawayInput {
 export interface BrainMemoryRubricInput {
   /** 主人原文。 */
   readonly owner_text: string;
-  /** 任务卡。 */
-  readonly task_card: BrainTaskCard;
+  /** 来源类型；旧任务卡路径缺省视为 task_event（任务事件）。 */
+  readonly source?: "task_event" | "conversation_fact";
+  /** 任务卡；conversation_fact（对话事实） 输入没有执行终态。 */
+  readonly task_card?: BrainTaskCard;
+  /** conversation_fact（对话事实） 原始消息标识。 */
+  readonly message_id?: string;
+  /** conversation_fact（对话事实） 发话时快照时间戳。 */
+  readonly snapshot_ts?: number;
+  /** conversation_fact（对话事实） 来源路由。 */
+  readonly route_kind?: "chat_reply" | "plan_exec";
+  /** conversation_fact（对话事实） Bot 当轮回复。 */
+  readonly bot_reply?: string;
   /** 已有 bot_memory（长期记忆） 三类资产。 */
   readonly existing_memory: BotMemorySnapshot;
   /** 主人发话时坐标；用于解析“这里 / 这边 / 脚下 / 我家”等指示语。 */
@@ -94,6 +105,10 @@ export type BrainMemoryCapacityResolution = Readonly<{
 /** BrainWorker（大脑工作线程） LLM（大语言模型） 依赖。 */
 export interface BrainWorkerLlmDependencies {
   readonly fetch?: typeof fetch;
+  /** BrainWorker（大脑工作线程） rubric（评分规则）解析诊断旁路。 */
+  readonly diagnosticSink?: BrainDiagnosticLogSink;
+  /** 当前时钟。 */
+  readonly now?: () => Date;
 }
 
 /** 创建 OpenAI compatible（OpenAI 兼容） BrainWorker（大脑工作线程） LLM（大语言模型） 客户端。 */
@@ -153,6 +168,14 @@ export function createOpenAiCompatibleBrainWorkerLlmClient(
           fetchImpl,
           messages: createMemoryRubricMessages(input),
         }),
+        {
+          input,
+          model: config.model,
+          ...(dependencies.diagnosticSink === undefined
+            ? {}
+            : { diagnosticSink: dependencies.diagnosticSink }),
+          now: dependencies.now ?? (() => new Date()),
+        },
       );
     },
     async resolveMemoryCapacity(
@@ -274,7 +297,14 @@ function createMemoryRubricMessages(
         "",
         "输入：",
         `- 主人原句：${input.owner_text}`,
-        `- 任务卡：${JSON.stringify(input.task_card)}`,
+        input.task_card === undefined
+          ? `- 对话事实：${JSON.stringify({
+              message_id: input.message_id,
+              snapshot_ts: input.snapshot_ts,
+              route_kind: input.route_kind,
+              bot_reply: input.bot_reply,
+            })}`
+          : `- 任务卡：${JSON.stringify(input.task_card)}`,
         ...(input.owner_position === undefined
           ? ["- 主人当前坐标：不可得"]
           : [
@@ -286,11 +316,15 @@ function createMemoryRubricMessages(
         "",
         "只输出 JSON，结构：",
         '{"candidates":[{"kind":"USER|MEMORY|SKILL","content":"...","confidence":0.0,"reason":"..."}]}',
+        "- kind 必须是 USER、MEMORY、SKILL 三者之一的实际值，不得原样输出 USER|MEMORY|SKILL",
         "",
         "判断规则：",
+        "- Chat / Plan 对话中主人明确命名地点、项目、基地、家、偏好时，也可产生长期记忆候选",
         "- 主人偏好/沟通风格 → USER",
         "- 世界/项目稳定事实（坐标、地标命名）→ MEMORY",
         "- 若主人说“这里 / 这边 / 脚下 / 我家 / 基地”且主人发话时坐标可得，必须以主人发话时坐标作为该地点坐标",
+        "- 示例：主人原句“这里叫日月川了”，主人发话时坐标 x=12 y=64 z=-9 → 输出 MEMORY：日月川 = x=12, y=64, z=-9，confidence 至少 0.85",
+        "- 示例：主人原句“这里定义为峡谷之巅”，主人发话时坐标 x=-4 y=120 z=33 → 输出 MEMORY：峡谷之巅 = x=-4, y=120, z=33，confidence 至少 0.85",
         "- 复用 SOP 流程模板（不是 ts skill，是流程套路）→ SKILL",
         "- 一次性任务结果、临时日志、TS 源码、背包 diff → confidence < 0.6 或不输出",
         "- 与现有条目冲突或更新 → 输出 kind 相同的新条目，reason 写覆盖原因",
@@ -344,17 +378,77 @@ async function requestPlainText(input: {
   return extractAssistantReply(payload);
 }
 
-function parseRubricCandidates(content: string): readonly BrainMemoryRubricCandidate[] {
-  const record = parseJsonRecord(content);
-  const rawCandidates = record.candidates;
+async function parseRubricCandidates(
+  content: string,
+  options: {
+    readonly input: BrainMemoryRubricInput;
+    readonly model: string;
+    readonly diagnosticSink?: BrainDiagnosticLogSink;
+    readonly now: () => Date;
+  },
+): Promise<readonly BrainMemoryRubricCandidate[]> {
+  let rawCandidates: unknown;
 
-  if (!Array.isArray(rawCandidates)) {
-    throw new Error("memory rubric response must contain candidates array");
+  try {
+    const record = parseJsonRecord(content);
+    rawCandidates = record.candidates;
+
+    if (!Array.isArray(rawCandidates)) {
+      throw new Error("memory rubric response must contain candidates array");
+    }
+
+    return Object.freeze(
+      rawCandidates.map((candidate) => createRubricCandidateFromRecord(candidate)),
+    );
+  } catch (error) {
+    await appendRubricParseDiagnostic({
+      error,
+      content,
+      options,
+    });
+
+    return Object.freeze([]);
+  }
+}
+
+async function appendRubricParseDiagnostic(input: {
+  readonly error: unknown;
+  readonly content: string;
+  readonly options: {
+    readonly input: BrainMemoryRubricInput;
+    readonly model: string;
+    readonly diagnosticSink?: BrainDiagnosticLogSink;
+    readonly now: () => Date;
+  };
+}): Promise<void> {
+  if (input.options.diagnosticSink === undefined) {
+    return;
   }
 
-  return Object.freeze(
-    rawCandidates.map((candidate) => createRubricCandidateFromRecord(candidate)),
-  );
+  const createdAt = input.options.now();
+  const message = input.error instanceof Error ? input.error.message : String(input.error);
+  await input.options.diagnosticSink({
+    log_ref: createBrainDiagnosticLogRef({
+      date: createdAt.toISOString().slice(0, 10),
+      kind: "rubric-parse-failed",
+      ...(input.options.input.message_id === undefined
+        ? {}
+        : { message_id: input.options.input.message_id }),
+    }),
+    lines: [
+      Object.freeze({
+        t: createdAt.getTime() / 1000,
+        event: "brain.rubric.parse_failed" as const,
+        model: input.options.model,
+        ...(input.options.input.message_id === undefined
+          ? {}
+          : { message_id: input.options.input.message_id }),
+        ...(input.options.input.source === undefined ? {} : { source: input.options.input.source }),
+        error_message: message,
+        raw_output: clampMultiline(input.content, 4000),
+      }),
+    ],
+  });
 }
 
 function createRubricCandidateFromRecord(value: unknown): BrainMemoryRubricCandidate {

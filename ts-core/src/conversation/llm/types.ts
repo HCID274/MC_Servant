@@ -1,4 +1,5 @@
 import { SKILL_DIRECTORY } from "../../core-ports/skills.js";
+import type { BrainSearchInput, BrainSearchResult } from "../../data/contracts/index.js";
 import type { LlmJsonlLine, LlmLogStage } from "../../diagnostics/contracts.js";
 import type {
   ConversationCompositeTriage,
@@ -29,13 +30,32 @@ export interface ConversationLlmConfig {
   readonly timeout_ms: number;
 }
 
+/** OpenAI compatible（OpenAI 兼容） tool call（工具调用）。 */
+export interface ConversationLlmToolCall {
+  readonly id: string;
+  readonly type: "function";
+  readonly function: {
+    readonly name: string;
+    readonly arguments: string;
+  };
+}
+
 /** 单条 OpenAI 兼容对话消息。 */
 export interface ConversationLlmMessage {
   /** 消息角色。 */
-  readonly role: "system" | "user" | "assistant";
+  readonly role: "system" | "user" | "assistant" | "tool";
   /** 消息文本。 */
   readonly content: string;
+  /** assistant（助手） 发出的 tool call（工具调用）。 */
+  readonly tool_calls?: readonly ConversationLlmToolCall[];
+  /** tool result（工具结果） 对应的 tool call id。 */
+  readonly tool_call_id?: string;
 }
+
+/** ConversationWorker（对话工作线程） 暴露给 LLM（大语言模型） 的 Brain search（大脑检索）工具。 */
+export type ConversationLlmSearchTool = (
+  input: BrainSearchInput,
+) => BrainSearchResult | Promise<BrainSearchResult>;
 
 /** 闲聊调用的诊断摘要。 */
 export interface ConversationLlmDiagnosticRecord {
@@ -69,6 +89,8 @@ export interface ConversationGeneratedReply {
 
 /** 闲聊请求输入。 */
 export interface ConversationLlmChatInput {
+  /** 目标 Bot（机器人） 标识；search() tool（工具） 启用时必需。 */
+  readonly bot_id?: string;
   /** 原始消息标识。 */
   readonly message_id: string;
   /** 当前主人消息。 */
@@ -83,8 +105,12 @@ export interface ConversationLlmChatInput {
   readonly snapshot_context?: string;
   /** 可选记忆摘要。 */
   readonly memory_context?: string;
+  /** A.5 + C 常驻 Brain context（大脑上下文）。 */
+  readonly brain_context?: string;
   /** 可选当前状态摘要。 */
   readonly state_context?: string;
+  /** 可选 Brain search（大脑检索） tool（工具）。 */
+  readonly search_tool?: ConversationLlmSearchTool;
 }
 
 /** 分诊请求输入。 */
@@ -97,10 +123,14 @@ export interface ConversationLlmTriageInput {
   readonly history?: readonly ConversationHistoryTurn[];
   /** 一行 Bot 状态摘要。 */
   readonly bot_summary?: string;
+  /** A.5 + C(USER/MEMORY) 常驻 Brain context（大脑上下文）。 */
+  readonly brain_context?: string;
 }
 
 /** 最小移动规划请求输入。 */
 export interface ConversationLlmPlanInput {
+  /** 目标 Bot（机器人） 标识；search() tool（工具） 启用时必需。 */
+  readonly bot_id?: string;
   /** 原始消息标识。 */
   readonly message_id: string;
   /** 当前主人消息。 */
@@ -113,6 +143,10 @@ export interface ConversationLlmPlanInput {
   readonly task_history_context?: string;
   /** 可选记忆摘要。 */
   readonly memory_context?: string;
+  /** A.5 + C 常驻 Brain context（大脑上下文）。 */
+  readonly brain_context?: string;
+  /** 可选 Brain search（大脑检索） tool（工具）。 */
+  readonly search_tool?: ConversationLlmSearchTool;
 }
 
 /** 闲聊调用成功结果。 */

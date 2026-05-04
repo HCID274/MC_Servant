@@ -178,3 +178,11 @@
 - C 审查结论: 曾打回 1 次 (首次补“这里是家”时只在 BrainWorker（大脑工作线程）测试里硬编码坐标,且生产实现由 BrainWorker（大脑工作线程）延迟读取 live snapshot（实时快照）,异步消费后可能记录主人移动后的错误坐标);B（实现代理）改为在 message ingress（消息接入）/ConversationWorker（对话工作线程） prompt snapshot（提示词快照）捕获 owner_position_at_message（发话时主人坐标）,并经 BotWorkerTask（执行任务）与 BrainTaskCard（任务卡）结构化透传后通过
 - 关键决策: 选择 BrainWorker（大脑工作线程）统一编排 rubric（评分规则）识别、候选落库、提拔、容量决策和审计,PostgreSQL（关系型数据库）只通过 db/brain-memory（大脑记忆数据库端口）写入;安全扫描命中时保留 pending（待审核）候选但禁止自动提拔,容量超限交给同一 Brain LLM（大脑大语言模型）端口做 merge（合并）/replace（替换）/delete（删除）决策;“这里 / 这边 / 基地”坐标选择结构化字段透传,不选 live provider（实时提供器）,避免异步延迟污染长期记忆语义
 - 架构冲突: 无
+
+## T-BRAIN-005 | 2026-05-04 | ConversationWorker（对话工作线程）注入 Brain（大脑）上下文与 search（检索）工具
+
+- 涉及模块: workers/conversation-worker（对话工作线程）,workers/brain-worker（大脑工作线程）,workers/bot-worker（机器人工作线程）,conversation/llm（对话大语言模型）,conversation/brain-context（大脑上下文）,db/brain-search（大脑检索数据库端口）,db/task-history（任务历史数据库端口）,diagnostics/brain-log（大脑诊断日志）,app/entrypoint（应用入口）
+- A 拆解依据: 用户要求按 04_CONVERSATION_SPEC.md §9 / §10.2 / §12 与 05_DATA_SPEC.md §3 落地 A 层/A.5/C 层上下文注入,Stage 2-Chat（第二阶段闲聊）与 Stage 2-Plan（第二阶段规划）暴露 search()（检索工具）并支持最多 3 轮 tool calling（工具调用）,Stage 1-Triage（第一阶段分诊）不暴露工具;返修要求 Brain fact（大脑事实）只能旁路、task_history（任务历史）先于 task_events（任务事件）建立父子链路、LLM JSONL（大语言模型结构化日志）必须保留最终 assistant（助手）输出
+- C 审查结论: 曾打回 3 次 (地点记忆闭环缺测试且误用 Plan（规划）特殊分支;task_events（任务事件）外键父表 task_history（任务历史）缺失;Brain fact（大脑事实）入队和诊断失败仍可能阻断 Chat（闲聊）/Plan（规划）主路径);B（实现代理）补齐三 worker（工作线程）集成测试、task_history（任务历史）生命周期 sink（汇点）、Brain fact（大脑事实）best-effort（尽力而为）旁路与双失败测试后通过
+- 关键决策: 选择由 ConversationWorker（对话工作线程）通过注入端口消费 Brain（大脑）上下文和 search()（检索工具）,不直读数据库;选择 BotWorker（机器人工作线程）维护 task_history（任务历史）生命周期、BrainWorker（大脑工作线程）写 task_events（任务事件）与记忆层,app（应用）只做装配;Brain fact（大脑事实）失败只落 runtime event（运行时事件）和诊断,不传播到主路径
+- 架构冲突: 无

@@ -22,6 +22,7 @@ import {
 } from "../app/index.js";
 import type { AppRuntimeCoreResources } from "../app/index.js";
 import {
+  ConversationLlmPlanError,
   createConversationCompositeTriage,
   createSkillCallPlanDraft,
 } from "../conversation/index.js";
@@ -40,6 +41,7 @@ import {
 import type { MineflayerBotHandle } from "../runtime/transport.js";
 import {
   type BotWorkerTask,
+  type BrainWorkerTask,
   createBotWorkerActions,
   createBotWorkerTask,
   createBrainWorkerTask,
@@ -750,7 +752,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     let fakeBot: FakeEntrypointMineflayerBot | undefined;
     let conversationProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     let brainProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
-    let capturedBotTask: BotWorkerTask | undefined;
+    let capturedBrainTask: BrainWorkerTask | undefined;
     const serverBridge = createAppServerBridgeConfigFromEnvironment({
       env: {
         SERVER_BRIDGE_ACCESS_TOKEN: "local-dev-token",
@@ -859,7 +861,10 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
                   }, 0);
                 }
                 if (name === "bot:bot-owner-position-memory:exec") {
-                  capturedBotTask = data as BotWorkerTask;
+                  throw new Error("location memory must not enter bot exec queue");
+                }
+                if (name === "brain") {
+                  capturedBrainTask = data as BrainWorkerTask;
                 }
 
                 return { id: String(options?.jobId ?? "job-online") };
@@ -900,17 +905,12 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         conversationWorker: {
           triage: () =>
             createConversationCompositeTriage({
-              action: {
-                intent: "task",
-                priority: ConversationPriority.Normal,
-                reason: "主人在当前位置声明这里是家",
-              },
+              reply: {},
             }),
-          planner: () =>
-            createSkillCallPlanDraft({
-              reply: "我记下这里",
-              skill: "collect",
-              params: { radius: 32 },
+          replyGenerator: () =>
+            Promise.resolve({
+              mode: "llm" as const,
+              reply: "我记住这里了喵~",
             }),
           createWorker: ({ processor }) => {
             conversationProcessor = processor;
@@ -965,26 +965,17 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         ack_type: "player_message",
       });
       await expect
-        .poll(() => capturedBotTask?.owner_position_at_message)
-        .toEqual({ x: 120, y: 64, z: -300 });
+        .poll(() => capturedBrainTask?.payload)
+        .toMatchObject({
+          kind: "conversation_fact",
+          owner_position_at_message: { x: 120, y: 64, z: -300 },
+        });
 
       fakeBot?.setOwnerPosition("Steve", { x: 999, y: 70, z: 999 });
-      const terminalActions = createBotWorkerActions({
-        task: capturedBotTask as BotWorkerTask,
-        phase: "terminal",
-        status: TaskHistoryStatus.Completed,
-        total_steps: 1,
-        duration_ms: 1000,
-      });
-      const brainAction = terminalActions.find((action) => action.type === "enqueue_brain");
-
-      if (brainAction?.type !== "enqueue_brain") {
-        throw new Error("expected enqueue_brain action");
-      }
-
-      await brainProcessor?.({ data: brainAction.task });
+      await brainProcessor?.({ data: capturedBrainTask });
       expect(rubricInputs).toMatchObject([
         {
+          source: "conversation_fact",
           owner_text: "这里是我们的家",
           owner_position: { x: 120, y: 64, z: -300 },
         },
@@ -998,6 +989,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
 
   it("应在真实在线入口组合 BotWorker（机器人工作线程） actionSink（动作汇点） 并写入 replay（补拉）", async () => {
     const customActions: string[] = [];
+    const taskHistoryUpdates: unknown[] = [];
     let botProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const bootstrap = createAppBootstrapContract({
       botId: "bot-worker-replay-online",
@@ -1013,7 +1005,20 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             createPool: () => ({
               end: async () => undefined,
             }),
-            createDrizzle: () => ({}),
+            createDrizzle: () => ({
+              insert: () => ({
+                values: () => ({
+                  onConflictDoNothing: async () => undefined,
+                }),
+              }),
+              update: () => ({
+                set: (values: unknown) => ({
+                  where: async () => {
+                    taskHistoryUpdates.push(values);
+                  },
+                }),
+              }),
+            }),
             warmupPool: async () => undefined,
           },
           redis: {
@@ -1097,6 +1102,12 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     expect(customActions).toEqual(["emit_task_lifecycle"]);
+    expect(taskHistoryUpdates).toEqual([
+      expect.objectContaining({
+        status: TaskHistoryStatus.Discarded,
+        finishedAt: expect.any(Date),
+      }),
+    ]);
     expect(replayResponse.json()).toMatchObject({
       events: [
         {
@@ -1551,7 +1562,13 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
 
       expect(queueAdds.map((item) => [item.queue, item.jobName, item.jobId])).toEqual([
         ["msg:bot-bridge-conversation", "conversation", "msg-svs-chat"],
+        ["brain", "brain", "conversation-fact-msg-svs-chat"],
       ]);
+      expect(
+        queueAdds
+          .filter((item) => item.queue === "brain")
+          .every((item) => typeof item.jobId === "string" && !item.jobId.includes(":")),
+      ).toBe(true);
       expect(llmRequests).toHaveLength(2);
       expect(interrupts).toEqual([]);
       expect(replayBody.events.map((event: { type: string }) => event.type)).toEqual([
@@ -2265,6 +2282,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
   it("应在真实在线入口把自然语言坐标任务接到 LLM（大语言模型） 分诊与规划，并入 goTo（前往坐标） 执行队列", async () => {
     const llmRequests: Array<{ url: string; body: unknown }> = [];
     const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];
+    const taskHistoryInserts: unknown[] = [];
     const memoryProviderCalls: unknown[] = [];
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const bootstrap = createAppBootstrapContract({
@@ -2324,7 +2342,20 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             createPool: () => ({
               end: async () => undefined,
             }),
-            createDrizzle: () => ({}),
+            createDrizzle: () => ({
+              insert: () => ({
+                values: (row: unknown) => ({
+                  onConflictDoNothing: async () => {
+                    taskHistoryInserts.push(row);
+                  },
+                }),
+              }),
+              update: () => ({
+                set: () => ({
+                  where: async () => undefined,
+                }),
+              }),
+            }),
             warmupPool: async () => undefined,
           },
           redis: {
@@ -2439,6 +2470,23 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           priority: 1,
         },
       },
+      {
+        name: "brain",
+        jobName: "brain",
+        data: expect.objectContaining({
+          worker: "brain",
+          payload: expect.objectContaining({
+            kind: "conversation_fact",
+            bot_id: "bot-plan-online",
+            message_id: "msg-online-plan",
+            owner_text: "请去坐标 x=10 y=64 z=-5",
+            route_kind: "plan_exec",
+          }),
+        }),
+        options: {
+          jobId: "conversation-fact-msg-online-plan",
+        },
+      },
     ]);
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "chat.reply",
@@ -2453,6 +2501,16 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       skill: "goTo",
       priority: "urgent",
     });
+    expect(taskHistoryInserts).toEqual([
+      expect.objectContaining({
+        id: "msg-online-plan",
+        botId: "bot-plan-online",
+        status: TaskHistoryStatus.Accepted,
+        skill: "goTo",
+        params: { x: 10, y: 64, z: -5 },
+        logRef: expect.stringMatching(/^tasks\/\d{4}-\d{2}-\d{2}\/msg-online-plan\.jsonl$/u),
+      }),
+    ]);
     const statusResponse = await runtime.services.http.server.inject({
       method: "GET",
       url: "/api/status?bot_id=bot-plan-online",
@@ -2680,6 +2738,23 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           priority: 5,
         },
       },
+      {
+        name: "brain",
+        jobName: "brain",
+        data: expect.objectContaining({
+          worker: "brain",
+          payload: expect.objectContaining({
+            kind: "conversation_fact",
+            bot_id: "bot-skill-online",
+            message_id: "msg-online-collect",
+            owner_text: "把地上的圆石捡起来",
+            route_kind: "plan_exec",
+          }),
+        }),
+        options: {
+          jobId: "conversation-fact-msg-online-collect",
+        },
+      },
     ]);
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "task.discarded",
@@ -2844,7 +2919,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     expect(llmRequests).toHaveLength(2);
-    expect(queueAdds).toHaveLength(1);
+    expect(queueAdds).toHaveLength(2);
     expect(queueAdds[0]).toMatchObject({
       name: "bot:bot-replace-online:exec",
       jobName: "bot",
@@ -2860,6 +2935,23 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       options: {
         jobId: "msg-online-replace",
         priority: 1,
+      },
+    });
+    expect(queueAdds[1]).toMatchObject({
+      name: "brain",
+      jobName: "brain",
+      data: {
+        worker: "brain",
+        payload: expect.objectContaining({
+          kind: "conversation_fact",
+          bot_id: "bot-replace-online",
+          message_id: "msg-online-replace",
+          owner_text: "把刚才的目标改成去 10 64 -5",
+          route_kind: "plan_exec",
+        }),
+      },
+      options: {
+        jobId: "conversation-fact-msg-online-replace",
       },
     });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({

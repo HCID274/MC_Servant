@@ -1,3 +1,4 @@
+import { renderConversationBrainContext } from "../../../conversation/brain-context.js";
 import { createConversationReply } from "../../../conversation/chat.js";
 import type {
   ConversationPlanDraft,
@@ -13,6 +14,7 @@ import { ExecutionTaskKind } from "../../../core-ports/foundation.js";
 import { SKILL_DIRECTORY } from "../../../core-ports/skills.js";
 import { TaskHistoryStatus } from "../../../core-ports/tasking.js";
 import { type ConversationWorkerTask, createBotWorkerTask } from "../../contracts.js";
+import { tryEnqueueConversationFactCandidate } from "../brain-facts.js";
 import {
   CONVERSATION_WORKER_MEMORY_CONTEXT_CHAR_BUDGET,
   CONVERSATION_WORKER_MEMORY_CONTEXT_LIMIT,
@@ -45,12 +47,14 @@ export async function handlePlanExecRoute(input: {
   let plan: ConversationPlanDraft & { readonly diagnostics?: ConversationLlmDiagnosticRecord };
   let memoryContext: string | undefined;
   let resourceContext: string | undefined;
+  let brainContext: string | undefined;
   let recentContext: string | undefined;
   let inventoryChangeContext: string | undefined;
   let ownerPositionAtMessage = input.task.message.owner_position_at_message;
   try {
     recentContext = await readRecentContext(input);
     memoryContext = await readMemoryContext(input);
+    brainContext = await readBrainContext(input);
     resourceContext = await readResourceContext(input);
     const promptContext = await createPlanPromptSnapshotContext({
       task: input.task,
@@ -67,6 +71,10 @@ export async function handlePlanExecRoute(input: {
         triage: input.route.triage,
         route: input.route,
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+        ...(brainContext === undefined ? {} : { brain_context: brainContext }),
+        ...(input.dependencies.brainSearchTool === undefined
+          ? {}
+          : { search_tool: input.dependencies.brainSearchTool }),
         ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
         ...(recentContext === undefined ? {} : { recent_context: recentContext }),
         ...(promptContext.snapshot_context === undefined
@@ -83,6 +91,7 @@ export async function handlePlanExecRoute(input: {
     if (isConversationLlmSkillNotEnabledError(error)) {
       await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply, {
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+        ...(brainContext === undefined ? {} : { brain_context: brainContext }),
         ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
         ...(recentContext === undefined ? {} : { recent_context: recentContext }),
         ...(inventoryChangeContext === undefined
@@ -92,10 +101,10 @@ export async function handlePlanExecRoute(input: {
       });
       return;
     }
-
     const diagnostics = getPlanErrorDiagnostics(error);
     await pushPlanningFailure(input, "planner_failed", plannerFailureReply.reply, {
       ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+      ...(brainContext === undefined ? {} : { brain_context: brainContext }),
       ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
       ...(recentContext === undefined ? {} : { recent_context: recentContext }),
       ...(inventoryChangeContext === undefined
@@ -125,6 +134,7 @@ export async function handlePlanExecRoute(input: {
   ) {
     await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply, {
       ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+      ...(brainContext === undefined ? {} : { brain_context: brainContext }),
       ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
       ...(recentContext === undefined ? {} : { recent_context: recentContext }),
       ...(inventoryChangeContext === undefined
@@ -166,6 +176,7 @@ export async function handlePlanExecRoute(input: {
       reply: reply.reply,
       contexts: {
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+        ...(brainContext === undefined ? {} : { brain_context: brainContext }),
         ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
         ...(recentContext === undefined ? {} : { recent_context: recentContext }),
         ...(inventoryChangeContext === undefined
@@ -223,6 +234,16 @@ export async function handlePlanExecRoute(input: {
       priority: execJob.priority,
     }),
   );
+  await tryEnqueueConversationFactCandidate({
+    task: input.task,
+    dependencies: input.dependencies,
+    events: input.events,
+    route_kind: "plan_exec",
+    bot_reply: plan.reply,
+    ...(ownerPositionAtMessage === undefined
+      ? {}
+      : { owner_position_at_message: ownerPositionAtMessage }),
+  });
 }
 
 async function readRecentContext(input: {
@@ -239,6 +260,27 @@ async function readRecentContext(input: {
         ? {}
         : { actorRecentEvents: projection.recent_events }),
       currentMessageId: input.task.message.message_id,
+      roundLimit: 5,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+async function readBrainContext(input: {
+  readonly task: ConversationWorkerTask;
+  readonly dependencies: ConversationWorkerRuntimeDependencies;
+}): Promise<string | undefined> {
+  try {
+    const context = await input.dependencies.brainContextProvider?.({
+      bot_id: input.task.bot_id,
+      message_id: input.task.message.message_id,
+      include_skill: true,
+    });
+
+    return renderConversationBrainContext({
+      ...(context === null || context === undefined ? {} : { context }),
+      includeSkill: true,
     });
   } catch {
     return undefined;
@@ -309,6 +351,7 @@ async function pushPlanningFailure(
   reply: string,
   contexts: {
     readonly memory_context?: string;
+    readonly brain_context?: string;
     readonly resource_context?: string;
     readonly recent_context?: string;
     readonly inventory_change_context?: string;
@@ -334,6 +377,7 @@ async function pushPlanningFailure(
     reply,
     contexts: {
       ...(contexts.memory_context === undefined ? {} : { memory_context: contexts.memory_context }),
+      ...(contexts.brain_context === undefined ? {} : { brain_context: contexts.brain_context }),
       ...(contexts.resource_context === undefined
         ? {}
         : { resource_context: contexts.resource_context }),
@@ -377,6 +421,7 @@ async function appendConversationReplyLog(input: {
     readonly resource_context?: string;
     readonly recent_context?: string;
     readonly inventory_change_context?: string;
+    readonly brain_context?: string;
   };
   readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;
 }): Promise<void> {

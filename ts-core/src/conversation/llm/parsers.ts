@@ -4,7 +4,7 @@ import { createConversationCompositeTriageFromRecord } from "../triage.js";
 import { ConversationLlmPlanError, ConversationLlmSkillNotEnabledError } from "./errors.js";
 import type { OpenAiCompatibleChatCompletionResponse } from "./http.js";
 import { createConversationSkillPlanFromTable } from "./skill-plan-table.js";
-import type { ConversationLlmPlanResult } from "./types.js";
+import type { ConversationLlmPlanResult, ConversationLlmToolCall } from "./types.js";
 
 /** 提取 OpenAI 兼容返回中的回复文本。 */
 export function extractAssistantReply(payload: OpenAiCompatibleChatCompletionResponse): string {
@@ -26,6 +26,13 @@ export function extractAssistantReply(payload: OpenAiCompatibleChatCompletionRes
   }
 
   throw new Error("LLM response does not contain assistant text");
+}
+
+/** 提取 OpenAI compatible（OpenAI 兼容） assistant（助手） tool calls（工具调用）。 */
+export function extractAssistantToolCalls(
+  payload: OpenAiCompatibleChatCompletionResponse,
+): readonly ConversationLlmToolCall[] {
+  return payload.choices?.[0]?.message?.tool_calls ?? [];
 }
 
 /** 解析复合分诊阶段返回。 */

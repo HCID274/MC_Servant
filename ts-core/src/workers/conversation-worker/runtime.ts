@@ -1,3 +1,4 @@
+import { renderConversationBrainContext } from "../../conversation/brain-context.js";
 import { createCancelTemplateReply, createConversationReply } from "../../conversation/chat.js";
 import type { ConversationCompositeTriage } from "../../conversation/contracts.js";
 import { createConversationInventoryDiffCache } from "../../conversation/inventory-diff-cache.js";
@@ -45,7 +46,15 @@ export function createConversationWorkerRuntime(input: {
       message_id: task.message.message_id,
       at: new Date(task.message.snapshot_ts),
     });
-    const triage = await (dependencies.triage?.({ task }) ?? createDefaultTriage());
+    const brainContext = await readBrainContext({
+      task,
+      dependencies,
+      includeSkill: false,
+    });
+    const triage = await (dependencies.triage?.({
+      task,
+      ...(brainContext === undefined ? {} : { brain_context: brainContext }),
+    }) ?? createDefaultTriage());
     await handleCompositeTriage({
       task,
       triage,
@@ -76,6 +85,27 @@ export function createConversationWorkerRuntime(input: {
       return Object.freeze([...events]);
     },
   });
+}
+
+async function readBrainContext(input: {
+  readonly task: ReturnType<typeof cloneWorkerTask>;
+  readonly dependencies: ConversationWorkerRuntimeDependencies;
+  readonly includeSkill: boolean;
+}): Promise<string | undefined> {
+  try {
+    const context = await input.dependencies.brainContextProvider?.({
+      bot_id: input.task.bot_id,
+      message_id: input.task.message.message_id,
+      include_skill: input.includeSkill,
+    });
+
+    return renderConversationBrainContext({
+      ...(context === null || context === undefined ? {} : { context }),
+      includeSkill: input.includeSkill,
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 /** 按 cancel（取消）→reply（回复）→action（动作） 顺序派发复合分诊结果。 */

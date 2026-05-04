@@ -1,4 +1,18 @@
-import type { ConversationLlmConfig, ConversationLlmMessage } from "./types.js";
+import type {
+  ConversationLlmConfig,
+  ConversationLlmMessage,
+  ConversationLlmToolCall,
+} from "./types.js";
+
+/** OpenAI compatible（OpenAI 兼容） function tool（函数工具） 声明。 */
+export interface OpenAiCompatibleFunctionTool {
+  readonly type: "function";
+  readonly function: {
+    readonly name: string;
+    readonly description: string;
+    readonly parameters: Readonly<Record<string, unknown>>;
+  };
+}
 
 /** OpenAI compatible（OpenAI 兼容） chat.completions（对话补全） 请求体。 */
 export interface OpenAiCompatibleChatCompletionRequest {
@@ -8,6 +22,8 @@ export interface OpenAiCompatibleChatCompletionRequest {
     readonly enable_thinking?: boolean;
   };
   readonly reasoning_effort?: string;
+  readonly tools?: readonly OpenAiCompatibleFunctionTool[];
+  readonly tool_choice?: "auto" | "none";
 }
 
 /** OpenAI 兼容 chat.completions（对话补全） 响应的最小结构。 */
@@ -25,6 +41,7 @@ export interface OpenAiCompatibleChatCompletionResponse {
             /** 文本分片。 */
             readonly text?: string;
           }>;
+      readonly tool_calls?: readonly ConversationLlmToolCall[];
     };
   }>;
   /** token（令牌） 用量。 */
@@ -46,10 +63,14 @@ export async function requestChatCompletionPayload(input: {
   fetchImpl: typeof fetch;
   config: ConversationLlmConfig;
   messages: readonly ConversationLlmMessage[];
+  tools?: readonly OpenAiCompatibleFunctionTool[];
+  tool_choice?: "auto" | "none";
 }): Promise<OpenAiCompatibleChatCompletionResponse> {
   const requestBody = createChatCompletionRequestBody({
     config: input.config,
     messages: input.messages,
+    ...(input.tools === undefined ? {} : { tools: input.tools }),
+    ...(input.tool_choice === undefined ? {} : { tool_choice: input.tool_choice }),
   });
   const response = await fetchWithTimeout(
     input.fetchImpl,
@@ -77,6 +98,8 @@ export async function requestChatCompletionPayload(input: {
 export function createChatCompletionRequestBody(input: {
   config: ConversationLlmConfig;
   messages: readonly ConversationLlmMessage[];
+  tools?: readonly OpenAiCompatibleFunctionTool[];
+  tool_choice?: "auto" | "none";
 }): OpenAiCompatibleChatCompletionRequest {
   const model = input.config.model.trim();
   const thinkingEnabled = isThinkingEnabledForModel(input.config);
@@ -93,6 +116,8 @@ export function createChatCompletionRequestBody(input: {
     ...(!isMimoModel(model) && thinkingEnabled && input.config.reasoning_effort !== "none"
       ? { reasoning_effort: input.config.reasoning_effort }
       : {}),
+    ...(input.tools === undefined ? {} : { tools: input.tools }),
+    ...(input.tool_choice === undefined ? {} : { tool_choice: input.tool_choice }),
   };
 
   return Object.freeze(body);

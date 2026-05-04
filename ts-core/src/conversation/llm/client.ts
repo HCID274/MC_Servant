@@ -68,6 +68,8 @@ export function createConversationLlmClient(
         message_id: input.message_id,
         messages,
         parse: (content) => content,
+        ...(input.search_tool === undefined ? {} : { searchTool: input.search_tool }),
+        ...(input.bot_id === undefined ? {} : { searchToolBotId: input.bot_id }),
         onFailure: ({ error, diagnostics, errorSnapshot }) => {
           throw new ConversationLlmChatError(errorSnapshot.message, diagnostics, {
             cause: error,
@@ -93,6 +95,8 @@ export function createConversationLlmClient(
         message_id: input.message_id,
         messages,
         parse: parseConversationSkillPlan,
+        ...(input.search_tool === undefined ? {} : { searchTool: input.search_tool }),
+        ...(input.bot_id === undefined ? {} : { searchToolBotId: input.bot_id }),
         onFailure: ({ error, diagnostics, errorSnapshot }) => {
           if (isConversationLlmSkillNotEnabledError(error)) {
             throw new ConversationLlmSkillNotEnabledError(
@@ -104,7 +108,6 @@ export function createConversationLlmClient(
               { cause: error },
             );
           }
-
           throw new ConversationLlmPlanError(errorSnapshot.message, {
             cause: error,
             diagnostics,

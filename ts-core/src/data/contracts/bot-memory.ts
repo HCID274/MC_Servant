@@ -30,7 +30,7 @@ export type BotMemorySnapshot = Readonly<Record<BotMemoryKind, string>>;
 export interface MemoryCandidateDraft {
   readonly id: string;
   readonly bot_id: string;
-  readonly source_event_id: string;
+  readonly source_event_id?: string;
   readonly kind: BotMemoryKind;
   readonly content: string;
   readonly confidence: number;
@@ -102,7 +102,9 @@ export function createBotMemoryRecord(input: BotMemoryRecord): BotMemoryRecord {
 export function createMemoryCandidateDraft(input: MemoryCandidateDraft): MemoryCandidateDraft {
   assertNonEmpty(input.id, "id");
   assertNonEmpty(input.bot_id, "bot_id");
-  assertNonEmpty(input.source_event_id, "source_event_id");
+  if (input.source_event_id !== undefined) {
+    assertNonEmpty(input.source_event_id, "source_event_id");
+  }
   assertBotMemoryKind(input.kind);
   assertNonEmpty(input.content, "content");
   assertConfidence(input.confidence);

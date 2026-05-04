@@ -142,7 +142,141 @@ describe("conversation llm（对话大语言模型） 运行时", () => {
         ok: true,
       },
     });
+    expect(result.diagnostics.lines).toContainEqual(
+      expect.objectContaining({
+        role: "assistant",
+        content: "当然可以，我在这里陪着你",
+      }),
+    );
     expect(diagnostics).toEqual([result.diagnostics]);
+  });
+
+  it("Chat（闲聊） 应暴露 search() tool（工具） 并把 brain.search（大脑检索） 结果回填给 LLM", async () => {
+    const capturedBodies: unknown[] = [];
+    const searchCalls: unknown[] = [];
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        now: () => new Date("2026-04-24T10:00:00.000Z"),
+        fetch: async (_url, init) => {
+          const body = init?.body === undefined ? undefined : JSON.parse(String(init.body));
+          capturedBodies.push(body);
+
+          if (capturedBodies.length === 1) {
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: "",
+                      tool_calls: [
+                        {
+                          id: "call-search-1",
+                          type: "function",
+                          function: {
+                            name: "search",
+                            arguments: '{"query":"上次捡盾牌","top_k":5}',
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          }
+
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { content: "上次捡到 shield x1" } }],
+              usage: { prompt_tokens: 50, completion_tokens: 8 },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        },
+      },
+    );
+
+    const result = await client.generateChatReply({
+      bot_id: "bot-cw",
+      message_id: "msg-chat-search",
+      message: "你上次捡到了什么",
+      brain_context: "[A.5滚动摘要]\n最近帮主人捡过东西",
+      search_tool: async (input) => {
+        searchCalls.push(input);
+
+        return {
+          hits: [
+            {
+              id: "event-1",
+              task_id: "msg-collect",
+              owner_text: "去捡盾牌",
+              task_card: { result: "collect 成功，捡到 shield x1" },
+              created_at: "2026-04-24T09:59:00.000Z",
+              score: 0.9,
+            },
+          ],
+        };
+      },
+    });
+
+    expect(result.reply).toBe("上次捡到 shield x1");
+    expect(searchCalls).toEqual([
+      {
+        bot_id: "bot-cw",
+        query: "上次捡盾牌",
+        top_k: 5,
+      },
+    ]);
+    expect(capturedBodies[0]).toMatchObject({
+      tools: [
+        expect.objectContaining({
+          type: "function",
+          function: expect.objectContaining({ name: "search" }),
+        }),
+      ],
+      tool_choice: "auto",
+    });
+    expect(capturedBodies[1]).toMatchObject({
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          role: "tool",
+          tool_call_id: "call-search-1",
+          content: expect.stringContaining("collect 成功，捡到 shield x1"),
+        }),
+      ]),
+    });
+    expect(result.diagnostics.lines).toContainEqual(
+      expect.objectContaining({
+        role: "tool",
+        content: expect.stringContaining("collect 成功，捡到 shield x1"),
+      }),
+    );
+    expect(result.diagnostics.lines).toContainEqual(
+      expect.objectContaining({
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          expect.objectContaining({
+            id: "call-search-1",
+          }),
+        ],
+      }),
+    );
+    expect(result.diagnostics.lines).toContainEqual(
+      expect.objectContaining({
+        role: "assistant",
+        content: "上次捡到 shield x1",
+      }),
+    );
   });
 
   it("应把关闭 thinking（思考） 模式转换为 MiMo（小米大模型） 私有参数", async () => {

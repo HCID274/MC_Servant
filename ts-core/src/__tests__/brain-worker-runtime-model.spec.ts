@@ -4,9 +4,12 @@ import {
   ExecPriority,
   ExecutionTaskKind,
   TaskHistoryStatus,
+  createBrainConversationFactWorkerTask,
   createBrainTaskCard,
   createBrainWorkerRuntime,
   createBrainWorkerTask,
+  createConversationLlmConfig,
+  createOpenAiCompatibleBrainWorkerLlmClient,
   createOpenAiCompatibleEmbeddingGenerator,
 } from "../index.js";
 
@@ -83,20 +86,141 @@ describe("BrainWorker（大脑工作线程） 真实运行时", () => {
     ]);
   });
 
-  it("应在 embedding API（向量接口） 失败时记录 brain.task_event.failed（任务事件失败） 且不调用 persist（持久化）", async () => {
+  it("应消费 conversation_fact（对话事实）并用发话时坐标写入长期记忆候选", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
-    let persistCalls = 0;
+    const rubricInputs: unknown[] = [];
+    const candidateDrafts: unknown[] = [];
+    const memoryWrites: unknown[] = [];
     const runtime = createBrainWorkerRuntime({
       queue: {
         name: "brain",
         connection: {},
       },
       dependencies: {
+        now: () => new Date("2026-05-03T01:00:00.000Z"),
+        async generateEmbedding() {
+          throw new Error("conversation_fact must not write task_events");
+        },
+        async persistTaskEvent() {
+          throw new Error("conversation_fact must not persist task_event");
+        },
+        llm: {
+          model: "bl-auto",
+          async generateFailureTakeaway() {
+            throw new Error("failure takeaway should not run");
+          },
+          async generateSessionTakeaway() {
+            throw new Error("session takeaway should not run");
+          },
+          async compressRollingSummary(content) {
+            return content;
+          },
+          async generateMemoryCandidates(input) {
+            rubricInputs.push(input);
+
+            return [
+              {
+                kind: "MEMORY",
+                content: `秘密基地坐标：x=${input.owner_position?.x}, y=${input.owner_position?.y}, z=${input.owner_position?.z}`,
+                confidence: 0.92,
+                reason: "主人在当前位置命名基地",
+              },
+            ];
+          },
+          async resolveMemoryCapacity() {
+            throw new Error("capacity should not run");
+          },
+        },
+        async loadBotMemory() {
+          return { USER: "", MEMORY: "", SKILL: "" };
+        },
+        async insertMemoryCandidate(draft) {
+          candidateDrafts.push(draft);
+        },
+        async decideMemoryCandidate() {
+          return undefined;
+        },
+        async writeBotMemory(write) {
+          memoryWrites.push(write);
+        },
+        async appendMemoryAudit() {
+          return undefined;
+        },
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createBrainConversationFactWorkerTask({
+        bot_id: "bot-brain",
+        message_id: "msg-secret-base",
+        intent_epoch: 8,
+        snapshot_ts: 200,
+        owner_text: "这里以后就是秘密基地",
+        route_kind: "chat_reply",
+        bot_reply: "我记住了",
+        owner_position_at_message: { x: -24.8, y: 105, z: -15.6 },
+      }),
+    });
+
+    expect(rubricInputs).toEqual([
+      expect.objectContaining({
+        source: "conversation_fact",
+        owner_text: "这里以后就是秘密基地",
+        message_id: "msg-secret-base",
+        snapshot_ts: 200,
+        route_kind: "chat_reply",
+        bot_reply: "我记住了",
+        owner_position: { x: -24.8, y: 105, z: -15.6 },
+      }),
+    ]);
+    expect(candidateDrafts).toEqual([
+      expect.objectContaining({
+        id: "memory-candidate:conversation-fact:bot-brain:msg-secret-base:0",
+        bot_id: "bot-brain",
+        kind: "MEMORY",
+        content: "秘密基地坐标：x=-24.8, y=105, z=-15.6",
+        confidence: 0.92,
+        status: "pending",
+      }),
+    ]);
+    expect(candidateDrafts[0]).not.toHaveProperty("source_event_id");
+    expect(memoryWrites).toEqual([
+      {
+        bot_id: "bot-brain",
+        kind: "MEMORY",
+        content: "秘密基地坐标：x=-24.8, y=105, z=-15.6",
+        updated_at: "2026-05-03T01:00:00.000Z",
+      },
+    ]);
+  });
+
+  it("应在 embedding API（向量接口） 失败时记录 brain.task_event.failed（任务事件失败） 诊断且不调用 persist（持久化）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    let persistCalls = 0;
+    const diagnostics: unknown[] = [];
+    const runtime = createBrainWorkerRuntime({
+      queue: {
+        name: "brain",
+        connection: {},
+      },
+      dependencies: {
+        now: () => new Date("2026-05-03T03:00:00.000Z"),
         async generateEmbedding() {
           throw new Error("embedding unavailable");
         },
         async persistTaskEvent() {
           persistCalls += 1;
+        },
+        async diagnosticSink(record) {
+          diagnostics.push(record);
         },
         createWorker: ({ processor: capturedProcessor }) => {
           processor = capturedProcessor;
@@ -137,6 +261,156 @@ describe("BrainWorker（大脑工作线程） 真实运行时", () => {
           name: "Error",
           message: "embedding unavailable",
         },
+      },
+    ]);
+    expect(diagnostics).toEqual([
+      {
+        log_ref: "brain/2026-05-03/task-failed-msg-brain-failed.jsonl",
+        lines: [
+          {
+            t: new Date("2026-05-03T03:00:00.000Z").getTime() / 1000,
+            event: "brain.task.failed",
+            bot_id: "bot-brain",
+            message_id: "msg-brain-failed",
+            error: {
+              name: "Error",
+              message: "embedding unavailable",
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("rubric（评分规则） JSON（结构化数据）漂移时应返回空候选并写原始输出诊断", async () => {
+    const diagnostics: unknown[] = [];
+    const client = createOpenAiCompatibleBrainWorkerLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "bot-brain",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async () =>
+          new Response(JSON.stringify({ choices: [{ message: { content: "不是 JSON" } }] }), {
+            status: 200,
+          }),
+        async diagnosticSink(record) {
+          diagnostics.push(record);
+        },
+        now: () => new Date("2026-05-03T04:00:00.000Z"),
+      },
+    );
+
+    const candidates = await client.generateMemoryCandidates({
+      source: "conversation_fact",
+      message_id: "msg-rubric-drift",
+      owner_text: "这里定义为日月川了",
+      existing_memory: { USER: "", MEMORY: "", SKILL: "" },
+      owner_position: { x: 12, y: 64, z: -9 },
+    });
+
+    expect(candidates).toEqual([]);
+    expect(diagnostics).toEqual([
+      {
+        log_ref: "brain/2026-05-03/rubric-parse-failed-msg-rubric-drift.jsonl",
+        lines: [
+          expect.objectContaining({
+            t: new Date("2026-05-03T04:00:00.000Z").getTime() / 1000,
+            event: "brain.rubric.parse_failed",
+            message_id: "msg-rubric-drift",
+            model: "bl-auto",
+            source: "conversation_fact",
+            error_message: expect.stringContaining("JSON"),
+            raw_output: "不是 JSON",
+          }),
+        ],
+      },
+    ]);
+  });
+
+  it("rubric（评分规则） 产出 0 候选时应写 brain.rubric.empty（空评分）诊断", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const diagnostics: unknown[] = [];
+    const runtime = createBrainWorkerRuntime({
+      queue: {
+        name: "brain",
+        connection: {},
+      },
+      dependencies: {
+        now: () => new Date("2026-05-03T05:00:00.000Z"),
+        async generateEmbedding() {
+          throw new Error("conversation_fact must not write task_events");
+        },
+        async persistTaskEvent() {
+          throw new Error("conversation_fact must not persist task_event");
+        },
+        llm: {
+          model: "bl-auto",
+          async generateFailureTakeaway() {
+            throw new Error("failure takeaway should not run");
+          },
+          async generateSessionTakeaway() {
+            throw new Error("session takeaway should not run");
+          },
+          async compressRollingSummary(content) {
+            return content;
+          },
+          async generateMemoryCandidates() {
+            return [];
+          },
+          async resolveMemoryOverflow(input) {
+            return { op: "patch", content: input.appended_content };
+          },
+        },
+        async insertMemoryCandidate() {
+          throw new Error("empty rubric must not insert candidates");
+        },
+        async diagnosticSink(record) {
+          diagnostics.push(record);
+        },
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createBrainConversationFactWorkerTask({
+        bot_id: "bot-brain",
+        message_id: "msg-rubric-empty",
+        intent_epoch: 10,
+        snapshot_ts: 1000,
+        owner_text: "这里定义为日月川了",
+        route_kind: "chat_reply",
+        owner_position_at_message: { x: 10, y: 64, z: 20 },
+      }),
+    });
+
+    expect(diagnostics).toEqual([
+      {
+        log_ref: "brain/2026-05-03/rubric-empty-msg-rubric-empty.jsonl",
+        lines: [
+          {
+            t: new Date("2026-05-03T05:00:00.000Z").getTime() / 1000,
+            event: "brain.rubric.empty",
+            bot_id: "bot-brain",
+            message_id: "msg-rubric-empty",
+            source: "conversation_fact",
+            owner_text: "这里定义为日月川了",
+            owner_position: { x: 10, y: 64, z: 20 },
+            raw_count: 0,
+            accepted_count: 0,
+          },
+        ],
       },
     ]);
   });

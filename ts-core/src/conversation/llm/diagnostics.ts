@@ -29,10 +29,19 @@ export function createLlmInvocationLines(input: {
       createLlmLogLine({
         t: input.t,
         role: message.role,
-        content: message.content,
+        content: renderDiagnosticMessageContent(message),
       }),
     ),
   ]);
+}
+
+function renderDiagnosticMessageContent(message: ConversationLlmMessage): string {
+  const toolCalls =
+    message.tool_calls === undefined ? "" : `\ntool_calls=${JSON.stringify(message.tool_calls)}`;
+  const toolCallId =
+    message.tool_call_id === undefined ? "" : `\ntool_call_id=${message.tool_call_id}`;
+
+  return `${message.content}${toolCalls}${toolCallId}`;
 }
 
 /** 将未知错误转换为 JSONL（结构化日志） 错误快照。 */

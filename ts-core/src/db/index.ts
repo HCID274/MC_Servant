@@ -15,7 +15,9 @@ export * from "./connection.js";
 export * from "./intent-epoch.js";
 export * from "./migrations.js";
 export * from "./task-events.js";
+export * from "./task-history.js";
 export * from "./brain-memory.js";
+export * from "./brain-search.js";
 
 /**
  * db 模块边界声明。
@@ -42,6 +44,7 @@ export const dbModuleBoundary = {
     "createDrizzleMigrationMetadata",
     "runDrizzleMigrations",
     "createPostgresTaskEventPersister",
+    "createPostgresTaskHistoryStore",
     "createPostgresBrainMemoryStore",
   ],
 } satisfies ModuleBoundary;

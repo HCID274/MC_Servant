@@ -28,12 +28,16 @@ import {
   isPersistedTaskSummaryStatus,
 } from "../data/contracts.js";
 import type { RedisClientLike } from "../db/index.js";
+import { type BrainDiagnosticLogSink, createBrainDiagnosticLogRef } from "../diagnostics/index.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
 import type { BrainWorkerLlmClient } from "./brain-llm.js";
 import { scanBrainMemoryContentSafety } from "./brain-memory-safety.js";
 import { createBullmqPhysicalQueueName } from "./bullmq.js";
 import {
+  type BrainConversationFactWorkerTask,
+  type BrainTaskEventWorkerTask,
   type BrainWorkerTask,
+  createBrainConversationFactWorkerTask,
   createBrainWorkerActions,
   createBrainWorkerTask,
 } from "./contracts.js";
@@ -51,6 +55,20 @@ type MemoryPromotionResolution = Readonly<{
   readonly reason?: string;
 }>;
 
+type BrainMemoryCandidateSource = Readonly<{
+  readonly source_kind: "task_event" | "conversation_fact";
+  readonly source_ref_id: string;
+  readonly source_event_id?: string;
+  readonly bot_id: string;
+  readonly message_id?: string;
+  readonly snapshot_ts?: number;
+  readonly owner_text: string;
+  readonly owner_position?: BrainConversationFactWorkerTask["payload"]["owner_position_at_message"];
+  readonly task_card?: BrainTaskEventWorkerTask["payload"]["task_card"];
+  readonly route_kind?: BrainConversationFactWorkerTask["payload"]["route_kind"];
+  readonly bot_reply?: string;
+}>;
+
 /** BrainWorker（大脑工作线程） 运行时事件。 */
 export type BrainWorkerRuntimeEvent =
   | {
@@ -65,7 +83,7 @@ export type BrainWorkerRuntimeEvent =
       /** task_events（任务事件） 主键。 */
       readonly event_id: string;
       /** 终态状态。 */
-      readonly status: BrainWorkerTask["payload"]["status"];
+      readonly status: BrainTaskEventWorkerTask["payload"]["status"];
     }
   | {
       /** 事件类型。 */
@@ -202,6 +220,8 @@ export interface BrainWorkerRuntimeDependencies {
   }>;
   /** BrainWorker（大脑工作线程） 运行时事件汇点。 */
   readonly eventSink?: (event: BrainWorkerRuntimeEvent) => Promise<unknown>;
+  /** BrainWorker（大脑工作线程） 本地诊断旁路。 */
+  readonly diagnosticSink?: BrainDiagnosticLogSink;
   /** 当前时钟。 */
   readonly now?: () => Date;
   /** 可注入 BullMQ（任务队列） Worker 工厂。 */
@@ -241,6 +261,7 @@ function createDefaultBrainWorker(input: {
 
 function cloneBrainWorkerTask(data: unknown): BrainWorkerTask {
   const candidate = data as BrainWorkerTask;
+  const payload = candidate.payload;
 
   if (candidate.worker !== "brain") {
     throw new Error("BrainWorker task must have worker=brain");
@@ -248,25 +269,53 @@ function cloneBrainWorkerTask(data: unknown): BrainWorkerTask {
   if (candidate.queue !== createBrainQueueName()) {
     throw new Error("BrainWorker task must target brain queue");
   }
-  assertNonEmptyString(candidate.payload.bot_id, "payload.bot_id");
-  assertNonEmptyString(candidate.payload.message_id, "payload.message_id");
-  assertNonEmptyString(candidate.payload.owner_text, "payload.owner_text");
-  if (!Number.isInteger(candidate.payload.intent_epoch) || candidate.payload.intent_epoch < 0) {
+  if ("kind" in payload && payload.kind === "conversation_fact") {
+    assertNonEmptyString(payload.bot_id, "payload.bot_id");
+    assertNonEmptyString(payload.message_id, "payload.message_id");
+    assertNonEmptyString(payload.owner_text, "payload.owner_text");
+    if (!Number.isInteger(payload.intent_epoch) || payload.intent_epoch < 0) {
+      throw new Error("payload.intent_epoch must be a non-negative integer");
+    }
+
+    return createBrainConversationFactWorkerTask({
+      bot_id: payload.bot_id,
+      message_id: payload.message_id,
+      intent_epoch: payload.intent_epoch,
+      snapshot_ts: payload.snapshot_ts,
+      owner_text: payload.owner_text,
+      route_kind: payload.route_kind,
+      ...(payload.bot_reply === undefined ? {} : { bot_reply: payload.bot_reply }),
+      ...(payload.owner_position_at_message === undefined
+        ? {}
+        : { owner_position_at_message: payload.owner_position_at_message }),
+    });
+  }
+  const taskEventPayload = payload as BrainTaskEventWorkerTask["payload"];
+  assertNonEmptyString(taskEventPayload.bot_id, "payload.bot_id");
+  assertNonEmptyString(taskEventPayload.message_id, "payload.message_id");
+  assertNonEmptyString(taskEventPayload.owner_text, "payload.owner_text");
+  if (!Number.isInteger(taskEventPayload.intent_epoch) || taskEventPayload.intent_epoch < 0) {
     throw new Error("payload.intent_epoch must be a non-negative integer");
   }
-  if (!isPersistedTaskSummaryStatus(candidate.payload.status)) {
+  if (!isPersistedTaskSummaryStatus(taskEventPayload.status)) {
     throw new Error("BrainWorker task status must be completed, failed, or interrupted");
   }
 
   return createBrainWorkerTask({
-    bot_id: candidate.payload.bot_id,
-    message_id: candidate.payload.message_id,
-    intent_epoch: candidate.payload.intent_epoch,
-    status: candidate.payload.status,
-    owner_text: candidate.payload.owner_text,
-    task_card: candidate.payload.task_card,
-    ...(candidate.payload.log_ref === undefined ? {} : { log_ref: candidate.payload.log_ref }),
+    bot_id: taskEventPayload.bot_id,
+    message_id: taskEventPayload.message_id,
+    intent_epoch: taskEventPayload.intent_epoch,
+    status: taskEventPayload.status,
+    owner_text: taskEventPayload.owner_text,
+    task_card: taskEventPayload.task_card,
+    ...(taskEventPayload.log_ref === undefined ? {} : { log_ref: taskEventPayload.log_ref }),
   });
+}
+
+function isBrainConversationFactWorkerTask(
+  task: BrainWorkerTask,
+): task is BrainConversationFactWorkerTask {
+  return "kind" in task.payload && task.payload.kind === "conversation_fact";
 }
 
 function createErrorSnapshot(error: unknown): BrainWorkerRuntimeEvent & {
@@ -318,6 +367,15 @@ export function createBrainWorkerRuntime(input: {
 
     try {
       task = cloneBrainWorkerTask(job.data);
+      if (isBrainConversationFactWorkerTask(task)) {
+        await processConversationFactTask({
+          task,
+          dependencies: input.dependencies,
+          emitEvent,
+          now,
+        });
+        return;
+      }
       const embeddingText = createTaskEventEmbeddingText({
         owner_text: task.payload.owner_text,
       });
@@ -362,8 +420,7 @@ export function createBrainWorkerRuntime(input: {
         now,
       });
       await processMemoryCandidates({
-        task,
-        draft,
+        source: createTaskEventMemorySource({ task, draft }),
         dependencies: input.dependencies,
         emitEvent,
         now,
@@ -377,17 +434,23 @@ export function createBrainWorkerRuntime(input: {
       });
     } catch (error) {
       const failedEvent = createErrorSnapshot(error);
-      await emitEvent(
-        Object.freeze({
-          ...failedEvent,
-          ...(task === undefined
-            ? {}
-            : {
-                bot_id: task.payload.bot_id,
-                message_id: task.payload.message_id,
-              }),
-        }),
-      );
+      const enrichedFailedEvent = Object.freeze({
+        ...failedEvent,
+        ...(task === undefined
+          ? {}
+          : {
+              bot_id: task.payload.bot_id,
+              message_id: task.payload.message_id,
+            }),
+      });
+      await emitEvent(enrichedFailedEvent);
+      await appendBrainTaskFailureDiagnostic({
+        event: enrichedFailedEvent,
+        ...(input.dependencies.diagnosticSink === undefined
+          ? {}
+          : { diagnosticSink: input.dependencies.diagnosticSink }),
+        now,
+      });
       throw error;
     }
   };
@@ -420,8 +483,36 @@ export function createBrainWorkerRuntime(input: {
   });
 }
 
+async function appendBrainTaskFailureDiagnostic(input: {
+  readonly event: BrainWorkerRuntimeEvent & { readonly type: "brain.task_event.failed" };
+  readonly diagnosticSink?: BrainDiagnosticLogSink;
+  readonly now: () => Date;
+}): Promise<void> {
+  if (input.diagnosticSink === undefined) {
+    return;
+  }
+
+  const createdAt = input.now();
+  await input.diagnosticSink({
+    log_ref: createBrainDiagnosticLogRef({
+      date: createdAt.toISOString().slice(0, 10),
+      kind: "task-failed",
+      ...(input.event.message_id === undefined ? {} : { message_id: input.event.message_id }),
+    }),
+    lines: [
+      Object.freeze({
+        t: createdAt.getTime() / 1000,
+        event: "brain.task.failed" as const,
+        ...(input.event.bot_id === undefined ? {} : { bot_id: input.event.bot_id }),
+        ...(input.event.message_id === undefined ? {} : { message_id: input.event.message_id }),
+        error: input.event.error,
+      }),
+    ],
+  });
+}
+
 async function updateFailureTakeawayIfNeeded(input: {
-  readonly task: BrainWorkerTask;
+  readonly task: BrainTaskEventWorkerTask;
   readonly draft: TaskEventDraft;
   readonly dependencies: BrainWorkerRuntimeDependencies;
   readonly emitEvent: (event: BrainWorkerRuntimeEvent) => Promise<void>;
@@ -465,7 +556,7 @@ async function updateFailureTakeawayIfNeeded(input: {
 }
 
 async function updateRollingSummary(input: {
-  readonly task: BrainWorkerTask;
+  readonly task: BrainTaskEventWorkerTask;
   readonly dependencies: BrainWorkerRuntimeDependencies;
   readonly emitEvent: (event: BrainWorkerRuntimeEvent) => Promise<void>;
   readonly now: () => Date;
@@ -510,9 +601,59 @@ async function updateRollingSummary(input: {
   );
 }
 
-async function processMemoryCandidates(input: {
-  readonly task: BrainWorkerTask;
+async function processConversationFactTask(input: {
+  readonly task: BrainConversationFactWorkerTask;
+  readonly dependencies: BrainWorkerRuntimeDependencies;
+  readonly emitEvent: (event: BrainWorkerRuntimeEvent) => Promise<void>;
+  readonly now: () => Date;
+}): Promise<void> {
+  await processMemoryCandidates({
+    source: createConversationFactMemorySource(input.task),
+    dependencies: input.dependencies,
+    emitEvent: input.emitEvent,
+    now: input.now,
+  });
+}
+
+function createTaskEventMemorySource(input: {
+  readonly task: BrainTaskEventWorkerTask;
   readonly draft: TaskEventDraft;
+}): BrainMemoryCandidateSource {
+  return Object.freeze({
+    source_kind: "task_event" as const,
+    source_ref_id: input.draft.id,
+    source_event_id: input.draft.id,
+    bot_id: input.task.payload.bot_id,
+    message_id: input.task.payload.message_id,
+    snapshot_ts: input.task.payload.task_card.snapshot_ts,
+    owner_text: input.task.payload.owner_text,
+    task_card: input.task.payload.task_card,
+    ...(input.task.payload.task_card.owner_position_at_message === undefined
+      ? {}
+      : { owner_position: input.task.payload.task_card.owner_position_at_message }),
+  });
+}
+
+function createConversationFactMemorySource(
+  task: BrainConversationFactWorkerTask,
+): BrainMemoryCandidateSource {
+  return Object.freeze({
+    source_kind: "conversation_fact" as const,
+    source_ref_id: `conversation-fact:${task.payload.bot_id}:${task.payload.message_id}`,
+    bot_id: task.payload.bot_id,
+    message_id: task.payload.message_id,
+    snapshot_ts: task.payload.snapshot_ts,
+    owner_text: task.payload.owner_text,
+    route_kind: task.payload.route_kind,
+    ...(task.payload.bot_reply === undefined ? {} : { bot_reply: task.payload.bot_reply }),
+    ...(task.payload.owner_position_at_message === undefined
+      ? {}
+      : { owner_position: task.payload.owner_position_at_message }),
+  });
+}
+
+async function processMemoryCandidates(input: {
+  readonly source: BrainMemoryCandidateSource;
   readonly dependencies: BrainWorkerRuntimeDependencies;
   readonly emitEvent: (event: BrainWorkerRuntimeEvent) => Promise<void>;
   readonly now: () => Date;
@@ -525,20 +666,27 @@ async function processMemoryCandidates(input: {
   }
 
   const existingMemory =
-    (await input.dependencies.loadBotMemory?.(input.task.payload.bot_id)) ??
+    (await input.dependencies.loadBotMemory?.(input.source.bot_id)) ??
     createEmptyBotMemorySnapshot();
-  const ownerPosition = input.task.payload.task_card.owner_position_at_message;
   const mutableMemory: Record<BotMemoryKind, string> = {
     USER: existingMemory.USER,
     MEMORY: existingMemory.MEMORY,
     SKILL: existingMemory.SKILL,
   };
   const candidates = await llm.generateMemoryCandidates({
-    owner_text: input.task.payload.owner_text,
-    task_card: input.task.payload.task_card,
+    owner_text: input.source.owner_text,
+    source: input.source.source_kind,
+    ...(input.source.task_card === undefined ? {} : { task_card: input.source.task_card }),
+    ...(input.source.message_id === undefined ? {} : { message_id: input.source.message_id }),
+    ...(input.source.snapshot_ts === undefined ? {} : { snapshot_ts: input.source.snapshot_ts }),
+    ...(input.source.route_kind === undefined ? {} : { route_kind: input.source.route_kind }),
+    ...(input.source.bot_reply === undefined ? {} : { bot_reply: input.source.bot_reply }),
     existing_memory: existingMemory,
-    ...(ownerPosition === undefined ? {} : { owner_position: ownerPosition }),
+    ...(input.source.owner_position === undefined
+      ? {}
+      : { owner_position: input.source.owner_position }),
   });
+  let acceptedCount = 0;
 
   for (const [index, candidate] of candidates.entries()) {
     const nowIso = input.now().toISOString();
@@ -546,6 +694,9 @@ async function processMemoryCandidates(input: {
     const duplicate = containsExactMemoryLine(mutableMemory[candidate.kind], candidate.content);
     const initialStatus =
       candidate.confidence < MEMORY_KEEP_PENDING_CONFIDENCE || duplicate ? "rejected" : "pending";
+    if (initialStatus !== "rejected") {
+      acceptedCount += 1;
+    }
     const candidateReason = createMemoryCandidateReason({
       reason: candidate.reason,
       duplicate,
@@ -553,11 +704,13 @@ async function processMemoryCandidates(input: {
     });
     const candidateDraft = createMemoryCandidateDraft({
       id: createMemoryCandidateId({
-        event_id: input.draft.id,
+        event_id: input.source.source_ref_id,
         index,
       }),
-      bot_id: input.task.payload.bot_id,
-      source_event_id: input.draft.id,
+      bot_id: input.source.bot_id,
+      ...(input.source.source_event_id === undefined
+        ? {}
+        : { source_event_id: input.source.source_event_id }),
       kind: candidate.kind,
       content: candidate.content,
       confidence: candidate.confidence,
@@ -595,6 +748,54 @@ async function processMemoryCandidates(input: {
       });
     }
   }
+
+  if (candidates.length === 0 || acceptedCount === 0) {
+    await appendBrainRubricEmptyDiagnostic({
+      source: input.source,
+      raw_count: candidates.length,
+      accepted_count: acceptedCount,
+      ...(input.dependencies.diagnosticSink === undefined
+        ? {}
+        : { diagnosticSink: input.dependencies.diagnosticSink }),
+      now: input.now,
+    });
+  }
+}
+
+async function appendBrainRubricEmptyDiagnostic(input: {
+  readonly source: BrainMemoryCandidateSource;
+  readonly raw_count: number;
+  readonly accepted_count: number;
+  readonly diagnosticSink?: BrainDiagnosticLogSink;
+  readonly now: () => Date;
+}): Promise<void> {
+  if (input.diagnosticSink === undefined) {
+    return;
+  }
+
+  const createdAt = input.now();
+  await input.diagnosticSink({
+    log_ref: createBrainDiagnosticLogRef({
+      date: createdAt.toISOString().slice(0, 10),
+      kind: "rubric-empty",
+      ...(input.source.message_id === undefined ? {} : { message_id: input.source.message_id }),
+    }),
+    lines: [
+      Object.freeze({
+        t: createdAt.getTime() / 1000,
+        event: "brain.rubric.empty" as const,
+        bot_id: input.source.bot_id,
+        ...(input.source.message_id === undefined ? {} : { message_id: input.source.message_id }),
+        source: input.source.source_kind,
+        owner_text: input.source.owner_text,
+        ...(input.source.owner_position === undefined
+          ? {}
+          : { owner_position: input.source.owner_position }),
+        raw_count: input.raw_count,
+        accepted_count: input.accepted_count,
+      }),
+    ],
+  });
 }
 
 async function promoteMemoryCandidate(input: {
@@ -701,7 +902,7 @@ async function resolveMemoryOverflow(input: {
 }
 
 function scheduleSessionTakeaway(input: {
-  readonly task: BrainWorkerTask;
+  readonly task: BrainTaskEventWorkerTask;
   readonly dependencies: BrainWorkerRuntimeDependencies;
   readonly timers: Map<string, ReturnType<typeof setTimeout>>;
   readonly emitEvent: (event: BrainWorkerRuntimeEvent) => Promise<void>;
@@ -801,7 +1002,7 @@ async function runSessionTakeawayIfStillSilent(input: {
 }
 
 async function createFailureLogExcerpt(input: {
-  readonly task: BrainWorkerTask;
+  readonly task: BrainTaskEventWorkerTask;
   readonly readTaskLogExcerpt?: (logRef: string) => Promise<string | undefined>;
 }): Promise<string> {
   const logRef = input.task.payload.log_ref ?? input.task.payload.task_card.result.log_ref;
@@ -863,7 +1064,9 @@ function removeOldestMemoryLines(content: string, maxChars: number): string {
   return clampByChars(lines.join("\n"), maxChars);
 }
 
-function createRollingSummaryLine(taskCard: BrainWorkerTask["payload"]["task_card"]): string {
+function createRollingSummaryLine(
+  taskCard: BrainTaskEventWorkerTask["payload"]["task_card"],
+): string {
   const statusText =
     taskCard.result.status === "completed"
       ? "完成"

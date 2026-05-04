@@ -1,13 +1,20 @@
+import type { BrainSearchInput } from "../../data/contracts/index.js";
 import type { LlmLogStage } from "../../diagnostics/contracts.js";
 import { createLlmLogLine, createLlmLogRef } from "../../diagnostics/logs.js";
+import { BRAIN_SEARCH_MAX_TOOL_ROUNDS, createBrainSearchToolResult } from "../brain-context.js";
 import {
   createConversationLlmDiagnosticRecord,
   createErrorSnapshot,
   createLlmInvocationLines,
   createUnixSeconds,
 } from "./diagnostics.js";
+import type {
+  OpenAiCompatibleChatCompletionResponse,
+  OpenAiCompatibleFunctionTool,
+} from "./http.js";
 import { requestChatCompletionPayload } from "./http.js";
-import { extractAssistantReply } from "./parsers.js";
+import { extractAssistantReply, extractAssistantToolCalls } from "./parsers.js";
+import type { ConversationLlmSearchTool } from "./types.js";
 import type {
   ConversationLlmConfig,
   ConversationLlmDependencies,
@@ -39,6 +46,10 @@ export interface ConversationLlmStageInput<TResult> extends ConversationLlmStage
   readonly parse: (content: string) => TResult;
   /** 失败策略。 */
   readonly onFailure: (input: ConversationLlmStageFailure) => TResult | Promise<TResult>;
+  /** 可选 search() tool（工具）；仅 Stage 2-Chat / Stage 2-Plan 使用。 */
+  readonly searchTool?: ConversationLlmSearchTool;
+  /** search() tool（工具） 所属 Bot（机器人） 标识。 */
+  readonly searchToolBotId?: string;
 }
 
 /** LLM（大语言模型） 阶段失败上下文。 */
@@ -83,11 +94,8 @@ export async function executeStage<TResult>(
   });
 
   try {
-    const payload = await requestChatCompletionPayload({
-      fetchImpl: input.fetchImpl,
-      config: input.config,
-      messages: input.messages,
-    });
+    const toolExecution = await executeSearchToolLoop(input);
+    const payload = toolExecution.payload;
     const value = input.parse(extractAssistantReply(payload));
     const finishedAt = input.now();
     const diagnostics = createConversationLlmDiagnosticRecord({
@@ -99,6 +107,7 @@ export async function executeStage<TResult>(
       ok: true,
       lines: [
         ...invocationLines,
+        ...toolExecution.extraLines,
         createLlmLogLine({
           t: createUnixSeconds(finishedAt),
           meta: {
@@ -154,4 +163,180 @@ export async function executeStage<TResult>(
       diagnostics,
     });
   }
+}
+
+async function executeSearchToolLoop<TResult>(input: ConversationLlmStageInput<TResult>): Promise<{
+  readonly payload: Awaited<ReturnType<typeof requestChatCompletionPayload>>;
+  readonly extraLines: readonly ReturnType<typeof createLlmLogLine>[];
+}> {
+  if (input.searchTool === undefined) {
+    const payload = await requestChatCompletionPayload({
+      fetchImpl: input.fetchImpl,
+      config: input.config,
+      messages: input.messages,
+    });
+
+    return Object.freeze({
+      payload,
+      extraLines: [createAssistantTranscriptLine(payload, input.now())],
+    });
+  }
+
+  let messages = [...input.messages];
+  const extraLines: ReturnType<typeof createLlmLogLine>[] = [];
+
+  for (let round = 0; round <= BRAIN_SEARCH_MAX_TOOL_ROUNDS; round += 1) {
+    const payload = await requestChatCompletionPayload({
+      fetchImpl: input.fetchImpl,
+      config: input.config,
+      messages,
+      tools: [SEARCH_TOOL_DEFINITION],
+      tool_choice: round >= BRAIN_SEARCH_MAX_TOOL_ROUNDS ? "none" : "auto",
+    });
+    const toolCalls = extractAssistantToolCalls(payload).filter(
+      (toolCall) => toolCall.function.name === "search",
+    );
+
+    if (toolCalls.length === 0 || round >= BRAIN_SEARCH_MAX_TOOL_ROUNDS) {
+      extraLines.push(createAssistantTranscriptLine(payload, input.now()));
+
+      return Object.freeze({ payload, extraLines });
+    }
+
+    extraLines.push(createAssistantTranscriptLine(payload, input.now()));
+
+    messages = [
+      ...messages,
+      Object.freeze({
+        role: "assistant",
+        content: "",
+        tool_calls: toolCalls,
+      }),
+    ];
+
+    for (const toolCall of toolCalls) {
+      const searchInput = parseSearchToolInput({
+        bot_id: input.searchToolBotId ?? "",
+        rawArguments: toolCall.function.arguments,
+      });
+      const content = await executeSearchToolCall({
+        searchTool: input.searchTool,
+        searchInput,
+      });
+      messages.push(
+        Object.freeze({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content,
+        }),
+      );
+      extraLines.push(
+        createLlmLogLine({
+          t: createUnixSeconds(input.now()),
+          role: "tool",
+          content,
+        }),
+      );
+    }
+  }
+
+  throw new Error("search tool loop failed to produce final response");
+}
+
+function createAssistantTranscriptLine(
+  payload: Awaited<ReturnType<typeof requestChatCompletionPayload>>,
+  now: Date,
+): ReturnType<typeof createLlmLogLine> {
+  const message = payload.choices?.[0]?.message;
+  const toolCalls = message?.tool_calls ?? [];
+
+  return createLlmLogLine({
+    t: createUnixSeconds(now),
+    role: "assistant" as const,
+    content: normalizeAssistantContentForLog(message?.content),
+    ...(toolCalls.length === 0 ? {} : { tool_calls: toolCalls }),
+  });
+}
+
+function normalizeAssistantContentForLog(
+  content: NonNullable<
+    NonNullable<OpenAiCompatibleChatCompletionResponse["choices"]>[number]["message"]
+  >["content"],
+): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
+  }
+
+  return "";
+}
+
+async function executeSearchToolCall(input: {
+  readonly searchTool: ConversationLlmSearchTool;
+  readonly searchInput: BrainSearchInput;
+}): Promise<string> {
+  try {
+    return createBrainSearchToolResult({
+      query: input.searchInput.query,
+      result: await input.searchTool(input.searchInput),
+    });
+  } catch (error) {
+    return JSON.stringify({
+      query: input.searchInput.query,
+      hits: [],
+      error: error instanceof Error ? error.message : "brain.search failed",
+    });
+  }
+}
+
+const SEARCH_TOOL_DEFINITION = Object.freeze({
+  type: "function",
+  function: Object.freeze({
+    name: "search",
+    description: "查找长期任务历史。仅在 A.5 滚动摘要 / C 层 MEMORY 不够回答主人问题时使用",
+    parameters: Object.freeze({
+      type: "object",
+      properties: Object.freeze({
+        query: Object.freeze({ type: "string", description: "自然语言查询" }),
+        kinds: Object.freeze({
+          type: "array",
+          items: Object.freeze({ enum: ["task", "takeaway"] }),
+          description: "默认两者都查",
+        }),
+        top_k: Object.freeze({ type: "integer", default: 5, maximum: 10 }),
+      }),
+      required: ["query"],
+    }),
+  }),
+} satisfies OpenAiCompatibleFunctionTool);
+
+function parseSearchToolInput(input: {
+  readonly bot_id: string;
+  readonly rawArguments: string;
+}): BrainSearchInput {
+  const parsed = JSON.parse(input.rawArguments) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("search tool arguments must be a JSON object");
+  }
+
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.query !== "string" || record.query.trim().length === 0) {
+    throw new Error("search tool query must be a non-empty string");
+  }
+
+  return Object.freeze({
+    bot_id: input.bot_id,
+    query: record.query.trim(),
+    ...(Array.isArray(record.kinds)
+      ? {
+          kinds: record.kinds.filter(
+            (kind): kind is "task" | "takeaway" => kind === "task" || kind === "takeaway",
+          ),
+        }
+      : {}),
+    ...(typeof record.top_k === "number" ? { top_k: record.top_k } : {}),
+  });
 }

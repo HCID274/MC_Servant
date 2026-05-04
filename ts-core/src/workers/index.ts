@@ -22,6 +22,7 @@ export const workersModuleBoundary = {
     "createConversationWorkerTask",
     "createBotWorkerTask",
     "createBrainWorkerTask",
+    "createBrainConversationFactWorkerTask",
     "createConversationWorkerActions",
     "createBotWorkerActions",
     "createBrainWorkerActions",
@@ -44,3 +45,4 @@ export * from "./brain-worker.js";
 export * from "./embedding-client.js";
 export * from "./brain-llm.js";
 export * from "./brain-memory-safety.js";
+export * from "./task-history-sink.js";

@@ -1,3 +1,4 @@
+import { renderConversationBrainContext } from "../../../conversation/brain-context.js";
 import { createConversationReply } from "../../../conversation/chat.js";
 import type { ConversationRouteDecision } from "../../../conversation/contracts.js";
 import { ConversationLlmChatError } from "../../../conversation/llm.js";
@@ -5,6 +6,7 @@ import type { ConversationLlmDiagnosticRecord } from "../../../conversation/llm.
 import type { MessageTriage } from "../../../core-ports/foundation.js";
 import type { BotActorStateProjection } from "../../../core-ports/runtime.js";
 import type { ConversationWorkerTask } from "../../contracts.js";
+import { tryEnqueueConversationFactCandidate } from "../brain-facts.js";
 import { appendLlmDiagnosticEvent } from "../events.js";
 import {
   CONVERSATION_WORKER_MEMORY_CONTEXT_CHAR_BUDGET,
@@ -35,10 +37,13 @@ export async function handleChatReplyRoute(input: {
         ? {}
         : { actorRecentEvents: actorProjection.recent_events }),
       currentMessageId: input.task.message.message_id,
+      roundLimit: 5,
     });
     const memoryContext = await readMemoryContext(input);
+    const brainContext = await readBrainContext(input);
     const promptContext =
-      input.dependencies.replyGenerator === undefined
+      input.dependencies.replyGenerator === undefined &&
+      input.dependencies.enqueueBrainFactSink === undefined
         ? undefined
         : await createChatPromptSnapshotContext({
             task: input.task,
@@ -61,6 +66,10 @@ export async function handleChatReplyRoute(input: {
             ? {}
             : { inventory_change_context: promptContext.inventory_change_context }),
           ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+          ...(brainContext === undefined ? {} : { brain_context: brainContext }),
+          ...(input.dependencies.brainSearchTool === undefined
+            ? {}
+            : { search_tool: input.dependencies.brainSearchTool }),
         })) ?? `收到：${input.task.message.content}`,
       );
     } finally {
@@ -86,6 +95,8 @@ export async function handleChatReplyRoute(input: {
       message_id: input.task.message.message_id,
       text: reply.reply,
     });
+    const ownerPositionAtMessage =
+      input.task.message.owner_position_at_message ?? promptContext?.owner_position_at_message;
     await appendConversationReplyLog({
       task: input.task,
       route: input.route,
@@ -100,6 +111,7 @@ export async function handleChatReplyRoute(input: {
           ? {}
           : { inventory_change_context: promptContext.inventory_change_context }),
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
+        ...(brainContext === undefined ? {} : { brain_context: brainContext }),
       },
       ...(generatedReply.diagnostics === undefined
         ? {}
@@ -113,11 +125,41 @@ export async function handleChatReplyRoute(input: {
         content: reply.reply,
       }),
     );
+    await tryEnqueueConversationFactCandidate({
+      task: input.task,
+      dependencies: input.dependencies,
+      events: input.events,
+      route_kind: "chat_reply",
+      bot_reply: reply.reply,
+      ...(ownerPositionAtMessage === undefined
+        ? {}
+        : { owner_position_at_message: ownerPositionAtMessage }),
+    });
   } catch (error) {
     if (error instanceof ConversationLlmChatError) {
       appendLlmDiagnosticEvent(input.events, input.task.bot_id, error.diagnostics);
     }
     throw error;
+  }
+}
+
+async function readBrainContext(input: {
+  readonly task: ConversationWorkerTask;
+  readonly dependencies: ConversationWorkerRuntimeDependencies;
+}): Promise<string | undefined> {
+  try {
+    const context = await input.dependencies.brainContextProvider?.({
+      bot_id: input.task.bot_id,
+      message_id: input.task.message.message_id,
+      include_skill: false,
+    });
+
+    return renderConversationBrainContext({
+      ...(context === null || context === undefined ? {} : { context }),
+      includeSkill: false,
+    });
+  } catch {
+    return undefined;
   }
 }
 
@@ -147,6 +189,7 @@ async function appendConversationReplyLog(input: {
     readonly recent_context?: string;
     readonly inventory_change_context?: string;
     readonly memory_context?: string;
+    readonly brain_context?: string;
   };
   readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;
 }): Promise<void> {

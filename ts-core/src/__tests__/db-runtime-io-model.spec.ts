@@ -9,11 +9,17 @@ import {
   createBrainTaskCard,
   createDataConfig,
   createDrizzleMigrationMetadata,
+  createPersistedTaskHistoryAcceptedRecord,
+  createPersistedTaskHistoryStartedPatch,
+  createPersistedTaskHistoryTerminalPatch,
+  createPostgresBrainSearchStore,
   createPostgresConnectionDescriptor,
   createPostgresRuntimeResource,
   createPostgresTaskEventPersister,
+  createPostgresTaskHistoryStore,
   createRedisConnectionDescriptor,
   createRedisRuntimeResource,
+  createSkillCallJob,
   createTaskEventDraft,
   runDrizzleMigrations,
 } from "../index.js";
@@ -149,6 +155,182 @@ describe("db 与 app 的真实 I/O 工厂边界", () => {
         embedding: [0.1, 0.2],
         createdAt: new Date("2026-04-26T01:00:00.000Z"),
       }),
+    ]);
+  });
+
+  it("应通过 PostgreSQL（关系型数据库） 端口写入并更新 task_history（任务历史）", async () => {
+    const inserts: unknown[] = [];
+    const updates: unknown[] = [];
+    const store = createPostgresTaskHistoryStore({
+      db: {
+        insert: () => ({
+          values: (row: unknown) => ({
+            onConflictDoNothing: async () => {
+              inserts.push(row);
+            },
+          }),
+        }),
+        update: () => ({
+          set: (values: unknown) => ({
+            where: async () => {
+              updates.push(values);
+            },
+          }),
+        }),
+      },
+    });
+    const job = createSkillCallJob({
+      message_id: "msg-history",
+      intent_epoch: 3,
+      snapshot_ts: 100,
+      priority: ExecPriority.Normal,
+      skill: "goTo",
+      params: { x: 10, y: 64, z: 20 },
+    });
+
+    await store.insertAccepted(
+      createPersistedTaskHistoryAcceptedRecord({
+        bot_id: "bot-db",
+        job,
+        log_ref: "tasks/2026-05-04/msg-history.jsonl",
+        created_at: "2026-05-04T01:00:00.000Z",
+      }),
+    );
+    await store.markStarted(
+      createPersistedTaskHistoryStartedPatch({
+        id: "msg-history",
+        started_at: "2026-05-04T01:00:01.000Z",
+      }),
+    );
+    await store.markTerminal(
+      createPersistedTaskHistoryTerminalPatch({
+        id: "msg-history",
+        status: TaskHistoryStatus.Completed,
+        finished_at: "2026-05-04T01:00:03.000Z",
+        duration_ms: 2000,
+        total_steps: 4,
+      }),
+    );
+    await store.markTerminal(
+      createPersistedTaskHistoryTerminalPatch({
+        id: "msg-history-failed",
+        status: TaskHistoryStatus.Failed,
+        finished_at: "2026-05-04T01:00:04.000Z",
+        duration_ms: 3000,
+        total_steps: 5,
+        error: { name: "Error", message: "path not found" },
+      }),
+    );
+    await store.markTerminal(
+      createPersistedTaskHistoryTerminalPatch({
+        id: "msg-history-interrupted",
+        status: TaskHistoryStatus.Interrupted,
+        finished_at: "2026-05-04T01:00:05.000Z",
+        duration_ms: 4000,
+        total_steps: 6,
+        interrupt_source: { type: "owner" },
+        reason: "owner_cancel",
+      }),
+    );
+    await store.markDiscarded({
+      id: "msg-history-discarded",
+      discarded_at: "2026-05-04T01:00:06.000Z",
+    });
+
+    expect(inserts).toEqual([
+      expect.objectContaining({
+        id: "msg-history",
+        botId: "bot-db",
+        status: TaskHistoryStatus.Accepted,
+        skill: "goTo",
+        params: { x: 10, y: 64, z: 20 },
+        logRef: "tasks/2026-05-04/msg-history.jsonl",
+      }),
+    ]);
+    expect(updates).toEqual([
+      expect.objectContaining({
+        status: TaskHistoryStatus.Started,
+        startedAt: new Date("2026-05-04T01:00:01.000Z"),
+      }),
+      expect.objectContaining({
+        status: TaskHistoryStatus.Completed,
+        finishedAt: new Date("2026-05-04T01:00:03.000Z"),
+        durationMs: 2000,
+        totalSteps: 4,
+      }),
+      expect.objectContaining({
+        status: TaskHistoryStatus.Failed,
+        finishedAt: new Date("2026-05-04T01:00:04.000Z"),
+        durationMs: 3000,
+        totalSteps: 5,
+        error: { name: "Error", message: "path not found" },
+      }),
+      expect.objectContaining({
+        status: TaskHistoryStatus.Interrupted,
+        finishedAt: new Date("2026-05-04T01:00:05.000Z"),
+        durationMs: 4000,
+        totalSteps: 6,
+        interruptSource: { type: "owner" },
+      }),
+      expect.objectContaining({
+        status: TaskHistoryStatus.Discarded,
+        finishedAt: new Date("2026-05-04T01:00:06.000Z"),
+      }),
+    ]);
+  });
+
+  it("应通过 PostgreSQL（关系型数据库） brain.search（大脑检索） 端口执行 RRF（倒数排序融合） 查询", async () => {
+    const queries: Array<{ sql: string; values: readonly unknown[] }> = [];
+    const store = createPostgresBrainSearchStore({
+      db: {
+        $client: {
+          async query(sql: string, values: readonly unknown[]) {
+            queries.push({ sql, values });
+
+            return {
+              rows: [
+                {
+                  id: "event-1",
+                  task_id: "msg-collect",
+                  owner_text: "去捡盾牌",
+                  takeaway: null,
+                  task_card: { result: "collect 成功，捡到 shield x1" },
+                  created_at: new Date("2026-04-26T01:00:00.000Z"),
+                  rrf_score: 0.42,
+                },
+              ],
+            };
+          },
+        },
+      },
+      generateEmbedding: async (text) => {
+        expect(text).toBe("捡盾牌");
+
+        return [0.1, 0.2, 0.3];
+      },
+    });
+
+    const result = await store.search({
+      bot_id: "bot-db",
+      query: "捡盾牌",
+      top_k: 20,
+    });
+
+    expect(queries).toEqual([
+      {
+        sql: expect.stringContaining("WITH fts AS"),
+        values: ["bot-db", "捡盾牌", "[0.1,0.2,0.3]", 10],
+      },
+    ]);
+    expect(result.hits).toEqual([
+      {
+        id: "event-1",
+        task_id: "msg-collect",
+        owner_text: "去捡盾牌",
+        task_card: { result: "collect 成功，捡到 shield x1" },
+        created_at: "2026-04-26T01:00:00.000Z",
+        score: 0.42,
+      },
     ]);
   });
 

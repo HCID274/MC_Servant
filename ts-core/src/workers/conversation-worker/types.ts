@@ -8,6 +8,7 @@ import type { ConversationInventoryDiffCache } from "../../conversation/inventor
 import type {
   ConversationGeneratedReply,
   ConversationLlmDiagnosticRecord,
+  ConversationLlmSearchTool,
 } from "../../conversation/llm.js";
 import type { ConversationRecentContextStore } from "../../conversation/recent-context.js";
 import type { MessageTriage } from "../../core-ports/foundation.js";
@@ -15,9 +16,12 @@ import type { EnvironmentSnapshot } from "../../core-ports/observation.js";
 import type { BotActorStateProjection } from "../../core-ports/runtime.js";
 import type { SkillName } from "../../core-ports/skills.js";
 import type { ExecPriority, TaskHistoryStatus } from "../../core-ports/tasking.js";
+import type { ConversationBrainContext } from "../../data/contracts/index.js";
 import type { RedisClientLike } from "../../db/index.js";
+import type { BrainDiagnosticLogSink } from "../../diagnostics/index.js";
 import type {
   BotWorkerTask,
+  BrainWorkerTask,
   ConversationWorkerTask,
   InterruptRuntimeAction,
 } from "../contracts.js";
@@ -89,6 +93,32 @@ export type ConversationWorkerRuntimeEvent =
       readonly exec_type?: "sandbox_code";
       /** 执行队列优先级。 */
       readonly priority: ExecPriority;
+    }
+  | {
+      /** 事件类型。 */
+      readonly type: "brain.fact.enqueue_failed";
+      /** 目标 Bot 标识。 */
+      readonly bot_id: string;
+      /** 原始消息标识。 */
+      readonly message_id: string;
+      /** fact（事实） 来源路由。 */
+      readonly route_kind: "chat_reply" | "plan_exec";
+      /** 失败摘要。 */
+      readonly error_summary: string;
+    }
+  | {
+      /** 事件类型。 */
+      readonly type: "brain.fact.diagnostic_failed";
+      /** 目标 Bot 标识。 */
+      readonly bot_id: string;
+      /** 原始消息标识。 */
+      readonly message_id: string;
+      /** fact（事实） 来源路由。 */
+      readonly route_kind: "chat_reply" | "plan_exec";
+      /** 原始入队失败摘要。 */
+      readonly enqueue_error_summary: string;
+      /** 诊断写入失败摘要。 */
+      readonly diagnostic_error_summary: string;
     };
 
 /** ConversationWorker（对话工作线程） 广播回复汇点。 */
@@ -107,6 +137,12 @@ export type ConversationEnqueueExecTaskSink = (input: {
   readonly priority: number;
 }) => Promise<unknown>;
 
+/** ConversationWorker（对话工作线程） 对话事实入 BrainWorker（大脑工作线程） 汇点。 */
+export type ConversationEnqueueBrainFactSink = (input: {
+  /** BrainWorker（大脑工作线程） 可消费的 conversation_fact（对话事实）任务。 */
+  readonly task: BrainWorkerTask;
+}) => Promise<unknown>;
+
 /** ConversationWorker（对话工作线程） 运行时中断汇点。 */
 export type ConversationInterruptRuntimeSink = (input: {
   /** 目标 Bot 标识。 */
@@ -119,6 +155,8 @@ export type ConversationInterruptRuntimeSink = (input: {
 export type ConversationWorkerTriage = (input: {
   /** Worker 输入任务。 */
   readonly task: ConversationWorkerTask;
+  /** A.5 + C(USER/MEMORY) 常驻 Brain context（大脑上下文）。 */
+  readonly brain_context?: string;
 }) => ConversationTriageOutput | Promise<ConversationTriageOutput>;
 
 /** ConversationWorker（对话工作线程） 回复生成依赖。 */
@@ -139,6 +177,10 @@ export type ConversationWorkerReplyGenerator = (input: {
   readonly inventory_change_context?: string;
   /** 可选记忆摘要。 */
   readonly memory_context?: string;
+  /** A.5 + C 常驻 Brain context（大脑上下文）。 */
+  readonly brain_context?: string;
+  /** 可选 search() tool（工具）。 */
+  readonly search_tool?: ConversationLlmSearchTool;
 }) => string | ConversationGeneratedReply | Promise<string | ConversationGeneratedReply>;
 
 /** ConversationWorker（对话工作线程） 状态投影提供器。 */
@@ -182,6 +224,22 @@ export type ConversationMemoryContextProvider = (
   input: ConversationMemoryContextProviderInput,
 ) => string | null | undefined | Promise<string | null | undefined>;
 
+/** ConversationWorker（对话工作线程） 常驻 Brain context（大脑上下文）读取输入。 */
+export interface ConversationBrainContextProviderInput {
+  readonly bot_id: string;
+  readonly message_id: string;
+  readonly include_skill: boolean;
+}
+
+/** ConversationWorker（对话工作线程） 可注入 Brain context（大脑上下文）provider（提供器）。 */
+export type ConversationBrainContextProvider = (
+  input: ConversationBrainContextProviderInput,
+) =>
+  | ConversationBrainContext
+  | null
+  | undefined
+  | Promise<ConversationBrainContext | null | undefined>;
+
 /** ConversationWorker（对话工作线程） 资源摘要读取输入。 */
 export interface ConversationResourceContextProviderInput {
   /** 目标 Bot 标识。 */
@@ -209,6 +267,10 @@ export type ConversationWorkerPlanner = (input: {
   readonly route: Extract<ConversationRouteDecision, { readonly kind: "plan_exec" }>;
   /** 可选记忆摘要。 */
   readonly memory_context?: string;
+  /** A.5 + C 常驻 Brain context（大脑上下文）。 */
+  readonly brain_context?: string;
+  /** 可选 search() tool（工具）。 */
+  readonly search_tool?: ConversationLlmSearchTool;
   /** 可选资源摘要。 */
   readonly resource_context?: string;
   /** 可选最近上下文时间线，已按 §7.6 渲染。 */
@@ -246,6 +308,7 @@ export interface ConversationReplyLogInput {
     readonly resource_context?: string;
     readonly recent_context?: string;
     readonly inventory_change_context?: string;
+    readonly brain_context?: string;
   };
   /** LLM（大语言模型） 诊断记录，包含实际发送的 messages（消息）。 */
   readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;
@@ -280,6 +343,10 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly actorStateProjectionProvider?: ConversationActorStateProjectionProvider;
   /** memory（记忆）上下文提供器；仅按路由信号读取，失败时降级为空上下文。 */
   readonly memoryContextProvider?: ConversationMemoryContextProvider;
+  /** Brain context（大脑上下文）提供器；Triage / Chat / Plan 三阶段只读消费。 */
+  readonly brainContextProvider?: ConversationBrainContextProvider | undefined;
+  /** Stage 2-Chat / Stage 2-Plan 暴露给 LLM（大语言模型） 的 search() tool（工具）。 */
+  readonly brainSearchTool?: ConversationLlmSearchTool | undefined;
   /** ResourceService（世界感知资源服务） 摘要提供器；仅规划路径读取，失败时降级为空上下文。 */
   readonly resourceContextProvider?: ConversationResourceContextProvider;
   /** 最小规划函数，成功时返回可执行规划草案。 */
@@ -298,6 +365,10 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly interruptRuntimeSink?: ConversationInterruptRuntimeSink;
   /** 执行任务入队汇点，真实路径指向 `bot:{botId}:exec`（执行队列）。 */
   readonly enqueueExecTaskSink?: ConversationEnqueueExecTaskSink;
+  /** 对话事实候选入队汇点，真实路径指向 `brain`（大脑） 队列。 */
+  readonly enqueueBrainFactSink?: ConversationEnqueueBrainFactSink;
+  /** Brain fact（大脑事实） 旁路失败诊断汇点。 */
+  readonly brainDiagnosticSink?: BrainDiagnosticLogSink;
   /** 当前是否已有活跃任务。 */
   readonly hasActiveTask?: () => boolean;
   /** 主人消息活跃心跳；BrainWorker（大脑工作线程） 会话静默检测只读消费。 */

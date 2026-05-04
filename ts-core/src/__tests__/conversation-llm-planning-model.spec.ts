@@ -97,6 +97,62 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).not.toContain("reply 只写自然短句");
   });
 
+  it("三阶段 prompt（提示词） 应按表注入 A.5 + C 层且 Triage（分诊） 不暴露 search() tool（工具）", async () => {
+    const triageMessages = createConversationTriageMessages({
+      message_id: "msg-brain-triage",
+      message: "你记得我家在哪吗",
+      brain_context:
+        "[A.5滚动摘要]\n最近在基地附近活动\n[C.USER]\n主人喜欢直接回答\n[C.MEMORY]\n主基地 x=120 y=64 z=-300",
+    });
+    const planMessages = createConversationPlanMessages({
+      message_id: "msg-brain-plan",
+      message: "按以前的流程去挖矿",
+      snapshot_context: "[Bot] 位置:(0,64,0)",
+      brain_context:
+        "[A.5滚动摘要]\n最近准备挖矿\n[C.USER]\n主人喜欢直接回答\n[C.MEMORY]\n主基地 x=120\n[C.SKILL]\n挖矿前检查铁镐和火把",
+    });
+
+    expect(triageMessages[1]?.content).toContain("[A.5滚动摘要]");
+    expect(triageMessages[1]?.content).toContain("[C.USER]");
+    expect(triageMessages[1]?.content).toContain("[C.MEMORY]");
+    expect(triageMessages[1]?.content).not.toContain("[C.SKILL]");
+    expect(planMessages[1]?.content).toContain("[C.SKILL]");
+
+    const capturedBodies: unknown[] = [];
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async (_url, init) => {
+          capturedBodies.push(init?.body === undefined ? undefined : JSON.parse(String(init.body)));
+
+          return new Response(
+            JSON.stringify({ choices: [{ message: { content: '{"reply":{}}' } }] }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        },
+      },
+    );
+
+    await client.generateCompositeTriage({
+      message_id: "msg-brain-triage-runtime",
+      message: "你记得我家在哪吗",
+      brain_context: "[A.5滚动摘要]\n最近在基地附近活动",
+    });
+
+    expect(capturedBodies[0]).not.toHaveProperty("tools");
+    expect(capturedBodies[0]).not.toHaveProperty("tool_choice");
+  });
+
   it("应按 OpenAI（开放人工智能） 兼容 chat.completions（对话补全） 解析 composite triage（复合分诊） JSON", async () => {
     const client = createConversationLlmClient(
       createConversationLlmConfig({
@@ -147,6 +203,104 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         priority: "urgent",
         reason: "主人要求去坐标",
       },
+    });
+  });
+
+  it("Plan（规划） 应暴露 search() tool（工具） 并在 tool_result（工具结果） 后解析技能计划", async () => {
+    const capturedBodies: unknown[] = [];
+    const searchCalls: unknown[] = [];
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async (_url, init) => {
+          capturedBodies.push(init?.body === undefined ? undefined : JSON.parse(String(init.body)));
+
+          if (capturedBodies.length === 1) {
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: "",
+                      tool_calls: [
+                        {
+                          id: "call-plan-search",
+                          type: "function",
+                          function: {
+                            name: "search",
+                            arguments: '{"query":"基地坐标"}',
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          }
+
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content:
+                      '{"type":"skill_call","reply":"我去基地附近看看喵~","skill":"goTo","params":{"x":120,"y":64,"z":-300}}',
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        },
+      },
+    );
+
+    const result = await client.generateSkillPlan({
+      bot_id: "bot-cw",
+      message_id: "msg-plan-search",
+      message: "去基地",
+      snapshot_context: "[主人] 位置:(0,64,0)",
+      search_tool: async (input) => {
+        searchCalls.push(input);
+
+        return {
+          hits: [
+            {
+              id: "event-base",
+              task_id: "msg-base",
+              owner_text: "这里是我们的基地",
+              task_card: { owner_position_at_message: { x: 120, y: 64, z: -300 } },
+              created_at: "2026-04-24T10:00:00.000Z",
+              score: 0.88,
+            },
+          ],
+        };
+      },
+    });
+
+    expect(result).toMatchObject({
+      type: "skill_call",
+      skill: "goTo",
+      params: { x: 120, y: 64, z: -300 },
+    });
+    expect(searchCalls).toEqual([{ bot_id: "bot-cw", query: "基地坐标" }]);
+    expect(capturedBodies[0]).toMatchObject({ tool_choice: "auto" });
+    expect(capturedBodies[1]).toMatchObject({
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          role: "tool",
+          content: expect.stringContaining("这里是我们的基地"),
+        }),
+      ]),
     });
   });
 
@@ -789,6 +943,48 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
       }),
     ).rejects.toBeInstanceOf(ConversationLlmSkillNotEnabledError);
+  });
+
+  it("应把 cannot_plan（无法规划） 的 conversation_fact（对话事实） 作为普通规划失败", async () => {
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content:
+                      '{"type":"cannot_plan","reason":"conversation_fact","code":"conversation_fact"}',
+                  },
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: {
+                "content-type": "application/json",
+              },
+            },
+          ),
+      },
+    );
+
+    await expect(
+      client.generateSkillPlan({
+        message_id: "msg-plan-location-fact",
+        message: "记住这里为峡谷之巅",
+        snapshot_context: "[主人] 位置:(7.7,118,-35.6) 距离:41.5格 在线:是",
+      }),
+    ).rejects.toBeInstanceOf(ConversationLlmPlanError);
   });
 
   it("应在单技能规划返回非法载荷时抛出显式错误", async () => {

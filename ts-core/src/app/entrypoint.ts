@@ -22,13 +22,17 @@ import { createBotActorStateProjection } from "../core-ports/index.js";
 import type { EnvironmentSnapshot, SnapshotPosition } from "../core-ports/observation.js";
 import {
   type IntentEpochStore,
+  type PostgresBrainSearchStore,
   createPostgresBrainMemoryStore,
+  createPostgresBrainSearchStore,
   createPostgresTaskEventPersister,
+  createPostgresTaskHistoryStore,
   createRedisIntentEpochStore,
 } from "../db/index.js";
 import {
   type LlmDiagnosticSummary,
   createLlmDiagnosticSummary,
+  createLocalBrainDiagnosticLogSink,
   createLocalConversationReplyLogSink,
   createLocalLlmDiagnosticLogSink,
   createLocalTaskLogExcerptReader,
@@ -50,17 +54,21 @@ import {
   type BotWorkerAction,
   type BotWorkerRuntime,
   type BotWorkerRuntimeDependencies,
+  type BotWorkerTask,
   type BrainWorkerRuntime,
   type BrainWorkerRuntimeDependencies,
   type BullmqQueueLike,
   type ConversationWorkerRuntime,
   type ConversationWorkerRuntimeDependencies,
   createBotWorkerRuntime,
+  createBrainConversationFactJobId,
   createBrainWorkerRuntime,
   createConversationBotWorkerActionSink,
   createConversationWorkerRuntime,
   createOpenAiCompatibleBrainWorkerLlmClient,
   createOpenAiCompatibleEmbeddingGenerator,
+  persistAcceptedTaskHistory,
+  persistTaskHistoryLifecycleAction,
 } from "../workers/index.js";
 import { createResourceService } from "../world-model/index.js";
 import type { ResourceServiceBoundary } from "../world-model/index.js";
@@ -584,14 +592,40 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       createPostgresTaskEventPersister({
         db: infrastructure.postgres.db,
       });
+    const taskHistoryStore = supportsPostgresTaskHistoryStore(infrastructure.postgres.db)
+      ? createPostgresTaskHistoryStore({
+          db: infrastructure.postgres.db,
+        })
+      : undefined;
     const brainMemoryStore = supportsPostgresBrainMemoryStore(infrastructure.postgres.db)
       ? createPostgresBrainMemoryStore({
           db: infrastructure.postgres.db,
         })
       : undefined;
+    const brainSearchStore =
+      supportsPostgresBrainSearchStore(infrastructure.postgres.db) &&
+      brainEmbeddingGenerator !== undefined
+        ? createPostgresBrainSearchStore({
+            db: infrastructure.postgres.db,
+            generateEmbedding: brainEmbeddingGenerator,
+          })
+        : undefined;
+    const onlineBrainContextProvider = createOnlineBrainContextProvider(brainMemoryStore);
+    const onlineBrainSearchTool = createOnlineBrainSearchTool(brainSearchStore);
+    const brainDiagnosticSink =
+      input.dependencies?.brainWorker?.diagnosticSink ??
+      createLocalBrainDiagnosticLogSink({
+        baseDir: input.bootstrap.config.logs.baseDir,
+        sensitiveValues:
+          input.dependencies?.llm?.api_key === undefined ? [] : [input.dependencies.llm.api_key],
+      });
     const brainLlmClient =
       input.dependencies?.brainWorker?.llm ??
-      createOnlineBrainWorkerLlmClient(input.bootstrap, input.dependencies?.llm);
+      createOnlineBrainWorkerLlmClient(
+        input.bootstrap,
+        input.dependencies?.llm,
+        brainDiagnosticSink,
+      );
 
     brainWorker = createBrainWorkerRuntime({
       queue: {
@@ -602,6 +636,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         ...(input.dependencies?.brainWorker ?? {}),
         generateEmbedding: brainEmbeddingGenerator,
         persistTaskEvent: taskEventPersister,
+        diagnosticSink: brainDiagnosticSink,
         ...(brainLlmClient === undefined ? {} : { llm: brainLlmClient }),
         ...(input.dependencies?.brainWorker?.loadRollingSummary !== undefined
           ? { loadRollingSummary: input.dependencies.brainWorker.loadRollingSummary }
@@ -678,6 +713,11 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
           (() => intentEpochStore.read(input.bootstrap.bot_id)),
         actionSink: async (action) => {
           await input.dependencies?.botWorker?.actionSink?.(action);
+          await persistTaskHistoryLifecycleAction({
+            action,
+            ...(taskHistoryStore === undefined ? {} : { taskHistoryStore }),
+            now: () => new Date(),
+          });
 
           if (action.type === "enqueue_brain") {
             const addBrainTask = onlineServices.workers.brain.queue.add;
@@ -729,6 +769,16 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         resourceContextProvider:
           input.dependencies?.conversationWorker?.resourceContextProvider ??
           createOnlineResourceContextProvider(() => resourceService),
+        ...(input.dependencies?.conversationWorker?.brainContextProvider !== undefined
+          ? { brainContextProvider: input.dependencies.conversationWorker.brainContextProvider }
+          : onlineBrainContextProvider === undefined
+            ? {}
+            : { brainContextProvider: onlineBrainContextProvider }),
+        ...(input.dependencies?.conversationWorker?.brainSearchTool !== undefined
+          ? { brainSearchTool: input.dependencies.conversationWorker.brainSearchTool }
+          : onlineBrainSearchTool === undefined
+            ? {}
+            : { brainSearchTool: onlineBrainSearchTool }),
         environmentSnapshotProvider:
           input.dependencies?.conversationWorker?.environmentSnapshotProvider ??
           createOnlineConversationEnvironmentSnapshotProvider({
@@ -759,11 +809,32 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
             throw new Error("bot exec queue does not support add");
           }
 
+          await persistAcceptedTaskHistory({
+            bot_id: input.bootstrap.bot_id,
+            task,
+            ...(taskHistoryStore === undefined ? {} : { taskHistoryStore }),
+            now: () => new Date(),
+          });
           await services.workers.bot.queue.add("bot", task, {
             jobId: task.exec_job.message_id,
             priority,
           });
         },
+        enqueueBrainFactSink:
+          input.dependencies?.conversationWorker?.enqueueBrainFactSink ??
+          (async ({ task }) => {
+            const addBrainTask = onlineServices.workers.brain.queue.add;
+
+            if (typeof addBrainTask !== "function") {
+              throw new Error("brain queue does not support add");
+            }
+
+            await addBrainTask("brain", task, {
+              jobId: createBrainConversationFactJobId(task.payload.message_id),
+            });
+          }),
+        brainDiagnosticSink:
+          input.dependencies?.conversationWorker?.brainDiagnosticSink ?? brainDiagnosticSink,
       },
     });
     await conversationWorker.start();
@@ -957,7 +1028,7 @@ export function createOnlineConversationActorStateProjectionProvider<TBotId exte
 function createOnlineConversationTriage(
   llm: ConversationLlmClient | undefined,
 ): ConversationWorkerRuntimeDependencies["triage"] {
-  return async ({ task }) => {
+  return async ({ task, brain_context }) => {
     if (llm === undefined) {
       return createConversationCompositeTriage({
         reply: {},
@@ -968,6 +1039,7 @@ function createOnlineConversationTriage(
       message_id: task.message.message_id,
       message: task.message.content,
       bot_summary: "online_runtime_ready",
+      ...(brain_context === undefined ? {} : { brain_context }),
     });
 
     return triage;
@@ -986,12 +1058,15 @@ function createOnlineConversationReplyGenerator(
     return undefined;
   }
 
-  return async ({ task, memory_context, snapshot_context }) =>
+  return async ({ task, memory_context, brain_context, snapshot_context, search_tool }) =>
     llm.generateChatReply({
+      bot_id: task.bot_id,
       message_id: task.message.message_id,
       message: task.message.content,
       ...(snapshot_context === undefined ? {} : { snapshot_context }),
       ...(memory_context === undefined ? {} : { memory_context }),
+      ...(brain_context === undefined ? {} : { brain_context }),
+      ...(search_tool === undefined ? {} : { search_tool }),
     });
 }
 
@@ -1007,8 +1082,9 @@ function createOnlineConversationPlanner(
     return undefined;
   }
 
-  return async ({ task, route, memory_context, snapshot_context }) =>
+  return async ({ task, route, memory_context, brain_context, snapshot_context, search_tool }) =>
     llm.generateSkillPlan({
+      bot_id: task.bot_id,
       message_id: task.message.message_id,
       message: task.message.content,
       snapshot_context:
@@ -1016,7 +1092,38 @@ function createOnlineConversationPlanner(
         "online_runtime: observation unavailable; executable skills: goTo, collect",
       triage_reason: route.triage.reason,
       ...(memory_context === undefined ? {} : { memory_context }),
+      ...(brain_context === undefined ? {} : { brain_context }),
+      ...(search_tool === undefined ? {} : { search_tool }),
     });
+}
+
+function createOnlineBrainContextProvider(
+  store: ReturnType<typeof createPostgresBrainMemoryStore> | undefined,
+): ConversationWorkerRuntimeDependencies["brainContextProvider"] | undefined {
+  if (store === undefined) {
+    return undefined;
+  }
+
+  return async ({ bot_id }) => {
+    const rollingSummary = await store.loadRollingSummary(bot_id);
+
+    return Object.freeze({
+      ...(rollingSummary === undefined ? {} : { rolling_summary: rollingSummary }),
+      memory: await store.loadBotMemory(bot_id),
+    });
+  };
+}
+
+function createOnlineBrainSearchTool(
+  store: PostgresBrainSearchStore | undefined,
+): ConversationWorkerRuntimeDependencies["brainSearchTool"] | undefined {
+  return store === undefined ? undefined : (input) => store.search(input);
+}
+
+function supportsPostgresBrainSearchStore(db: unknown): boolean {
+  const candidate = db as { readonly $client?: { readonly query?: unknown } };
+
+  return typeof candidate.$client?.query === "function";
 }
 
 /** 创建在线 ConversationWorker（对话工作线程） prompt（提示词） 快照 provider（提供器）。 */
@@ -1198,6 +1305,7 @@ function createOnlineBrainEmbeddingGenerator<TBotId extends string>(
 function createOnlineBrainWorkerLlmClient<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
   llmDependencies: AppOnlineLlmDependencies | undefined,
+  diagnosticSink: BrainWorkerRuntimeDependencies["diagnosticSink"] | undefined,
 ): BrainWorkerRuntimeDependencies["llm"] {
   if (!bootstrap.llm.enabled) {
     return undefined;
@@ -1221,7 +1329,10 @@ function createOnlineBrainWorkerLlmClient<TBotId extends string>(
       owner_name: "主人",
       timeout_ms: 15_000,
     }),
-    fetchImpl === undefined ? {} : { fetch: fetchImpl },
+    {
+      ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+      ...(diagnosticSink === undefined ? {} : { diagnosticSink }),
+    },
   );
 }
 
@@ -1318,6 +1429,12 @@ export function createRealtimeEventFromBotWorkerAction(input: {
     created_at: input.createdAt,
     payload: input.action.lifecycle.payload as unknown as Readonly<Record<string, unknown>>,
   });
+}
+
+function supportsPostgresTaskHistoryStore(db: unknown): boolean {
+  const candidate = db as { readonly insert?: unknown; readonly update?: unknown };
+
+  return typeof candidate.insert === "function" && typeof candidate.update === "function";
 }
 
 /**

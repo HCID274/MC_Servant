@@ -18,7 +18,11 @@ import {
 import type { EnvironmentSnapshot, InventorySummary } from "../core-ports/observation.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
 import { createTaskSummaryDraft } from "../data/index.js";
+import { createPostgresBrainMemoryStore } from "../db/index.js";
 import { ConversationPriority } from "../domain/contracts.js";
+import { createGoToSkillExecutionResult } from "../skills/index.js";
+import { createBotWorkerRuntime } from "../workers/bot-worker.js";
+import { createBrainWorkerRuntime } from "../workers/brain-worker.js";
 import {
   createBotWorkerActions,
   createBotWorkerTask,
@@ -29,6 +33,10 @@ import {
   createConversationWorkerRuntime,
 } from "../workers/conversation-worker.js";
 import { createConversationWorkerMemoryContext } from "../workers/conversation-worker/helpers.js";
+import {
+  persistAcceptedTaskHistory,
+  persistTaskHistoryLifecycleAction,
+} from "../workers/task-history-sink.js";
 
 function createCompositeChatTriage() {
   return createConversationCompositeTriage({
@@ -56,6 +64,64 @@ function createCompositeCancelTriage(reason: string) {
       reason,
     },
   });
+}
+
+function createFakeBrainMemoryDb(input: {
+  readonly memoryRows: Record<string, unknown>[];
+  readonly candidateRows: Record<string, unknown>[];
+  readonly auditRows: Record<string, unknown>[];
+}) {
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => input.memoryRows,
+        }),
+      }),
+    }),
+    insert: () => ({
+      values: (row: unknown) => {
+        const record = row as Record<string, unknown>;
+
+        if (typeof record.confidence === "number") {
+          input.candidateRows.push(record);
+
+          return Promise.resolve(undefined);
+        }
+        if (typeof record.op === "string") {
+          input.auditRows.push(record);
+
+          return Promise.resolve(undefined);
+        }
+
+        return {
+          async onConflictDoUpdate() {
+            const existingIndex = input.memoryRows.findIndex(
+              (memoryRow) => memoryRow.botId === record.botId && memoryRow.kind === record.kind,
+            );
+            const normalizedRow = {
+              ...record,
+              updatedAt:
+                record.updatedAt instanceof Date
+                  ? record.updatedAt
+                  : new Date(String(record.updatedAt)),
+            };
+
+            if (existingIndex < 0) {
+              input.memoryRows.push(normalizedRow);
+            } else {
+              input.memoryRows[existingIndex] = normalizedRow;
+            }
+          },
+        };
+      },
+    }),
+    update: () => ({
+      set: (values: unknown) => ({
+        where: async () => values,
+      }),
+    }),
+  };
 }
 
 describe("ConversationWorker（对话工作线程） 真实运行时", () => {
@@ -287,6 +353,937 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     expect(recentContexts[1]).toContain("Bot：第 1 次回复喵~");
     expect(recentContexts[1]).toContain("执行结果：collect 成功,捡到 shield x1");
     expect(recentContexts[1]).not.toContain("你刚刚捡到了什么");
+  });
+
+  it("prompt（提示词） 最近上下文窗口应限制为最近 5 轮原文", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const recentContexts: Array<string | undefined> = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () => createCompositeChatTriage(),
+        replyGenerator: (input) => {
+          recentContexts.push(input.recent_context);
+
+          return "收到";
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    for (let index = 1; index <= 7; index += 1) {
+      await processor?.({
+        data: createConversationWorkerTask({
+          bot_id: "bot-cw",
+          message: {
+            bot_id: "bot-cw",
+            message_id: `msg-window-${index}`,
+            content: `第 ${index} 轮`,
+            intent_epoch: index,
+            snapshot_ts: 100 + index,
+          },
+        }),
+      });
+    }
+
+    const lastPromptContext = recentContexts.at(-1);
+    expect(lastPromptContext).not.toContain("第 1 轮");
+    expect(lastPromptContext).toContain("第 2 轮");
+    expect(lastPromptContext).toContain("第 6 轮");
+    expect(lastPromptContext).not.toContain("第 7 轮");
+  });
+
+  it("应让 Chat（闲聊） 约定地点进入 Brain（大脑）并让后续 Plan（规划）使用约定时坐标", async () => {
+    let conversationProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    let brainProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const memoryRows: Record<string, unknown>[] = [];
+    const candidateRows: Record<string, unknown>[] = [];
+    const auditRows: Record<string, unknown>[] = [];
+    const brainMemoryStore = createPostgresBrainMemoryStore({
+      db: createFakeBrainMemoryDb({ memoryRows, candidateRows, auditRows }),
+    });
+    const rubricInputs: unknown[] = [];
+    const enqueuedExecTasks: unknown[] = [];
+    const snapshots = [
+      createEnvironmentSnapshotFixture([], { x: -24.8, y: 105, z: -15.6 }),
+      createEnvironmentSnapshotFixture([], { x: 88, y: 70, z: 99 }),
+    ];
+    const brainRuntime = createBrainWorkerRuntime({
+      queue: {
+        name: "brain",
+        connection: {},
+      },
+      dependencies: {
+        now: () => new Date("2026-05-03T02:00:00.000Z"),
+        async generateEmbedding() {
+          throw new Error("chat fact should not write task_events");
+        },
+        async persistTaskEvent() {
+          throw new Error("chat fact should not persist task_events");
+        },
+        llm: {
+          model: "bl-auto",
+          async generateFailureTakeaway() {
+            throw new Error("failure takeaway should not run");
+          },
+          async generateSessionTakeaway() {
+            throw new Error("session takeaway should not run");
+          },
+          async compressRollingSummary(content) {
+            return content;
+          },
+          async generateMemoryCandidates(input) {
+            rubricInputs.push(input);
+            if (input.owner_text !== "这里以后就是秘密基地") {
+              return [];
+            }
+
+            return [
+              {
+                kind: "MEMORY",
+                content: `秘密基地坐标：x=${input.owner_position?.x}, y=${input.owner_position?.y}, z=${input.owner_position?.z}`,
+                confidence: 0.95,
+                reason: "主人命名当前位置",
+              },
+            ];
+          },
+          async resolveMemoryCapacity() {
+            throw new Error("capacity should not run");
+          },
+        },
+        loadBotMemory: brainMemoryStore.loadBotMemory,
+        insertMemoryCandidate: brainMemoryStore.insertMemoryCandidate,
+        decideMemoryCandidate: brainMemoryStore.decideMemoryCandidate,
+        writeBotMemory: brainMemoryStore.writeBotMemory,
+        appendMemoryAudit: brainMemoryStore.appendMemoryAudit,
+        createWorker: ({ processor }) => {
+          brainProcessor = processor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+    const conversationRuntime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor }) => {
+          conversationProcessor = processor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: ({ task }) =>
+          task.message.content === "去秘密基地"
+            ? createCompositeTaskTriage({
+                priority: ConversationPriority.Normal,
+                reason: "owner_target_secret_base",
+              })
+            : createCompositeChatTriage(),
+        environmentSnapshotProvider: () =>
+          snapshots.shift() ?? createEnvironmentSnapshotFixture([]),
+        brainContextProvider: () => ({
+          memory: {
+            USER: "",
+            MEMORY: typeof memoryRows[0]?.content === "string" ? String(memoryRows[0].content) : "",
+            SKILL: "",
+          },
+        }),
+        replyGenerator: () => "我记住了",
+        planner: (input) => {
+          expect(input.brain_context).toContain("秘密基地坐标：x=-24.8, y=105, z=-15.6");
+          expect(input.brain_context).not.toContain("x=88");
+
+          return {
+            type: "skill_call",
+            reply: "我去秘密基地",
+            skill: "goTo",
+            params: { x: -24.8, y: 105, z: -15.6 },
+          };
+        },
+        enqueueBrainFactSink: async ({ task }) => {
+          await brainProcessor?.({ data: task });
+        },
+        enqueueExecTaskSink: async ({ task }) => {
+          enqueuedExecTasks.push(task);
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await brainRuntime.start();
+    await conversationRuntime.start();
+    await conversationProcessor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-secret-base-chat",
+          content: "这里以后就是秘密基地",
+          intent_epoch: 1,
+          snapshot_ts: 100,
+        },
+      }),
+    });
+    await conversationProcessor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-go-secret-base",
+          content: "去秘密基地",
+          intent_epoch: 2,
+          snapshot_ts: 101,
+        },
+      }),
+    });
+
+    expect(candidateRows).toHaveLength(1);
+    expect(candidateRows[0]).toEqual(
+      expect.objectContaining({
+        id: "memory-candidate:conversation-fact:bot-cw:msg-secret-base-chat:0",
+        botId: "bot-cw",
+        kind: "MEMORY",
+        content: "秘密基地坐标：x=-24.8, y=105, z=-15.6",
+        confidence: 0.95,
+        status: "pending",
+      }),
+    );
+    expect(memoryRows).toHaveLength(1);
+    expect(memoryRows[0]).toEqual(
+      expect.objectContaining({
+        botId: "bot-cw",
+        kind: "MEMORY",
+        content: "秘密基地坐标：x=-24.8, y=105, z=-15.6",
+      }),
+    );
+    expect(rubricInputs).toEqual([
+      expect.objectContaining({
+        source: "conversation_fact",
+        owner_text: "这里以后就是秘密基地",
+        route_kind: "chat_reply",
+        owner_position: { x: -24.8, y: 105, z: -15.6 },
+      }),
+      expect.objectContaining({
+        source: "conversation_fact",
+        owner_text: "去秘密基地",
+        route_kind: "plan_exec",
+        owner_position: { x: 88, y: 70, z: 99 },
+      }),
+    ]);
+    expect(enqueuedExecTasks).toEqual([
+      expect.objectContaining({
+        owner_text: "去秘密基地",
+        owner_position_at_message: { x: 88, y: 70, z: 99 },
+        exec_job: expect.objectContaining({
+          params: { x: -24.8, y: 105, z: -15.6 },
+        }),
+      }),
+    ]);
+
+    await conversationRuntime.close();
+    await brainRuntime.close();
+  });
+
+  it("Brain fact（大脑事实）入队失败不得截断 Chat（闲聊）回复日志", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const replies: Array<{ message_id: string; content: string }> = [];
+    const replyLogs: unknown[] = [];
+    const brainDiagnostics: unknown[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () => createCompositeChatTriage(),
+        replyGenerator: () => "我记住了",
+        environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
+        broadcastReplySink: async (reply) => {
+          replies.push(reply);
+        },
+        conversationReplyLogSink: async (entry) => {
+          replyLogs.push(entry);
+        },
+        enqueueBrainFactSink: async () => {
+          throw new Error("brain queue unavailable");
+        },
+        brainDiagnosticSink: async (record) => {
+          brainDiagnostics.push(record);
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-chat-fact-fail",
+          content: "这里定义为日月川了",
+          intent_epoch: 1,
+          snapshot_ts: 100,
+        },
+      }),
+    });
+
+    expect(replies).toEqual([
+      {
+        message_id: "msg-chat-fact-fail",
+        content: "我记住了喵~",
+      },
+    ]);
+    expect(replyLogs).toEqual([
+      expect.objectContaining({
+        message_id: "msg-chat-fact-fail",
+        reply: "我记住了喵~",
+      }),
+    ]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "brain.fact.enqueue_failed",
+      bot_id: "bot-cw",
+      message_id: "msg-chat-fact-fail",
+      route_kind: "chat_reply",
+      error_summary: "brain queue unavailable",
+    });
+    expect(brainDiagnostics).toEqual([
+      expect.objectContaining({
+        log_ref: expect.stringMatching(
+          /^brain\/\d{4}-\d{2}-\d{2}\/fact-enqueue-failed-msg-chat-fact-fail\.jsonl$/u,
+        ),
+        lines: [
+          expect.objectContaining({
+            event: "brain.fact.enqueue_failed",
+            bot_id: "bot-cw",
+            message_id: "msg-chat-fact-fail",
+            route_kind: "chat_reply",
+            error: {
+              name: "Error",
+              message: "brain queue unavailable",
+            },
+          }),
+        ],
+      }),
+    ]);
+
+    await runtime.close();
+  });
+
+  it("Brain fact（大脑事实）入队失败不得阻塞 Plan（规划）执行任务入队", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const enqueuedExecTasks: unknown[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createCompositeTaskTriage({
+            priority: ConversationPriority.Normal,
+            reason: "owner_target_named_place",
+          }),
+        environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
+        planner: () => ({
+          type: "skill_call",
+          reply: "我去日月川",
+          skill: "goTo",
+          params: { x: 10, y: 64, z: 20 },
+        }),
+        enqueueExecTaskSink: async ({ task }) => {
+          enqueuedExecTasks.push(task);
+        },
+        enqueueBrainFactSink: async () => {
+          throw new Error("brain queue unavailable");
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-plan-fact-fail",
+          content: "去登上日月川",
+          intent_epoch: 2,
+          snapshot_ts: 101,
+        },
+      }),
+    });
+
+    expect(enqueuedExecTasks).toEqual([
+      expect.objectContaining({
+        exec_job: expect.objectContaining({
+          message_id: "msg-plan-fact-fail",
+          skill: "goTo",
+          params: { x: 10, y: 64, z: 20 },
+        }),
+      }),
+    ]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.accepted",
+      bot_id: "bot-cw",
+      message_id: "msg-plan-fact-fail",
+      skill: "goTo",
+      priority: "normal",
+    });
+    expect(runtime.getEvents()).toContainEqual({
+      type: "brain.fact.enqueue_failed",
+      bot_id: "bot-cw",
+      message_id: "msg-plan-fact-fail",
+      route_kind: "plan_exec",
+      error_summary: "brain queue unavailable",
+    });
+
+    await runtime.close();
+  });
+
+  it("Brain fact（大脑事实）与诊断汇点双失败也不得截断 Chat（闲聊）主路径", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const replies: Array<{ message_id: string; content: string }> = [];
+    const replyLogs: unknown[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () => createCompositeChatTriage(),
+        replyGenerator: () => "我记住了",
+        environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
+        broadcastReplySink: async (reply) => {
+          replies.push(reply);
+        },
+        conversationReplyLogSink: async (entry) => {
+          replyLogs.push(entry);
+        },
+        enqueueBrainFactSink: async () => {
+          throw new Error("brain queue unavailable");
+        },
+        brainDiagnosticSink: async () => {
+          throw new Error("brain diagnostic unavailable");
+        },
+      },
+    });
+
+    await runtime.start();
+    expect(processor).toBeDefined();
+    await expect(
+      processor?.({
+        data: createConversationWorkerTask({
+          bot_id: "bot-cw",
+          message: {
+            bot_id: "bot-cw",
+            message_id: "msg-chat-fact-diagnostic-fail",
+            content: "这里定义为日月川了",
+            intent_epoch: 1,
+            snapshot_ts: 100,
+          },
+        }),
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(replies).toEqual([
+      {
+        message_id: "msg-chat-fact-diagnostic-fail",
+        content: "我记住了喵~",
+      },
+    ]);
+    expect(replyLogs).toEqual([
+      expect.objectContaining({
+        message_id: "msg-chat-fact-diagnostic-fail",
+        reply: "我记住了喵~",
+      }),
+    ]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "brain.fact.enqueue_failed",
+      bot_id: "bot-cw",
+      message_id: "msg-chat-fact-diagnostic-fail",
+      route_kind: "chat_reply",
+      error_summary: "brain queue unavailable",
+    });
+    expect(runtime.getEvents()).toContainEqual({
+      type: "brain.fact.diagnostic_failed",
+      bot_id: "bot-cw",
+      message_id: "msg-chat-fact-diagnostic-fail",
+      route_kind: "chat_reply",
+      enqueue_error_summary: "brain queue unavailable",
+      diagnostic_error_summary: "brain diagnostic unavailable",
+    });
+
+    await runtime.close();
+  });
+
+  it("Brain fact（大脑事实）与诊断汇点双失败也不得阻塞 Plan（规划）执行入队", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const enqueuedExecTasks: unknown[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createCompositeTaskTriage({
+            priority: ConversationPriority.Normal,
+            reason: "owner_target_named_place",
+          }),
+        environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
+        planner: () => ({
+          type: "skill_call",
+          reply: "我去日月川",
+          skill: "goTo",
+          params: { x: 10, y: 64, z: 20 },
+        }),
+        enqueueExecTaskSink: async ({ task }) => {
+          enqueuedExecTasks.push(task);
+        },
+        enqueueBrainFactSink: async () => {
+          throw new Error("brain queue unavailable");
+        },
+        brainDiagnosticSink: async () => {
+          throw new Error("brain diagnostic unavailable");
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    expect(processor).toBeDefined();
+    await expect(
+      processor?.({
+        data: createConversationWorkerTask({
+          bot_id: "bot-cw",
+          message: {
+            bot_id: "bot-cw",
+            message_id: "msg-plan-fact-diagnostic-fail",
+            content: "去登上日月川",
+            intent_epoch: 2,
+            snapshot_ts: 101,
+          },
+        }),
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(enqueuedExecTasks).toEqual([
+      expect.objectContaining({
+        exec_job: expect.objectContaining({
+          message_id: "msg-plan-fact-diagnostic-fail",
+          skill: "goTo",
+          params: { x: 10, y: 64, z: 20 },
+        }),
+      }),
+    ]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.accepted",
+      bot_id: "bot-cw",
+      message_id: "msg-plan-fact-diagnostic-fail",
+      skill: "goTo",
+      priority: "normal",
+    });
+    expect(runtime.getEvents()).toContainEqual({
+      type: "brain.fact.enqueue_failed",
+      bot_id: "bot-cw",
+      message_id: "msg-plan-fact-diagnostic-fail",
+      route_kind: "plan_exec",
+      error_summary: "brain queue unavailable",
+    });
+    expect(runtime.getEvents()).toContainEqual({
+      type: "brain.fact.diagnostic_failed",
+      bot_id: "bot-cw",
+      message_id: "msg-plan-fact-diagnostic-fail",
+      route_kind: "plan_exec",
+      enqueue_error_summary: "brain queue unavailable",
+      diagnostic_error_summary: "brain diagnostic unavailable",
+    });
+
+    await runtime.close();
+  });
+
+  it("应串起 ConversationWorker / BotWorker / BrainWorker（三工作线程）并写入 task_history 与 task_events", async () => {
+    let conversationProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    let botProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    let brainProcessor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const memoryRows: Record<string, unknown>[] = [];
+    const candidateRows: Record<string, unknown>[] = [];
+    const auditRows: Record<string, unknown>[] = [];
+    const taskHistoryRows: Record<string, unknown>[] = [];
+    const taskHistoryUpdates: Record<string, unknown>[] = [];
+    const taskEventRows: Record<string, unknown>[] = [];
+    const snapshots = [
+      createEnvironmentSnapshotFixture([], { x: 10, y: 64, z: 20 }),
+      createEnvironmentSnapshotFixture([], { x: 80, y: 64, z: 80 }),
+    ];
+    const taskHistoryStore = {
+      async insertAccepted(record: Record<string, unknown>) {
+        taskHistoryRows.push({ ...record });
+      },
+      async markStarted(patch: Record<string, unknown>) {
+        taskHistoryUpdates.push({ ...patch });
+        const row = taskHistoryRows.find((candidate) => candidate.id === patch.id);
+        if (row !== undefined) {
+          row.status = TaskHistoryStatus.Started;
+        }
+      },
+      async markTerminal(patch: Record<string, unknown>) {
+        taskHistoryUpdates.push({ ...patch });
+        const row = taskHistoryRows.find((candidate) => candidate.id === patch.id);
+        if (row !== undefined) {
+          row.status = patch.status;
+        }
+      },
+      async markDiscarded(input: { readonly id: string; readonly discarded_at: string }) {
+        taskHistoryUpdates.push({ ...input, status: TaskHistoryStatus.Discarded });
+        const row = taskHistoryRows.find((candidate) => candidate.id === input.id);
+        if (row !== undefined) {
+          row.status = TaskHistoryStatus.Discarded;
+        }
+      },
+    };
+    const brainMemoryStore = createPostgresBrainMemoryStore({
+      db: createFakeBrainMemoryDb({ memoryRows, candidateRows, auditRows }),
+    });
+    const brainRuntime = createBrainWorkerRuntime({
+      queue: {
+        name: "brain",
+        connection: {},
+      },
+      dependencies: {
+        now: () => new Date("2026-05-04T01:00:00.000Z"),
+        async generateEmbedding() {
+          return [0.1, 0.2, 0.3];
+        },
+        async persistTaskEvent(draft) {
+          expect(taskHistoryRows.some((row) => row.id === draft.task_id)).toBe(true);
+          taskEventRows.push({ ...draft });
+        },
+        llm: {
+          model: "bl-auto",
+          async generateFailureTakeaway() {
+            throw new Error("failure takeaway should not run");
+          },
+          async generateSessionTakeaway() {
+            throw new Error("session takeaway should not run");
+          },
+          async compressRollingSummary(content) {
+            return content;
+          },
+          async generateMemoryCandidates(input) {
+            if (input.owner_text !== "这里定义为日月川了") {
+              return [];
+            }
+
+            return [
+              {
+                kind: "MEMORY",
+                content: `日月川坐标：x=${input.owner_position?.x}, y=${input.owner_position?.y}, z=${input.owner_position?.z}`,
+                confidence: 0.95,
+                reason: "主人命名当前位置",
+              },
+            ];
+          },
+          async resolveMemoryCapacity() {
+            throw new Error("capacity should not run");
+          },
+        },
+        loadBotMemory: brainMemoryStore.loadBotMemory,
+        insertMemoryCandidate: brainMemoryStore.insertMemoryCandidate,
+        decideMemoryCandidate: brainMemoryStore.decideMemoryCandidate,
+        writeBotMemory: brainMemoryStore.writeBotMemory,
+        appendMemoryAudit: brainMemoryStore.appendMemoryAudit,
+        createWorker: ({ processor }) => {
+          brainProcessor = processor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+    const botRuntime = createBotWorkerRuntime({
+      queue: {
+        name: "bot:bot-cw:exec",
+        connection: {},
+      },
+      dependencies: {
+        actor: {
+          async executeSkill(job) {
+            return {
+              result: createGoToSkillExecutionResult(job.params),
+              snapshot: {} as never,
+            };
+          },
+          async executeSandboxCode() {
+            throw new Error("sandbox should not run");
+          },
+        },
+        now: (() => {
+          const values = [1000, 1042];
+
+          return () => values.shift() ?? 1042;
+        })(),
+        actionSink: async (action) => {
+          await persistTaskHistoryLifecycleAction({
+            action,
+            taskHistoryStore,
+            now: () => new Date("2026-05-04T01:00:01.000Z"),
+          });
+          if (action.type === "enqueue_brain") {
+            await brainProcessor?.({ data: action.task });
+          }
+        },
+        createWorker: ({ processor }) => {
+          botProcessor = processor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+    const conversationRuntime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor }) => {
+          conversationProcessor = processor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: ({ task }) =>
+          task.message.content === "去登上日月川"
+            ? createCompositeTaskTriage({
+                priority: ConversationPriority.Normal,
+                reason: "owner_target_named_place",
+              })
+            : createCompositeChatTriage(),
+        environmentSnapshotProvider: () =>
+          snapshots.shift() ?? createEnvironmentSnapshotFixture([]),
+        brainContextProvider: () => ({
+          memory: {
+            USER: "",
+            MEMORY: typeof memoryRows[0]?.content === "string" ? String(memoryRows[0].content) : "",
+            SKILL: "",
+          },
+        }),
+        replyGenerator: () => "我记住了",
+        planner: (input) => {
+          expect(input.brain_context).toContain("日月川坐标：x=10, y=64, z=20");
+
+          return {
+            type: "skill_call",
+            reply: "我去日月川",
+            skill: "goTo",
+            params: { x: 10, y: 64, z: 20 },
+          };
+        },
+        enqueueBrainFactSink: async ({ task }) => {
+          await brainProcessor?.({ data: task });
+        },
+        enqueueExecTaskSink: async ({ task }) => {
+          await persistAcceptedTaskHistory({
+            bot_id: task.bot_id,
+            task,
+            taskHistoryStore,
+            now: () => new Date("2026-05-04T01:00:00.000Z"),
+          });
+          await botProcessor?.({ data: task });
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await brainRuntime.start();
+    await botRuntime.start();
+    await conversationRuntime.start();
+    await conversationProcessor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-sun-moon-river",
+          content: "这里定义为日月川了",
+          intent_epoch: 1,
+          snapshot_ts: 100,
+        },
+      }),
+    });
+    await conversationProcessor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-go-sun-moon-river",
+          content: "去登上日月川",
+          intent_epoch: 2,
+          snapshot_ts: 101,
+        },
+      }),
+    });
+
+    expect(memoryRows).toEqual([
+      expect.objectContaining({
+        kind: "MEMORY",
+        content: "日月川坐标：x=10, y=64, z=20",
+      }),
+    ]);
+    expect(taskHistoryRows).toEqual([
+      expect.objectContaining({
+        id: "msg-go-sun-moon-river",
+        status: TaskHistoryStatus.Completed,
+      }),
+    ]);
+    expect(taskHistoryUpdates).toEqual([
+      expect.objectContaining({
+        id: "msg-go-sun-moon-river",
+        status: TaskHistoryStatus.Started,
+      }),
+      expect.objectContaining({
+        id: "msg-go-sun-moon-river",
+        status: TaskHistoryStatus.Completed,
+      }),
+    ]);
+    expect(taskEventRows).toEqual([
+      expect.objectContaining({
+        task_id: "msg-go-sun-moon-river",
+        owner_text: "去登上日月川",
+        embedding: [0.1, 0.2, 0.3],
+      }),
+    ]);
+
+    await conversationRuntime.close();
+    await botRuntime.close();
+    await brainRuntime.close();
+  });
+
+  it("Plan（规划） cannot_plan（无法规划） 时应统一失败，不再改写成对话事实", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const replies: Array<{ message_id: string; content: string }> = [];
+    const brainFacts: unknown[] = [];
+    const enqueuedExecTasks: unknown[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createCompositeTaskTriage({
+            priority: ConversationPriority.Normal,
+            reason: "LLM 误把地点记忆当任务",
+          }),
+        environmentSnapshotProvider: () =>
+          createEnvironmentSnapshotFixture([], { x: 7.7, y: 118, z: -35.6 }),
+        planner: () => {
+          throw new ConversationLlmPlanError("conversation_fact");
+        },
+        enqueueBrainFactSink: async ({ task }) => {
+          brainFacts.push(task);
+        },
+        enqueueExecTaskSink: async ({ task }) => {
+          enqueuedExecTasks.push(task);
+        },
+        broadcastReplySink: async (reply) => {
+          replies.push(reply);
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-canyon-top",
+          content: "记住这里为峡谷之巅",
+          intent_epoch: 12,
+          snapshot_ts: 300,
+        },
+      }),
+    });
+
+    expect(replies).toEqual([
+      {
+        message_id: "msg-canyon-top",
+        content: "抱歉，这次我还没能规划出可执行的技能任务喵~",
+      },
+    ]);
+    expect(enqueuedExecTasks).toEqual([]);
+    expect(brainFacts).toEqual([]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "chat.reply",
+      bot_id: "bot-cw",
+      message_id: "msg-canyon-top",
+      content: "抱歉，这次我还没能规划出可执行的技能任务喵~",
+    });
+    expect(runtime.getEvents().some((event) => event.type === "task.accepted")).toBe(false);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.discarded",
+      bot_id: "bot-cw",
+      message_id: "msg-canyon-top",
+      status: TaskHistoryStatus.Discarded,
+      reason: "planner_failed",
+    });
   });
 
   it("应让 Chat / Plan / Plan（三路） 按路径出口顺序递推 inventory diff（背包差异） baseline（基线）", async () => {
@@ -1421,6 +2418,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
 
 function createEnvironmentSnapshotFixture(
   inventoryItems: readonly (readonly [string, number])[],
+  ownerPosition: EnvironmentSnapshot["owner"]["position"] = { x: 1, y: 64, z: 1 },
 ): EnvironmentSnapshot {
   return Object.freeze({
     timestamp: 1,
@@ -1448,7 +2446,7 @@ function createEnvironmentSnapshotFixture(
     nearby_entities: [],
     nearby_blocks: [],
     owner: {
-      position: { x: 1, y: 64, z: 1 },
+      position: ownerPosition,
       name: "owner",
       online: true,
     },

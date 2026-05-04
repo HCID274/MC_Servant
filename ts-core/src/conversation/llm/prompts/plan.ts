@@ -34,6 +34,7 @@ export function createPlanSystemPrompt(input: PlanSystemPromptInput = {}): strin
     "绝对规则：",
     "- 只能输出 JSON，不要解释",
     "- sandbox_code 只能使用全局 api、console、sleep(ms)、Math、JSON、Date，不要 import/export/require",
+    "- 如果 Brain上下文不足以规划与历史相关的任务，可以调用 search() 查找长期任务历史",
     `- 不要输出除 ${skillNames} 之外的 skill`,
     "- collect 表示捡拾 center/radius 范围内匹配掉落物；未给 center 时表示 Bot 当前位置附近；未给 itemName 时表示捡拾范围内所有掉落物",
     "- 主人说“捡起来 / 捡地上的东西 / 把这个东西捡起来 / 全捡起来”等泛指捡拾时，必须输出 collect，不要因为缺 itemName 输出 cannot_plan",

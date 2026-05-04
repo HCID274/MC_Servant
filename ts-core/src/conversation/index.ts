@@ -29,4 +29,5 @@ export * from "./chat.js";
 export * from "./planning.js";
 export * from "./inventory-diff-cache.js";
 export * from "./recent-context.js";
+export * from "./brain-context.js";
 export * from "./llm.js";
