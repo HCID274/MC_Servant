@@ -3,12 +3,17 @@ import { describe, expect, it } from "vitest";
 import {
   ExecPriority,
   ExecutionTaskKind,
+  FORBIDDEN_TOOLCHAIN_DEMO_NAMES,
   PHASE1_SKILL_DEFINITIONS,
   PHASE1_SKILL_NAMES,
   SKILL_DIRECTORY,
   type SkillCallJobInput,
   type SkillName,
   type SkillParamsByName,
+  TOOLCHAIN_CAPABILITY_NAMES,
+  TOOLCHAIN_FAILURE_CODES,
+  type ToolchainCapabilityName,
+  type ToolchainCapabilityResult,
   createPhase1SkillRegistry,
   createSkillCall,
   createSkillCallJob,
@@ -35,6 +40,13 @@ void invalidSkillName;
 // @ts-expect-error `equip`（装备） 参数不接受挖掘计数字段。
 const invalidEquipParams: SkillParamsByName["equip"] = { itemName: "stone_pickaxe", count: 1 };
 void invalidEquipParams;
+
+const validToolchainCapabilityName: ToolchainCapabilityName = "craft";
+void validToolchainCapabilityName;
+
+// @ts-expect-error `demoMineIron`（演示挖铁） 不允许成为可复用工具链能力。
+const invalidToolchainCapabilityName: ToolchainCapabilityName = "demoMineIron";
+void invalidToolchainCapabilityName;
 
 const invalidSkillCallJob: SkillCallJobInput = {
   message_id: "type-mismatch",
@@ -82,6 +94,56 @@ describe("skills 模块契约", () => {
       summary: "按物品名与槽位执行装备",
       parameterKeys: ["itemName", "destination"],
     });
+  });
+
+  it("应声明工具链能力、结构化失败码并禁止 demo（演示） 一键入口", () => {
+    const failureResult: ToolchainCapabilityResult<{ readonly world_key: string | null }> = {
+      ok: false,
+      error: {
+        code: "missing_materials",
+        message: "缺少木棍",
+        world_key: "minecraft:overworld",
+      },
+    };
+    const successResult: ToolchainCapabilityResult<{
+      readonly world_key: string | null;
+      readonly completed_count: number;
+    }> = {
+      ok: true,
+      data: {
+        world_key: "minecraft:overworld",
+        completed_count: 1,
+      },
+    };
+
+    expect(TOOLCHAIN_CAPABILITY_NAMES).toEqual([
+      "craft",
+      "place",
+      "equip",
+      "mine",
+      "ensureLogs",
+      "ensureCraftingTablePlaced",
+      "ensureWoodenPickaxeEquipped",
+      "ensureCobblestone",
+      "ensureStonePickaxeEquipped",
+    ]);
+    expect(FORBIDDEN_TOOLCHAIN_DEMO_NAMES).toEqual(["demoMineIron"]);
+    expect(TOOLCHAIN_CAPABILITY_NAMES).not.toContain("demoMineIron");
+    expect(TOOLCHAIN_FAILURE_CODES).toEqual(
+      expect.arrayContaining([
+        "missing_materials",
+        "missing_crafting_table",
+        "cannot_place",
+        "not_equipped",
+        "resource_not_found",
+        "unsafe_path",
+        "world_mismatch",
+      ]),
+    );
+    expect(failureResult.ok).toBe(false);
+    expect(failureResult.error.code).toBe("missing_materials");
+    expect(successResult.ok).toBe(true);
+    expect(successResult.data.completed_count).toBe(1);
   });
 
   it("应让 skill_call 构造与运行时任务共享同一套强类型目录", () => {

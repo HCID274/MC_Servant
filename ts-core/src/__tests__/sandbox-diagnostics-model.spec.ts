@@ -11,10 +11,14 @@ import {
   PHASE1_SKILL_NAMES,
   SANDBOX_BOT_SKILL_BINDINGS,
   SANDBOX_FACADE_SECTIONS,
+  SANDBOX_FORBIDDEN_DEMO_METHOD_NAMES,
   SANDBOX_READONLY_SECTIONS,
   type SANDBOX_STEP_ACTION_NAMES,
+  SANDBOX_TOOLCHAIN_CAPABILITY_NAMES,
+  SANDBOX_TOOLCHAIN_FAILURE_CODES,
   type SandboxExecutionRequest,
   type SandboxStepParamsByAction,
+  type SandboxToolchainCapabilityParamsByName,
   TaskHistoryStatus,
   type TaskLifecycleEvent,
   createDiagnosticsCatalog,
@@ -69,6 +73,16 @@ void invalidSandboxRequestType;
 const invalidAbortRecoverable: AbortError["recoverable"] = true;
 void invalidAbortRecoverable;
 
+const validCraftParams: SandboxToolchainCapabilityParamsByName["craft"] = {
+  itemName: "stone_pickaxe",
+  count: 1,
+};
+void validCraftParams;
+
+// @ts-expect-error `craft`（合成） 参数不接受坐标；放置坐标属于 `place`（放置） 能力。
+const invalidCraftParams: SandboxToolchainCapabilityParamsByName["craft"] = { x: 1 };
+void invalidCraftParams;
+
 describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
   const createRuntimeSandboxRequest = (input: {
     code: string;
@@ -97,6 +111,31 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(facadeContract.bot.mine.aligned_skill).toBe("mine");
     expect(facadeContract.chat.report.emits_step).toBe(true);
     expect(SANDBOX_READONLY_SECTIONS).toEqual(["world", "knowledge", "memory", "owner", "task"]);
+  });
+
+  it("应声明工具链能力契约但不把未实现能力注入当前 Facade（门面）", () => {
+    const facadeContract = createSandboxFacadeContract();
+
+    expect(SANDBOX_TOOLCHAIN_CAPABILITY_NAMES).toEqual([
+      "craft",
+      "place",
+      "equip",
+      "mine",
+      "ensureLogs",
+      "ensureCraftingTablePlaced",
+      "ensureWoodenPickaxeEquipped",
+      "ensureCobblestone",
+      "ensureStonePickaxeEquipped",
+    ]);
+    expect(SANDBOX_FORBIDDEN_DEMO_METHOD_NAMES).toEqual(["demoMineIron"]);
+    expect(SANDBOX_TOOLCHAIN_CAPABILITY_NAMES).not.toContain("demoMineIron");
+    expect(SANDBOX_TOOLCHAIN_FAILURE_CODES).toEqual(
+      expect.arrayContaining(["missing_materials", "cannot_place", "unsafe_path"]),
+    );
+    expect(Object.keys(facadeContract.bot)).toEqual([...PHASE1_SKILL_NAMES]);
+    expect(facadeContract.bot).not.toHaveProperty("craft");
+    expect(facadeContract.bot).not.toHaveProperty("place");
+    expect(facadeContract.bot).not.toHaveProperty("ensureStonePickaxeEquipped");
   });
 
   it("应提供渐进披露索引并按 namespace（命名空间） 描述 Facade API（门面接口）", () => {

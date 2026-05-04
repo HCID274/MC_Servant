@@ -8,7 +8,17 @@
  */
 
 import type { ExecutionTaskKind } from "../core-ports/foundation.js";
-import type { SkillName, SkillParamsByName } from "../core-ports/skills.js";
+import type {
+  SkillName,
+  SkillParamsByName,
+  ToolchainCapabilityName,
+  ToolchainCapabilityParamsByName,
+} from "../core-ports/skills.js";
+import {
+  FORBIDDEN_TOOLCHAIN_DEMO_NAMES,
+  TOOLCHAIN_CAPABILITY_NAMES,
+  TOOLCHAIN_FAILURE_CODES,
+} from "../core-ports/skills.js";
 import type { TaskHistoryStatus } from "../core-ports/tasking.js";
 import type { SandboxJsonlLine, TaskLogStepStatus } from "../diagnostics/contracts.js";
 
@@ -37,6 +47,21 @@ export const SANDBOX_BOT_METHOD_NAMES = ["goTo", "mine", "cutTree", "collect", "
 
 /** `bot`（动作） 分区方法名联合类型。 */
 export type SandboxBotMethodName = SkillName;
+
+/** sandbox（沙箱） 工具链能力契约清单；未实现前不得注入为真实 Facade（门面） 方法。 */
+export const SANDBOX_TOOLCHAIN_CAPABILITY_NAMES = TOOLCHAIN_CAPABILITY_NAMES;
+
+/** sandbox（沙箱） 禁止的一键 demo（演示） 方法名清单。 */
+export const SANDBOX_FORBIDDEN_DEMO_METHOD_NAMES = FORBIDDEN_TOOLCHAIN_DEMO_NAMES;
+
+/** sandbox（沙箱） 工具链能力失败码清单。 */
+export const SANDBOX_TOOLCHAIN_FAILURE_CODES = TOOLCHAIN_FAILURE_CODES;
+
+/** sandbox（沙箱） 工具链能力参数映射。 */
+export type SandboxToolchainCapabilityParamsByName = ToolchainCapabilityParamsByName;
+
+/** sandbox（沙箱） 工具链能力名联合类型。 */
+export type SandboxToolchainCapabilityName = ToolchainCapabilityName;
 
 /** `chat`（聊天） 分区允许的写动作清单。 */
 export const SANDBOX_CHAT_METHOD_NAMES = ["say", "report"] as const;

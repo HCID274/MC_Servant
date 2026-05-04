@@ -132,6 +132,149 @@ export type SkillCallInput = {
 /** 技能元信息分类。 */
 export type SkillCategory = "movement" | "resource" | "inventory";
 
+/** 工具链能力失败码；用于 sandbox（沙箱） 可编排能力的结构化失败结果。 */
+export const TOOLCHAIN_FAILURE_CODES = Object.freeze([
+  "missing_materials",
+  "missing_crafting_table",
+  "crafting_table_unavailable",
+  "cannot_place",
+  "not_equipped",
+  "resource_not_found",
+  "unsafe_path",
+  "unreachable_target",
+  "inventory_full",
+  "world_mismatch",
+  "unsupported_capability",
+] as const);
+
+/** 工具链能力失败码联合类型。 */
+export type ToolchainFailureCode = (typeof TOOLCHAIN_FAILURE_CODES)[number];
+
+/** 工具链能力失败结果。 */
+export interface ToolchainFailure {
+  /** 结构化失败码。 */
+  readonly code: ToolchainFailureCode;
+  /** 面向 diagnostics（诊断） 与 replan（重新规划） 的短消息。 */
+  readonly message: string;
+  /** 当前世界键；必须来自 currentWorld（当前世界）/ResourceService（资源服务） 既有接口。 */
+  readonly world_key: string | null;
+  /** 可选补充上下文，不承载手写 Minecraft（我的世界） 事实。 */
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
+/** 工具链能力成功结果。 */
+export interface ToolchainCapabilitySuccess<TData extends object> {
+  /** 固定成功标记。 */
+  readonly ok: true;
+  /** 能力返回数据。 */
+  readonly data: TData;
+}
+
+/** 工具链能力失败结果。 */
+export interface ToolchainCapabilityFailure {
+  /** 固定失败标记。 */
+  readonly ok: false;
+  /** 结构化失败。 */
+  readonly error: ToolchainFailure;
+}
+
+/** 工具链能力统一返回结构。 */
+export type ToolchainCapabilityResult<TData extends object> =
+  | ToolchainCapabilitySuccess<TData>
+  | ToolchainCapabilityFailure;
+
+/** sandbox（沙箱） 工具链能力名；当前仅作契约声明，未注册为 Phase 1（第一阶段） 可执行技能。 */
+export const TOOLCHAIN_CAPABILITY_NAMES = Object.freeze([
+  "craft",
+  "place",
+  "equip",
+  "mine",
+  "ensureLogs",
+  "ensureCraftingTablePlaced",
+  "ensureWoodenPickaxeEquipped",
+  "ensureCobblestone",
+  "ensureStonePickaxeEquipped",
+] as const);
+
+/** 禁止出现的一键 demo（演示） 能力名。 */
+export const FORBIDDEN_TOOLCHAIN_DEMO_NAMES = Object.freeze(["demoMineIron"] as const);
+
+/** sandbox（沙箱） 工具链能力名联合类型。 */
+export type ToolchainCapabilityName = (typeof TOOLCHAIN_CAPABILITY_NAMES)[number];
+
+/** 禁止的一键 demo（演示） 能力名联合类型。 */
+export type ForbiddenToolchainDemoName = (typeof FORBIDDEN_TOOLCHAIN_DEMO_NAMES)[number];
+
+/** `craft`（合成） 工具链参数。 */
+export interface CraftCapabilityParams {
+  /** 目标物品标准名称。 */
+  readonly itemName: string;
+  /** 期望合成数量。 */
+  readonly count: number;
+}
+
+/** `place`（放置） 工具链参数。 */
+export interface PlaceCapabilityParams {
+  /** 目标方块标准名称。 */
+  readonly blockName: string;
+  /** 可选放置参考点；省略时由 runtime（运行时） 在当前世界选择安全候选。 */
+  readonly near?: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>;
+}
+
+/** `ensureLogs`（确保原木） 参数。 */
+export interface EnsureLogsCapabilityParams {
+  /** 期望背包中至少存在的原木数量。 */
+  readonly count: number;
+}
+
+/** `ensureCobblestone`（确保圆石） 参数。 */
+export interface EnsureCobblestoneCapabilityParams {
+  /** 期望背包中至少存在的圆石数量。 */
+  readonly count: number;
+}
+
+/** 无参数 ensure（确保） 能力参数。 */
+export type EmptyEnsureCapabilityParams = Readonly<Record<string, never>>;
+
+/** 工具链能力参数映射。 */
+export interface ToolchainCapabilityParamsByName {
+  /** `craft`（合成） 参数。 */
+  readonly craft: CraftCapabilityParams;
+  /** `place`（放置） 参数。 */
+  readonly place: PlaceCapabilityParams;
+  /** `equip`（装备） 复用技能参数。 */
+  readonly equip: EquipSkillParams;
+  /** `mine`（挖掘） 复用技能参数。 */
+  readonly mine: MineSkillParams;
+  /** `ensureLogs`（确保原木） 参数。 */
+  readonly ensureLogs: EnsureLogsCapabilityParams;
+  /** `ensureCraftingTablePlaced`（确保工作台已放置） 参数。 */
+  readonly ensureCraftingTablePlaced: EmptyEnsureCapabilityParams;
+  /** `ensureWoodenPickaxeEquipped`（确保木镐已装备） 参数。 */
+  readonly ensureWoodenPickaxeEquipped: EmptyEnsureCapabilityParams;
+  /** `ensureCobblestone`（确保圆石） 参数。 */
+  readonly ensureCobblestone: EnsureCobblestoneCapabilityParams;
+  /** `ensureStonePickaxeEquipped`（确保石镐已装备） 参数。 */
+  readonly ensureStonePickaxeEquipped: EmptyEnsureCapabilityParams;
+}
+
+/** 工具链能力通用成功数据。 */
+export interface ToolchainCapabilityData {
+  /** 当前世界键。 */
+  readonly world_key: string | null;
+  /** 完成数量；不适用时为 1。 */
+  readonly completed_count: number;
+  /** 关键产物或目标标准名称。 */
+  readonly item_name?: string;
+  /** 关键方块标准名称。 */
+  readonly block_name?: string;
+}
+
+/** 工具链能力结果映射。 */
+export type ToolchainCapabilityResultByName = {
+  readonly [TName in ToolchainCapabilityName]: ToolchainCapabilityResult<ToolchainCapabilityData>;
+};
+
 /** 技能元信息结构。 */
 export interface SkillMetadata {
   /** 归属分类。 */

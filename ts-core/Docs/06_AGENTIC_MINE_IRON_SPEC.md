@@ -121,11 +121,15 @@ Plan/Chat（规划/闲聊）最终拿到的是被选中的内容,不是全库内
 
 ### 4.1 "挖铁"必须走 sandbox TS（沙箱 TypeScript）
 
-"挖铁"属于多步目标,不得映射为单个 `demoMineIron()`（演示挖铁） skill_call（技能调用）。Plan（规划）应生成类似结构：
+"挖铁"属于多步目标,不得映射为单个 `demoMineIron()`（演示挖铁） skill_call（技能调用）。Plan（规划）应生成类似结构。示例只表达组合方式,不代表一键隐藏入口：
 
 ```ts
-await api.bot.ensureStonePickaxeEquipped()
-await api.bot.mine("iron_ore", 1)
+const tool = await api.bot.ensureStonePickaxeEquipped()
+if (!tool.ok) throw new Error(tool.error.message)
+
+const mined = await api.bot.mine("iron_ore", 1)
+if (!mined.ok) throw new Error(mined.error.message)
+
 await api.bot.collect("raw_iron", 32)
 await api.chat.report("已经挖到粗铁了喵~")
 ```
@@ -147,9 +151,51 @@ ensure（确保）函数内部允许 if/else（条件分支）、循环、补采
 - `cutTree()`（砍树）。
 - `collect()`（捡拾）。
 - `craft()`（合成）。
-- `placeCraftingTable()`（放置工作台）。
+- `place()`（放置）。
 - `equip()`（装备）。
 - `mine()`（挖掘）。
+
+ensure（确保）函数必须返回统一结构：
+
+```ts
+type ToolchainResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: ToolchainFailure }
+
+type ToolchainFailure = {
+  code:
+    | "missing_materials"
+    | "missing_crafting_table"
+    | "crafting_table_unavailable"
+    | "cannot_place"
+    | "not_equipped"
+    | "resource_not_found"
+    | "unsafe_path"
+    | "unreachable_target"
+    | "inventory_full"
+    | "world_mismatch"
+    | "unsupported_capability"
+  message: string
+  world_key: string | null
+  details?: Record<string, unknown>
+}
+```
+
+失败码语义：
+
+| code（失败码） | 含义 |
+|----------------|------|
+| `missing_materials`（缺材料） | 背包和可采集资源都不足以完成合成或确保目标 |
+| `missing_crafting_table`（无工作台） | 目标配方需要工作台,但当前没有可用工作台 |
+| `crafting_table_unavailable`（工作台不可用） | 找到工作台但不可达、被阻挡或交互失败 |
+| `cannot_place`（无法放置） | 没有安全放置点、目标方块不可放置或服务端拒绝 |
+| `not_equipped`（未装备） | 目标装备不存在、槽位不合法或装备动作失败 |
+| `resource_not_found`（找不到资源） | 当前半径/刷新阶梯内找不到目标资源 |
+| `unsafe_path`（路径不安全） | 路径或采矿动作会经过岩浆、深坑、坍塌等危险 |
+| `unreachable_target`（目标不可达） | 资源存在但 runtime（运行时） 找不到可达候选点 |
+| `inventory_full`（背包已满） | 没有空间接收产物或掉落物 |
+| `world_mismatch`（世界不匹配） | 请求和 currentWorld（当前世界）/ResourceService（资源服务） 当前世界不一致 |
+| `unsupported_capability`（能力未启用） | 契约已声明但实现尚未接入 |
 
 ### 4.3 CraftService（合成服务）边界
 
@@ -410,4 +456,3 @@ BrainWorker（大脑工作线程）在以下情况下创建或更新 agent-manag
 6. 若失败,下一轮 Plan（规划）读取结构化失败原因并换策略。
 7. 成功后 BrainWorker（大脑工作线程）沉淀经验 skill（经验技能）。
 8. 下一次类似任务能通过索引和检索更快加载经验。
-

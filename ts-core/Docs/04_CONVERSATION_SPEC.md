@@ -275,10 +275,17 @@ interface api {
     goTo(x: number, y: number, z: number): Promise<Position>
     goToOwner(distance?: number): Promise<Position>
     follow(distance?: number): Promise<void>
-    mine(blockName: string, count: number): Promise<{collected: number}>
+    mine(blockName: string, count: number): Promise<ToolchainResult<{block_name:string,completed_count:number,world_key:string|null}>>
+    craft(itemName: string, count: number): Promise<ToolchainResult<{item_name:string,completed_count:number,world_key:string|null}>>
+    place(blockName: string, near?: Position): Promise<ToolchainResult<{block_name:string,completed_count:number,world_key:string|null}>>
     collect(itemName: string, radius?: number): Promise<{collected: number}>
-    equip(itemName: string, destination?: string): Promise<void>
+    equip(itemName: string, destination?: string): Promise<ToolchainResult<{item_name:string,destination:string,world_key:string|null}>>
     cutTree(count: number): Promise<{collected: number}>
+    ensureLogs(count: number): Promise<ToolchainResult<{item_name:string,completed_count:number,world_key:string|null}>>
+    ensureCraftingTablePlaced(): Promise<ToolchainResult<{block_name:string,completed_count:number,world_key:string|null}>>
+    ensureWoodenPickaxeEquipped(): Promise<ToolchainResult<{item_name:string,completed_count:number,world_key:string|null}>>
+    ensureCobblestone(count: number): Promise<ToolchainResult<{item_name:string,completed_count:number,world_key:string|null}>>
+    ensureStonePickaxeEquipped(): Promise<ToolchainResult<{item_name:string,completed_count:number,world_key:string|null}>>
     attack(entityName: string): Promise<{killed: boolean}>
     getStatus(): Promise<BotStatus>
     getInventory(): Promise<InventoryItem[]>
@@ -313,6 +320,10 @@ interface api {
   }
 }
 ```
+
+`ToolchainResult`（工具链结果） 固定为 `{ok:true,data}` 或 `{ok:false,error}`。`error.code`（错误码） 必须使用结构化失败码,覆盖 `missing_materials`（缺材料）、`missing_crafting_table`（无工作台）、`cannot_place`（无法放置）、`not_equipped`（未装备）、`resource_not_found`（找不到资源）、`unsafe_path`（路径不安全） 等可恢复原因。Plan（规划）不得生成或引用 `demoMineIron()`（演示挖铁） 或等价一键隐藏脚本。
+
+所有资源、坐标和维度上下文必须通过 existing world tag（既有世界标签）、`currentWorld`（当前世界） 或 ResourceService（资源服务） 接口读取；sandbox TS（沙箱 TypeScript） 不得自行拼接 `world_key`（世界键）。
 
 约 800 token。这是 sandbox_code 路径 prompt 的固定开销，闲聊路径完全不需要。
 

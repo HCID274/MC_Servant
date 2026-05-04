@@ -177,9 +177,40 @@
 
     ### 4.2 BotAPI — 物理动作
 
-    每个方法都是异步的，执行完成后才返回。内部由 BotActor 驱动 Mineflayer 执行。
+    每个方法都是异步的，执行完成后才返回。内部由 BotActor（机器人执行代理） 驱动 Mineflayer（Minecraft 协议客户端） 执行。
+
+    T-054（任务）后，工具链能力分为两类：
+
+    - 已注册 Phase 1（第一阶段） 技能：`goTo`（前往）、`mine`（挖掘）、`cutTree`（砍树）、`collect`（捡拾）、`equip`（装备）。
+    - 仅声明契约、等待后续实现的工具链能力：`craft`（合成）、`place`（放置）、`ensureLogs`（确保原木）、`ensureCraftingTablePlaced`（确保工作台已放置）、`ensureWoodenPickaxeEquipped`（确保木镐已装备）、`ensureCobblestone`（确保圆石）、`ensureStonePickaxeEquipped`（确保石镐已装备）。
+
+    未实现能力不得注入真实 Facade API（门面接口） 伪装可用；实现前必须返回结构化 unsupported failure（不支持失败） 或不出现在当前 prompt（提示词） 可用方法中。
 
     ```typescript
+    type ToolchainFailureCode =
+      | "missing_materials"
+      | "missing_crafting_table"
+      | "crafting_table_unavailable"
+      | "cannot_place"
+      | "not_equipped"
+      | "resource_not_found"
+      | "unsafe_path"
+      | "unreachable_target"
+      | "inventory_full"
+      | "world_mismatch"
+      | "unsupported_capability"
+
+    interface ToolchainFailure {
+      code: ToolchainFailureCode
+      message: string
+      world_key: string | null
+      details?: Record<string, unknown>
+    }
+
+    type ToolchainResult<T> =
+      | { ok: true; data: T }
+      | { ok: false; error: ToolchainFailure }
+
     interface BotAPI {
     /**
      * 寻路移动到指定坐标
@@ -207,7 +238,17 @@
      * @param count 挖掘数量
      * @returns 实际挖到的数量
      */
-    mine(blockName: string, count: number): Promise<{ collected: number }>
+    mine(blockName: string, count: number): Promise<ToolchainResult<{ block_name: string; completed_count: number; world_key: string | null }>>
+
+    /**
+     * 合成指定物品。材料、配方、是否需要工作台必须由 minecraft-data / Mineflayer / runtime 校验。
+     */
+    craft(itemName: string, count: number): Promise<ToolchainResult<{ item_name: string; completed_count: number; world_key: string | null }>>
+
+    /**
+     * 放置指定方块。放置候选点必须由 runtime 在当前世界中选择或校验。
+     */
+    place(blockName: string, near?: Position): Promise<ToolchainResult<{ block_name: string; completed_count: number; world_key: string | null }>>
 
     /**
      * 收集附近掉落物
@@ -222,7 +263,7 @@
      * @param itemName 物品名称
      * @param destination 装备位置
      */
-    equip(itemName: string, destination?: 'hand' | 'off-hand' | 'head' | 'torso' | 'legs' | 'feet'): Promise<void>
+    equip(itemName: string, destination?: 'hand' | 'off-hand' | 'head' | 'torso' | 'legs' | 'feet'): Promise<ToolchainResult<{ item_name: string; destination: string; world_key: string | null }>>
 
     /**
      * 砍树（复合动作：找到树 → 移动过去 → 挖原木 → 收集掉落物）
@@ -230,6 +271,15 @@
      * @returns 实际收集到的原木数量
      */
     cutTree(count: number): Promise<{ collected: number }>
+
+    /**
+     * 可复用 ensure（确保）函数。ensure 内部只能组合底层通用原语，不得变成一次性挖铁脚本。
+     */
+    ensureLogs(count: number): Promise<ToolchainResult<{ item_name: string; completed_count: number; world_key: string | null }>>
+    ensureCraftingTablePlaced(): Promise<ToolchainResult<{ block_name: string; completed_count: number; world_key: string | null }>>
+    ensureWoodenPickaxeEquipped(): Promise<ToolchainResult<{ item_name: string; completed_count: number; world_key: string | null }>>
+    ensureCobblestone(count: number): Promise<ToolchainResult<{ item_name: string; completed_count: number; world_key: string | null }>>
+    ensureStonePickaxeEquipped(): Promise<ToolchainResult<{ item_name: string; completed_count: number; world_key: string | null }>>
 
     /**
      * 攻击实体
@@ -269,6 +319,10 @@
     slot: number
     }
     ```
+
+    **禁止项**：不得新增或暴露 `demoMineIron()`（演示挖铁） 或等价的一键隐藏链路。用户说“挖铁”时，LLM（大语言模型） 应生成可读 sandbox TS（沙箱 TypeScript） 组合，显式调用 `ensure*`（确保函数）、`craft`（合成）、`place`（放置）、`equip`（装备）、`mine`（挖掘）、`collect`（捡拾） 等通用能力；TS Core（TypeScript 核心） 不得把整条链路藏在单个 demo（演示） 方法里。
+
+    **世界定位硬约束**：上述所有能力涉及资源、坐标、维度或缓存时，必须从 existing world tag（既有世界标签）、`currentWorld`（当前世界） 或 ResourceService（资源服务） 读取世界上下文。sandbox TS（沙箱 TypeScript）、skills（技能） 与 runtime（运行时） 不得自行读取维度字段并拼接 `world_key`（世界键），也不得跨世界复用资源缓存。
 
     ### 4.3 WorldAPI — 环境查询
 
