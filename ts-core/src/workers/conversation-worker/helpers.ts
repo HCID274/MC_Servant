@@ -72,12 +72,13 @@ export function createPlanningFailureReply() {
 /**
  * 创建未启用技能的模板回复。
  *
- * T-046（任务四十六） 只允许 goTo（前往坐标） 与 collect（捡拾） 进入在线执行队列；其他技能必须明确拒绝。
+ * 在线入口只允许已验收技能与已接线工具链能力进入执行队列；其他能力必须明确拒绝。
  */
 export function createSkillNotEnabledReply() {
   return createConversationReply({
     mode: "template",
-    reply: "这个技能还没有通过单技能验收，当前只允许执行 goTo 前往坐标和 collect 捡拾喵~",
+    reply:
+      "这个技能还没有通过验收，当前允许执行 goTo 前往坐标、collect 捡拾、cutTree 砍树和 place 放置工作台喵~",
   });
 }
 

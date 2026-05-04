@@ -15,7 +15,11 @@ import type {
   SandboxFacadeCallControl,
   SandboxFacadeExecutionAdapter,
 } from "../core-ports/sandbox.js";
-import type { SkillName, SkillParamsByName } from "../core-ports/skills.js";
+import type {
+  SkillName,
+  SkillParamsByName,
+  ToolchainCapabilityParamsByName,
+} from "../core-ports/skills.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
 import type { SandboxJsonlLine } from "../diagnostics/contracts.js";
 import { assertDiagnosticStorageRef, createSandboxLogLine } from "../diagnostics/logs.js";
@@ -716,7 +720,8 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
         mine: (...args) => __sandboxCall("bot.mine", args),
         collect: (...args) => __sandboxCall("bot.collect", args),
         equip: (...args) => __sandboxCall("bot.equip", args),
-        cutTree: (...args) => __sandboxCall("bot.cutTree", args)
+        cutTree: (...args) => __sandboxCall("bot.cutTree", args),
+        place: (...args) => __sandboxCall("bot.place", args)
       }),
       chat: Object.freeze({
         say: (...args) => __sandboxCall("chat.say", args),
@@ -909,6 +914,17 @@ function normalizeSandboxCallParams(
     return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["equip"];
   }
 
+  if (action === "place") {
+    if (typeof first === "string") {
+      return {
+        blockName: first,
+        ...(isRecord(args[1]) ? { near: cloneReadonlyValue(args[1]) } : {}),
+      } as SandboxStepParamsByAction["place"];
+    }
+
+    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["place"];
+  }
+
   if (action === "cutTree") {
     return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["cutTree"];
   }
@@ -930,7 +946,64 @@ async function executeSandboxBotFacadeCall(
     throw new Error("cutTree is not executable in the current runtime sandbox");
   }
 
+  if (action === "place") {
+    if (typeof facade.executeToolchainCapability !== "function") {
+      throw new Error("Toolchain capability place is not configured in current sandbox");
+    }
+
+    const result = await facade.executeToolchainCapability(
+      "place",
+      params as ToolchainCapabilityParamsByName["place"],
+      control,
+    );
+
+    if (isToolchainCapabilityFailure(result)) {
+      throw createToolchainCapabilityFacadeError(
+        result.error.code,
+        result.error.message,
+        result.error.details,
+      );
+    }
+
+    return result;
+  }
+
   return facade.executeBotSkill(action, params as SkillParamsByName[typeof action], control);
+}
+
+function isToolchainCapabilityFailure(value: unknown): value is {
+  readonly ok: false;
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+    readonly details?: Readonly<Record<string, unknown>>;
+  };
+} {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as {
+    readonly ok?: unknown;
+    readonly error?: { readonly code?: unknown; readonly message?: unknown };
+  };
+  return (
+    candidate.ok === false &&
+    typeof candidate.error?.code === "string" &&
+    typeof candidate.error.message === "string"
+  );
+}
+
+function createToolchainCapabilityFacadeError(
+  code: string,
+  message: string,
+  details?: Readonly<Record<string, unknown>>,
+): Error {
+  const detailText = formatToolchainErrorDetails(details);
+  return Object.assign(new Error(`${message}${detailText}`), {
+    error_code: code,
+    ...(details === undefined ? {} : { details }),
+  });
 }
 
 function createSandboxFacadeCallControl(
@@ -1034,8 +1107,49 @@ function createFacadeCallError(
     recoverable: true,
     method: action,
     params: params as Readonly<Record<string, unknown>>,
-    error_code: "facade_call_failed",
+    error_code: readFacadeErrorCode(error),
+    ...readFacadeErrorDetails(error),
   });
+}
+
+function readFacadeErrorCode(error: unknown): string {
+  if (typeof error !== "object" || error === null) {
+    return "facade_call_failed";
+  }
+
+  const errorCode = (error as { readonly error_code?: unknown }).error_code;
+  return typeof errorCode === "string" && errorCode.trim().length > 0
+    ? errorCode
+    : "facade_call_failed";
+}
+
+function readFacadeErrorDetails(error: unknown): {
+  readonly details?: Readonly<Record<string, unknown>>;
+} {
+  if (typeof error !== "object" || error === null) {
+    return {};
+  }
+
+  const details = (error as { readonly details?: unknown }).details;
+  if (typeof details !== "object" || details === null || Array.isArray(details)) {
+    return {};
+  }
+
+  return { details: details as Readonly<Record<string, unknown>> };
+}
+
+function formatToolchainErrorDetails(
+  details: Readonly<Record<string, unknown>> | undefined,
+): string {
+  if (details === undefined) {
+    return "";
+  }
+
+  try {
+    return ` details=${JSON.stringify(details)}`;
+  } catch {
+    return " details=<unserializable>";
+  }
 }
 
 function createTranspileError(error: unknown): TranspileError {
@@ -1092,16 +1206,22 @@ function isSandboxExecutionError(value: unknown): value is SandboxExecutionError
   );
 }
 
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null;
+}
+
 function toJsonlErrorSnapshot(error: SandboxExecutionError): {
   readonly name: string;
   readonly message: string;
   readonly error_code?: string;
+  readonly details?: Readonly<Record<string, unknown>>;
   readonly recoverable?: boolean;
 } {
   return Object.freeze({
     name: error.name,
     message: error.message,
     ...("error_code" in error ? { error_code: error.error_code } : {}),
+    ...("details" in error && error.details !== undefined ? { details: error.details } : {}),
     recoverable: error.recoverable,
   });
 }

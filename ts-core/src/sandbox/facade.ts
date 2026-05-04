@@ -7,7 +7,7 @@
  * 4. 技能对齐：确保沙箱内的 `bot` 分区方法与 Phase 1 技能元数据严格对齐。
  */
 
-import { PHASE1_SKILL_DEFINITIONS } from "../core-ports/skills.js";
+import { PHASE1_SKILL_DEFINITIONS, type SkillName } from "../core-ports/skills.js";
 import {
   SANDBOX_BOT_METHOD_NAMES,
   SANDBOX_CHAT_METHOD_NAMES,
@@ -51,7 +51,7 @@ function createMethodContract<TName extends string>(input: {
   access: "read" | "write";
   parameterKeys: readonly string[];
   emitsStep: boolean;
-  alignedSkill?: SandboxBotMethodName;
+  alignedSkill?: SkillName;
 }): SandboxMethodContract<TName> {
   return Object.freeze({
     kind: "method",
@@ -77,7 +77,7 @@ const phase1SkillMetadata = new Map(
 );
 
 const facadeNamespaceDescriptions = Object.freeze({
-  bot: "bot(write): goTo(x,y,z), mine(blockName,count), collect(itemName,radius?), equip(itemName,destination?), cutTree(count)=unsupported",
+  bot: "bot(write): goTo(x,y,z), mine(blockName,count), collect(itemName,radius?), equip(itemName,destination?), cutTree(count), place('crafting_table', near?)",
   chat: "chat(write): say(message), report(message); both write through BotActor controlled chat",
   world:
     "world(read): currently unavailable in minimal runtime sandbox; call describe('world') before relying on reads",
@@ -175,6 +175,12 @@ export function createSandboxFacadeContract(): SandboxFacadeContract {
         parameterKeys: phase1SkillMetadata.get("equip")?.parameterKeys ?? [],
         emitsStep: true,
         alignedSkill: SANDBOX_BOT_SKILL_BINDINGS.equip,
+      }),
+      place: createMethodContract({
+        name: "place",
+        access: "write",
+        parameterKeys: ["blockName", "near"],
+        emitsStep: true,
       }),
     }),
     world: Object.freeze({

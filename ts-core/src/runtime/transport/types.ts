@@ -1,3 +1,4 @@
+import type { Vec3 } from "vec3";
 import type { MineflayerObservationInput } from "../../core-ports/observation.js";
 import type {
   ResourceRefreshRadius,
@@ -13,6 +14,7 @@ import type {
   GoToSkillParams,
   MineSkillExecutionResult,
   MineSkillParams,
+  PlaceCapabilityParams,
   ToolchainCapabilityData,
   ToolchainCapabilityResult,
 } from "../../core-ports/skills.js";
@@ -253,6 +255,17 @@ export interface MineflayerMiningPort {
   canSeeBlock?(block: MineflayerBlockHandle): boolean;
 }
 
+/** Mineflayer（Minecraft 协议客户端） 放置能力端口。 */
+export interface MineflayerPlacementPort {
+  /** 将视线转向指定位置；真实 Mineflayer（Minecraft 协议客户端） 需要 Vec3（三维向量） 实例。 */
+  lookAt?(position: Vec3, force?: boolean): void | Promise<void>;
+  /** 在参考方块指定面上放置当前手持方块。 */
+  placeBlock?(
+    referenceBlock: MineflayerBlockHandle,
+    faceVector: MineflayerVec3Like,
+  ): void | Promise<void>;
+}
+
 /** Mineflayer（Minecraft 协议客户端） 合成能力端口。 */
 export interface MineflayerCraftingPort {
   /** 查询当前材料与工作台条件下可合成的配方。 */
@@ -312,6 +325,7 @@ export interface MineflayerBotHandle
     MineflayerChatPort,
     MineflayerMovementPort,
     MineflayerMiningPort,
+    MineflayerPlacementPort,
     MineflayerCraftingPort,
     MineflayerEntityPort,
     MineflayerInventoryPort {}
@@ -336,7 +350,30 @@ export interface MineflayerPathfinderApi {
   stop?(): void;
 }
 
-/** Mineflayer 寻路插件模块结构。 */
+/** mineflayer-pathfinder（Mineflayer 寻路插件） 目标构造器集合。 */
+export interface MineflayerPathfinderGoals {
+  /** 方块坐标目标。 */
+  readonly GoalBlock?: new (
+    x: number,
+    y: number,
+    z: number,
+  ) => unknown;
+  /** 近距离目标。 */
+  readonly GoalNear?: new (
+    x: number,
+    y: number,
+    z: number,
+    range: number,
+  ) => unknown;
+  /** 近距离 XZ 平面目标。 */
+  readonly GoalNearXZ?: new (
+    x: number,
+    z: number,
+    range: number,
+  ) => unknown;
+}
+
+/** Mineflayer 寻路插件模块结构；真实库可能从顶层、default（默认导出） 或 module.exports（模块导出） 暴露 goals（目标构造器）。 */
 export interface MineflayerPathfinderModule {
   /** Mineflayer（Minecraft 协议客户端） pathfinder（寻路器） 插件函数。 */
   readonly pathfinder: unknown;
@@ -345,27 +382,15 @@ export interface MineflayerPathfinderModule {
     bot: MineflayerMovementPort,
     registry: unknown,
   ) => unknown;
-  /** pathfinder（寻路器） 目标构造器集合。 */
-  readonly goals: {
-    /** 方块坐标目标。 */
-    readonly GoalBlock: new (
-      x: number,
-      y: number,
-      z: number,
-    ) => unknown;
-    /** 近距离目标。 */
-    readonly GoalNear: new (
-      x: number,
-      y: number,
-      z: number,
-      range: number,
-    ) => unknown;
-    /** 近距离 XZ 平面目标。 */
-    readonly GoalNearXZ?: new (
-      x: number,
-      z: number,
-      range: number,
-    ) => unknown;
+  /** 顶层 goals（目标构造器） 导出形态。 */
+  readonly goals?: MineflayerPathfinderGoals;
+  /** ESM default（默认导出） 下的 goals（目标构造器） 导出形态。 */
+  readonly default?: {
+    readonly goals?: MineflayerPathfinderGoals;
+  };
+  /** CommonJS module.exports（模块导出） 下的 goals（目标构造器） 导出形态。 */
+  readonly "module.exports"?: {
+    readonly goals?: MineflayerPathfinderGoals;
   };
 }
 
@@ -441,6 +466,10 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   /** 通过受控背包与 Mineflayer recipe（配方）能力执行 craft（合成）。 */
   craft(
     params: Readonly<CraftCapabilityParams>,
+  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
+  /** 通过受控背包、移动与 Mineflayer placeBlock（放方块）能力执行 place（放置）。 */
+  place(
+    params: Readonly<PlaceCapabilityParams>,
   ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
   /** 停止当前 Mineflayer（Minecraft 协议客户端） 世界交互动作。 */
   stopCurrentAction(): void;

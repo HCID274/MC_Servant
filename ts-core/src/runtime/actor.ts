@@ -11,9 +11,12 @@ import {
   type SkillExecutionResult,
   type SkillName,
   type SkillParamsByName,
+  type ToolchainCapabilityName,
+  type ToolchainCapabilityParamsByName,
   isCollectSkillParams,
   isCutTreeSkillParams,
   isGoToSkillParams,
+  isPlaceCapabilityParams,
 } from "../core-ports/skills.js";
 import {
   type BotActorCurrentTaskProjection,
@@ -231,6 +234,12 @@ export function createBotActorRuntime<TBotId extends string>(input: {
     mine: input.transport.mine.bind(input.transport),
     collect: input.transport.collect.bind(input.transport),
     equip: input.transport.equip.bind(input.transport),
+    place:
+      typeof input.transport.place === "function"
+        ? input.transport.place.bind(input.transport)
+        : async () => {
+            throw new Error("Toolchain place execution dependency is not configured");
+          },
   };
   const recentEventFormatter = input.recentEventFormatter ?? defaultRuntimeRecentEventFormatter;
 
@@ -299,6 +308,33 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         }
 
         throw new Error(`Unsupported sandbox skill: ${String(skill)}`);
+      },
+      async executeToolchainCapability<TName extends ToolchainCapabilityName>(
+        capability: TName,
+        params: Readonly<ToolchainCapabilityParamsByName[TName]>,
+        control?: SandboxFacadeCallControl,
+      ) {
+        assertSandboxFacadeCallActive(control);
+
+        if (capability !== "place") {
+          throw new Error(
+            `Toolchain capability ${capability} is not executable in current sandbox`,
+          );
+        }
+        if (!isPlaceCapabilityParams(params)) {
+          throw new Error("sandbox place params are invalid");
+        }
+
+        const result = await skillExecution.place(params);
+        if (!result.ok) {
+          throw createToolchainCapabilityError(
+            result.error.code,
+            result.error.message,
+            result.error.details,
+          );
+        }
+
+        return result as unknown as Readonly<Record<string, unknown>>;
       },
       async writeChat(
         method: "say" | "report",
@@ -943,6 +979,32 @@ function assertSandboxFacadeCallActive(control: SandboxFacadeCallControl | undef
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function createToolchainCapabilityError(
+  code: string,
+  message: string,
+  details?: Readonly<Record<string, unknown>>,
+): Error {
+  const detailText = formatToolchainErrorDetails(details);
+  return Object.assign(new Error(`${message}${detailText}`), {
+    error_code: code,
+    ...(details === undefined ? {} : { details }),
+  });
+}
+
+function formatToolchainErrorDetails(
+  details: Readonly<Record<string, unknown>> | undefined,
+): string {
+  if (details === undefined) {
+    return "";
+  }
+
+  try {
+    return ` details=${JSON.stringify(details)}`;
+  } catch {
+    return " details=<unserializable>";
+  }
 }
 
 const defaultRuntimeRecentEventFormatter: RuntimeRecentEventFormatter = Object.freeze({

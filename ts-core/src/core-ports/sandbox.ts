@@ -6,7 +6,12 @@
  */
 
 import type { ExecutionTaskKind } from "./foundation.js";
-import type { SkillName, SkillParamsByName } from "./skills.js";
+import type {
+  SkillName,
+  SkillParamsByName,
+  ToolchainCapabilityName,
+  ToolchainCapabilityParamsByName,
+} from "./skills.js";
 import type { TaskHistoryStatus } from "./tasking.js";
 
 /** 单次 Facade API（门面接口） 调用的执行门控。 */
@@ -23,6 +28,12 @@ export interface SandboxFacadeExecutionAdapter {
   executeBotSkill<TName extends SkillName>(
     skill: TName,
     params: Readonly<SkillParamsByName[TName]>,
+    control?: SandboxFacadeCallControl,
+  ): Promise<Readonly<Record<string, unknown>>>;
+  /** 通过 BotActor（机器人执行代理） 单写者执行已实现的工具链能力。 */
+  executeToolchainCapability?<TName extends ToolchainCapabilityName>(
+    capability: TName,
+    params: Readonly<ToolchainCapabilityParamsByName[TName]>,
     control?: SandboxFacadeCallControl,
   ): Promise<Readonly<Record<string, unknown>>>;
   /** 通过 BotActor（机器人执行代理） 单写者写入聊天。 */

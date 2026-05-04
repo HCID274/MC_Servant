@@ -22,11 +22,13 @@ import type {
   EquipSkillParams,
   GoToSkillParams,
   MineSkillParams,
+  PlaceCapabilityParams,
 } from "../../core-ports/skills.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../../domain/invariants.js";
 import { attachMineflayerBlockWorldCompatibility } from "./block-world-compat.js";
 import { executeMineflayerCollect } from "./collect.js";
 import { executeMineflayerCraft } from "./craft.js";
+import type { CraftingTablePlacementCache } from "./crafting-table.js";
 import { executeMineflayerDigBlockAt } from "./dig-block.js";
 import { executeMineflayerEquip } from "./equip.js";
 import { executeMineflayerGoTo } from "./go-to.js";
@@ -40,6 +42,7 @@ import {
 } from "./lifecycle.js";
 import { executeMineflayerMine } from "./mine.js";
 import { createMineflayerPathfinderContext } from "./pathfinder.js";
+import { executeMineflayerPlaceCraftingTable } from "./placement.js";
 import type {
   MineflayerBlockHandle,
   MineflayerBotHandle,
@@ -79,6 +82,7 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
   let removeWorldStateResetListener: (() => void) | null = null;
   let spawned = false;
   let pathfinderLoaded = false;
+  const craftingTableCache: CraftingTablePlacementCache = { position: null };
   const createBot = dependencies.createBot ?? createDefaultMineflayerBot;
   const connectTimeoutMs = dependencies.connectTimeoutMs ?? DEFAULT_MINEFLAYER_CONNECT_TIMEOUT_MS;
 
@@ -205,6 +209,19 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
         bot: currentBot,
         params,
         worldKey: createMineflayerWorldKey(currentBot),
+        craftingTableCache,
+      });
+    },
+    async place(params: Readonly<PlaceCapabilityParams>) {
+      const currentBot = ensureWorldInteractionReady("place");
+      const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
+      return executeMineflayerPlaceCraftingTable({
+        bot: currentBot,
+        pathfinder,
+        pathfinderModule,
+        params,
+        worldKey: createMineflayerWorldKey(currentBot),
+        cache: craftingTableCache,
       });
     },
     stopCurrentAction(): void {
@@ -299,7 +316,7 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
   }
 
   function ensureWorldInteractionReady(
-    skill: "goTo" | "mine" | "digBlockAt" | "collect" | "equip" | "craft",
+    skill: "goTo" | "mine" | "digBlockAt" | "collect" | "equip" | "craft" | "place",
   ): MineflayerBotHandle {
     if (state !== "connected" || bot === null) {
       throw new Error(`Mineflayer transport must be connected before ${skill}`);

@@ -76,6 +76,7 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
         mine: created.transport.mine.bind(created.transport),
         collect: created.transport.collect.bind(created.transport),
         equip: created.transport.equip.bind(created.transport),
+        place: created.transport.place.bind(created.transport),
         cutTree: createCutTreeSkillExecutor({
           resourceService: created.resourceService,
           digger: created.transport,

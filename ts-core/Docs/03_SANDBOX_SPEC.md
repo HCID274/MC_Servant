@@ -182,7 +182,8 @@
     T-054（任务）后，工具链能力分为两类：
 
     - 已注册 Phase 1（第一阶段） 技能：`goTo`（前往）、`mine`（挖掘）、`cutTree`（砍树）、`collect`（捡拾）、`equip`（装备）。
-    - 仅声明契约、等待后续实现的工具链能力：`craft`（合成）、`place`（放置）、`ensureLogs`（确保原木）、`ensureCraftingTablePlaced`（确保工作台已放置）、`ensureWoodenPickaxeEquipped`（确保木镐已装备）、`ensureCobblestone`（确保圆石）、`ensureStonePickaxeEquipped`（确保石镐已装备）。
+    - 仅声明契约、等待后续实现的工具链能力：`ensureLogs`（确保原木）、`ensureCraftingTablePlaced`（确保工作台已放置）、`ensureWoodenPickaxeEquipped`（确保木镐已装备）、`ensureCobblestone`（确保圆石）、`ensureStonePickaxeEquipped`（确保石镐已装备）。
+    - 已有最小工具链基础能力：`craft`（合成） 与 `place`（放置）。其中 `place`（放置） Phase 1（第一阶段） 只允许放置 `crafting_table`（工作台），不得扩展成通用建筑系统。
 
     未实现能力不得注入真实 Facade API（门面接口） 伪装可用；实现前必须返回结构化 unsupported failure（不支持失败） 或不出现在当前 prompt（提示词） 可用方法中。
 
@@ -191,6 +192,10 @@
       | "missing_materials"
       | "missing_crafting_table"
       | "crafting_table_unavailable"
+      | "missing_crafting_table_item"
+      | "no_placeable_position"
+      | "place_failed"
+      | "cached_position_invalid"
       | "cannot_place"
       | "not_equipped"
       | "resource_not_found"
@@ -246,9 +251,9 @@
     craft(itemName: string, count: number): Promise<ToolchainResult<{ item_name: string; completed_count: number; world_key: string | null }>>
 
     /**
-     * 放置指定方块。放置候选点必须由 runtime 在当前世界中选择或校验。
+    * 放置指定方块。Phase 1 仅允许 crafting_table；若背包没有工作台物品，先通过 craft 能力合成 1 个；若配方校验显示缺少中间材料，再通过 craft('planks', n) 这类已开放最小合成能力补齐，随后由 runtime 在当前世界中选择最多 3 个附近合法候选点顺序尝试。工具链返回 ok:false 时必须使沙箱步骤失败并保留结构化 error.code，不得把失败当成成功执行。
      */
-    place(blockName: string, near?: Position): Promise<ToolchainResult<{ block_name: string; completed_count: number; world_key: string | null }>>
+    place(blockName: 'crafting_table', near?: Position): Promise<ToolchainResult<{ block_name: string; completed_count: number; world_key: string | null; position?: Position }>>
 
     /**
      * 收集附近掉落物

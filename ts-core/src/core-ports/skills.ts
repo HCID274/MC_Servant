@@ -139,6 +139,10 @@ export const TOOLCHAIN_FAILURE_CODES = Object.freeze([
   "crafting_table_unavailable",
   "recipe_not_found",
   "runtime_craft_failed",
+  "missing_crafting_table_item",
+  "no_placeable_position",
+  "place_failed",
+  "cached_position_invalid",
   "cannot_place",
   "not_equipped",
   "resource_not_found",
@@ -270,6 +274,8 @@ export interface ToolchainCapabilityData {
   readonly item_name?: string;
   /** 关键方块标准名称。 */
   readonly block_name?: string;
+  /** 可选方块位置；必须来自当前 runtime（运行时） 世界交互结果。 */
+  readonly position?: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>;
 }
 
 /** 工具链能力结果映射。 */
@@ -330,6 +336,15 @@ function freezePlainObject<TValue extends object>(value: TValue): Readonly<TValu
 
 /** 判断值是否为 `collect`（捡拾） 可用中心点。 */
 function isCollectCenter(value: unknown): value is NonNullable<CollectSkillParams["center"]> {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, ["x", "y", "z"])) {
+    return false;
+  }
+
+  return isFiniteNumber(value.x) && isFiniteNumber(value.y) && isFiniteNumber(value.z);
+}
+
+/** 判断值是否为工具链 `place`（放置） 可用参考点。 */
+function isPlaceNear(value: unknown): value is NonNullable<PlaceCapabilityParams["near"]> {
   if (!isRecord(value) || !hasOnlyAllowedKeys(value, ["x", "y", "z"])) {
     return false;
   }
@@ -409,6 +424,17 @@ export function isEquipSkillParams(params: unknown): params is EquipSkillParams 
   return (
     isNonEmptyString(params.itemName) &&
     (params.destination === undefined || isEquipDestination(params.destination))
+  );
+}
+
+/** 校验 `place`（放置） 工具链参数。 */
+export function isPlaceCapabilityParams(params: unknown): params is PlaceCapabilityParams {
+  if (!isRecord(params) || !hasOnlyAllowedKeys(params, ["blockName", "near"])) {
+    return false;
+  }
+
+  return (
+    isNonEmptyString(params.blockName) && (params.near === undefined || isPlaceNear(params.near))
   );
 }
 
@@ -622,11 +648,20 @@ export interface EquipSkillAdapter {
   equip(params: Readonly<SkillParamsByName["equip"]>): Promise<EquipSkillExecutionResult>;
 }
 
+/** `place`（放置） 工具链执行适配器。 */
+export interface PlaceToolchainAdapter {
+  /** 放置当前阶段允许的工具链方块。 */
+  place(
+    params: Readonly<PlaceCapabilityParams>,
+  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
+}
+
 /** 技能执行器依赖集合。 */
 export interface SkillExecutionDependencies
   extends MineSkillAdapter,
     CollectSkillAdapter,
-    EquipSkillAdapter {
+    EquipSkillAdapter,
+    PlaceToolchainAdapter {
   /** `goTo`（前往坐标） 移动适配器。 */
   readonly goToMovement: GoToMovementAdapter;
   /** `cutTree`（砍树） 在真实 app（应用）装配时注入；未注入时保持禁用。 */

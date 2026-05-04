@@ -77,6 +77,10 @@ C → 用户          : 通过 → 写入 PROGRESS.md
 - 环境可达 → 跑真实调用,记录命令、输入、输出、判断
 - 环境不可达 → 提供最短人工手测步骤
 
+**runtime（运行时）硬约束**:
+- 调用 Mineflayer（Minecraft 客户端库） API（应用程序接口） 时,必须传库要求的真实对象类型。典型踩坑: `lookAt`（看向目标） 需要 `Vec3`（三维向量） 实例,不能传普通 `{x,y,z}` 对象;涉及 `Vec3`（三维向量）、`Block`（方块对象）、`Item`（物品对象）、`Entity`（实体对象） 时,先查现有 adapter（适配器） 或真实库类型,再写回归测试覆盖真实导出/调用形态。
+- 所有 `world_key`（世界键）/维度/世界定位必须走既有 `currentWorld`（当前世界）、`ResourceService`（资源服务） 或 `runtime/transport`（运行时传输层） 接口;不得在 skill（技能）、sandbox（沙箱）、world-model（世界模型）、plugin（服务端模组） 或 prompt（提示词） 中重新拼接世界名、解析维度或猜测 `bot.game.dimension`（机器人游戏维度）。
+
 ### 2.3 Reviewer C
 
 **输入**: A 的边界 + B 的 500 字记录 + `git diff` + `ENGINEERING_PRINCIPLES.md` + `01_ARCHITECTURE.md`
@@ -173,6 +177,10 @@ A 给的边界是起点,可越界,但越界必须在交互记录第三段里写�
 
 ## 自检
 见 ts-core/Docs/ENGINEERING_PRINCIPLES.md "B 自检清单"。
+
+## runtime（运行时）硬约束
+- 调用 Mineflayer（Minecraft 客户端库） API（应用程序接口） 时必须使用库要求的真实对象类型,例如 `lookAt`（看向目标） 点位必须是 `Vec3`（三维向量） 实例,不得用普通 `{x,y,z}` 对象冒充。
+- `world_key`（世界键）/维度/世界定位必须走既有 `currentWorld`（当前世界）、`ResourceService`（资源服务） 或 `runtime/transport`（运行时传输层） 接口,不得自行拼接世界名或猜测维度。
 
 ## 真实 LLM 验收
 触碰 LLM 链路时,默认网关:

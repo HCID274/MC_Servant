@@ -3,6 +3,7 @@ import {
   type GoToSkillParams,
   createGoToSkillExecutionResult,
 } from "../../core-ports/skills.js";
+import { resolveGoalBlockConstructor } from "./pathfinder-goals.js";
 import type {
   MineflayerMovementPort,
   MineflayerPathfinderApi,
@@ -41,44 +42,4 @@ export function configureGoToMovements(movements: unknown): void {
     canDig: true,
     digCost: DEFAULT_GO_TO_DIG_COST,
   });
-}
-
-function resolveGoalBlockConstructor(
-  pathfinderModule: MineflayerPathfinderModule,
-): new (
-  x: number,
-  y: number,
-  z: number,
-) => unknown {
-  const moduleRecord = asRecord(pathfinderModule);
-  const directGoals = asRecord(readRecordValue(moduleRecord, "goals"));
-  const defaultGoals = asRecord(asRecord(readRecordValue(moduleRecord, "default"))?.goals);
-  const goalBlockConstructor = directGoals?.GoalBlock ?? defaultGoals?.GoalBlock;
-
-  if (typeof goalBlockConstructor !== "function") {
-    throw new Error("mineflayer-pathfinder GoalBlock constructor is unavailable");
-  }
-
-  return goalBlockConstructor as new (
-    x: number,
-    y: number,
-    z: number,
-  ) => unknown;
-}
-
-function asRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
-  return typeof value === "object" && value !== null
-    ? (value as Readonly<Record<string, unknown>>)
-    : undefined;
-}
-
-function readRecordValue(
-  record: Readonly<Record<string, unknown>> | undefined,
-  key: string,
-): unknown {
-  try {
-    return record?.[key];
-  } catch {
-    return undefined;
-  }
 }

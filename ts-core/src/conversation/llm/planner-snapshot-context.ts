@@ -59,7 +59,7 @@ export function createPlannerSnapshotContext(input: {
   readonly inventoryChangeContext?: string;
 }): string {
   if (input.snapshot === null) {
-    return "online_runtime: observation unavailable; executable skills: goTo, collect";
+    return "online_runtime: observation unavailable; executable skills: goTo, collect, cutTree; sandbox toolchain: place(crafting_table)";
   }
 
   const inventoryChangeLine = createOptionalPrefixedLine(

@@ -1,4 +1,5 @@
 import { configureGoToMovements } from "./go-to.js";
+import { resolveGoalNearConstructor } from "./pathfinder-goals.js";
 import type {
   MineflayerMiningPort,
   MineflayerMovementPort,
@@ -39,50 +40,4 @@ export async function executeMineflayerDigBlockAt(input: {
     new GoalNear(input.position.x, input.position.y, input.position.z, 1),
   );
   await input.bot.dig(block);
-}
-
-function resolveGoalNearConstructor(
-  pathfinderModule: MineflayerPathfinderModule,
-): new (
-  x: number,
-  y: number,
-  z: number,
-  range: number,
-) => unknown {
-  const moduleRecord = asRecord(pathfinderModule);
-  const directGoals = asRecord(readRecordValue(moduleRecord, "goals"));
-  const defaultGoals = asRecord(asRecord(readRecordValue(moduleRecord, "default"))?.goals);
-  const goalNearConstructor = directGoals?.GoalNear ?? defaultGoals?.GoalNear;
-
-  if (typeof goalNearConstructor !== "function") {
-    throw new Error("mineflayer-pathfinder GoalNear constructor is unavailable");
-  }
-
-  return goalNearConstructor as new (
-    x: number,
-    y: number,
-    z: number,
-    range: number,
-  ) => unknown;
-}
-
-function asRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
-  return typeof value === "object" && value !== null
-    ? (value as Readonly<Record<string, unknown>>)
-    : undefined;
-}
-
-function readRecordValue(
-  record: Readonly<Record<string, unknown>> | undefined,
-  key: string,
-): unknown {
-  if (record === undefined || !Object.prototype.hasOwnProperty.call(record, key)) {
-    return undefined;
-  }
-
-  try {
-    return record[key];
-  } catch {
-    return undefined;
-  }
 }

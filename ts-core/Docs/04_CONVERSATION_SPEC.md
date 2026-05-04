@@ -277,7 +277,7 @@ interface api {
     follow(distance?: number): Promise<void>
     mine(blockName: string, count: number): Promise<ToolchainResult<{block_name:string,completed_count:number,world_key:string|null}>>
     craft(itemName: string, count: number): Promise<ToolchainResult<{item_name:string,completed_count:number,world_key:string|null}>>
-    place(blockName: string, near?: Position): Promise<ToolchainResult<{block_name:string,completed_count:number,world_key:string|null}>>
+    place(blockName: 'crafting_table', near?: Position): Promise<ToolchainResult<{block_name:string,completed_count:number,world_key:string|null,position?:Position}>>
     collect(itemName: string, radius?: number): Promise<{collected: number}>
     equip(itemName: string, destination?: string): Promise<ToolchainResult<{item_name:string,destination:string,world_key:string|null}>>
     cutTree(count: number): Promise<{collected: number}>
@@ -321,7 +321,9 @@ interface api {
 }
 ```
 
-`ToolchainResult`（工具链结果） 固定为 `{ok:true,data}` 或 `{ok:false,error}`。`error.code`（错误码） 必须使用结构化失败码,覆盖 `missing_materials`（缺材料）、`missing_crafting_table`（无工作台）、`cannot_place`（无法放置）、`not_equipped`（未装备）、`resource_not_found`（找不到资源）、`unsafe_path`（路径不安全） 等可恢复原因。Plan（规划）不得生成或引用 `demoMineIron()`（演示挖铁） 或等价一键隐藏脚本。
+`ToolchainResult`（工具链结果） 固定为 `{ok:true,data}` 或 `{ok:false,error}`。`error.code`（错误码） 必须使用结构化失败码,覆盖 `missing_materials`（缺材料）、`missing_crafting_table`（无工作台）、`missing_crafting_table_item`（背包无工作台物品）、`no_placeable_position`（附近无可放位置）、`place_failed`（放置失败）、`cached_position_invalid`（缓存位置失效）、`cannot_place`（无法放置）、`not_equipped`（未装备）、`resource_not_found`（找不到资源）、`unsafe_path`（路径不安全） 等可恢复原因。Plan（规划）不得生成或引用 `demoMineIron()`（演示挖铁） 或等价一键隐藏脚本。
+
+`place('crafting_table')`（放置工作台） 若背包没有 crafting table（工作台） 物品，执行层必须先通过 `craft('crafting_table', 1)`（合成工作台） 尝试获得物品；若 runtime（运行时） 配方校验显示缺少中间材料，可继续调用已开放的最小 `craft('planks', n)`（合成木板） 能力补齐，再重试合成工作台。放置阶段必须在当前世界附近预选最多 3 个合法候选点顺序尝试，一个被挡住或验证失败则顺延。材料不足时返回 `missing_materials`（缺材料），不得直接停在“无工作台物品”；工具链 `ok:false`（失败结果） 必须让 sandbox（沙箱） 步骤失败并保留结构化 `error.code`（错误码），供下一轮 Plan（规划）按失败原因补材料或重新选位。
 
 所有资源、坐标和维度上下文必须通过 existing world tag（既有世界标签）、`currentWorld`（当前世界） 或 ResourceService（资源服务） 接口读取；sandbox TS（沙箱 TypeScript） 不得自行拼接 `world_key`（世界键）。
 

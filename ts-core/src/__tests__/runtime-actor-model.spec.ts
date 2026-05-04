@@ -56,6 +56,10 @@ function createFakeTransport(input?: {
     readonly itemName: string;
     readonly destination?: "hand" | "off-hand" | "head" | "torso" | "legs" | "feet";
   }) => Promise<void> | void;
+  place?: (params: {
+    readonly blockName: string;
+    readonly near?: { readonly x: number; readonly y: number; readonly z: number };
+  }) => Promise<void> | void;
   stopCurrentAction?: () => void;
   worldReady?: boolean;
 }): MineflayerRuntimeTransport<"bot-actor"> {
@@ -125,6 +129,22 @@ function createFakeTransport(input?: {
       await input?.equip?.(params);
 
       return createEquipSkillExecutionResult(params);
+    },
+    async place(params) {
+      if (!connected) {
+        throw new Error("not connected");
+      }
+
+      await input?.place?.(params);
+
+      return {
+        ok: true,
+        data: {
+          world_key: "minecraft:overworld",
+          completed_count: 1,
+          block_name: params.blockName,
+        },
+      };
     },
     stopCurrentAction() {
       input?.stopCurrentAction?.();
@@ -1040,6 +1060,84 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
         params: { x: 1, y: 64, z: 1 },
       },
     ]);
+  });
+
+  it("应让 sandbox_code（沙箱代码） 的 bot.place（放置） 复用工具链执行边界", async () => {
+    const placements: Array<{ readonly blockName: string }> = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        place: (params) => {
+          placements.push({ blockName: params.blockName });
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
+    });
+
+    await actor.start();
+    const outcome = await actor.executeSandboxCode(
+      createSandboxCodeJob({
+        message_id: "msg-sandbox-place",
+        intent_epoch: 1,
+        snapshot_ts: 1_712_930_002_500,
+        priority: ExecPriority.Normal,
+        code: "await api.bot.place('crafting_table')",
+      }),
+    );
+
+    expect(outcome.result.status).toBe("completed");
+    expect(placements).toEqual([{ blockName: "crafting_table" }]);
+    expect(outcome.result.step_results).toMatchObject([
+      {
+        action: "place",
+        status: "ok",
+        params: { blockName: "crafting_table" },
+      },
+    ]);
+  });
+
+  it("应让 sandbox_code（沙箱代码） 的 bot.place（放置） 暴露工具链失败码", async () => {
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        place: () => {
+          throw Object.assign(new Error("Inventory does not contain enough recipe ingredients"), {
+            error_code: "missing_materials",
+          });
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
+    });
+
+    await actor.start();
+    const outcome = await actor.executeSandboxCode(
+      createSandboxCodeJob({
+        message_id: "msg-sandbox-place-fail",
+        intent_epoch: 1,
+        snapshot_ts: 1_712_930_002_500,
+        priority: ExecPriority.Normal,
+        code: "await api.bot.place('crafting_table')",
+      }),
+    );
+
+    expect(outcome.result.status).toBe("failed");
+    if (outcome.result.status !== "failed") {
+      throw new Error("expected sandbox place failure");
+    }
+    expect(outcome.result.error).toMatchObject({
+      name: "FacadeCallError",
+      error_code: "missing_materials",
+    });
   });
 
   it("应在 world_ready（世界交互就绪） 未打开时拒绝 sandbox_code（沙箱代码） 且不写聊天", async () => {

@@ -8,6 +8,7 @@ import {
   createCollectSkillExecutionResult,
 } from "../../core-ports/skills.js";
 import { matchesMinecraftItemName, normalizeMinecraftName } from "./naming.js";
+import { resolveGoalNearConstructor, resolveGoalNearXZConstructor } from "./pathfinder-goals.js";
 import type {
   MineflayerEntityHandle,
   MineflayerEntityPort,
@@ -308,70 +309,6 @@ async function goToPickupTarget(
   }
 }
 
-function resolveGoalNearConstructor(
-  pathfinderModule: MineflayerPathfinderModule,
-): new (
-  x: number,
-  y: number,
-  z: number,
-  range: number,
-) => unknown {
-  const goalConstructor = readPathfinderGoals(pathfinderModule).GoalNear;
-
-  if (typeof goalConstructor !== "function") {
-    throw new Error("mineflayer-pathfinder GoalNear constructor is unavailable");
-  }
-
-  return goalConstructor as new (
-    x: number,
-    y: number,
-    z: number,
-    range: number,
-  ) => unknown;
-}
-
-function resolveGoalNearXZConstructor(
-  pathfinderModule: MineflayerPathfinderModule,
-): (new (x: number, z: number, range: number) => unknown) | undefined {
-  const goalConstructor = readPathfinderGoals(pathfinderModule).GoalNearXZ;
-
-  return typeof goalConstructor === "function"
-    ? (goalConstructor as new (
-        x: number,
-        z: number,
-        range: number,
-      ) => unknown)
-    : undefined;
-}
-
-function readPathfinderGoals(
-  pathfinderModule: MineflayerPathfinderModule,
-): Readonly<Record<string, unknown>> {
-  const moduleRecord = isRecord(pathfinderModule) ? pathfinderModule : undefined;
-  const directGoalsValue = readOptionalRecordValue(moduleRecord, "goals");
-  const directGoals = isRecord(directGoalsValue) ? directGoalsValue : undefined;
-  const defaultRecordValue = readOptionalRecordValue(moduleRecord, "default");
-  const defaultRecord = isRecord(defaultRecordValue) ? defaultRecordValue : undefined;
-  const defaultGoalsValue = readOptionalRecordValue(defaultRecord, "goals");
-  const defaultGoals = isRecord(defaultGoalsValue) ? defaultGoalsValue : undefined;
-  return directGoals ?? defaultGoals ?? {};
-}
-
-function readOptionalRecordValue(
-  record: Readonly<Record<string, unknown>> | undefined,
-  key: string,
-): unknown {
-  if (record === undefined || !Object.prototype.hasOwnProperty.call(record, key)) {
-    return undefined;
-  }
-
-  try {
-    return record[key];
-  } catch {
-    return undefined;
-  }
-}
-
 /** 规范化 collectDrops（收集掉落物） 参数，保证半径默认值和上限一致。 */
 function normalizeCollectDropsOptions(
   bot: MineflayerCollectPort,
@@ -437,8 +374,9 @@ async function moveToCollectCenterIfNeeded(input: {
     return;
   }
 
+  const GoalNear = resolveGoalNearConstructor(input.pathfinderModule);
   await input.pathfinder.goto(
-    new input.pathfinderModule.goals.GoalNear(
+    new GoalNear(
       input.options.center.x,
       input.options.center.y,
       input.options.center.z,

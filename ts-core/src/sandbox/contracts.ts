@@ -9,6 +9,7 @@
 
 import type { ExecutionTaskKind } from "../core-ports/foundation.js";
 import type {
+  PlaceCapabilityParams,
   SkillName,
   SkillParamsByName,
   ToolchainCapabilityName,
@@ -43,10 +44,17 @@ export const SANDBOX_READONLY_SECTIONS = ["world", "knowledge", "memory", "owner
 export type SandboxReadonlySectionName = (typeof SANDBOX_READONLY_SECTIONS)[number];
 
 /** `bot`（动作） 分区允许暴露的写动作清单。 */
-export const SANDBOX_BOT_METHOD_NAMES = ["goTo", "mine", "cutTree", "collect", "equip"] as const;
+export const SANDBOX_BOT_METHOD_NAMES = [
+  "goTo",
+  "mine",
+  "cutTree",
+  "collect",
+  "equip",
+  "place",
+] as const;
 
 /** `bot`（动作） 分区方法名联合类型。 */
-export type SandboxBotMethodName = SkillName;
+export type SandboxBotMethodName = SkillName | "place";
 
 /** sandbox（沙箱） 工具链能力契约清单；未实现前不得注入为真实 Facade（门面） 方法。 */
 export const SANDBOX_TOOLCHAIN_CAPABILITY_NAMES = TOOLCHAIN_CAPABILITY_NAMES;
@@ -121,7 +129,9 @@ export const SANDBOX_STEP_ACTION_NAMES = [
 export type SandboxStepActionName = (typeof SANDBOX_STEP_ACTION_NAMES)[number];
 
 /** 沙箱步骤动作与参数结构的映射表。 */
-export interface SandboxStepParamsByAction extends Pick<SkillParamsByName, SandboxBotMethodName> {
+export interface SandboxStepParamsByAction extends Pick<SkillParamsByName, SkillName> {
+  /** `place`（放置） 的参数结构。 */
+  readonly place: PlaceCapabilityParams;
   /** `say`（聊天输出） 的参数结构。 */
   readonly say: {
     /** 输出消息。 */
@@ -166,7 +176,7 @@ export interface SandboxValueContract<TName extends string = string>
 
 /** `bot`（动作） 分区与技能目录一一对齐的绑定结构。 */
 export type SandboxBotSkillBindings = {
-  readonly [TName in SandboxBotMethodName]: TName;
+  readonly [TName in SkillName]: TName;
 };
 
 /** Facade API（门面接口） 的完整顶层契约结构。 */
@@ -253,6 +263,8 @@ export interface FacadeCallError extends SandboxExecutionErrorBase<"FacadeCallEr
   readonly params: Readonly<Record<string, unknown>>;
   /** 结构化错误码。 */
   readonly error_code: string;
+  /** 能力返回的可审计细节；用于把候选点失败原因传到 task（任务） 诊断。 */
+  readonly details?: Readonly<Record<string, unknown>>;
 }
 
 /** 外部中断错误结构。 */

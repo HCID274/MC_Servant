@@ -4,6 +4,7 @@ import type {
   ToolchainCapabilityResult,
   ToolchainFailureCode,
 } from "../../core-ports/skills.js";
+import { type CraftingTablePlacementCache, isCraftingTableBlock } from "./crafting-table.js";
 import type {
   MineflayerBlockHandle,
   MineflayerBotHandle,
@@ -12,6 +13,7 @@ import type {
   MineflayerRecipeHandle,
   MineflayerRegistryFacts,
 } from "./types.js";
+import { readMineflayerBlockAt } from "./world-reader.js";
 
 const CRAFTING_TABLE_SEARCH_RADIUS = 6;
 
@@ -22,6 +24,7 @@ export async function executeMineflayerCraft(input: {
   readonly bot: MineflayerBotHandle;
   readonly params: Readonly<CraftCapabilityParams>;
   readonly worldKey: string | null;
+  readonly craftingTableCache?: CraftingTablePlacementCache;
 }): Promise<CraftTransportResult> {
   const capabilitiesError = validateCraftingCapabilities(input.bot, input.worldKey);
 
@@ -40,7 +43,7 @@ export async function executeMineflayerCraft(input: {
     });
   }
 
-  const craftingTable = await findNearbyCraftingTable(input.bot);
+  const craftingTable = await findNearbyCraftingTable(input.bot, input.craftingTableCache);
   const craftPlan = selectCraftPlan({
     bot: input.bot,
     candidates: targetCandidates,
@@ -222,7 +225,17 @@ function selectCraftPlan(input: {
 
 async function findNearbyCraftingTable(
   bot: MineflayerBotHandle,
+  cache: CraftingTablePlacementCache | undefined,
 ): Promise<MineflayerBlockHandle | null> {
+  if (cache?.position !== undefined && cache.position !== null) {
+    const cachedBlock = readMineflayerBlockAt(bot, cache.position);
+    if (isCraftingTableBlock(bot.registry, cachedBlock)) {
+      return cachedBlock;
+    }
+
+    cache.position = null;
+  }
+
   if (typeof bot.findBlocks !== "function" || typeof bot.blockAt !== "function") {
     return null;
   }
@@ -236,8 +249,7 @@ async function findNearbyCraftingTable(
 
   const positions = await bot.findBlocks({
     matching: (block) =>
-      block.type === craftingTableFact.id ||
-      normalizeCraftName(block.name ?? "") === "crafting_table",
+      block.type === craftingTableFact.id || isCraftingTableBlock(bot.registry, block),
     maxDistance: CRAFTING_TABLE_SEARCH_RADIUS,
     count: 1,
   });

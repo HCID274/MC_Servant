@@ -4,6 +4,7 @@ import {
   createMineSkillExecutionResult,
 } from "../../core-ports/skills.js";
 import { normalizeMinecraftName } from "./naming.js";
+import { resolveGoalNearConstructor } from "./pathfinder-goals.js";
 import type {
   MineflayerMiningPort,
   MineflayerMovementPort,
@@ -44,6 +45,7 @@ export async function executeMineflayerMine(input: {
   }
 
   const movements = new input.pathfinderModule.Movements(input.bot, input.bot.registry);
+  const GoalNear = resolveGoalNearConstructor(input.pathfinderModule);
   input.pathfinder.setMovements?.(movements);
 
   for (const position of positions.slice(0, input.params.count)) {
@@ -53,9 +55,7 @@ export async function executeMineflayerMine(input: {
       throw new Error(`Mineflayer cannot load target block for ${input.params.blockName}`);
     }
 
-    await input.pathfinder.goto(
-      new input.pathfinderModule.goals.GoalNear(position.x, position.y, position.z, 1),
-    );
+    await input.pathfinder.goto(new GoalNear(position.x, position.y, position.z, 1));
     await input.bot.dig(block);
   }
 

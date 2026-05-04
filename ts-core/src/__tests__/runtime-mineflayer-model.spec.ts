@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import type { Vec3 } from "vec3";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("mineflayer-pathfinder", () => ({
@@ -43,9 +44,14 @@ import {
   createMineflayerTransportDescriptor,
   createObservationRuntimeCache,
   executeMineflayerCraft,
+  executeMineflayerPlaceCraftingTable,
   readMineflayerBlockAt,
+  resolveGoalBlockConstructor,
+  resolveGoalNearConstructor,
+  resolveGoalNearXZConstructor,
 } from "../index.js";
 import type {
+  CraftingTablePlacementCache,
   MineflayerBlockHandle,
   MineflayerBotHandle,
   MineflayerEntityHandle,
@@ -151,6 +157,16 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     readonly count: number | undefined;
     readonly table: MineflayerBlockHandle | undefined;
   }[] = [];
+  readonly equipCalls: { readonly item: MineflayerItemHandle; readonly destination: string }[] = [];
+  readonly lookAtCalls: {
+    readonly position: { readonly x: number; readonly y: number; readonly z: number };
+    readonly force?: boolean;
+  }[] = [];
+  readonly placeBlockCalls: {
+    readonly referenceBlock: MineflayerBlockHandle;
+    readonly faceVector: { readonly x: number; readonly y: number; readonly z: number };
+  }[] = [];
+  readonly placeBlockFailureTargets = new Set<string>();
   readonly inventory = {
     items: (): readonly MineflayerItemHandle[] => this.inventoryItems,
   };
@@ -282,6 +298,71 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     craftingTable?: MineflayerBlockHandle,
   ): Promise<void> {
     this.craftCalls.push({ recipe, count, table: craftingTable });
+    const completedCount = Math.max(1, recipe.result.count) * Math.max(1, count ?? 1);
+    const existingStack = this.inventoryItems.find((item) => item.type === recipe.result.id);
+    if (existingStack === undefined) {
+      const itemName = this.registry.items[String(recipe.result.id)]?.name;
+      this.inventoryItems.push({
+        type: recipe.result.id,
+        ...(itemName === undefined ? {} : { name: itemName }),
+        count: completedCount,
+      });
+      return;
+    }
+
+    this.inventoryItems.splice(this.inventoryItems.indexOf(existingStack), 1, {
+      ...existingStack,
+      count: (existingStack.count ?? 0) + completedCount,
+    });
+  }
+
+  async equip(item: MineflayerItemHandle, destination: string): Promise<void> {
+    this.equipCalls.push({ item, destination });
+  }
+
+  async lookAt(position: Vec3, force?: boolean): Promise<void> {
+    if (typeof position.minus !== "function") {
+      throw new Error("point.minus is not a function");
+    }
+    this.lookAtCalls.push({ position, force });
+  }
+
+  async placeBlock(
+    referenceBlock: MineflayerBlockHandle,
+    faceVector: { readonly x: number; readonly y: number; readonly z: number },
+  ): Promise<void> {
+    this.placeBlockCalls.push({ referenceBlock, faceVector });
+    const referencePosition = referenceBlock.position;
+
+    if (referencePosition === undefined) {
+      throw new Error("missing reference position");
+    }
+
+    const target = {
+      x: referencePosition.x + faceVector.x,
+      y: referencePosition.y + faceVector.y,
+      z: referencePosition.z + faceVector.z,
+    };
+    if (this.placeBlockFailureTargets.has(formatPositionKey(target))) {
+      throw new Error("target blocked");
+    }
+
+    this.resourceBlocks.splice(
+      0,
+      this.resourceBlocks.length,
+      ...this.resourceBlocks.filter(
+        (block) =>
+          block.position === undefined ||
+          block.position.x !== target.x ||
+          block.position.y !== target.y ||
+          block.position.z !== target.z,
+      ),
+      {
+        name: "crafting_table",
+        type: 7,
+        position: target,
+      },
+    );
   }
 
   nearestEntity(
@@ -335,7 +416,65 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   }
 }
 
+function formatPositionKey(position: {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}): string {
+  return `${position.x}:${position.y}:${position.z}`;
+}
+
+const fakePathfinderModule = {
+  pathfinder: Symbol("mock-pathfinder-plugin"),
+  Movements: class MockPlacementMovements {},
+  goals: {
+    GoalBlock: class MockPlacementGoalBlock {
+      constructor(
+        readonly x: number,
+        readonly y: number,
+        readonly z: number,
+      ) {}
+    },
+    GoalNear: class MockPlacementGoalNear {
+      constructor(
+        readonly x: number,
+        readonly y: number,
+        readonly z: number,
+        readonly range: number,
+      ) {}
+    },
+  },
+};
+
+const fakeDefaultOnlyPathfinderModule = {
+  pathfinder: fakePathfinderModule.pathfinder,
+  Movements: fakePathfinderModule.Movements,
+  default: {
+    goals: fakePathfinderModule.goals,
+  },
+} as unknown as typeof fakePathfinderModule;
+
 describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () => {
+  it("pathfinder goals（寻路目标） 应集中兼容 direct/default/module.exports 导出形态", () => {
+    expect(resolveGoalBlockConstructor(fakeDefaultOnlyPathfinderModule)).toBe(
+      fakePathfinderModule.goals.GoalBlock,
+    );
+    expect(resolveGoalNearConstructor(fakeDefaultOnlyPathfinderModule)).toBe(
+      fakePathfinderModule.goals.GoalNear,
+    );
+    const moduleExportsOnlyPathfinderModule = {
+      pathfinder: fakePathfinderModule.pathfinder,
+      Movements: fakePathfinderModule.Movements,
+      "module.exports": {
+        goals: fakePathfinderModule.goals,
+      },
+    };
+    expect(resolveGoalNearConstructor(moduleExportsOnlyPathfinderModule)).toBe(
+      fakePathfinderModule.goals.GoalNear,
+    );
+    expect(resolveGoalNearXZConstructor(moduleExportsOnlyPathfinderModule)).toBeUndefined();
+  });
+
   it("WorldReader（世界读取器） 应集中封装单点方块读取", () => {
     const bot = new FakeMineflayerBot();
     const block: MineflayerBlockHandle = {
@@ -501,6 +640,359 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       data: {
         world_key: "minecraft:overworld",
         completed_count: 1,
+        item_name: "wooden_pickaxe",
+      },
+    });
+    expect(bot.craftCalls).toEqual([{ recipe, count: 1, table: tableBlock }]);
+  });
+
+  it("place（放置） 应复用仍存在的 crafting table（工作台） 缓存", async () => {
+    const bot = new FakeMineflayerBot();
+    const cache: CraftingTablePlacementCache = { position: { x: 2, y: 64, z: 0 } };
+    bot.resourceBlocks.push({
+      type: 7,
+      name: "crafting_table",
+      position: { x: 2, y: 64, z: 0 },
+    });
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot,
+        pathfinder: bot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+        params: { blockName: "crafting_table" },
+        worldKey: "minecraft:overworld",
+        cache,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        block_name: "crafting_table",
+        position: { x: 2, y: 64, z: 0 },
+      },
+    });
+    expect(bot.placeBlockCalls).toEqual([]);
+    expect(bot.equipCalls).toEqual([]);
+  });
+
+  it("place（放置） 带 near（参考点） 时不应复用远处缓存工作台", async () => {
+    const bot = new FakeMineflayerBot();
+    const cache: CraftingTablePlacementCache = { position: { x: 20, y: 64, z: 20 } };
+    bot.entity.position = { x: 0, y: 64, z: 0 };
+    bot.inventoryItems.push({ type: 7, name: "crafting_table", count: 1 });
+    bot.resourceBlocks.push(
+      { type: 7, name: "crafting_table", position: { x: 20, y: 64, z: 20 } },
+      { type: 2, name: "grass_block", position: { x: 2, y: 63, z: 0 } },
+      { type: 0, name: "air", position: { x: 2, y: 64, z: 0 } },
+    );
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot,
+        pathfinder: bot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+        params: { blockName: "crafting_table", near: { x: 2, y: 64, z: 0 } },
+        worldKey: "minecraft:overworld",
+        cache,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        block_name: "crafting_table",
+        position: { x: 2, y: 64, z: 0 },
+      },
+    });
+    expect(bot.placeBlockCalls).toHaveLength(1);
+    expect(cache.position).toEqual({ x: 2, y: 64, z: 0 });
+  });
+
+  it("place（放置） 应先尝试合成工作台，并暴露材料不足与附近无可放位置", async () => {
+    const missingItemBot = new FakeMineflayerBot();
+    missingItemBot.entity.position = { x: 0, y: 64, z: 0 };
+    missingItemBot.craftRecipes.set(7, [
+      {
+        result: { id: 7, count: 1 },
+        delta: [
+          { id: 4, count: -4 },
+          { id: 7, count: 1 },
+        ],
+        requiresTable: false,
+      },
+    ]);
+    missingItemBot.craftRecipes.set(4, [
+      {
+        result: { id: 4, count: 4 },
+        delta: [
+          { id: 5, count: -1 },
+          { id: 4, count: 4 },
+        ],
+        requiresTable: false,
+      },
+    ]);
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot: missingItemBot,
+        pathfinder: missingItemBot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+        params: { blockName: "crafting_table" },
+        worldKey: "minecraft:overworld",
+        cache: { position: null },
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "missing_materials",
+      },
+    });
+
+    const noPositionBot = new FakeMineflayerBot();
+    noPositionBot.entity.position = { x: 0, y: 64, z: 0 };
+    noPositionBot.inventoryItems.push({ type: 7, name: "crafting_table", count: 1 });
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot: noPositionBot,
+        pathfinder: noPositionBot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+        params: { blockName: "crafting_table" },
+        worldKey: "minecraft:overworld",
+        cache: { position: null },
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "no_placeable_position",
+      },
+    });
+  });
+
+  it("place（放置） 应在背包无工作台时先用 Mineflayer recipe（配方） 合成再放置", async () => {
+    const bot = new FakeMineflayerBot();
+    const cache: CraftingTablePlacementCache = { position: null };
+    const tableRecipe: MineflayerRecipeHandle = {
+      result: { id: 7, count: 1 },
+      delta: [
+        { id: 4, count: -4 },
+        { id: 7, count: 1 },
+      ],
+      requiresTable: false,
+    };
+    bot.entity.position = { x: 0, y: 64, z: 0 };
+    bot.inventoryItems.push({ type: 4, name: "birch_planks", count: 4 });
+    bot.craftRecipes.set(7, [tableRecipe]);
+    bot.resourceBlocks.push(
+      { type: 2, name: "grass_block", position: { x: 2, y: 63, z: 0 } },
+      { type: 0, name: "air", position: { x: 2, y: 64, z: 0 } },
+    );
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot,
+        pathfinder: bot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+        params: { blockName: "crafting_table", near: { x: 2, y: 64, z: 0 } },
+        worldKey: "minecraft:overworld",
+        cache,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        block_name: "crafting_table",
+        position: { x: 2, y: 64, z: 0 },
+      },
+    });
+    expect(bot.craftCalls).toEqual([{ recipe: tableRecipe, count: 1, table: undefined }]);
+    expect(bot.equipCalls).toEqual([
+      { item: { type: 7, name: "crafting_table", count: 1 }, destination: "hand" },
+    ]);
+  });
+
+  it("place（放置） 背包只有 logs（原木） 时应先按配方合成 planks（木板） 再合成工作台", async () => {
+    const bot = new FakeMineflayerBot();
+    const cache: CraftingTablePlacementCache = { position: null };
+    const planksRecipe: MineflayerRecipeHandle = {
+      result: { id: 4, count: 4 },
+      delta: [
+        { id: 5, count: -1 },
+        { id: 4, count: 4 },
+      ],
+      requiresTable: false,
+    };
+    const tableRecipe: MineflayerRecipeHandle = {
+      result: { id: 7, count: 1 },
+      delta: [
+        { id: 4, count: -4 },
+        { id: 7, count: 1 },
+      ],
+      requiresTable: false,
+    };
+    bot.entity.position = { x: 0, y: 64, z: 0 };
+    bot.inventoryItems.push({ type: 5, name: "birch_log", count: 1 });
+    bot.craftRecipes.set(4, [planksRecipe]);
+    bot.craftRecipes.set(7, [tableRecipe]);
+    bot.resourceBlocks.push(
+      { type: 2, name: "grass_block", position: { x: 2, y: 63, z: 0 } },
+      { type: 0, name: "air", position: { x: 2, y: 64, z: 0 } },
+    );
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot,
+        pathfinder: bot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+        params: { blockName: "crafting_table", near: { x: 2, y: 64, z: 0 } },
+        worldKey: "minecraft:overworld",
+        cache,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        block_name: "crafting_table",
+        position: { x: 2, y: 64, z: 0 },
+      },
+    });
+    expect(bot.craftCalls).toEqual([
+      { recipe: planksRecipe, count: 1, table: undefined },
+      { recipe: tableRecipe, count: 1, table: undefined },
+    ]);
+    expect(bot.placeBlockCalls).toHaveLength(1);
+  });
+
+  it("place（放置） 应选择附近空位、调用 Mineflayer placeBlock（放方块） 并缓存位置", async () => {
+    const bot = new FakeMineflayerBot();
+    const cache: CraftingTablePlacementCache = { position: null };
+    bot.entity.position = { x: 0, y: 64, z: 0 };
+    bot.inventoryItems.push({ type: 7, name: "crafting_table", count: 1 });
+    bot.resourceBlocks.push(
+      { type: 2, name: "grass_block", position: { x: 2, y: 63, z: 0 } },
+      { type: 0, name: "air", position: { x: 2, y: 64, z: 0 } },
+    );
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot,
+        pathfinder: bot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+        params: { blockName: "crafting_table", near: { x: 2, y: 64, z: 0 } },
+        worldKey: "minecraft:overworld",
+        cache,
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {
+        world_key: "minecraft:overworld",
+        completed_count: 1,
+        block_name: "crafting_table",
+        position: { x: 2, y: 64, z: 0 },
+      },
+    });
+    expect(cache.position).toEqual({ x: 2, y: 64, z: 0 });
+    expect(bot.equipCalls).toEqual([
+      { item: { type: 7, name: "crafting_table", count: 1 }, destination: "hand" },
+    ]);
+    expect(bot.placeBlockCalls).toHaveLength(1);
+    expect(readMineflayerBlockAt(bot, { x: 2, y: 64, z: 0 })).toMatchObject({
+      name: "crafting_table",
+    });
+  });
+
+  it("place（放置） 应兼容真实 mineflayer-pathfinder（寻路插件） default.goals 导出形态", async () => {
+    const bot = new FakeMineflayerBot();
+    const cache: CraftingTablePlacementCache = { position: null };
+    bot.entity.position = { x: 0, y: 64, z: 0 };
+    bot.inventoryItems.push({ type: 7, name: "crafting_table", count: 1 });
+    bot.resourceBlocks.push(
+      { type: 2, name: "grass_block", position: { x: 2, y: 63, z: 0 } },
+      { type: 0, name: "air", position: { x: 2, y: 64, z: 0 } },
+    );
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot,
+        pathfinder: bot.pathfinder,
+        pathfinderModule: fakeDefaultOnlyPathfinderModule,
+        params: { blockName: "crafting_table", near: { x: 2, y: 64, z: 0 } },
+        worldKey: "minecraft:overworld",
+        cache,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        block_name: "crafting_table",
+        position: { x: 2, y: 64, z: 0 },
+      },
+    });
+    expect(bot.placeBlockCalls).toHaveLength(1);
+  });
+
+  it("place（放置） 应预选 3 个候选位置并在第一个被挡住时顺延", async () => {
+    const bot = new FakeMineflayerBot();
+    const cache: CraftingTablePlacementCache = { position: null };
+    bot.entity.position = { x: 0, y: 64, z: 0 };
+    bot.inventoryItems.push({ type: 7, name: "crafting_table", count: 1 });
+    bot.placeBlockFailureTargets.add("2:64:0");
+    bot.resourceBlocks.push(
+      { type: 2, name: "grass_block", position: { x: 2, y: 63, z: 0 } },
+      { type: 0, name: "air", position: { x: 2, y: 64, z: 0 } },
+      { type: 2, name: "grass_block", position: { x: 1, y: 63, z: 0 } },
+      { type: 0, name: "air", position: { x: 1, y: 64, z: 0 } },
+    );
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot,
+        pathfinder: bot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+        params: { blockName: "crafting_table", near: { x: 2, y: 64, z: 0 } },
+        worldKey: "minecraft:overworld",
+        cache,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        block_name: "crafting_table",
+        position: { x: 1, y: 64, z: 0 },
+      },
+    });
+    expect(bot.placeBlockCalls).toHaveLength(2);
+    expect(cache.position).toEqual({ x: 1, y: 64, z: 0 });
+  });
+
+  it("craft（合成） 应优先复用 PlacementService（放置服务） 缓存的工作台", async () => {
+    const bot = new FakeMineflayerBot();
+    const cache: CraftingTablePlacementCache = { position: { x: 2, y: 64, z: 0 } };
+    const recipe: MineflayerRecipeHandle = {
+      result: { id: 2, count: 1 },
+      delta: [
+        { id: 4, count: -3 },
+        { id: 6, count: -2 },
+        { id: 2, count: 1 },
+      ],
+      requiresTable: true,
+    };
+    const tableBlock: MineflayerBlockHandle = {
+      type: 7,
+      name: "crafting_table",
+      position: { x: 2, y: 64, z: 0 },
+    };
+    bot.resourceBlocks.push(tableBlock);
+    bot.inventoryItems.push(
+      { type: 4, name: "birch_planks", count: 3 },
+      { type: 6, name: "stick", count: 2 },
+    );
+    bot.craftRecipes.set(2, [recipe]);
+
+    await expect(
+      executeMineflayerCraft({
+        bot,
+        params: { itemName: "wooden_pickaxe", count: 1 },
+        worldKey: "minecraft:overworld",
+        craftingTableCache: cache,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
         item_name: "wooden_pickaxe",
       },
     });

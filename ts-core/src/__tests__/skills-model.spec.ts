@@ -7,6 +7,7 @@ import {
   FORBIDDEN_TOOLCHAIN_DEMO_NAMES,
   PHASE1_SKILL_DEFINITIONS,
   PHASE1_SKILL_NAMES,
+  PLACEMENT_SERVICE_ALLOWED_BLOCKS,
   SKILL_DIRECTORY,
   type SkillCallJobInput,
   type SkillName,
@@ -17,6 +18,7 @@ import {
   type ToolchainCapabilityResult,
   createCraftService,
   createPhase1SkillRegistry,
+  createPlacementService,
   createSkillCall,
   createSkillCallJob,
   createSkillRegistry,
@@ -137,6 +139,10 @@ describe("skills 模块契约", () => {
         "missing_crafting_table",
         "recipe_not_found",
         "runtime_craft_failed",
+        "missing_crafting_table_item",
+        "no_placeable_position",
+        "place_failed",
+        "cached_position_invalid",
         "cannot_place",
         "not_equipped",
         "resource_not_found",
@@ -148,6 +154,44 @@ describe("skills 模块契约", () => {
     expect(failureResult.error.code).toBe("missing_materials");
     expect(successResult.ok).toBe(true);
     expect(successResult.data.completed_count).toBe(1);
+  });
+
+  it("PlacementService（放置服务） 应只允许 crafting table（工作台） 并委托 runtime（运行时）", async () => {
+    const calls: unknown[] = [];
+    const placementService = createPlacementService({
+      runtime: {
+        async place(params) {
+          calls.push(params);
+          return {
+            ok: true,
+            data: {
+              world_key: "minecraft:overworld",
+              completed_count: 1,
+              block_name: params.blockName,
+              position: { x: 1, y: 64, z: 2 },
+            },
+          };
+        },
+      },
+    });
+
+    await expect(placementService.placeCraftingTable()).resolves.toMatchObject({
+      ok: true,
+      data: {
+        block_name: "crafting_table",
+      },
+    });
+    await expect(
+      placementService.place({ blockName: "torch", near: { x: 1, y: 64, z: 2 } }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "unsupported_capability",
+      },
+    });
+
+    expect(PLACEMENT_SERVICE_ALLOWED_BLOCKS).toEqual(["crafting_table"]);
+    expect(calls).toEqual([{ blockName: "crafting_table" }]);
   });
 
   it("CraftService（合成服务） 应只做 allowlist（白名单） 边界并委托 runtime（运行时） 校验事实", async () => {

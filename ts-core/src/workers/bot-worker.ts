@@ -435,6 +435,9 @@ export function createBotWorkerRuntime(input: {
           ...("error_code" in executionResult.error
             ? { error_code: executionResult.error.error_code }
             : {}),
+          ...("details" in executionResult.error && executionResult.error.details !== undefined
+            ? { details: executionResult.error.details }
+            : {}),
         });
         await emitActions(
           createBotWorkerActions({

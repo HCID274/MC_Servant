@@ -970,6 +970,8 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).toContain(skillSection);
     expect(messages[0]?.content).toContain("默认以环境快照 [主人] 坐标作为 collect.params.center");
     expect(messages[0]?.content).toContain("执行层会在 32 未命中时自动扩到 64 搜索");
+    expect(messages[0]?.content).toContain('await api.bot.place("crafting_table")');
+    expect(messages[0]?.content).toContain("必须读取环境快照 [主人] 位置");
     expect(messages[0]?.content).toContain("<skill_name>");
     expect(messages[0]?.content).toContain("<param_name>");
     expect(messages[0]?.content).not.toContain('"blockName":"stone"');
@@ -984,6 +986,8 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       '{"type":"skill_call","reply":"收到，我去捡附近掉落物","skill":"collect","params":{}}',
       '{"type":"skill_call","reply":"收到，我去捡附近掉落物","skill":"collect","params":{"itemName":"item","center":{"x":1,"y":64,"z":2},"radius":32}}',
       '{"type":"skill_call","reply":"收到，我去砍 12 块木头","skill":"cutTree","params":{"count":12}}',
+      '{"type":"sandbox_code","reply":"收到，我来放一个工作台","code":"await api.bot.place(\\"crafting_table\\")"}',
+      '{"type":"sandbox_code","reply":"收到，我来你这里放工作台","code":"await api.bot.goTo(8,64,2); await api.bot.place(\\"crafting_table\\", {x:8,y:64,z:2})"}',
       '{"type":"skill_call","reply":"收到，我先把稿子拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}',
     ];
     const client = createConversationLlmClient(
@@ -1077,6 +1081,27 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       params: {
         count: 12,
       },
+    });
+    await expect(
+      client.generateSkillPlan({
+        message_id: "msg-plan-place-table",
+        message: "放置一个工作台",
+        snapshot_context: "online_runtime: executable skills: goTo, collect, cutTree, place",
+      }),
+    ).resolves.toMatchObject({
+      type: "sandbox_code",
+      code: 'await api.bot.place("crafting_table")',
+    });
+    await expect(
+      client.generateSkillPlan({
+        message_id: "msg-plan-place-table-owner",
+        message: "在我这放置一个工作台",
+        snapshot_context:
+          "online_runtime: executable skills: goTo, collect, cutTree, place\n[主人] 位置:(8,64,2) 距离:6格 在线:是",
+      }),
+    ).resolves.toMatchObject({
+      type: "sandbox_code",
+      code: 'await api.bot.goTo(8,64,2); await api.bot.place("crafting_table", {x:8,y:64,z:2})',
     });
     await expect(
       client.generateSkillPlan({

@@ -8,7 +8,7 @@ import {
   type AbortError,
   ExecPriority,
   ExecutionTaskKind,
-  PHASE1_SKILL_NAMES,
+  SANDBOX_BOT_METHOD_NAMES,
   SANDBOX_BOT_SKILL_BINDINGS,
   SANDBOX_FACADE_SECTIONS,
   SANDBOX_FORBIDDEN_DEMO_METHOD_NAMES,
@@ -102,18 +102,19 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       resource_limits: input.resourceLimits,
     });
 
-  it("应让 Facade API（门面接口） 写动作与 Phase 1（第一阶段） 技能目录精确对齐", () => {
+  it("应让 Facade API（门面接口） 写动作覆盖已启用技能与工作台放置工具链", () => {
     const facadeContract = createSandboxFacadeContract();
 
     expect(Object.keys(facadeContract)).toEqual([...SANDBOX_FACADE_SECTIONS]);
-    expect(Object.keys(facadeContract.bot)).toEqual([...PHASE1_SKILL_NAMES]);
+    expect(Object.keys(facadeContract.bot)).toEqual([...SANDBOX_BOT_METHOD_NAMES]);
     expect(SANDBOX_BOT_SKILL_BINDINGS.goTo).toBe("goTo");
     expect(facadeContract.bot.mine.aligned_skill).toBe("mine");
+    expect(facadeContract.bot.place.aligned_skill).toBeUndefined();
     expect(facadeContract.chat.report.emits_step).toBe(true);
     expect(SANDBOX_READONLY_SECTIONS).toEqual(["world", "knowledge", "memory", "owner", "task"]);
   });
 
-  it("应声明工具链能力契约但不把未实现能力注入当前 Facade（门面）", () => {
+  it("应声明工具链能力契约且只把已实现 place（放置） 注入当前 Facade（门面）", () => {
     const facadeContract = createSandboxFacadeContract();
 
     expect(SANDBOX_TOOLCHAIN_CAPABILITY_NAMES).toEqual([
@@ -132,9 +133,9 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(SANDBOX_TOOLCHAIN_FAILURE_CODES).toEqual(
       expect.arrayContaining(["missing_materials", "cannot_place", "unsafe_path"]),
     );
-    expect(Object.keys(facadeContract.bot)).toEqual([...PHASE1_SKILL_NAMES]);
+    expect(Object.keys(facadeContract.bot)).toEqual([...SANDBOX_BOT_METHOD_NAMES]);
     expect(facadeContract.bot).not.toHaveProperty("craft");
-    expect(facadeContract.bot).not.toHaveProperty("place");
+    expect(facadeContract.bot).toHaveProperty("place");
     expect(facadeContract.bot).not.toHaveProperty("ensureStonePickaxeEquipped");
   });
 
@@ -237,6 +238,82 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
 
     expect(result.status).toBe(TaskHistoryStatus.Completed);
     expect(result.step_results).toEqual([]);
+  });
+
+  it("应让 sandbox_code（沙箱代码） 调用 place（放置） 工作台工具链能力", async () => {
+    const calls: unknown[] = [];
+    const result = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "await api.bot.place('crafting_table')",
+        messageId: "T-056-place",
+      }),
+      facade: {
+        async executeBotSkill() {
+          throw new Error("unexpected skill call");
+        },
+        async executeToolchainCapability(capability, params) {
+          calls.push({ capability, params });
+
+          return {
+            ok: true,
+            data: {
+              block_name: "crafting_table",
+              completed_count: 1,
+              world_key: "minecraft:overworld",
+            },
+          };
+        },
+        async writeChat() {
+          throw new Error("unexpected chat call");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Completed);
+    expect(calls).toEqual([{ capability: "place", params: { blockName: "crafting_table" } }]);
+    expect(result.step_results).toMatchObject([
+      {
+        action: "place",
+        status: "ok",
+      },
+    ]);
+  });
+
+  it("应把 place（放置） 工具链结构化失败升级为沙箱失败", async () => {
+    const result = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "await api.bot.place('crafting_table')",
+        messageId: "T-056-place-failed",
+      }),
+      facade: {
+        async executeBotSkill() {
+          throw new Error("unexpected skill call");
+        },
+        async executeToolchainCapability() {
+          return {
+            ok: false,
+            error: {
+              code: "missing_materials",
+              message: "Inventory does not contain enough recipe ingredients",
+              world_key: "minecraft:overworld",
+            },
+          };
+        },
+        async writeChat() {
+          throw new Error("unexpected chat call");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Failed);
+    expect(result.error).toMatchObject({
+      name: "FacadeCallError",
+      error_code: "missing_materials",
+    });
+    expect(result.step_results[0]).toMatchObject({
+      action: "place",
+      status: "err",
+    });
   });
 
   it("应拒绝 process / require / import / fetch 等沙箱逃逸入口", async () => {
