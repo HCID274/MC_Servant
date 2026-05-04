@@ -40,7 +40,7 @@ import {
 
 function createCompositeChatTriage() {
   return createConversationCompositeTriage({
-    reply: {},
+    chat: {},
   });
 }
 
@@ -1593,7 +1593,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
         intent_epoch: 9,
         message_content: "你还记得上次的矿洞吗",
         route_kind: "chat_reply",
-        query_reason: "composite_reply",
+        query_reason: "composite_chat",
         limit: 5,
         char_budget: 800,
       }),
@@ -1913,7 +1913,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
   });
 
-  it("应按 cancel（取消）→reply（回复）→action（动作） 顺序派发 composite triage（复合分诊）", async () => {
+  it("应按 cancel（取消）→chat（闲聊）→action（动作） 顺序派发 composite triage（复合分诊）", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const calls: string[] = [];
     const replies: Array<{ message_id: string; content: string }> = [];
@@ -1937,7 +1937,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
               reason: "owner_composite_cancel",
               priority: "interrupt",
             },
-            reply: {},
+            chat: {},
             action: {
               intent: "task",
               priority: ConversationPriority.Urgent,
@@ -2022,7 +2022,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     ]);
   });
 
-  it("应让无显式文本的 composite reply（复合回复） 复用状态上下文闲聊路径", async () => {
+  it("应让无显式文本的 composite chat（复合闲聊） 复用状态上下文闲聊路径", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const stateContexts: Array<string | undefined> = [];
     const runtime = createConversationWorkerRuntime({
@@ -2040,7 +2040,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
         },
         triage: () =>
           createConversationCompositeTriage({
-            reply: {},
+            chat: {},
           }),
         actorStateProjectionProvider: () =>
           createBotActorStateProjection({

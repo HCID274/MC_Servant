@@ -294,7 +294,7 @@ export interface ConversationReplyLogInput {
   /** 主人原始输入。 */
   readonly owner_message: string;
   /** 触发回复的 route（路由） 类型。 */
-  readonly route_kind: ConversationRouteDecision["kind"] | "composite_reply";
+  readonly route_kind: ConversationRouteDecision["kind"] | "composite_chat";
   /** 回复模式。 */
   readonly reply_mode: ConversationGeneratedReply["mode"] | "llm" | "template";
   /** 最终广播给主人的回复。 */

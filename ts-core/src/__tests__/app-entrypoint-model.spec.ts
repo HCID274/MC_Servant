@@ -905,7 +905,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         conversationWorker: {
           triage: () =>
             createConversationCompositeTriage({
-              reply: {},
+              chat: {},
             }),
           replyGenerator: () =>
             Promise.resolve({
@@ -1392,7 +1392,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
                     messages?: Array<{ role: string; content: string }>;
                   });
             const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
-            const assistantContent = userMessage.includes("Bot 状态：") ? '{"reply":{}}' : "你好呀";
+            const assistantContent = userMessage.includes("Bot 状态：") ? '{"chat":{}}' : "你好呀";
 
             return new Response(
               JSON.stringify({
@@ -1682,7 +1682,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
                   });
             const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
             const assistantContent = userMessage.includes("Bot 状态：")
-              ? '{"reply":{}}'
+              ? '{"chat":{}}'
               : "当然可以，我在这里";
 
             return new Response(
@@ -1827,7 +1827,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         intent_epoch: 1,
         message_content: "你还记得上次的矿洞吗",
         route_kind: "chat_reply",
-        query_reason: "composite_reply",
+        query_reason: "composite_chat",
       }),
     ]);
     expect(chatRequestBody.messages?.[0]?.content).toContain(

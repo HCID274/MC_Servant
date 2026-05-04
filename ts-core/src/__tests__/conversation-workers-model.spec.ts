@@ -70,13 +70,13 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     expect(route.queue_behavior).toBe("none");
   });
 
-  it("应创建强类型 composite triage（复合分诊） 并拒绝 reply 正文", () => {
+  it("应创建强类型 composite triage（复合分诊） 并拒绝 chat（闲聊） 正文", () => {
     const composite = createConversationCompositeTriage({
       cancel: {
         reason: "先停下",
         priority: "interrupt",
       },
-      reply: {},
+      chat: {},
       action: {
         intent: "task",
         priority: "urgent",
@@ -89,7 +89,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
         reason: "先停下",
         priority: "interrupt",
       },
-      reply: {},
+      chat: {},
       action: {
         intent: "task",
         priority: "urgent",
@@ -98,9 +98,9 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     });
     expect(() =>
       createConversationCompositeTriage({
-        reply: Object.fromEntries([["content", "知道了"]]) as Record<string, never>,
+        chat: Object.fromEntries([["content", "知道了"]]) as Record<string, never>,
       }),
-    ).toThrow(/reply must be an empty object/);
+    ).toThrow(/chat must be an empty object/);
   });
 
   it("应让 skill_call（技能调用） / sandbox_code（沙箱代码） 双路径严格对齐现有执行契约", () => {

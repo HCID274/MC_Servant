@@ -104,7 +104,7 @@ Stage 1 判定 `intent: cancel` 时，不需要第二次 LLM 调用。Conversati
 只输出 JSON，不要输出其他内容。
 
 输出片段规则：
-- reply：可选。闲聊、问候、问问题、情感表达、与 Minecraft 游戏操作无关的对话；只输出空对象 `{}`
+- chat：可选。闲聊、问候、问问题、情感表达、与 Minecraft 游戏操作无关的对话；只输出空对象 `{}`
 - action：可选。要求 Bot 执行游戏内动作（采集、移动、制造、跟随等）；`intent` 固定为 `task`
 - cancel：可选。要求停止当前任务（但不是一般性的"不要"——只有明确指向当前动作的停止指令）
 - 修改当前任务：不再有独立 intent，必须表达为 `cancel + action`
@@ -116,7 +116,7 @@ Stage 1 判定 `intent: cancel` 时，不需要第二次 LLM 调用。Conversati
 - background：低优先级（"有空的话"、"之后帮我"）
 
 输出格式：
-{"cancel":{"reason":"一句话原因","priority":"interrupt|queued"},"reply":{},"action":{"intent":"task","priority":"interrupt|urgent|normal|background","reason":"一句话说明判断依据"}}
+{"cancel":{"reason":"一句话原因","priority":"interrupt|queued"},"chat":{},"action":{"intent":"task","priority":"interrupt|urgent|normal|background","reason":"一句话说明判断依据"}}
 ```
 
 ### 3.2 User Prompt 模板
@@ -137,7 +137,7 @@ interface ConversationCompositeTriage {
     reason: string
     priority: 'interrupt' | 'queued'
   }
-  reply?: Record<string, never>
+  chat?: Record<string, never>
   action?: {
     intent: 'task'
     priority: 'interrupt' | 'urgent' | 'normal' | 'background'
@@ -160,10 +160,11 @@ LLM 输出解析失败时的诊断策略：
 |------|------|
 | JSON 解析失败 | 写入 LLM diagnostics JSONL 并抛出分诊错误 |
 | 输出旧 `{ intent, priority, reason }` | 写入 LLM diagnostics JSONL 并抛出分诊错误 |
-| `reply` 携带正文 | 写入 LLM diagnostics JSONL 并抛出分诊错误 |
+| `chat` 携带正文 | 写入 LLM diagnostics JSONL 并抛出分诊错误 |
+| 旧 `reply` 字段 | 写入 LLM diagnostics JSONL 并抛出分诊错误 |
 | `action.intent` 非 `task` | 写入 LLM diagnostics JSONL 并抛出分诊错误 |
 
-分诊失败不再静默回退为 `{ reply: {} }`，由 diagnostics 日志保留原始 prompt 和错误摘要，避免把 schema 漂移误当成闲聊。
+分诊失败不再静默回退为 `{ chat: {} }`，由 diagnostics 日志保留原始 prompt 和错误摘要，避免把 schema 漂移误当成闲聊。
 
 ---
 
@@ -1053,7 +1054,7 @@ msg:{botId} 队列取出 job（用户消息）
     │
 5. ══ Stage 1: Triage LLM 调用 ══（不暴露 search()）
     │  输入：状态摘要 + A 层 + A.5 + C(USER+MEMORY) + 当前消息
-    │  输出：ConversationCompositeTriage { cancel?, reply?, action? }
+    │  输出：ConversationCompositeTriage { cancel?, chat?, action? }
     │
 6. 复合片段派发：
     │
@@ -1061,7 +1062,7 @@ msg:{botId} 队列取出 job（用户消息）
     │   → botActor.interrupt(...)
     │   → 广播模板回复
     │
-    ├─ reply 存在
+    ├─ chat 存在
     │   → ══ Stage 2-Chat LLM 调用（暴露 search()） ══
     │     - 输入：A + A.5 + C(USER+MEMORY) + 当前消息
     │     - LLM 自主决定是否发 search() 工具调用（≤3 轮,详见 §9）

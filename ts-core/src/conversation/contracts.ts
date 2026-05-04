@@ -133,8 +133,8 @@ export interface ConversationCompositeCancel {
   readonly priority: ConversationCompositeCancelPriority;
 }
 
-/** 复合分诊中的 reply（回复） 片段。 */
-export type ConversationCompositeReply = Readonly<Record<string, never>>;
+/** 复合分诊中的 chat（闲聊） 片段，只表示进入 Stage 2-Chat（第二阶段闲聊）。 */
+export type ConversationCompositeChat = Readonly<Record<string, never>>;
 
 /** 复合分诊中的 action（动作） 片段，只表示需要进入 planner（规划器）。 */
 export interface ConversationCompositeAction {
@@ -150,8 +150,8 @@ export interface ConversationCompositeAction {
 export interface ConversationCompositeTriage {
   /** 可选 cancel（取消） 片段。 */
   readonly cancel?: ConversationCompositeCancel;
-  /** 可选 reply（回复） 片段。 */
-  readonly reply?: ConversationCompositeReply;
+  /** 可选 chat（闲聊） 片段。 */
+  readonly chat?: ConversationCompositeChat;
   /** 可选 action（动作） 片段。 */
   readonly action?: ConversationCompositeAction;
 }

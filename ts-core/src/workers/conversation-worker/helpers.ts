@@ -31,7 +31,7 @@ export function createDefaultConversationWorker(input: {
 
 export function createDefaultTriage(): ConversationCompositeTriage {
   return Object.freeze({
-    reply: Object.freeze({}),
+    chat: Object.freeze({}),
   });
 }
 /** 克隆并校验对话任务数据。 */

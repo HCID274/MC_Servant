@@ -99,7 +99,7 @@ export function createMessageTriage(input: {
  */
 export function createConversationCompositeTriage(input: {
   readonly cancel?: { readonly reason?: string; readonly priority?: string } | null;
-  readonly reply?: Record<string, never> | null;
+  readonly chat?: Record<string, never> | null;
   readonly action?: {
     readonly intent?: string;
     readonly priority?: string;
@@ -116,18 +116,18 @@ export function createConversationCompositeTriage(input: {
               ? input.cancel.priority
               : "interrupt",
         });
-  const reply = createCompositeReply(input.reply);
+  const chat = createCompositeChat(input.chat);
   const action = createCompositeAction(input.action);
 
-  if (cancel === undefined && reply === undefined && action === undefined) {
+  if (cancel === undefined && chat === undefined && action === undefined) {
     return Object.freeze({
-      reply: Object.freeze({}),
+      chat: Object.freeze({}),
     });
   }
 
   return Object.freeze({
     ...(cancel === undefined ? {} : { cancel }),
-    ...(reply === undefined ? {} : { reply }),
+    ...(chat === undefined ? {} : { chat }),
     ...(action === undefined ? {} : { action }),
   });
 }
@@ -139,23 +139,26 @@ export function createConversationCompositeTriageFromRecord(
   if (typeof record.intent === "string") {
     throw new Error("triage must use composite schema");
   }
+  if ("reply" in record) {
+    throw new Error("triage reply field is no longer supported; use chat empty object");
+  }
 
   return createConversationCompositeTriage({
     ...(isRecord(record.cancel) ? { cancel: pickReasonPriority(record.cancel) } : {}),
-    ...(isRecord(record.reply) ? { reply: createReplyInput(record.reply) } : {}),
+    ...(hasOwn(record, "chat") ? { chat: createChatInput(record.chat) } : {}),
     ...(isRecord(record.action) ? { action: pickActionInput(record.action) } : {}),
   });
 }
 
-function createCompositeReply(
+function createCompositeChat(
   value: Record<string, never> | null | undefined,
-): ConversationCompositeTriage["reply"] {
+): ConversationCompositeTriage["chat"] {
   if (value === undefined || value === null) {
     return undefined;
   }
 
   if (Object.keys(value).length > 0) {
-    throw new Error("triage reply must be an empty object");
+    throw new Error("triage chat must be an empty object");
   }
 
   return Object.freeze({});
@@ -189,6 +192,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
 function pickReasonPriority(record: Record<string, unknown>): {
   readonly reason?: string;
   readonly priority?: string;
@@ -199,9 +206,12 @@ function pickReasonPriority(record: Record<string, unknown>): {
   };
 }
 
-function createReplyInput(value: Record<string, unknown>): Record<string, never> {
+function createChatInput(value: unknown): Record<string, never> {
+  if (!isRecord(value)) {
+    throw new Error("triage chat must be an empty object");
+  }
   if (Object.keys(value).length > 0) {
-    throw new Error("triage reply must be an empty object");
+    throw new Error("triage chat must be an empty object");
   }
 
   return {};

@@ -1031,7 +1031,7 @@ function createOnlineConversationTriage(
   return async ({ task, brain_context }) => {
     if (llm === undefined) {
       return createConversationCompositeTriage({
-        reply: {},
+        chat: {},
       });
     }
 

@@ -186,3 +186,11 @@
 - C 审查结论: 曾打回 3 次 (地点记忆闭环缺测试且误用 Plan（规划）特殊分支;task_events（任务事件）外键父表 task_history（任务历史）缺失;Brain fact（大脑事实）入队和诊断失败仍可能阻断 Chat（闲聊）/Plan（规划）主路径);B（实现代理）补齐三 worker（工作线程）集成测试、task_history（任务历史）生命周期 sink（汇点）、Brain fact（大脑事实）best-effort（尽力而为）旁路与双失败测试后通过
 - 关键决策: 选择由 ConversationWorker（对话工作线程）通过注入端口消费 Brain（大脑）上下文和 search()（检索工具）,不直读数据库;选择 BotWorker（机器人工作线程）维护 task_history（任务历史）生命周期、BrainWorker（大脑工作线程）写 task_events（任务事件）与记忆层,app（应用）只做装配;Brain fact（大脑事实）失败只落 runtime event（运行时事件）和诊断,不传播到主路径
 - 架构冲突: 无
+
+## T-CONV-005 | 2026-05-04 | Composite Triage（复合分诊）空路由片段从 reply（回复）改名为 chat（闲聊）
+
+- 涉及模块: conversation/contracts（对话契约）,conversation/triage（分诊领域模型）,conversation/llm/prompts/triage（分诊提示词）,conversation/llm/parsers（大语言模型解析器）,workers/conversation-worker/runtime（对话工作线程运行时）,Docs/04_CONVERSATION_SPEC.md（对话规格文档）,相关测试
+- A 拆解依据: 用户确认 Stage 1-Triage（第一阶段分诊）中 `reply:{}` 命名容易与已删除的 `reply.content`（回复正文）混淆;要求改为 `chat:{}` 表示进入 Stage 2-Chat（第二阶段闲聊）,Triage（分诊）仍只做路由,严禁恢复回复正文,旧 `reply:{}` 不兼容
+- C 审查结论: 通过
+- 关键决策: 选择硬拒绝旧 `reply` 字段而不是保留兼容双轨,让 schema（结构）漂移进入 diagnostics（诊断）并暴露;内部派发顺序同步改为 cancel（取消）→chat（闲聊）→action（动作）,真实 LLM（大语言模型）回归确认纯闲聊返回 `{"chat":{}}`
+- 架构冲突: 无

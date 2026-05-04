@@ -108,7 +108,7 @@ async function readBrainContext(input: {
   }
 }
 
-/** 按 cancel（取消）→reply（回复）→action（动作） 顺序派发复合分诊结果。 */
+/** 按 cancel（取消）→chat（闲聊）→action（动作） 顺序派发复合分诊结果。 */
 async function handleCompositeTriage(input: {
   readonly task: ReturnType<typeof cloneWorkerTask>;
   readonly triage: ConversationCompositeTriage;
@@ -135,8 +135,8 @@ async function handleCompositeTriage(input: {
     );
   }
 
-  if (input.triage.reply !== undefined) {
-    await handleGeneratedCompositeReply(input);
+  if (input.triage.chat !== undefined) {
+    await handleGeneratedCompositeChat(input);
     replyBroadcasted = true;
   } else if (input.triage.cancel !== undefined) {
     await broadcastCompositeReply(input, createCancelTemplateReply().reply, "template");
@@ -187,7 +187,7 @@ async function interruptRuntime(
   });
 }
 
-async function handleGeneratedCompositeReply(input: {
+async function handleGeneratedCompositeChat(input: {
   readonly task: ReturnType<typeof cloneWorkerTask>;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
   readonly events: ConversationWorkerRuntimeEvent[];
@@ -195,7 +195,7 @@ async function handleGeneratedCompositeReply(input: {
   const triage = createMessageTriage({
     intent: "chat",
     priority: ConversationPriority.Normal,
-    reason: "composite_reply",
+    reason: "composite_chat",
   });
   const route = createConversationRouteDecision({
     triage,
@@ -204,7 +204,7 @@ async function handleGeneratedCompositeReply(input: {
   });
 
   if (route.kind !== "chat_reply") {
-    throw new Error(`composite reply produced unsupported route: ${route.kind}`);
+    throw new Error(`composite chat produced unsupported route: ${route.kind}`);
   }
 
   await handleChatReplyRoute({
@@ -270,7 +270,7 @@ async function appendConversationReplyLog(input: {
       message_id: input.task.message.message_id,
       created_at: new Date().toISOString(),
       owner_message: input.task.message.content,
-      route_kind: "composite_reply",
+      route_kind: "composite_chat",
       reply_mode: input.reply_mode,
       reply: input.reply,
       contexts: {},

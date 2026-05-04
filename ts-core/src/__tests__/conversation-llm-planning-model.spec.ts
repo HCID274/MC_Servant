@@ -92,7 +92,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     });
 
     expect(messages[0]?.content).toContain("分诊只做路由判断");
-    expect(messages[0]?.content).toContain('纯闲聊只输出 reply 空对象，例如 {"reply":{}}。');
+    expect(messages[0]?.content).toContain('纯闲聊只输出 chat 空对象，例如 {"chat":{}}。');
     expect(messages[0]?.content).not.toContain('"content":"我在喵~"');
     expect(messages[0]?.content).not.toContain("reply 只写自然短句");
   });
@@ -133,7 +133,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
           capturedBodies.push(init?.body === undefined ? undefined : JSON.parse(String(init.body)));
 
           return new Response(
-            JSON.stringify({ choices: [{ message: { content: '{"reply":{}}' } }] }),
+            JSON.stringify({ choices: [{ message: { content: '{"chat":{}}' } }] }),
             {
               status: 200,
               headers: { "content-type": "application/json" },
@@ -171,7 +171,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
                 {
                   message: {
                     content:
-                      '{"cancel":{"reason":"主人要求先停下","priority":"interrupt"},"reply":{},"action":{"intent":"task","priority":"urgent","reason":"主人要求去坐标"}}',
+                      '{"cancel":{"reason":"主人要求先停下","priority":"interrupt"},"chat":{},"action":{"intent":"task","priority":"urgent","reason":"主人要求去坐标"}}',
                   },
                 },
               ],
@@ -197,13 +197,42 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         reason: "主人要求先停下",
         priority: "interrupt",
       },
-      reply: {},
+      chat: {},
       action: {
         intent: "task",
         priority: "urgent",
         reason: "主人要求去坐标",
       },
     });
+  });
+
+  it("应把 triage（分诊） chat 空对象解析为 Chat（闲聊） 路由片段", async () => {
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async () =>
+          new Response(JSON.stringify({ choices: [{ message: { content: '{"chat":{}}' } }] }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          }),
+      },
+    );
+
+    await expect(
+      client.generateCompositeTriage({
+        message_id: "msg-chat-triage",
+        message: "你好呀",
+      }),
+    ).resolves.toEqual({ chat: {} });
   });
 
   it("Plan（规划） 应暴露 search() tool（工具） 并在 tool_result（工具结果） 后解析技能计划", async () => {
@@ -354,6 +383,88 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     });
   });
 
+  it("应拒绝 triage（分诊） chat 片段携带正文并写入 diagnostics（诊断）", async () => {
+    const diagnostics: unknown[] = [];
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        onDiagnostic: (record) => diagnostics.push(record),
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: '{"chat":{"content":"你好"}}' } }],
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          ),
+      },
+    );
+
+    await expect(
+      client.generateCompositeTriage({
+        message_id: "msg-chat-content-triage",
+        message: "你好呀",
+      }),
+    ).rejects.toBeInstanceOf(ConversationLlmTriageError);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({
+      stage: "triage",
+      message_id: "msg-chat-content-triage",
+      ok: false,
+      error_summary: "triage chat must be an empty object",
+    });
+  });
+
+  it("应拒绝旧 reply 空对象 triage（分诊） schema（结构） 并写入 diagnostics（诊断）", async () => {
+    const diagnostics: unknown[] = [];
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        onDiagnostic: (record) => diagnostics.push(record),
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: '{"reply":{}}' } }],
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          ),
+      },
+    );
+
+    await expect(
+      client.generateCompositeTriage({
+        message_id: "msg-legacy-reply-triage",
+        message: "你好呀",
+      }),
+    ).rejects.toBeInstanceOf(ConversationLlmTriageError);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({
+      stage: "triage",
+      message_id: "msg-legacy-reply-triage",
+      ok: false,
+      error_summary: "triage reply field is no longer supported; use chat empty object",
+    });
+  });
+
   it("应在 triage（分诊） 返回非法 JSON 时抛出带 diagnostics（诊断） 的错误", async () => {
     const diagnostics: unknown[] = [];
     const client = createConversationLlmClient(
@@ -418,7 +529,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
     expect(messages[0]?.content).toContain("输出 composite JSON");
     expect(messages[0]?.content).toContain("cancel");
-    expect(messages[0]?.content).toContain("reply");
+    expect(messages[0]?.content).toContain("chat");
     expect(messages[0]?.content).toContain("action");
     expect(messages[0]?.content).toContain("禁止输出 modify");
     expect(messages[0]?.content).toContain("cancel + action");
