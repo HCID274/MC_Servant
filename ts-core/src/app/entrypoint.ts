@@ -49,6 +49,7 @@ import {
   matchInterfaceControlFastPath,
   registerServerBridgeWsRoute,
 } from "../interfaces/index.js";
+import type { ObservationEventSubscription } from "../observation/index.js";
 import { createConversationWorkerTask } from "../workers/contracts.js";
 import {
   type BotWorkerAction,
@@ -71,7 +72,7 @@ import {
   persistTaskHistoryLifecycleAction,
 } from "../workers/index.js";
 import { createResourceService } from "../world-model/index.js";
-import type { ResourceServiceBoundary } from "../world-model/index.js";
+import type { ResourceCacheBlockChange, ResourceServiceBoundary } from "../world-model/index.js";
 import {
   type AppBootstrapContract,
   type AppExternalAuthInitialConfig,
@@ -402,6 +403,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   let botWorker: BotWorkerRuntime | undefined;
   let brainWorker: BrainWorkerRuntime | undefined;
   let conversationWorker: ConversationWorkerRuntime | undefined;
+  let resourceEventSubscription: ObservationEventSubscription | undefined;
   let latestLlmDiagnostic: LlmDiagnosticSummary | null = null;
   let latestIntentEpoch = 0;
   let latestOwnerPlayerName: string | undefined;
@@ -573,6 +575,11 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     resourceService = createResourceService({
       refreshPort: createdRuntime.transport,
       worldKeyPort: createdRuntime.transport,
+    });
+    resourceEventSubscription = bindOnlineResourceServiceBlockUpdates({
+      runtime: createdRuntime,
+      resourceService,
+      readOwnerName: () => latestOwnerPlayerName,
     });
     const interruptRuntimeSink =
       input.dependencies?.conversationWorker?.interruptRuntimeSink ??
@@ -861,6 +868,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       async close(): Promise<void> {
         await closeOnlineRuntimeInOrder({
           runtime: createdRuntime,
+          resourceEventSubscription,
           botWorker: createdBotWorker,
           brainWorker: createdBrainWorker,
           conversationWorker: createdConversationWorker,
@@ -872,6 +880,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   } catch (error) {
     await closeOnlineRuntimeInOrder({
       runtime,
+      resourceEventSubscription,
       botWorker,
       brainWorker,
       conversationWorker,
@@ -1154,6 +1163,102 @@ function readOnlineEnvironmentSnapshot<TBotId extends string>(input: {
   return observationInput === null
     ? null
     : input.runtime.observation.refreshFromMineflayer(observationInput);
+}
+
+/** 绑定 blockUpdate（方块更新） 到 ResourceService（资源服务） 缓存更新。 */
+export function bindOnlineResourceServiceBlockUpdates<TBotId extends string>(input: {
+  readonly runtime: OnlineResourceBlockUpdateRuntime<TBotId>;
+  readonly resourceService: ResourceServiceBoundary;
+  readonly readOwnerName: () => string | undefined;
+}): ObservationEventSubscription | undefined {
+  const eventSource = input.runtime.transport.getEventSource();
+
+  if (eventSource === null) {
+    return undefined;
+  }
+
+  return input.runtime.observation.bindMineflayerEvents({
+    eventSource,
+    events: ["blockUpdate"],
+    readObservationInput: (_eventName, args) => {
+      const change = createResourceCacheBlockChangeFromMineflayerBlockUpdate(args);
+
+      if (change !== null) {
+        input.resourceService.applyBlockChanges([change]);
+      }
+
+      return input.runtime.transport.readObservationInput(input.readOwnerName());
+    },
+  });
+}
+
+interface OnlineResourceBlockUpdateRuntime<TBotId extends string> {
+  readonly observation: Pick<
+    AppRuntimeCoreResources<TBotId>["observation"],
+    "bindMineflayerEvents"
+  >;
+  readonly transport: Pick<
+    AppRuntimeCoreResources<TBotId>["transport"],
+    "getEventSource" | "readObservationInput"
+  >;
+}
+
+/** 从 Mineflayer（Minecraft 协议客户端） blockUpdate（方块更新） 参数提取资源缓存变化。 */
+export function createResourceCacheBlockChangeFromMineflayerBlockUpdate(
+  args: readonly unknown[],
+): ResourceCacheBlockChange | null {
+  const oldBlock = readPlainRecord(args[0]);
+  const newBlock = readPlainRecord(args[1]);
+  const position =
+    readSnapshotPosition(newBlock?.position) ?? readSnapshotPosition(oldBlock?.position);
+
+  if (position === null) {
+    return null;
+  }
+
+  return Object.freeze({
+    position,
+    block_name: readResourceBlockName(newBlock),
+  });
+}
+
+function readResourceBlockName(
+  block: Readonly<Record<string, unknown>> | undefined,
+): string | null {
+  if (block === undefined) {
+    return null;
+  }
+
+  return typeof block.name === "string" && block.name.length > 0 ? block.name : null;
+}
+
+function readSnapshotPosition(value: unknown): SnapshotPosition | null {
+  const record = readPlainRecord(value);
+
+  if (record === undefined) {
+    return null;
+  }
+
+  const { x, y, z } = record;
+
+  if (
+    typeof x !== "number" ||
+    typeof y !== "number" ||
+    typeof z !== "number" ||
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    !Number.isFinite(z)
+  ) {
+    return null;
+  }
+
+  return Object.freeze({ x, y, z });
+}
+
+function readPlainRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return typeof value === "object" && value !== null
+    ? (value as Readonly<Record<string, unknown>>)
+    : undefined;
 }
 
 function createOwnerPositionAtMessageField<TBotId extends string>(input: {
@@ -1643,6 +1748,7 @@ async function appendServerBridgeEnvelope<TBotId extends string>(input: {
  */
 async function closeOnlineRuntimeInOrder(input: {
   runtime: AppRuntimeCoreResources | undefined;
+  resourceEventSubscription: ObservationEventSubscription | undefined;
   botWorker: BotWorkerRuntime | undefined;
   brainWorker: BrainWorkerRuntime | undefined;
   conversationWorker: ConversationWorkerRuntime | undefined;
@@ -1655,6 +1761,7 @@ async function closeOnlineRuntimeInOrder(input: {
     () => input.conversationWorker?.close(),
     () => input.botWorker?.close(),
     () => input.brainWorker?.close(),
+    () => input.resourceEventSubscription?.close(),
     () => input.runtime?.close(),
     () => input.services?.close(),
     () => input.infrastructure?.close(),

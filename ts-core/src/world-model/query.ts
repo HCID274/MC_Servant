@@ -18,10 +18,12 @@ import type {
   BestResourceClusterResult,
   CandidateBlockSelectionResult,
   ResourceBlockCandidate,
+  ResourceCacheBlockChange,
   ResourceClusterQueryResult,
   ResourceClusterSummary,
   ResourceProfile,
   ResourceServiceBoundary,
+  ResourceServiceCacheUpdateResult,
   ResourceServiceRefreshPort,
   ResourceServiceRefreshResult,
   ResourceWorldKeyPort,
@@ -32,8 +34,23 @@ import type {
 } from "./contracts.js";
 
 const DEFAULT_RESOURCE_SERVICE_STALE_AFTER_MS = 60_000;
-const DEFAULT_RESOURCE_CLUSTER_RADIUS = 4;
 const DEFAULT_RESOURCE_PLANNER_SUMMARY_LIMIT = 2;
+const AIR_BLOCK_NAMES = new Set(["air", "cave_air", "void_air"]);
+const RESOURCE_CLUSTER_NEIGHBOR_OFFSETS = Object.freeze(
+  [-1, 0, 1].flatMap((x) =>
+    [-1, 0, 1].flatMap((y) =>
+      [-1, 0, 1]
+        .filter((z) => !(x === 0 && y === 0 && z === 0))
+        .map((z) => Object.freeze({ x, y, z })),
+    ),
+  ),
+);
+
+interface ClusterableResourceBlock {
+  readonly block_name: string;
+  readonly position: Readonly<SnapshotPosition>;
+  readonly distance: number;
+}
 
 interface MutableResourceServiceCacheEntry {
   resource_key: string;
@@ -66,12 +83,21 @@ function cloneCandidate(candidate: ResourceBlockCandidate): ResourceBlockCandida
     position: freezePosition(candidate.position),
   });
 }
+
+function cloneNullableCandidate(
+  candidate: ResourceBlockCandidate | null,
+): ResourceBlockCandidate | null {
+  return candidate === null ? null : cloneCandidate(candidate);
+}
+
 /** 克隆整个资源簇摘要及其候选者。 */
 
 function cloneCluster(cluster: ResourceClusterSummary): ResourceClusterSummary {
   return Object.freeze({
     ...cluster,
     centroid: freezePosition(cluster.centroid),
+    blocks: freezeReadonlyArray(cluster.blocks.map((position) => freezePosition(position))),
+    recommended_candidate: cloneNullableCandidate(cluster.recommended_candidate),
     candidates: freezeReadonlyArray(
       cluster.candidates.map((candidate) => cloneCandidate(candidate)),
     ),
@@ -99,6 +125,17 @@ function cloneResourceServiceRefreshResult(
     diagnostics: freezeReadonlyArray(result.diagnostics),
   });
 }
+
+function cloneResourceServiceCacheUpdateResult(
+  result: ResourceServiceCacheUpdateResult,
+): ResourceServiceCacheUpdateResult {
+  return Object.freeze({
+    ...result,
+    resource_keys: freezeReadonlyArray(result.resource_keys),
+    diagnostics: freezeReadonlyArray(result.diagnostics),
+  });
+}
+
 /** 克隆资源画像配置。 */
 
 function cloneProfile(profile: ResourceProfile): ResourceProfile {
@@ -144,6 +181,66 @@ function distanceBetween(left: SnapshotPosition, right: SnapshotPosition): numbe
   return Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z);
 }
 
+function comparePositions(left: SnapshotPosition, right: SnapshotPosition): number {
+  if (left.x !== right.x) {
+    return left.x - right.x;
+  }
+
+  if (left.y !== right.y) {
+    return left.y - right.y;
+  }
+
+  return left.z - right.z;
+}
+
+function compareClusterableResourceBlocks(
+  left: ClusterableResourceBlock,
+  right: ClusterableResourceBlock,
+): number {
+  if (left.block_name !== right.block_name) {
+    return left.block_name.localeCompare(right.block_name);
+  }
+
+  if (left.distance !== right.distance) {
+    return left.distance - right.distance;
+  }
+
+  return comparePositions(left.position, right.position);
+}
+
+function compareResourceBlockGroups<T extends ClusterableResourceBlock>(
+  left: readonly T[],
+  right: readonly T[],
+): number {
+  const leftFirst = left[0];
+  const rightFirst = right[0];
+
+  if (leftFirst === undefined && rightFirst === undefined) {
+    return 0;
+  }
+
+  if (leftFirst === undefined) {
+    return 1;
+  }
+
+  if (rightFirst === undefined) {
+    return -1;
+  }
+
+  return compareClusterableResourceBlocks(leftFirst, rightFirst);
+}
+
+function createPositionKey(position: SnapshotPosition): string {
+  return `${position.x}:${position.y}:${position.z}`;
+}
+
+function createOffsetPositionKey(
+  position: SnapshotPosition,
+  offset: Readonly<SnapshotPosition>,
+): string {
+  return `${position.x + offset.x}:${position.y + offset.y}:${position.z + offset.z}`;
+}
+
 /** 计算候选块列表的中心点。 */
 function calculateCentroid(candidates: readonly ResourceBlockCandidate[]): SnapshotPosition {
   const sum = candidates.reduce(
@@ -181,84 +278,185 @@ function createResourceCandidate(block: RuntimeResourceBlockSummary): ResourceBl
   });
 }
 
-/** 按显式 cluster_key（资源簇键） 或近邻半径把候选块分组。 */
-function groupRuntimeResourceBlocks(
-  resourceKey: string,
-  blocks: readonly RuntimeResourceBlockSummary[],
-): readonly (readonly RuntimeResourceBlockSummary[])[] {
-  const explicitGroups = new Map<string, RuntimeResourceBlockSummary[]>();
-  const ungrouped: RuntimeResourceBlockSummary[] = [];
+/** 按具体方块类型和 26 邻域 BFS（广度优先搜索）提取连通块。 */
+function groupConnectedResourceBlocks<T extends ClusterableResourceBlock>(
+  blocks: readonly T[],
+): readonly (readonly T[])[] {
+  const blocksByName = new Map<string, T[]>();
 
-  for (const block of blocks.filter((candidate) =>
-    runtimeBlockMatchesResourceKey(candidate, resourceKey),
-  )) {
-    if (block.cluster_key) {
-      explicitGroups.set(block.cluster_key, [
-        ...(explicitGroups.get(block.cluster_key) ?? []),
-        block,
-      ]);
-    } else {
-      ungrouped.push(block);
-    }
+  for (const block of [...blocks].sort(compareClusterableResourceBlocks)) {
+    blocksByName.set(block.block_name, [...(blocksByName.get(block.block_name) ?? []), block]);
   }
 
-  const proximityGroups: RuntimeResourceBlockSummary[][] = [];
+  const connectedGroups: T[][] = [...blocksByName.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([, sameNameBlocks]) => {
+      const byPosition = new Map<string, T>();
+      const sortedBlocks = sameNameBlocks.sort(compareClusterableResourceBlocks);
 
-  for (const block of ungrouped.sort((left, right) => left.distance - right.distance)) {
-    const matchedGroup = proximityGroups.find((group) =>
-      group.some(
-        (candidate) =>
-          distanceBetween(candidate.position, block.position) <= DEFAULT_RESOURCE_CLUSTER_RADIUS,
-      ),
-    );
+      for (const block of sortedBlocks) {
+        const positionKey = createPositionKey(block.position);
 
-    if (matchedGroup) {
-      matchedGroup.push(block);
-    } else {
-      proximityGroups.push([block]);
-    }
-  }
+        if (!byPosition.has(positionKey)) {
+          byPosition.set(positionKey, block);
+        }
+      }
 
-  return freezeReadonlyArray([
-    ...[...explicitGroups.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([, value]) => freezeReadonlyArray(value)),
-    ...proximityGroups.map((group) => freezeReadonlyArray(group)),
-  ]);
+      const visited = new Set<string>();
+      const groups: T[][] = [];
+
+      for (const seed of sortedBlocks) {
+        const seedKey = createPositionKey(seed.position);
+
+        if (visited.has(seedKey)) {
+          continue;
+        }
+
+        const group: T[] = [];
+        const queue: T[] = [seed];
+        visited.add(seedKey);
+
+        while (queue.length > 0) {
+          const current = queue.shift();
+
+          if (current === undefined) {
+            continue;
+          }
+
+          group.push(current);
+
+          for (const offset of RESOURCE_CLUSTER_NEIGHBOR_OFFSETS) {
+            const nextKey = createOffsetPositionKey(current.position, offset);
+
+            if (visited.has(nextKey)) {
+              continue;
+            }
+
+            const next = byPosition.get(nextKey);
+
+            if (next === undefined) {
+              continue;
+            }
+
+            visited.add(nextKey);
+            queue.push(next);
+          }
+        }
+
+        groups.push(group.sort(compareClusterableResourceBlocks));
+      }
+
+      return groups;
+    });
+
+  return freezeReadonlyArray(
+    connectedGroups
+      .sort((left, right) => compareResourceBlockGroups(left, right))
+      .map((group) => freezeReadonlyArray(group)),
+  );
+}
+
+function sortResourceCandidatesForDig(
+  candidates: readonly ResourceBlockCandidate[],
+): readonly ResourceBlockCandidate[] {
+  return freezeReadonlyArray(
+    [...candidates].sort((left, right) => {
+      if (left.is_exposed !== right.is_exposed) {
+        return Number(right.is_exposed) - Number(left.is_exposed);
+      }
+
+      if (left.score !== right.score) {
+        return right.score - left.score;
+      }
+
+      if (left.distance !== right.distance) {
+        return left.distance - right.distance;
+      }
+
+      return comparePositions(left.position, right.position);
+    }),
+  );
+}
+
+function selectRecommendedResourceCandidate(
+  candidates: readonly ResourceBlockCandidate[],
+): ResourceBlockCandidate | null {
+  return sortResourceCandidatesForDig(candidates)[0] ?? null;
+}
+
+function createResourceClusterFromCandidates(input: {
+  readonly resourceKey: string;
+  readonly worldKey: string;
+  readonly snapshotVersion: string;
+  readonly refreshRadius: ResourceRefreshRadius;
+  readonly refreshedAt: number;
+  readonly clusterIndex: number;
+  readonly candidates: readonly ResourceBlockCandidate[];
+}): ResourceClusterSummary {
+  const candidates = freezeReadonlyArray(
+    [...input.candidates]
+      .sort(compareClusterableResourceBlocks)
+      .map((candidate) => cloneCandidate(candidate)),
+  );
+  const centroid = calculateCentroid(candidates);
+  const nearestDistance = Math.min(...candidates.map((candidate) => candidate.distance));
+  const averageDistance =
+    candidates.reduce((sum, candidate) => sum + candidate.distance, 0) / candidates.length;
+  const blockName = candidates[0]?.block_name ?? "unknown";
+
+  return cloneCluster({
+    resource_key: input.resourceKey,
+    cluster_id: `${input.worldKey}:${input.resourceKey}:${blockName}:${input.refreshRadius}:${input.clusterIndex}:${Math.round(centroid.x)}:${Math.round(centroid.y)}:${Math.round(centroid.z)}`,
+    snapshot_version: input.snapshotVersion,
+    world_key: input.worldKey,
+    block_name: blockName,
+    refresh_radius: input.refreshRadius,
+    refreshed_at: input.refreshedAt,
+    centroid,
+    blocks: freezeReadonlyArray(candidates.map((candidate) => freezePosition(candidate.position))),
+    block_count: candidates.length,
+    nearest_distance: nearestDistance,
+    average_distance: averageDistance,
+    recommended_candidate: selectRecommendedResourceCandidate(candidates),
+    candidates,
+  });
+}
+
+function rebuildResourceClustersFromCandidates(input: {
+  readonly resourceKey: string;
+  readonly worldKey: string;
+  readonly snapshotVersion: string;
+  readonly refreshRadius: ResourceRefreshRadius;
+  readonly refreshedAt: number;
+  readonly candidates: readonly ResourceBlockCandidate[];
+}): readonly ResourceClusterSummary[] {
+  return sortResourceClusters(
+    groupConnectedResourceBlocks(input.candidates).map((group, index) =>
+      createResourceClusterFromCandidates({
+        ...input,
+        clusterIndex: index + 1,
+        candidates: group,
+      }),
+    ),
+  );
 }
 
 /** 从运行时刷新结果构建资源簇。 */
 export function createResourceClustersFromRuntimeRefresh(
   refresh: RuntimeResourceRefreshResult,
 ): readonly ResourceClusterSummary[] {
-  const groups = groupRuntimeResourceBlocks(refresh.resource_key, refresh.blocks);
+  const candidates = refresh.blocks
+    .filter((candidate) => runtimeBlockMatchesResourceKey(candidate, refresh.resource_key))
+    .map((block) => createResourceCandidate(block));
 
-  return sortResourceClusters(
-    groups.map((group, index) => {
-      const candidates = freezeReadonlyArray(group.map((block) => createResourceCandidate(block)));
-      const centroid = calculateCentroid(candidates);
-      const nearestDistance = Math.min(...candidates.map((candidate) => candidate.distance));
-      const averageDistance =
-        candidates.reduce((sum, candidate) => sum + candidate.distance, 0) / candidates.length;
-      const clusterKey = group.find((block) => block.cluster_key !== undefined)?.cluster_key;
-
-      return cloneCluster({
-        resource_key: refresh.resource_key,
-        cluster_id:
-          clusterKey ??
-          `${refresh.world_key}:${refresh.resource_key}:${refresh.radius}:${index + 1}:${Math.round(centroid.x)}:${Math.round(centroid.y)}:${Math.round(centroid.z)}`,
-        snapshot_version: refresh.snapshot_version,
-        world_key: refresh.world_key,
-        refresh_radius: refresh.radius,
-        refreshed_at: refresh.scanned_at,
-        centroid,
-        block_count: candidates.length,
-        nearest_distance: nearestDistance,
-        average_distance: averageDistance,
-        candidates,
-      });
-    }),
-  );
+  return rebuildResourceClustersFromCandidates({
+    resourceKey: refresh.resource_key,
+    worldKey: refresh.world_key,
+    snapshotVersion: refresh.snapshot_version,
+    refreshRadius: refresh.radius,
+    refreshedAt: refresh.scanned_at,
+    candidates,
+  });
 }
 
 /**
@@ -333,19 +531,9 @@ export function queryBestResourceCluster(input: {
 export function selectBestClusterCandidate(input: {
   cluster: ResourceClusterSummary;
 }): CandidateBlockSelectionResult | null {
-  const sortedCandidates = [...input.cluster.candidates].sort((left, right) => {
-    if (left.is_exposed !== right.is_exposed) {
-      return Number(right.is_exposed) - Number(left.is_exposed);
-    }
-
-    if (left.score !== right.score) {
-      return right.score - left.score;
-    }
-
-    return left.distance - right.distance;
-  });
-
-  const candidate = sortedCandidates[0];
+  const candidate =
+    input.cluster.recommended_candidate ??
+    sortResourceCandidatesForDig(input.cluster.candidates)[0];
 
   if (!candidate) {
     return null;
@@ -545,6 +733,112 @@ export function createResourceService(
 
       return cloneResourceServiceRefreshResult(result);
     },
+    applyBlockChanges(
+      changes: readonly ResourceCacheBlockChange[],
+    ): ResourceServiceCacheUpdateResult {
+      const worldKey = readWorldKey();
+      const changeByPosition = new Map(
+        changes.map((change) => [createPositionKey(change.position), change] as const),
+      );
+
+      if (changeByPosition.size === 0) {
+        return cloneResourceServiceCacheUpdateResult({
+          world_key: worldKey,
+          resource_keys: [],
+          removed_block_count: 0,
+          deleted_cluster_count: 0,
+          split_cluster_count: 0,
+          diagnostics: ["no_block_changes"],
+        });
+      }
+
+      const affectedResourceKeys: string[] = [];
+      let removedBlockCount = 0;
+      let deletedClusterCount = 0;
+      let splitClusterCount = 0;
+
+      for (const [cacheKey, entry] of [...cache.entries()]) {
+        if (entry.world_key !== worldKey) {
+          continue;
+        }
+
+        const remainingCandidates: ResourceBlockCandidate[] = [];
+        let entryChanged = false;
+        let nonEmptyOriginalClusterCount = 0;
+
+        for (const cluster of entry.clusters) {
+          let clusterRemainingCount = 0;
+
+          for (const candidate of cluster.candidates) {
+            const change = changeByPosition.get(createPositionKey(candidate.position));
+
+            if (change !== undefined && blockChangeRemovesCandidate(candidate, change)) {
+              removedBlockCount += 1;
+              entryChanged = true;
+              continue;
+            }
+
+            clusterRemainingCount += 1;
+            remainingCandidates.push(candidate);
+          }
+
+          if (clusterRemainingCount === 0 && cluster.candidates.length > 0) {
+            deletedClusterCount += 1;
+          } else if (clusterRemainingCount > 0) {
+            nonEmptyOriginalClusterCount += 1;
+          }
+        }
+
+        if (!entryChanged) {
+          continue;
+        }
+
+        affectedResourceKeys.push(entry.resource_key);
+
+        if (remainingCandidates.length === 0) {
+          cache.delete(cacheKey);
+          continue;
+        }
+
+        const updatedAt = now();
+        const snapshotVersion = `${entry.snapshot_version}:block_change:${updatedAt}`;
+        const clusters = rebuildResourceClustersFromCandidates({
+          resourceKey: entry.resource_key,
+          worldKey: entry.world_key,
+          snapshotVersion,
+          refreshRadius: entry.refresh_radius,
+          refreshedAt: updatedAt,
+          candidates: remainingCandidates,
+        });
+
+        splitClusterCount += Math.max(0, clusters.length - nonEmptyOriginalClusterCount);
+
+        cache.set(cacheKey, {
+          resource_key: entry.resource_key,
+          world_key: entry.world_key,
+          snapshot_version: snapshotVersion,
+          refresh_radius: entry.refresh_radius,
+          refreshed_at: updatedAt,
+          clusters,
+          diagnostics: [
+            ...entry.diagnostics.filter((diagnostic) => diagnostic !== "cache_miss"),
+            `resource_cache_updated:removed=${removedBlockCount}`,
+          ],
+        });
+      }
+
+      return cloneResourceServiceCacheUpdateResult({
+        world_key: worldKey,
+        resource_keys: affectedResourceKeys,
+        removed_block_count: removedBlockCount,
+        deleted_cluster_count: deletedClusterCount,
+        split_cluster_count: splitClusterCount,
+        diagnostics:
+          removedBlockCount > 0
+            ? ["resource_cache_updated"]
+            : ["no_cached_resource_blocks_changed"],
+      });
+    },
     createPlannerSummary(
       resourceKeys: readonly string[],
       maxClustersPerKey = DEFAULT_RESOURCE_PLANNER_SUMMARY_LIMIT,
@@ -573,6 +867,27 @@ export function createResourceService(
 
 function createResourceCacheKey(worldKey: string, resourceKey: string): string {
   return `${worldKey}\u0000${resourceKey}`;
+}
+
+function blockChangeRemovesCandidate(
+  candidate: ResourceBlockCandidate,
+  change: ResourceCacheBlockChange,
+): boolean {
+  const normalizedBlockName = normalizeBlockName(change.block_name);
+
+  return normalizedBlockName === null || normalizedBlockName !== candidate.block_name;
+}
+
+function normalizeBlockName(blockName: string | null | undefined): string | null {
+  if (blockName === null || blockName === undefined) {
+    return null;
+  }
+
+  const normalized = blockName.startsWith("minecraft:")
+    ? blockName.slice("minecraft:".length)
+    : blockName;
+
+  return AIR_BLOCK_NAMES.has(normalized) ? null : normalized;
 }
 
 function formatUnknownError(error: unknown): string {

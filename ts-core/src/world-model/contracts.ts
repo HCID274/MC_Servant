@@ -48,18 +48,24 @@ export interface ResourceClusterSummary {
   readonly snapshot_version: string;
   /** 当前世界 / 维度键，用于避免跨世界缓存混用。 */
   readonly world_key?: string;
+  /** 簇内具体方块类型；不同方块类型默认不混簇。 */
+  readonly block_name: string;
   /** 生成该簇时使用的刷新半径。 */
   readonly refresh_radius?: ResourceRefreshRadius;
   /** 该簇最后刷新时间戳。 */
   readonly refreshed_at?: number;
   /** 资源簇中心点。 */
   readonly centroid: Readonly<SnapshotPosition>;
+  /** 当前簇内方块坐标。 */
+  readonly blocks: readonly Readonly<SnapshotPosition>[];
   /** 资源块数量。 */
   readonly block_count: number;
   /** 最近距离。 */
   readonly nearest_distance: number;
   /** 平均距离。 */
   readonly average_distance: number;
+  /** 推荐挖掘候选。 */
+  readonly recommended_candidate: ResourceBlockCandidate | null;
   /** 当前簇内候选块。 */
   readonly candidates: readonly ResourceBlockCandidate[];
 }
@@ -157,6 +163,30 @@ export interface ResourceServiceRefreshResult {
   readonly diagnostics: readonly string[];
 }
 
+/** ResourceService（世界感知资源服务） 方块变化输入；世界路由由服务内部读取。 */
+export interface ResourceCacheBlockChange {
+  /** 已变化方块坐标。 */
+  readonly position: Readonly<SnapshotPosition>;
+  /** 变化后的标准方块名；null / undefined / air 表示该资源方块已消失。 */
+  readonly block_name?: string | null;
+}
+
+/** ResourceService（世界感知资源服务） 缓存更新结果。 */
+export interface ResourceServiceCacheUpdateResult {
+  /** 本次更新路由到的世界键。 */
+  readonly world_key: string | null;
+  /** 受影响资源键。 */
+  readonly resource_keys: readonly string[];
+  /** 移除的缓存方块数量。 */
+  readonly removed_block_count: number;
+  /** 删除的空资源簇数量。 */
+  readonly deleted_cluster_count: number;
+  /** 重新切分后新增的资源簇数量。 */
+  readonly split_cluster_count: number;
+  /** 可读诊断。 */
+  readonly diagnostics: readonly string[];
+}
+
 /** ResourceService（世界感知资源服务） 运行时刷新端口。 */
 export interface ResourceServiceRefreshPort {
   /** 围绕 Bot（机器人） 执行只读资源刷新。 */
@@ -181,6 +211,8 @@ export interface ResourceServiceBoundary {
     resourceKey: string,
     radius: ResourceRefreshRadius,
   ): Promise<ResourceServiceRefreshResult>;
+  /** 应用方块变化，更新当前世界内的资源簇缓存。 */
+  applyBlockChanges(changes: readonly ResourceCacheBlockChange[]): ResourceServiceCacheUpdateResult;
   /** 读取给 planner（规划器） 使用的短资源摘要。 */
   createPlannerSummary(resourceKeys: readonly string[], maxClustersPerKey?: number): string;
 }

@@ -11,6 +11,7 @@ import {
   createMinecraftDataFactsPort,
   createObservationReadBoundary,
   createReflexInterruptSource,
+  createResourceClustersFromRuntimeRefresh,
   createResourceService,
   createThreatDetectorInput,
   createWorldModelQueryBoundary,
@@ -412,10 +413,22 @@ describe("observation 与 world-model 契约", () => {
           resource_key: "oak_log",
           cluster_id: "oak-a",
           snapshot_version: "snapshot-query",
+          block_name: "oak_log",
           centroid: { x: 3, y: 64, z: 3 },
-          block_count: 4,
+          blocks: [
+            { x: 2, y: 64, z: 2 },
+            { x: 3, y: 64, z: 3 },
+          ],
+          block_count: 2,
           nearest_distance: 3,
           average_distance: 4,
+          recommended_candidate: {
+            block_name: "oak_log",
+            position: { x: 2, y: 64, z: 2 },
+            distance: 3,
+            score: 10,
+            is_exposed: true,
+          },
           candidates: [
             {
               block_name: "oak_log",
@@ -437,10 +450,13 @@ describe("observation 与 world-model 契约", () => {
           resource_key: "coal_ore",
           cluster_id: "coal-a",
           snapshot_version: "snapshot-query",
+          block_name: "coal_ore",
           centroid: { x: 12, y: 20, z: 12 },
+          blocks: [],
           block_count: 8,
           nearest_distance: 18,
           average_distance: 20,
+          recommended_candidate: null,
           candidates: [],
         },
       ],
@@ -473,6 +489,9 @@ describe("observation 与 world-model 契约", () => {
     expect(Object.isFrozen(queriedClusters)).toBe(true);
     expect(Object.isFrozen(firstCluster)).toBe(true);
     expect(Object.isFrozen(firstCluster.centroid)).toBe(true);
+    expect(Object.isFrozen(firstCluster.blocks)).toBe(true);
+    expect(Object.isFrozen(firstCluster.blocks[0])).toBe(true);
+    expect(Object.isFrozen(firstCluster.recommended_candidate)).toBe(true);
     expect(Object.isFrozen(firstCluster.candidates)).toBe(true);
     expect(Object.isFrozen(firstCluster.candidates[0])).toBe(true);
     expect(Object.isFrozen(firstCluster.candidates[0]?.position)).toBe(true);
@@ -520,6 +539,155 @@ describe("observation 与 world-model 契约", () => {
     ).resolves.toMatchObject({
       status: "runtime_unavailable",
       radius: 16,
+    });
+  });
+
+  it("资源簇应先按具体方块名分组，再用 26 邻域 BFS 连通聚类", () => {
+    const clusters = createResourceClustersFromRuntimeRefresh({
+      resource_key: "tree",
+      radius: 32,
+      status: "found",
+      world_key: "multiworld:resource",
+      snapshot_version: "resource-bfs",
+      scanned_at: 1_712_000_100,
+      origin: { x: 0, y: 64, z: 0 },
+      blocks: [
+        {
+          block_name: "oak_log",
+          position: { x: 0, y: 64, z: 0 },
+          distance: 1,
+          resource_keys: ["tree"],
+        },
+        {
+          block_name: "oak_log",
+          position: { x: 1, y: 65, z: 1 },
+          distance: 2,
+          resource_keys: ["tree"],
+        },
+        {
+          block_name: "oak_log",
+          position: { x: 4, y: 64, z: 0 },
+          distance: 4,
+          resource_keys: ["tree"],
+        },
+        {
+          block_name: "birch_log",
+          position: { x: 1, y: 64, z: 0 },
+          distance: 1.5,
+          resource_keys: ["tree"],
+        },
+      ],
+      diagnostics: [],
+    });
+
+    const oakClusters = clusters.filter((cluster) => cluster.block_name === "oak_log");
+    const birchCluster = clusters.find((cluster) => cluster.block_name === "birch_log");
+    const connectedOakCluster = oakClusters.find((cluster) => cluster.block_count === 2);
+
+    expect(clusters).toHaveLength(3);
+    expect(oakClusters.map((cluster) => cluster.block_count).sort()).toEqual([1, 2]);
+    expect(birchCluster?.block_count).toBe(1);
+    expect(connectedOakCluster?.blocks).toEqual([
+      { x: 0, y: 64, z: 0 },
+      { x: 1, y: 65, z: 1 },
+    ]);
+    expect(connectedOakCluster?.recommended_candidate?.position).toEqual({ x: 0, y: 64, z: 0 });
+    expect(connectedOakCluster?.world_key).toBe("multiworld:resource");
+    expect(connectedOakCluster?.snapshot_version).toBe("resource-bfs");
+  });
+
+  it("ResourceService（世界感知资源服务） 应按当前 world_key 更新缓存并在挖后重新切分断裂簇", async () => {
+    let now = 1_712_000_200;
+    let currentWorldKey = "multiworld:resource";
+    const resourceService = createResourceService({
+      now: () => now,
+      worldKeyPort: {
+        getCurrentWorldKey: () => currentWorldKey,
+      },
+      refreshPort: {
+        async refreshAroundBot(resourceKey, radius) {
+          return {
+            resource_key: resourceKey,
+            radius,
+            status: "found",
+            world_key: currentWorldKey,
+            snapshot_version: `${currentWorldKey}:line`,
+            scanned_at: now,
+            origin: { x: 0, y: 64, z: 0 },
+            blocks: [
+              {
+                block_name: "oak_log",
+                position: { x: 0, y: 64, z: 0 },
+                distance: 1,
+                resource_keys: [resourceKey],
+              },
+              {
+                block_name: "oak_log",
+                position: { x: 1, y: 64, z: 0 },
+                distance: 2,
+                resource_keys: [resourceKey],
+              },
+              {
+                block_name: "oak_log",
+                position: { x: 2, y: 64, z: 0 },
+                distance: 3,
+                resource_keys: [resourceKey],
+              },
+            ],
+            diagnostics: [],
+          };
+        },
+      },
+    });
+
+    await resourceService.refresh("tree", 16);
+    expect(resourceService.query("tree").clusters.map((cluster) => cluster.block_count)).toEqual([
+      3,
+    ]);
+
+    currentWorldKey = "minecraft:the_nether";
+    expect(
+      resourceService.applyBlockChanges([{ position: { x: 1, y: 64, z: 0 }, block_name: null }]),
+    ).toMatchObject({
+      world_key: "minecraft:the_nether",
+      removed_block_count: 0,
+      diagnostics: ["no_cached_resource_blocks_changed"],
+    });
+    expect(resourceService.query("tree").status).toBe("cache_miss");
+
+    currentWorldKey = "multiworld:resource";
+    now += 1;
+    const update = resourceService.applyBlockChanges([
+      { position: { x: 1, y: 64, z: 0 }, block_name: "air" },
+    ]);
+    const splitQuery = resourceService.query("tree");
+
+    expect(update).toMatchObject({
+      world_key: "multiworld:resource",
+      resource_keys: ["tree"],
+      removed_block_count: 1,
+      deleted_cluster_count: 0,
+      split_cluster_count: 1,
+      diagnostics: ["resource_cache_updated"],
+    });
+    expect(splitQuery.status).toBe("found");
+    expect(splitQuery.snapshot_version).toContain("block_change");
+    expect(splitQuery.clusters.map((cluster) => cluster.block_count).sort()).toEqual([1, 1]);
+    expect(splitQuery.clusters.every((cluster) => cluster.block_name === "oak_log")).toBe(true);
+
+    now += 1;
+    expect(
+      resourceService.applyBlockChanges([
+        { position: { x: 0, y: 64, z: 0 }, block_name: null },
+        { position: { x: 2, y: 64, z: 0 }, block_name: null },
+      ]),
+    ).toMatchObject({
+      removed_block_count: 2,
+      deleted_cluster_count: 2,
+    });
+    expect(resourceService.query("tree")).toMatchObject({
+      status: "cache_miss",
+      clusters: [],
     });
   });
 

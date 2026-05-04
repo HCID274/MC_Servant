@@ -508,7 +508,7 @@ Bot：去砍橡木。
 
 ### 7.4 资源簇上下文与圆心刷新协议
 
-`[资源簇]` 行来自 world-model 的 ResourceService（世界感知资源服务接口），以"圆心 + 固定半径"模式维护跨对话缓存。它是后续 mine / cutTree 等技能启用时的资源抓手——LLM 规划时知道周边有没有树有没有矿，而不必每次都让 skill 临时全图扫描。
+`[资源簇]` 行来自 world-model 的 ResourceService（世界感知资源服务接口），以"按具体方块名分组 + BFS 连通聚类"模式维护跨对话缓存。它是后续 mine / cutTree 等技能启用时的资源抓手——LLM 规划时知道周边有没有树有没有矿，而不必每次都让 skill 临时全图扫描。
 
 **架构原则（强约束，违反即视为架构冲突）**：
 
@@ -526,6 +526,8 @@ Bot：去砍橡木。
 | 圆心 | 上次刷新时 Bot 的位置 P0 |
 | 触发阈值 | `distance(bot.position_now, P0) > 8` 时触发新一轮刷新 |
 | 刷新方式 | 异步：以 `bot.position_now` 为新圆心，扫半径 16，刷新成功后 P0 推进为当前位置 |
+| 聚类语义 | 先按具体 `block_name` 分组，再用 26 邻域 BFS 连通聚类；不同原木 / 矿石类型默认不混簇 |
+| 缓存更新 | 方块变化只更新当前 `world_key` 桶；移除变化方块，空簇删除，断裂簇重新 BFS 切分 |
 | 资源 key 集合 | Phase 1 锁定 `tree`、`ore` 两个 key，并行刷新 |
 | 登录初扫 | Bot 登录瞬间以登录位置为初始圆心，异步触发一次半径 16 扫描；不阻塞登录流程 |
 | 对话等待 | ConversationWorker 在 plan 路径读取 resource_context 时，必须 `await` 当前 in-flight 刷新 Promise（若有）再读缓存 |

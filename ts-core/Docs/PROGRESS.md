@@ -194,3 +194,11 @@
 - C 审查结论: 通过
 - 关键决策: 选择硬拒绝旧 `reply` 字段而不是保留兼容双轨,让 schema（结构）漂移进入 diagnostics（诊断）并暴露;内部派发顺序同步改为 cancel（取消）→chat（闲聊）→action（动作）,真实 LLM（大语言模型）回归确认纯闲聊返回 `{"chat":{}}`
 - 架构冲突: 无
+
+## T-052A | 2026-05-04 | BFS（广度优先搜索）资源簇提取与缓存更新
+
+- 涉及模块: world-model（世界模型）资源簇契约与查询实现,ResourceService（资源服务）缓存,app（应用装配）在线 blockUpdate（方块更新）接线,Docs/04_CONVERSATION_SPEC.md（对话规格文档）,相关测试
+- A 拆解依据: 用户要求把 ResourceService（资源服务）/world-model（世界模型）资源簇生成从距离聚类改为按具体 blockName（方块名）分组的 BFS（广度优先搜索）连通聚类,树木和矿石统一支持 26 邻域,并在挖掘后的方块变化中按现有 world_key（世界键）隔离更新或删除缓存簇;边界限定不进入 plugin（服务端模组）、正式 cutTree（砍树）/mine（挖矿）技能或 LLM（大语言模型）链路
+- C 审查结论: 曾打回 1 次 (首次实现缺少生产 blockUpdate（方块更新）到 ResourceService（资源服务）的自动接线,且混入 plugin（服务端模组）/probe（探针）/WORKFLOW（工作流）越界 diff（差异）);B（实现代理）补齐 app（应用装配）事件接线并移出越界改动后通过
+- 关键决策: BFS（广度优先搜索）与断裂重切分保持在 world-model（世界模型）纯函数和 ResourceService（资源服务）内部,生产更新由 app（应用装配）把 Mineflayer（Minecraft 协议客户端） blockUpdate（方块更新）事件转成 ResourceCacheBlockChange（资源缓存方块变化）后调用公共接口;world_key（世界键）仍只通过 transport（传输层）端口读取,不在业务层解析维度或拼接世界名
+- 架构冲突: 无

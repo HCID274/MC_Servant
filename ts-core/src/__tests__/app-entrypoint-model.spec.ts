@@ -10,6 +10,7 @@ import WebSocket from "ws";
 
 import { createAppServerBridgeConfigFromEnvironment } from "../app/bootstrap/env.js";
 import {
+  bindOnlineResourceServiceBlockUpdates,
   createAppBootstrapContract,
   createAppExternalAuthSecretFromEnvironment,
   createAppStartupSummary,
@@ -31,6 +32,7 @@ import { ExecPriority, TaskHistoryStatus, createSandboxCodeJob } from "../core-p
 import { createBrainTaskCard } from "../data/index.js";
 import { ConversationPriority } from "../domain/contracts.js";
 import { SERVER_BRIDGE_PROTOCOL_VERSION } from "../interfaces/index.js";
+import { createObservationRuntimeCache } from "../observation/index.js";
 import {
   BotStatus,
   createExternalAuthExecutionPlan,
@@ -48,6 +50,7 @@ import {
   createConversationWorkerTask,
 } from "../workers/contracts.js";
 import type { BrainWorkerRuntimeDependencies } from "../workers/index.js";
+import { createResourceService } from "../world-model/index.js";
 
 class FakeEntrypointMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-online";
@@ -3158,5 +3161,95 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     await runtime.close();
+  });
+
+  it("应把在线 blockUpdate（方块更新） 自动接入 ResourceService（资源服务） 缓存更新", async () => {
+    let now = 1_712_000_300;
+    const eventSource = new EventEmitter();
+    const resourceService = createResourceService({
+      now: () => now,
+      worldKeyPort: {
+        getCurrentWorldKey: () => "multiworld:resource",
+      },
+      refreshPort: {
+        async refreshAroundBot(resourceKey, radius) {
+          return {
+            resource_key: resourceKey,
+            radius,
+            status: "found",
+            world_key: "multiworld:resource",
+            snapshot_version: "resource-online-block-update",
+            scanned_at: now,
+            origin: { x: 0, y: 64, z: 0 },
+            blocks: [
+              {
+                block_name: "oak_log",
+                position: { x: 0, y: 64, z: 0 },
+                distance: 1,
+                resource_keys: [resourceKey],
+              },
+              {
+                block_name: "oak_log",
+                position: { x: 1, y: 64, z: 0 },
+                distance: 2,
+                resource_keys: [resourceKey],
+              },
+              {
+                block_name: "oak_log",
+                position: { x: 2, y: 64, z: 0 },
+                distance: 3,
+                resource_keys: [resourceKey],
+              },
+            ],
+            diagnostics: [],
+          };
+        },
+      },
+    });
+    await resourceService.refresh("tree", 16);
+    expect(resourceService.query("tree").clusters.map((cluster) => cluster.block_count)).toEqual([
+      3,
+    ]);
+
+    const subscription = bindOnlineResourceServiceBlockUpdates({
+      runtime: {
+        observation: createObservationRuntimeCache(),
+        transport: {
+          getEventSource: () => eventSource,
+          readObservationInput: () => null,
+        },
+      },
+      resourceService,
+      readOwnerName: () => undefined,
+    });
+
+    now += 1;
+    eventSource.emit(
+      "blockUpdate",
+      { name: "oak_log", position: { x: 1, y: 64, z: 0 } },
+      { name: "air", position: { x: 1, y: 64, z: 0 } },
+    );
+
+    expect(
+      resourceService
+        .query("tree")
+        .clusters.map((cluster) => cluster.block_count)
+        .sort(),
+    ).toEqual([1, 1]);
+
+    subscription?.close();
+    now += 1;
+    eventSource.emit(
+      "blockUpdate",
+      { name: "oak_log", position: { x: 0, y: 64, z: 0 } },
+      { name: "air", position: { x: 0, y: 64, z: 0 } },
+    );
+
+    expect(
+      resourceService
+        .query("tree")
+        .clusters.map((cluster) => cluster.block_count)
+        .sort(),
+    ).toEqual([1, 1]);
   });
 });
