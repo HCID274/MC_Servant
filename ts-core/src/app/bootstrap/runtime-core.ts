@@ -17,7 +17,10 @@ import type {
 } from "../../runtime/index.js";
 import { createSandboxExecutionRequest, executeSandboxCodeRequest } from "../../sandbox/index.js";
 import { formatSandboxRecentEventLine } from "../../sandbox/recent-event.js";
+import { createCutTreeSkillExecutor } from "../../skills/index.js";
 import { formatSkillRecentEventLine } from "../../skills/recent-event.js";
+import { createResourceService } from "../../world-model/index.js";
+import type { ResourceServiceBoundary } from "../../world-model/index.js";
 import { createAppRuntimeCoreExternalAuth } from "./external-auth.js";
 import type {
   AppBootstrapContract,
@@ -46,6 +49,7 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
   const created: Partial<{
     observation: ObservationRuntimeCache;
     transport: MineflayerRuntimeTransport<TBotId>;
+    resourceService: ResourceServiceBoundary;
     actor: BotActorRuntime<TBotId>;
   }> = {};
 
@@ -55,6 +59,10 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
       bootstrap.runtime_resources.mineflayer_transport.descriptor,
       dependencies.transport,
     );
+    created.resourceService = createResourceService({
+      refreshPort: created.transport,
+      worldKeyPort: created.transport,
+    });
     const externalAuth = createAppRuntimeCoreExternalAuth(bootstrap, dependencies);
     const externalAuthPlan =
       dependencies.externalAuthPlan ??
@@ -63,6 +71,23 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
       botId: bootstrap.bot_id,
       transport: created.transport,
       observation: created.observation,
+      skillExecution: {
+        goToMovement: created.transport,
+        mine: created.transport.mine.bind(created.transport),
+        collect: created.transport.collect.bind(created.transport),
+        equip: created.transport.equip.bind(created.transport),
+        cutTree: createCutTreeSkillExecutor({
+          resourceService: created.resourceService,
+          digger: created.transport,
+          collector: {
+            collect: created.transport.collect.bind(created.transport),
+          },
+          inventory: {
+            readInventoryItems: () =>
+              created.transport?.readObservationInput()?.inventory.items ?? [],
+          },
+        }),
+      },
       externalAuth,
       externalAuthPlan,
       sandboxExecution: {
@@ -82,10 +107,18 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
 
     const observation = created.observation;
     const transport = created.transport;
+    const resourceService = created.resourceService;
     const actor = created.actor;
 
-    if (observation === undefined || transport === undefined || actor === undefined) {
-      throw new Error("app runtime core resources require observation, transport and actor");
+    if (
+      observation === undefined ||
+      transport === undefined ||
+      resourceService === undefined ||
+      actor === undefined
+    ) {
+      throw new Error(
+        "app runtime core resources require observation, transport, resourceService and actor",
+      );
     }
 
     return Object.freeze({
@@ -93,6 +126,7 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
       directory: bootstrap.runtime_resources,
       observation,
       transport,
+      resourceService,
       actor,
       async close(): Promise<void> {
         await closeAppRuntimeCoreResources({
@@ -133,9 +167,15 @@ function createOnlineRuntimeRecentEventFormatter(): RuntimeRecentEventFormatter 
             ...(input.result?.skill === SKILL_DIRECTORY.collect ? { result: input.result } : {}),
             ...(input.message === undefined ? {} : { message: input.message }),
           });
+        case SKILL_DIRECTORY.cutTree:
+          return formatSkillRecentEventLine({
+            skill: SKILL_DIRECTORY.cutTree,
+            status: input.status,
+            ...(input.result?.skill === SKILL_DIRECTORY.cutTree ? { result: input.result } : {}),
+            ...(input.message === undefined ? {} : { message: input.message }),
+          });
         case SKILL_DIRECTORY.mine:
         case SKILL_DIRECTORY.equip:
-        case SKILL_DIRECTORY.cutTree:
           return formatUnsupportedSkillRecentEventLine(input);
         default:
           return formatUnsupportedSkillRecentEventLine(input);

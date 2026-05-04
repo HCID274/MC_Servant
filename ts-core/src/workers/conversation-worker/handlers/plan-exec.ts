@@ -9,9 +9,9 @@ import {
   ConversationLlmPlanError,
   isConversationLlmSkillNotEnabledError,
 } from "../../../conversation/llm/errors.js";
+import { isOnlinePlanSkillName } from "../../../conversation/llm/skill-plan-table.js";
 import { createExecJobFromPlan } from "../../../conversation/planning.js";
 import { ExecutionTaskKind } from "../../../core-ports/foundation.js";
-import { SKILL_DIRECTORY } from "../../../core-ports/skills.js";
 import { TaskHistoryStatus } from "../../../core-ports/tasking.js";
 import { type ConversationWorkerTask, createBotWorkerTask } from "../../contracts.js";
 import { tryEnqueueConversationFactCandidate } from "../brain-facts.js";
@@ -127,11 +127,7 @@ export async function handlePlanExecRoute(input: {
     priority: input.route.exec_priority,
   });
 
-  if (
-    execJob.type === ExecutionTaskKind.SkillCall &&
-    execJob.skill !== SKILL_DIRECTORY.goTo &&
-    execJob.skill !== SKILL_DIRECTORY.collect
-  ) {
+  if (execJob.type === ExecutionTaskKind.SkillCall && !isOnlinePlanSkillName(execJob.skill)) {
     await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply, {
       ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
       ...(brainContext === undefined ? {} : { brain_context: brainContext }),

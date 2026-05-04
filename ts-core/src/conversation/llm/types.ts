@@ -162,6 +162,7 @@ export interface ConversationLlmChatResult {
 /** 在线最小真实规划允许的技能集合。 */
 export const ONLINE_PLAN_SKILLS = Object.freeze([
   SKILL_DIRECTORY.goTo,
+  SKILL_DIRECTORY.cutTree,
   SKILL_DIRECTORY.collect,
 ] as const);
 

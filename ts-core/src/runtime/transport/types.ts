@@ -355,6 +355,8 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   goTo(params: Readonly<GoToSkillParams>): Promise<GoToSkillExecutionResult>;
   /** 通过受控挖掘能力执行 mine（挖掘）。 */
   mine(params: Readonly<MineSkillParams>): Promise<MineSkillExecutionResult>;
+  /** 挖掘指定坐标的单个方块，用于资源簇推荐目标执行。 */
+  digBlockAt(position: Readonly<MineflayerVec3Like>): Promise<void>;
   /** 通过受控实体与移动能力执行 collect（捡拾）。 */
   collect(params: Readonly<CollectSkillParams>): Promise<CollectSkillExecutionResult>;
   /** 通过受控背包能力执行 equip（装备）。 */

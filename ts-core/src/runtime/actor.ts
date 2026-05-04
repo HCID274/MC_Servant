@@ -12,6 +12,7 @@ import {
   type SkillName,
   type SkillParamsByName,
   isCollectSkillParams,
+  isCutTreeSkillParams,
   isGoToSkillParams,
 } from "../core-ports/skills.js";
 import {
@@ -281,10 +282,20 @@ export function createBotActorRuntime<TBotId extends string>(input: {
             >;
           case SKILL_DIRECTORY.mine:
           case SKILL_DIRECTORY.equip:
-          case SKILL_DIRECTORY.cutTree:
             throw new Error(
               `Skill ${skill} has not passed independent validation and is not enabled in T-046`,
             );
+          case SKILL_DIRECTORY.cutTree:
+            if (!isCutTreeSkillParams(params)) {
+              throw new Error("sandbox cutTree params are invalid");
+            }
+            if (skillExecution.cutTree === undefined) {
+              throw new Error("Skill cutTree execution dependency is not configured");
+            }
+
+            return (await skillExecution.cutTree(params)) as unknown as Readonly<
+              Record<string, unknown>
+            >;
         }
 
         throw new Error(`Unsupported sandbox skill: ${String(skill)}`);
@@ -1018,9 +1029,14 @@ async function executeActorSkillCallJob(
       return dependencies.goToMovement.goTo(job.params);
     case SKILL_DIRECTORY.collect:
       return dependencies.collect(job.params);
+    case SKILL_DIRECTORY.cutTree:
+      if (dependencies.cutTree === undefined) {
+        throw new Error("Skill cutTree execution dependency is not configured");
+      }
+
+      return dependencies.cutTree(job.params);
     case SKILL_DIRECTORY.mine:
     case SKILL_DIRECTORY.equip:
-    case SKILL_DIRECTORY.cutTree:
       throw new Error(
         `Skill ${job.skill} has not passed independent validation and is not enabled in T-046`,
       );

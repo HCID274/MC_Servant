@@ -9,6 +9,8 @@ import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import type {
   CollectSkillAdapter,
   CollectSkillExecutionResult,
+  CutTreeSkillAdapter,
+  CutTreeSkillExecutionResult,
   EquipSkillAdapter,
   EquipSkillExecutionResult,
   GoToMovementAdapter,
@@ -23,6 +25,8 @@ import { SKILL_DIRECTORY, type SkillParamsByName } from "./contracts.js";
 
 export type {
   CollectSkillExecutionResult,
+  CutTreeSkillAdapter,
+  CutTreeSkillExecutionResult,
   EquipSkillExecutionResult,
   GoToSkillExecutionResult,
   MineSkillExecutionResult,
@@ -32,6 +36,7 @@ export type {
 
 export {
   createCollectSkillExecutionResult,
+  createCutTreeSkillExecutionResult,
   createEquipSkillExecutionResult,
   createGoToSkillExecutionResult,
   createMineSkillExecutionResult,
@@ -63,9 +68,13 @@ export async function executeSkillCallJob(input: {
       return input.dependencies.mine(input.job.params);
     case SKILL_DIRECTORY.collect:
       return input.dependencies.collect(input.job.params);
+    case SKILL_DIRECTORY.cutTree:
+      if (input.dependencies.cutTree === undefined) {
+        throw new Error("Skill cutTree execution dependency is not configured");
+      }
+
+      return input.dependencies.cutTree(input.job.params);
     case SKILL_DIRECTORY.equip:
       return input.dependencies.equip(input.job.params);
-    default:
-      throw new Error(`Skill ${input.job.skill} is not executable in the current runtime`);
   }
 }

@@ -350,7 +350,8 @@ export function createBotWorkerRuntime(input: {
     if (
       task.exec_job.type === ExecutionTaskKind.SkillCall &&
       task.exec_job.skill !== SKILL_DIRECTORY.goTo &&
-      task.exec_job.skill !== SKILL_DIRECTORY.collect
+      task.exec_job.skill !== SKILL_DIRECTORY.collect &&
+      task.exec_job.skill !== SKILL_DIRECTORY.cutTree
     ) {
       const error = Object.freeze({
         name: "Error",

@@ -339,13 +339,15 @@ skill_call 路径不需要 LLM 生成代码。Stage 2-Plan 的 prompt 简化为�
 
 可用动作：
 - goTo(x, y, z)：移动到坐标
-- goToOwner()：移动到主人身边
-- follow()：跟随主人
-- mine(blockName, count)：挖掘方块
 - collect(itemName)：捡拾掉落物
-- equip(itemName)：装备物品
-- cutTree(count)：砍树
-- attack(entityName)：攻击
+- cutTree(count)：砍树；count 是实际进入背包的原木数量
+
+未启用动作：
+- mine / equip：输出 skill_not_enabled
+
+规划约束：
+- 用户说"砍 12 块木头"时只输出 cutTree(count=12)
+- LLM 不输出树木簇、坐标、循环次数或挖掘目标；这些由执行层确定
 
 输出 JSON：
 {"reply":"开场回复（带喵）","skill":"动作名","params":{参数对象}}
@@ -530,7 +532,8 @@ Bot：去砍橡木。
 | 缓存更新 | 方块变化只更新当前 `world_key` 桶；移除变化方块，空簇删除，断裂簇重新 BFS 切分 |
 | 树木分类 | `cutTree` 只消费 ResourceService 当前 `world_key` 下的 `tree` 簇；原木语义来自 runtime refresh 的 `semantic_roles` / tag 事实，不按方块名后缀猜测；不可挖 / 不可达 / 非原木 / 空簇 / 无合法目标输出 rejected 结构 |
 | 可挖语义 | `is_diggable` 表示方块 / 工具 / 世界规则下可挖，不包含 Mineflayer `canDigBlock` 的当前 5.1 格手边距离限制 |
-| 树木选择 | 按 accepted 树木簇的推荐目标距离升序累计 `log_count`，满足用户需求即返回；缓存不足时复用 16→32→64 阶梯刷新 |
+| 树木选择 | `cutTree(count)` 先找单个 `log_count >= count` 的最近足量簇；没有单簇足量时再按推荐目标距离升序累计多个小簇；每簇默认选最低合法原木作为推荐目标；缓存不足时复用 16→32→64 阶梯刷新 |
+| 砍树完成标准 | 执行层只挖每个选中簇的一个推荐原木，由 plugin 连锁掉落；等待 0.5 秒后以树簇中心半径 8 强制 collect 全部掉落物，collect 失败则任务失败；随后以 dig+collect 前后的背包原木增量判断是否达到 `count`，不足则继续下一簇 |
 | 资源 key 集合 | Phase 1 锁定 `tree`、`ore` 两个 key，并行刷新 |
 | 资源 key 解析 | `tree` 是 TS Core 公共资源键；runtime/transport 负责把它解析到 Mineflayer / minecraft-data 的原木 tag 事实，refresh 返回仍保留 `resource_keys=["tree"]` |
 | 登录初扫 | Bot 登录瞬间以登录位置为初始圆心，异步触发一次半径 16 扫描；不阻塞登录流程 |

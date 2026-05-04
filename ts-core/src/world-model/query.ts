@@ -541,10 +541,9 @@ function classifyTreeResourceClusters(input: {
       continue;
     }
 
-    const recommendedTarget =
-      sortResourceCandidatesForDig(
-        logCandidates.filter((candidate) => isLegalCutTreeCandidate(candidate)),
-      )[0] ?? null;
+    const recommendedTarget = selectLowestLegalTreeCandidate(
+      logCandidates.filter((candidate) => isLegalCutTreeCandidate(candidate)),
+    );
 
     if (recommendedTarget === null) {
       rejected.push(
@@ -584,6 +583,24 @@ function classifyTreeResourceClusters(input: {
     rejected: freezeReadonlyArray(rejected),
     diagnostics: input.query.diagnostics,
   });
+}
+
+function selectLowestLegalTreeCandidate(
+  candidates: readonly ResourceBlockCandidate[],
+): ResourceBlockCandidate | null {
+  return (
+    [...candidates].sort((left, right) => {
+      if (left.position.y !== right.position.y) {
+        return left.position.y - right.position.y;
+      }
+
+      if (left.distance !== right.distance) {
+        return left.distance - right.distance;
+      }
+
+      return comparePositions(left.position, right.position);
+    })[0] ?? null
+  );
 }
 
 function createResourceClusterFromCandidates(input: {
@@ -940,6 +957,14 @@ export function createResourceService(
     accepted: readonly AcceptedTreeCluster[],
     requiredLogCount: number,
   ): readonly AcceptedTreeCluster[] => {
+    const nearestSufficientCluster = accepted.find(
+      (cluster) => cluster.log_count >= requiredLogCount,
+    );
+
+    if (nearestSufficientCluster !== undefined) {
+      return freezeReadonlyArray([nearestSufficientCluster]);
+    }
+
     let selectedLogCount = 0;
     const selected: AcceptedTreeCluster[] = [];
 

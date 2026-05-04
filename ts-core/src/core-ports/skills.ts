@@ -26,11 +26,14 @@ export const PHASE1_SKILL_NAMES = Object.freeze([
   SKILL_DIRECTORY.equip,
 ] as const);
 
-/** `collect`（捡拾） 允许的最小搜索半径。 */
+/** `collect`（捡拾） 面向规划层的建议最小搜索半径。 */
 export const COLLECT_MIN_RADIUS = 32;
 
+/** `collect`（捡拾） 显式调用允许的最小搜索半径。 */
+export const COLLECT_EXPLICIT_MIN_RADIUS = 1;
+
 /** `collect`（捡拾） 默认搜索半径。 */
-export const COLLECT_DEFAULT_RADIUS = COLLECT_MIN_RADIUS;
+export const COLLECT_DEFAULT_RADIUS = 32;
 
 /** `collect`（捡拾） 允许的最大搜索半径。 */
 export const COLLECT_MAX_RADIUS = 64;
@@ -85,7 +88,7 @@ export interface CollectSkillParams {
     /** 中心点 Z 坐标。 */
     readonly z: number;
   }>;
-  /** 可选搜索半径；默认 32，允许范围 32 到 64。 */
+  /** 可选搜索半径；默认 32，显式调用允许范围 1 到 64。 */
   readonly radius?: number;
   /** 可选执行超时毫秒数。 */
   readonly timeoutMs?: number;
@@ -246,7 +249,7 @@ export function isCollectSkillParams(params: unknown): params is CollectSkillPar
     (params.center === undefined || isCollectCenter(params.center)) &&
     (params.radius === undefined ||
       (isPositiveInteger(params.radius) &&
-        params.radius >= COLLECT_MIN_RADIUS &&
+        params.radius >= COLLECT_EXPLICIT_MIN_RADIUS &&
         params.radius <= COLLECT_MAX_RADIUS)) &&
     (params.timeoutMs === undefined || isPositiveInteger(params.timeoutMs))
   );
@@ -363,6 +366,46 @@ export interface CollectSkillExecutionResult {
   readonly total_steps: number;
 }
 
+/** `cutTree`（砍树） 单簇执行摘要。 */
+export interface CutTreeSkillClusterExecution {
+  /** 来源树木簇标识。 */
+  readonly cluster_id: string;
+  /** 具体原木方块名。 */
+  readonly log_block_name: string;
+  /** 该簇预估原木数量。 */
+  readonly estimated_log_count: number;
+  /** 本轮推荐挖掘目标。 */
+  readonly target: Readonly<{
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+  }>;
+  /** 本轮背包实际增长数量。 */
+  readonly collected_count: number;
+}
+
+/** `cutTree`（砍树） 技能执行结果。 */
+export interface CutTreeSkillExecutionResult {
+  /** 已执行的技能名。 */
+  readonly skill: "cutTree";
+  /** 用户请求的原木数量。 */
+  readonly requested_count: number;
+  /** 当前世界 / 维度键。 */
+  readonly world_key: string | null;
+  /** 实际进入背包的原木数量。 */
+  readonly collected_count: number;
+  /** 是否已按背包增量满足请求。 */
+  readonly completed: boolean;
+  /** 执行终态。 */
+  readonly status: "completed" | "insufficient";
+  /** 已尝试的树木簇。 */
+  readonly clusters: readonly CutTreeSkillClusterExecution[];
+  /** 执行诊断。 */
+  readonly diagnostics: readonly string[];
+  /** 当前最小执行器的步骤数。 */
+  readonly total_steps: number;
+}
+
 /** `collect`（捡拾） 执行结果中的物品增量。 */
 export interface CollectSkillCollectedItem {
   /** 物品标准名称。 */
@@ -400,6 +443,7 @@ export interface EquipSkillExecutionResult {
 export type SkillExecutionResult =
   | GoToSkillExecutionResult
   | MineSkillExecutionResult
+  | CutTreeSkillExecutionResult
   | CollectSkillExecutionResult
   | EquipSkillExecutionResult;
 
@@ -421,6 +465,12 @@ export interface CollectSkillAdapter {
   collect(params: Readonly<SkillParamsByName["collect"]>): Promise<CollectSkillExecutionResult>;
 }
 
+/** `cutTree`（砍树） 技能执行适配器。 */
+export interface CutTreeSkillAdapter {
+  /** 按背包增量执行确定性树木资源簇消费。 */
+  cutTree(params: Readonly<SkillParamsByName["cutTree"]>): Promise<CutTreeSkillExecutionResult>;
+}
+
 /** `equip`（装备） 技能执行适配器。 */
 export interface EquipSkillAdapter {
   /** 将指定物品装备到目标槽位；失败必须显式抛错。 */
@@ -434,6 +484,8 @@ export interface SkillExecutionDependencies
     EquipSkillAdapter {
   /** `goTo`（前往坐标） 移动适配器。 */
   readonly goToMovement: GoToMovementAdapter;
+  /** `cutTree`（砍树） 在真实 app（应用）装配时注入；未注入时保持禁用。 */
+  readonly cutTree?: CutTreeSkillAdapter["cutTree"];
 }
 
 /** 创建冻结的 goTo（前往坐标） 技能执行结果。 */
@@ -500,6 +552,49 @@ export function createCollectSkillExecutionResult(
       ),
     ),
     total_steps: outcome.total_steps ?? 1,
+  });
+}
+
+/** 创建冻结的 `cutTree`（砍树） 技能执行结果。 */
+export function createCutTreeSkillExecutionResult(
+  params: Readonly<CutTreeSkillParams>,
+  outcome: {
+    readonly world_key?: string | null;
+    readonly collected_count?: number;
+    readonly completed?: boolean;
+    readonly status?: CutTreeSkillExecutionResult["status"];
+    readonly clusters?: readonly CutTreeSkillClusterExecution[];
+    readonly diagnostics?: readonly string[];
+    readonly total_steps?: number;
+  } = {},
+): CutTreeSkillExecutionResult {
+  const collectedCount = outcome.collected_count ?? 0;
+  const completed = outcome.completed ?? collectedCount >= params.count;
+
+  return Object.freeze({
+    skill: "cutTree" as const,
+    requested_count: params.count,
+    world_key: outcome.world_key ?? null,
+    collected_count: collectedCount,
+    completed,
+    status: outcome.status ?? (completed ? "completed" : "insufficient"),
+    clusters: Object.freeze(
+      (outcome.clusters ?? []).map((cluster) =>
+        Object.freeze({
+          cluster_id: cluster.cluster_id,
+          log_block_name: cluster.log_block_name,
+          estimated_log_count: cluster.estimated_log_count,
+          target: Object.freeze({
+            x: cluster.target.x,
+            y: cluster.target.y,
+            z: cluster.target.z,
+          }),
+          collected_count: cluster.collected_count,
+        }),
+      ),
+    ),
+    diagnostics: Object.freeze([...(outcome.diagnostics ?? [])]),
+    total_steps: outcome.total_steps ?? 0,
   });
 }
 

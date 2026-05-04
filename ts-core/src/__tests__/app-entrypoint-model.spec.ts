@@ -2534,7 +2534,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     await runtime.close();
   });
 
-  it("应在真实在线入口允许 collect（捡拾） 并拒绝 mine（挖掘） / equip（装备） / cutTree（砍树） 未启用技能", async () => {
+  it("应在真实在线入口允许 collect（捡拾） / cutTree（砍树） 并拒绝 mine（挖掘） / equip（装备） 未启用技能", async () => {
     const llmRequests: Array<{ url: string; body: unknown }> = [];
     const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
@@ -2580,6 +2580,9 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
               } else if (currentInstruction.includes("把石镐拿在手上")) {
                 assistantContent =
                   '{"type":"skill_call","reply":"收到，我先把石镐拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}';
+              } else if (currentInstruction.includes("砍 12 块木头")) {
+                assistantContent =
+                  '{"type":"skill_call","reply":"收到，我去砍 12 块木头","skill":"cutTree","params":{"count":12}}';
               } else {
                 assistantContent =
                   '{"type":"cannot_plan","reason":"skill_not_enabled","code":"skill_not_enabled"}';
@@ -2714,7 +2717,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         message: {
           bot_id: "bot-skill-online",
           message_id: "msg-online-cut-tree",
-          content: "去砍一棵树",
+          content: "砍 12 块木头",
           intent_epoch: 8,
           snapshot_ts: 1_713_952_800_013,
         },
@@ -2758,6 +2761,41 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           jobId: "conversation-fact-msg-online-collect",
         },
       },
+      {
+        name: "bot:bot-skill-online:exec",
+        jobName: "bot",
+        data: expect.objectContaining({
+          worker: "bot",
+          bot_id: "bot-skill-online",
+          exec_job: expect.objectContaining({
+            message_id: "msg-online-cut-tree",
+            priority: "normal",
+            skill: "cutTree",
+            params: { count: 12 },
+          }),
+        }),
+        options: {
+          jobId: "msg-online-cut-tree",
+          priority: 5,
+        },
+      },
+      {
+        name: "brain",
+        jobName: "brain",
+        data: expect.objectContaining({
+          worker: "brain",
+          payload: expect.objectContaining({
+            kind: "conversation_fact",
+            bot_id: "bot-skill-online",
+            message_id: "msg-online-cut-tree",
+            owner_text: "砍 12 块木头",
+            route_kind: "plan_exec",
+          }),
+        }),
+        options: {
+          jobId: "conversation-fact-msg-online-cut-tree",
+        },
+      },
     ]);
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "task.discarded",
@@ -2781,11 +2819,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       reason: "skill_not_enabled",
     });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
-      type: "task.discarded",
+      type: "task.accepted",
       bot_id: "bot-skill-online",
       message_id: "msg-online-cut-tree",
-      status: "discarded",
-      reason: "skill_not_enabled",
+      skill: "cutTree",
+      priority: "normal",
     });
 
     await runtime.close();

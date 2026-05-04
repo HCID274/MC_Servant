@@ -1,5 +1,6 @@
 import type {
   CollectSkillExecutionResult,
+  CutTreeSkillExecutionResult,
   GoToSkillExecutionResult,
   SkillExecutionResult,
   SkillName,
@@ -22,6 +23,12 @@ export type SkillRecentEventLineInput =
       readonly status: SkillRecentEventStatus;
       readonly result?: CollectSkillExecutionResult;
       readonly message?: string;
+    }
+  | {
+      readonly skill: "cutTree";
+      readonly status: SkillRecentEventStatus;
+      readonly result?: CutTreeSkillExecutionResult;
+      readonly message?: string;
     };
 
 type SkillRecentEventFormatter<TSkill extends SkillRecentEventLineInput["skill"]> = (
@@ -32,6 +39,7 @@ type SkillRecentEventFormatter<TSkill extends SkillRecentEventLineInput["skill"]
 export const SKILL_RECENT_EVENT_FORMATTERS = Object.freeze({
   [SKILL_DIRECTORY.goTo]: formatGoToRecentEventLine,
   [SKILL_DIRECTORY.collect]: formatCollectRecentEventLine,
+  [SKILL_DIRECTORY.cutTree]: formatCutTreeRecentEventLine,
 } satisfies {
   readonly [TName in SkillRecentEventLineInput["skill"]]: SkillRecentEventFormatter<TName>;
 });
@@ -43,6 +51,8 @@ export function formatSkillRecentEventLine(input: SkillRecentEventLineInput): st
       return SKILL_RECENT_EVENT_FORMATTERS.goTo(input);
     case SKILL_DIRECTORY.collect:
       return SKILL_RECENT_EVENT_FORMATTERS.collect(input);
+    case SKILL_DIRECTORY.cutTree:
+      return SKILL_RECENT_EVENT_FORMATTERS.cutTree(input);
   }
 }
 
@@ -50,7 +60,9 @@ export function formatSkillRecentEventLine(input: SkillRecentEventLineInput): st
 export function assertSkillRecentEventFormatters(skills: readonly SkillName[]): void {
   for (const skill of skills) {
     if (
-      (skill === SKILL_DIRECTORY.goTo || skill === SKILL_DIRECTORY.collect) &&
+      (skill === SKILL_DIRECTORY.goTo ||
+        skill === SKILL_DIRECTORY.collect ||
+        skill === SKILL_DIRECTORY.cutTree) &&
       SKILL_RECENT_EVENT_FORMATTERS[skill] === undefined
     ) {
       throw new Error(`Missing recent event formatter for skill ${skill}`);
@@ -95,6 +107,23 @@ function formatCollectRecentEventLine(
       return `collect 中断：${normalizeMessage(input.message)}`;
     case "cancelled":
       return `collect 取消：${normalizeMessage(input.message)}`;
+  }
+}
+
+function formatCutTreeRecentEventLine(
+  input: Extract<SkillRecentEventLineInput, { skill: "cutTree" }>,
+) {
+  switch (input.status) {
+    case "completed":
+      return input.result === undefined
+        ? "cutTree 成功"
+        : `cutTree ${input.result.completed ? "成功" : "不足"},获得 ${input.result.collected_count}/${input.result.requested_count} 个原木`;
+    case "failed":
+      return `cutTree 失败：${normalizeMessage(input.message)}`;
+    case "interrupted":
+      return `cutTree 中断：${normalizeMessage(input.message)}`;
+    case "cancelled":
+      return `cutTree 取消：${normalizeMessage(input.message)}`;
   }
 }
 

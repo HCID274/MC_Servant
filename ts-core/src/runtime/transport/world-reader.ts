@@ -1,3 +1,4 @@
+import { Vec3 } from "vec3";
 import type { MineflayerBlockHandle, MineflayerMiningPort, MineflayerVec3Like } from "./types.js";
 
 /** transport（传输层） 内唯一的 Mineflayer（Minecraft 协议客户端） 单点方块读取入口。 */
@@ -19,33 +20,20 @@ export function readMineflayerBlockAt(
   return bot.blockAt(createMineflayerBlockAtPosition(position)) ?? null;
 }
 
-type MineflayerBlockAtPosition = MineflayerVec3Like & {
-  floored(): MineflayerBlockAtPosition;
-};
-
 /** 兼容 Mineflayer（Minecraft 协议客户端） 原生 blockAt 对 Vec3（向量） floored() 的要求。 */
 function createMineflayerBlockAtPosition(position: MineflayerVec3Like): MineflayerVec3Like {
-  if (hasFloored(position)) {
+  if (hasVec3Methods(position)) {
     return position;
   }
 
-  const compatiblePosition: MineflayerBlockAtPosition = {
-    x: position.x,
-    y: position.y,
-    z: position.z,
-    floored() {
-      return {
-        x: Math.floor(this.x),
-        y: Math.floor(this.y),
-        z: Math.floor(this.z),
-        floored: this.floored,
-      };
-    },
-  };
-
-  return compatiblePosition;
+  return new Vec3(position.x, position.y, position.z);
 }
 
-function hasFloored(position: MineflayerVec3Like): position is MineflayerBlockAtPosition {
-  return typeof (position as MineflayerVec3Like & { floored?: unknown }).floored === "function";
+function hasVec3Methods(position: MineflayerVec3Like): boolean {
+  const candidate = position as MineflayerVec3Like & {
+    readonly floored?: unknown;
+    readonly offset?: unknown;
+  };
+
+  return typeof candidate.floored === "function" && typeof candidate.offset === "function";
 }

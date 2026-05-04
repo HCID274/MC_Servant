@@ -71,7 +71,6 @@ import {
   persistAcceptedTaskHistory,
   persistTaskHistoryLifecycleAction,
 } from "../workers/index.js";
-import { createResourceService } from "../world-model/index.js";
 import type { ResourceCacheBlockChange, ResourceServiceBoundary } from "../world-model/index.js";
 import {
   type AppBootstrapContract,
@@ -572,10 +571,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         : `TS Core Mineflayer unavailable: ${transportSnapshot.last_error ?? transportSnapshot.state}`,
     );
     const createdRuntime = runtime;
-    resourceService = createResourceService({
-      refreshPort: createdRuntime.transport,
-      worldKeyPort: createdRuntime.transport,
-    });
+    resourceService = createdRuntime.resourceService;
     resourceEventSubscription = bindOnlineResourceServiceBlockUpdates({
       runtime: createdRuntime,
       resourceService,

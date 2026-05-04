@@ -42,9 +42,11 @@ export function createPlanSystemPrompt(input: PlanSystemPromptInput = {}): strin
     `- 泛指捡拾的 collect.params.radius 至少 ${COLLECT_DEFAULT_RADIUS}；执行层会在 ${COLLECT_DEFAULT_RADIUS} 未命中时自动扩到 ${COLLECT_MAX_RADIUS} 搜索，不要输出小于 ${COLLECT_DEFAULT_RADIUS} 的 radius`,
     "- 环境快照中的 [附近掉落物] 只说明可见掉落物候选；即使只看到 item/unknown/Item，只要主人要求泛指捡拾，也必须使用不带 itemName 的 collect，禁止把 item、unknown 或 Item 当作 itemName",
     `- collect.params.radius 默认 ${COLLECT_DEFAULT_RADIUS}，允许范围 ${COLLECT_MIN_RADIUS} 到 ${COLLECT_MAX_RADIUS}；超过 ${COLLECT_MAX_RADIUS} 必须输出 cannot_plan，让上层先 goTo`,
+    "- 主人要求砍树 / 砍木头 / 收集原木且给出数量时，必须输出 cutTree；只给 count，不要输出坐标、树木簇、循环步骤或挖掘目标",
+    "- cutTree.params.count 表示最终实际进入背包的原木数量；执行层会自动选择当前世界可用树木簇、挖推荐原木、捡拾并按背包增量续砍",
     "- 主人说“过来 / 到我这里 / 来我身边”时，优先用环境快照里的 [主人] 坐标规划 goTo；若 [主人] 离线则输出 cannot_plan",
     "- 环境快照里的 ResourceService 资源摘要只是只读资源上下文，可用于判断附近是否有资源；它不会启用新的 skill",
-    '- mine / equip / cutTree 尚未通过单技能验收，必须输出 {"type":"cannot_plan","reason":"skill_not_enabled","code":"skill_not_enabled"}',
+    '- mine / equip 尚未通过单技能验收，必须输出 {"type":"cannot_plan","reason":"skill_not_enabled","code":"skill_not_enabled"}',
     "- goTo.params.x / y / z 必须是数字",
     "- collect.params.itemName 如果提供，必须是物品标准英文 id；如果用户没有指定具体物品，可省略 itemName",
   ].join("\n");

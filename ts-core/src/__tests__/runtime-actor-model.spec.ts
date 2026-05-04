@@ -43,6 +43,11 @@ function createFakeTransport(input?: {
     readonly z: number;
   }) => Promise<void> | void;
   mine?: (params: { readonly blockName: string; readonly count: number }) => Promise<void> | void;
+  digBlockAt?: (position: {
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+  }) => Promise<void> | void;
   collect?: (params: {
     readonly itemName: string;
     readonly radius?: number;
@@ -95,6 +100,13 @@ function createFakeTransport(input?: {
       await input?.mine?.(params);
 
       return createMineSkillExecutionResult(params);
+    },
+    async digBlockAt(position) {
+      if (!connected) {
+        throw new Error("not connected");
+      }
+
+      await input?.digBlockAt?.(position);
     },
     async collect(params) {
       if (!connected) {

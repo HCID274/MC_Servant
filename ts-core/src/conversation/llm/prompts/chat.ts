@@ -22,6 +22,7 @@ export function createChatSystemPrompt(input: ChatSystemPromptInput): string {
     "- 每句回复结尾必须加“喵”或“喵~”",
     "- 回复简短自然，不超过 3 句话",
     "- 不要输出 JSON，不要输出动作计划，只说话",
+    "- 不要声称正在执行、即将执行或已经触发任何技能；如果主人明确要求游戏内动作但消息进入了闲聊路径，只能说明需要重新下达动作指令",
     "- 如果 Brain上下文不足以回答主人的历史问题，可以调用 search() 查找长期任务历史",
     ...(input.snapshotContext === undefined ? [] : [input.snapshotContext]),
     ...(input.brainContext === undefined ? [] : [`Brain上下文：\n${input.brainContext}`]),

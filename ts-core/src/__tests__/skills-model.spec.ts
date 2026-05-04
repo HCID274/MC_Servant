@@ -58,8 +58,10 @@ describe("skills 模块契约", () => {
     expect(
       isCollectSkillParams({ itemName: "oak_log", center: { x: 1, y: 64, z: -2 }, radius: 32 }),
     ).toBe(true);
+    expect(isCollectSkillParams({ itemName: "oak_log", radius: 8 })).toBe(true);
+    expect(isCollectSkillParams({ itemName: "oak_log", radius: 31 })).toBe(true);
     expect(isCollectSkillParams({ itemName: "oak_log", radius: 64 })).toBe(true);
-    expect(isCollectSkillParams({ itemName: "oak_log", radius: 31 })).toBe(false);
+    expect(isCollectSkillParams({ itemName: "oak_log", radius: 0 })).toBe(false);
     expect(isCollectSkillParams({ itemName: "oak_log", radius: 65 })).toBe(false);
     expect(isCollectSkillParams({ itemName: "oak_log", radius: -1 })).toBe(false);
   });

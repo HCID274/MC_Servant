@@ -218,3 +218,19 @@
 - C 审查结论: 通过;B（实现代理）交互中曾处理 bot（机器人）名称过滤、旧 jar（归档包）部署和树叶不自然凋零疑问,最终实现走 `PlayerBlockBreakEvents.AFTER`（破坏后事件）与 `ServerPlayerInteractionManager.tryBreakBlock`（服务端玩家破坏入口）,并由用户实服确认连锁掉落后树叶可按 vanilla（原版）机制自然凋零
 - 关键决策: 树木/矿石识别消费服务端 registry/tag（注册表/标签）事实,不判断自然树或用户需求数量;连锁破坏逐块调用玩家破坏入口而不是手动 drop（掉落）+ setBlockState（设置方块状态）,保留掉落、工具耐久、邻居更新、统计与 Fabric（模组框架） break hook（破坏钩子）等原版副作用;用 ThreadLocal（线程局部变量）递归保护避免 handler（处理器）再次触发自身,并记录 destroyed（破坏数）、scanned（扫描数）、truncated（截断）和 failure reasons（失败原因）
 - 架构冲突: 无
+
+## T-053 | 2026-05-04 | cutTree（砍树）技能接入资源簇执行链
+
+- 涉及模块: skills（技能） `cutTree`（砍树）执行器,sandbox（沙箱）/BotActor（机器人执行代理）技能入口,runtime/transport（运行时传输层）按坐标挖掘与 Mineflayer（Minecraft 协议客户端）资源事实兜底,ResourceService（资源服务）树木簇选择,collect（捡拾）复用,conversation/llm（对话大语言模型） prompt（提示词）与技能计划表,diagnostics（诊断）recent event（近期事件）,Docs/04_CONVERSATION_SPEC.md（对话规格文档）
+- A 拆解依据: 用户要求“砍 N 块木头”只由 LLM（大语言模型）输出高层 `cutTree(count)` skill call（技能调用）,执行层按当前 `world_key`（世界键）消费 T-052B（任务）树木簇推荐目标,挖一个原木触发 T-052C（任务） plugin（服务端模组）连锁掉落,collect（捡拾）后以真实 inventory diff（背包增量）判断是否继续;边界允许 skills（技能）、sandbox（沙箱）、runtime/transport（运行时传输层）、BotActor（机器人执行代理）、ResourceService（资源服务）、collect（捡拾）、conversation/llm（对话大语言模型）与 diagnostics（诊断）,明确不启用 mine（挖矿）或 equip（装备）
+- C 审查结论: 通过;B（实现代理）曾因“砍 5 块木头无反应”返修真实链路,补齐 `tree` 资源事实兜底、triage（分诊） prompt（提示词）动作指向、GoalNear（近距离目标）加载与 Vec3（三维向量）坐标对象;用户追加禁止 regex（正则表达式）语义捕获后,B（实现代理）撤掉新增 regex（正则表达式）兜底并用 prompt（提示词）约束;C（审查代理）确认当前 diff（差异）未启用 mine（挖矿）/equip（装备）、未进入 plugin（服务端模组）,`bash scripts/pre_review.sh` 全绿
+- 关键决策: 选择在 `cutTree`（砍树）确定性执行器中循环消费 ResourceService（资源服务）当前世界树木簇,优先单个足量近簇、否则累计多个小簇;每轮只挖推荐原木并复用 collect（捡拾）,以背包真实增量而非簇预估数量作为完成标准;LLM（大语言模型）只负责输出 `cutTree({count})`,不输出坐标、簇、循环或挖掘目标;资源事实兜底仍放 runtime/transport（运行时传输层）并消费 Mineflayer（Minecraft 协议客户端）/minecraft-data（Minecraft 数据库）事实,不在 world-model（世界模型）按方块名猜测
+- 架构冲突: 无
+
+## T-053-DBG | 2026-05-04 | cutTree（砍树）长程任务目标选择与捡拾修复
+
+- 涉及模块: world-model（世界模型）树木簇推荐目标,skills（技能） `cutTree`（砍树）执行器,collect（捡拾）公共参数契约,runtime/transport（运行时传输层）collect（捡拾）适配,Docs/04_CONVERSATION_SPEC.md（对话规格文档）,相关测试
+- A 拆解依据: 用户实服发现长程 `cutTree`（砍树）中推荐目标可能选到高处原木导致 pathfinder（寻路器）贴近树冠超时,且砍完一簇后的 collect（捡拾）失败会被吞掉后继续下一棵;用户明确要求默认选最低原木,砍完等待 0.5 秒后以树簇中心半径 8 捡拾全部掉落物,collect（捡拾）默认仍为 32 但显式调用可小于 32
+- C 审查结论: 曾打回 1 次 (首次返修仍吞掉 collect（捡拾）异常,且公共 `collect`（捡拾）参数校验仍拒绝 `radius: 8`);B（实现代理）移除吞错逻辑、区分规划建议最小半径 32 与显式调用最小半径 1,并补齐失败回归测试后通过
+- 关键决策: 树木簇推荐目标改为最低合法原木,避免 `GoalNear`（近距离目标）要求 Bot（机器人）靠近高处树冠;`cutTree`（砍树）每轮挖掘后强制调用无 `itemName`（物品名）过滤的 collect（捡拾）,以树簇中心和半径 8 清扫范围内全部掉落物,collect（捡拾）失败直接让任务失败并暴露原始错误
+- 架构冲突: 无

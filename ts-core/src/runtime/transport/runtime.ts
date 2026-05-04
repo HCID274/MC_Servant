@@ -25,6 +25,7 @@ import type {
 import { assertNonEmptyString, cloneReadonlyValue } from "../../domain/invariants.js";
 import { attachMineflayerBlockWorldCompatibility } from "./block-world-compat.js";
 import { executeMineflayerCollect } from "./collect.js";
+import { executeMineflayerDigBlockAt } from "./dig-block.js";
 import { executeMineflayerEquip } from "./equip.js";
 import { executeMineflayerGoTo } from "./go-to.js";
 import {
@@ -48,6 +49,7 @@ import type {
   MineflayerTransportDescriptor,
   MineflayerTransportSnapshot,
   MineflayerTransportState,
+  MineflayerVec3Like,
 } from "./types.js";
 import { attachMineflayerEntityVelocityCompatibility } from "./velocity-compat.js";
 import { canReadMineflayerBlockAt, readMineflayerBlockAt } from "./world-reader.js";
@@ -176,6 +178,16 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
       const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
       return executeMineflayerMine({ bot: currentBot, pathfinder, pathfinderModule, params });
     },
+    async digBlockAt(position: Readonly<MineflayerVec3Like>) {
+      const currentBot = ensureWorldInteractionReady("digBlockAt");
+      const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
+      await executeMineflayerDigBlockAt({
+        bot: currentBot,
+        pathfinder,
+        pathfinderModule,
+        position,
+      });
+    },
     async collect(params: Readonly<CollectSkillParams>) {
       const currentBot = ensureWorldInteractionReady("collect");
       const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
@@ -277,7 +289,7 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
   }
 
   function ensureWorldInteractionReady(
-    skill: "goTo" | "mine" | "collect" | "equip",
+    skill: "goTo" | "mine" | "digBlockAt" | "collect" | "equip",
   ): MineflayerBotHandle {
     if (state !== "connected" || bot === null) {
       throw new Error(`Mineflayer transport must be connected before ${skill}`);
@@ -467,7 +479,7 @@ function createRuntimeResourceBlockSummary(input: {
 }): RuntimeResourceBlockSummary {
   const position = input.block.position ?? input.origin;
   const targetDiagnostics: string[] = [];
-  const isDiggable = canDigRuntimeResourceBlock(input.block, targetDiagnostics);
+  const isDiggable = canDigRuntimeResourceBlock(input.bot.registry, input.block, targetDiagnostics);
   const isReachable = canReachRuntimeResourceBlock(input.bot, input.block, targetDiagnostics);
 
   return cloneReadonlyValue({
@@ -799,25 +811,38 @@ function blockHasRuntimeResourceTag(
 
   const registryTagValues = getRegistryResourceTagIds(registry, resourceKey);
 
-  return registryTagValues.some((value) => value === block.type || value === block.name);
+  return (
+    registryTagValues.some((value) => value === block.type || value === block.name) ||
+    blockMatchesRuntimeResourceFact(registry, block, resourceKey)
+  );
 }
 
 function createRuntimeResourceSemanticRoles(
   registry: unknown,
   block: MineflayerBlockHandle,
 ): readonly RuntimeResourceBlockSemanticRole[] {
-  return blockHasRuntimeResourceTag(registry, block, "logs")
+  return blockHasRuntimeResourceTag(registry, block, "logs") ||
+    blockMatchesRuntimeResourceFact(registry, block, "tree")
     ? Object.freeze(["cut_tree_log"] as const)
     : Object.freeze([]);
 }
 
-function canDigRuntimeResourceBlock(block: MineflayerBlockHandle, diagnostics: string[]): boolean {
+function canDigRuntimeResourceBlock(
+  registry: unknown,
+  block: MineflayerBlockHandle,
+  diagnostics: string[],
+): boolean {
   if (block.diggable === false) {
     diagnostics.push("not_diggable");
     return false;
   }
 
   if (block.diggable === true) {
+    return true;
+  }
+
+  const fact = readRegistryBlockFact(registry, block);
+  if (readBoolean(fact?.diggable, false)) {
     return true;
   }
 
@@ -874,8 +899,80 @@ function registryCanResolveResourceKey(registry: unknown, resourceKey: string): 
 
   return (
     createResourceKeyLookupNames(resourceKey).some((name) => blocksByName?.[name] !== undefined) ||
-    getRegistryResourceTagIds(registry, resourceKey).length > 0
+    getRegistryResourceTagIds(registry, resourceKey).length > 0 ||
+    registryCanResolveResourceFact(registry, resourceKey)
   );
+}
+
+function blockMatchesRuntimeResourceFact(
+  registry: unknown,
+  block: MineflayerBlockHandle,
+  resourceKey: string,
+): boolean {
+  const normalizedResourceKey = stripMinecraftNamespace(resourceKey);
+
+  if (normalizedResourceKey !== "tree" && normalizedResourceKey !== "logs") {
+    return false;
+  }
+
+  const fact = readRegistryBlockFact(registry, block);
+
+  return isCutTreeLogLikeBlockFact(fact);
+}
+
+function registryCanResolveResourceFact(registry: unknown, resourceKey: string): boolean {
+  const normalizedResourceKey = stripMinecraftNamespace(resourceKey);
+
+  if (normalizedResourceKey !== "tree" && normalizedResourceKey !== "logs") {
+    return false;
+  }
+
+  const registryRecord = asRecord(registry);
+  const blocksByName = asRecord(registryRecord?.blocksByName);
+
+  return blocksByName === undefined
+    ? false
+    : Object.values(blocksByName).some((fact) => isCutTreeLogLikeBlockFact(asRecord(fact)));
+}
+
+function readRegistryBlockFact(
+  registry: unknown,
+  block: MineflayerBlockHandle,
+): Record<string, unknown> | undefined {
+  const registryRecord = asRecord(registry);
+  const blocksByName = asRecord(registryRecord?.blocksByName);
+  const blocksById = asRecord(registryRecord?.blocks);
+  const blockName = block.name;
+
+  if (blockName !== undefined && blockName.length > 0) {
+    const byName = asRecord(blocksByName?.[blockName]);
+
+    if (byName !== undefined) {
+      return byName;
+    }
+  }
+
+  if (block.type !== undefined) {
+    return asRecord(blocksById?.[String(block.type)] ?? blocksById?.[block.type]);
+  }
+
+  return undefined;
+}
+
+function isCutTreeLogLikeBlockFact(fact: Record<string, unknown> | undefined): boolean {
+  if (fact === undefined) {
+    return false;
+  }
+
+  const material = fact.material;
+  const states = Array.isArray(fact.states) ? fact.states : [];
+  const hasAxisState = states.some((state) => {
+    const stateRecord = asRecord(state);
+
+    return stateRecord?.name === "axis";
+  });
+
+  return material === "mineable/axe" && hasAxisState && readBoolean(fact.diggable, true);
 }
 
 function readBlockDirectTags(tags: MineflayerBlockHandle["tags"]): ReadonlySet<string> {

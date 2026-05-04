@@ -157,6 +157,14 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     );
   }
 
+  dig(block: MineflayerBlockHandle): void {
+    this.resourceBlocks.splice(
+      0,
+      this.resourceBlocks.length,
+      ...this.resourceBlocks.filter((candidate) => candidate !== block),
+    );
+  }
+
   canDigBlock(block: MineflayerBlockHandle): boolean {
     const botPosition = this.entity.position;
     const blockPosition = block.position;
@@ -819,6 +827,108 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await transport.disconnect("test shutdown");
   });
 
+  it("资源刷新应在 registry（注册表） 缺少 blockTags（方块标签） 时用 minecraft-data（Minecraft 数据库） 方块事实识别可砍原木", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-resource-facts",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          Object.assign(bot.registry, {
+            blocksByName: {
+              oak_log: {
+                id: 7,
+                name: "oak_log",
+                diggable: true,
+                material: "mineable/axe",
+                states: [{ name: "axis" }],
+              },
+            },
+          });
+          bot.resourceBlocks.push({
+            name: "oak_log",
+            type: 7,
+            position: { x: 2, y: 64, z: 0 },
+          });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(transport.refreshAroundBot("tree", 16)).resolves.toMatchObject({
+      status: "found",
+      resource_key: "tree",
+      blocks: [
+        {
+          block_name: "oak_log",
+          resource_keys: ["tree"],
+          semantic_roles: ["cut_tree_log"],
+          is_diggable: true,
+          is_reachable: true,
+          target_diagnostics: [],
+        },
+      ],
+    });
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("digBlockAt（按坐标挖掘） 应移动到推荐坐标并只挖该目标方块", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-dig-block-at",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          bot.resourceBlocks.push(
+            {
+              name: "oak_log",
+              type: 7,
+              position: { x: 8, y: 64, z: 0 },
+              diggable: true,
+            },
+            {
+              name: "oak_log",
+              type: 7,
+              position: { x: 9, y: 64, z: 0 },
+              diggable: true,
+            },
+          );
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await transport.digBlockAt({ x: 8, y: 64, z: 0 });
+
+    expect(createdBots[0]?.resourceBlocks.map((block) => block.position)).toEqual([
+      { x: 9, y: 64, z: 0 },
+    ]);
+    expect(createdBots[0]?.receivedMovements).toHaveLength(1);
+
+    await transport.disconnect("test shutdown");
+  });
+
   it("应在 spawn（生成） 前失败时回收 Bot（机器人） 与运行时监听器", async () => {
     const failedBot = new FakeMineflayerBot();
     const transport = createMineflayerRuntimeTransport(
@@ -901,6 +1011,52 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     });
     expect(collectBot.receivedMovements[0]).toMatchObject({
       canDig: false,
+    });
+  });
+
+  it("collect（捡拾） 执行层应允许 cutTree（砍树） 使用半径 8 的小范围收集", async () => {
+    const collectBot = new FakeMineflayerBot();
+    collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    collectBot.entities.logDrop = {
+      id: 17,
+      name: "item",
+      displayName: "Item",
+      position: { x: 2, y: 64, z: 0 },
+      item: {
+        name: "oak_log",
+      },
+    };
+    collectBot.onGoto = () => {
+      collectBot.inventoryItems.push({
+        name: "oak_log",
+        count: 3,
+      });
+      collectBot.entities.logDrop = undefined;
+    };
+
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-collect-small-radius",
+      }),
+      {
+        createBot: () => collectBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    collectBot.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.collect({
+        center: { x: 0, y: 64, z: 0 },
+        radius: 8,
+        timeoutMs: 1000,
+      }),
+    ).resolves.toMatchObject({
+      radius: 8,
+      collected: [{ name: "oak_log", count: 3 }],
     });
   });
 

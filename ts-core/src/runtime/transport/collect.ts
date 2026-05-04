@@ -1,7 +1,6 @@
 import {
   COLLECT_DEFAULT_RADIUS,
   COLLECT_MAX_RADIUS,
-  COLLECT_MIN_RADIUS,
   type CollectSkillCollectedItem,
   type CollectSkillExecutionResult,
   type CollectSkillParams,
@@ -22,6 +21,7 @@ import type {
 const DEFAULT_COLLECT_TIMEOUT_MS = 10_000;
 const AUTO_COLLECT_SETTLE_MS = 250;
 const COLLECT_POLL_MS = 100;
+const INTERNAL_COLLECT_MIN_RADIUS = 1;
 
 /** collect（捡拾） 技能需要的 Mineflayer（Minecraft 协议客户端） 能力端口。 */
 export type MineflayerCollectPort = MineflayerMovementPort &
@@ -385,9 +385,13 @@ function normalizeCollectDropsOptions(
 
   const radius = params.radius ?? COLLECT_DEFAULT_RADIUS;
 
-  if (!Number.isInteger(radius) || radius < COLLECT_MIN_RADIUS || radius > COLLECT_MAX_RADIUS) {
+  if (
+    !Number.isInteger(radius) ||
+    radius < INTERNAL_COLLECT_MIN_RADIUS ||
+    radius > COLLECT_MAX_RADIUS
+  ) {
     throw new Error(
-      `collect radius must be an integer from ${COLLECT_MIN_RADIUS} to ${COLLECT_MAX_RADIUS}`,
+      `collect radius must be an integer from ${INTERNAL_COLLECT_MIN_RADIUS} to ${COLLECT_MAX_RADIUS}`,
     );
   }
 

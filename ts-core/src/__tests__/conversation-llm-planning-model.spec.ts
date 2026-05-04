@@ -93,8 +93,67 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
     expect(messages[0]?.content).toContain("分诊只做路由判断");
     expect(messages[0]?.content).toContain('纯闲聊只输出 chat 空对象，例如 {"chat":{}}。');
+    expect(messages[0]?.content).toContain("即使 Brain上下文或最近历史里出现过类似任务完成记录");
     expect(messages[0]?.content).not.toContain('"content":"我在喵~"');
     expect(messages[0]?.content).not.toContain("reply 只写自然短句");
+  });
+
+  it("triage（分诊） 应通过 prompt（提示词） 指向重复明确动作指令不能被历史完成记录吞掉", async () => {
+    const capturedRequests: Array<{ body: unknown }> = [];
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async (_url, init) => {
+          capturedRequests.push({
+            body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+          });
+
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content:
+                      '{"action":{"intent":"task","priority":"normal","reason":"主人重复给出明确砍树动作指令"}}',
+                  },
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: {
+                "content-type": "application/json",
+              },
+            },
+          );
+        },
+      },
+    );
+
+    await expect(
+      client.generateCompositeTriage({
+        message_id: "msg-triage-repeat-cut-tree",
+        message: "给我砍5块木头",
+        bot_summary: "idle",
+        brain_context: "主人要求“给我砍5块木头”，Bot 执行技能 cutTree完成。",
+      }),
+    ).resolves.toEqual({
+      action: {
+        intent: "task",
+        priority: "normal",
+        reason: "主人重复给出明确砍树动作指令",
+      },
+    });
+    expect(JSON.stringify(capturedRequests[0]?.body)).toContain(
+      "即使 Brain上下文或最近历史里出现过类似任务完成记录",
+    );
   });
 
   it("三阶段 prompt（提示词） 应按表注入 A.5 + C 层且 Triage（分诊） 不暴露 search() tool（工具）", async () => {
@@ -907,7 +966,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     });
     const skillSection = createConversationSkillPlanPromptSection();
 
-    expect(Object.keys(CONVERSATION_SKILL_PLAN_TABLE)).toEqual(["goTo", "collect"]);
+    expect(Object.keys(CONVERSATION_SKILL_PLAN_TABLE)).toEqual(["goTo", "collect", "cutTree"]);
     expect(messages[0]?.content).toContain(skillSection);
     expect(messages[0]?.content).toContain("默认以环境快照 [主人] 坐标作为 collect.params.center");
     expect(messages[0]?.content).toContain("执行层会在 32 未命中时自动扩到 64 搜索");
@@ -918,12 +977,13 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).not.toContain('"itemName":"stone_pickaxe"');
   });
 
-  it("应允许 collect（捡拾） 并拒绝 mine（挖掘） / equip（装备） 进入 T-046（任务四十六） 单技能规划结果", async () => {
+  it("应允许 collect（捡拾） / cutTree（砍树） 并拒绝 mine（挖掘） / equip（装备） 进入在线单技能规划结果", async () => {
     const responses = [
       '{"type":"skill_call","reply":"收到，我去挖石头","skill":"mine","params":{"blockName":"stone","count":2}}',
       '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":32}}',
       '{"type":"skill_call","reply":"收到，我去捡附近掉落物","skill":"collect","params":{}}',
       '{"type":"skill_call","reply":"收到，我去捡附近掉落物","skill":"collect","params":{"itemName":"item","center":{"x":1,"y":64,"z":2},"radius":32}}',
+      '{"type":"skill_call","reply":"收到，我去砍 12 块木头","skill":"cutTree","params":{"count":12}}',
       '{"type":"skill_call","reply":"收到，我先把稿子拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}',
     ];
     const client = createConversationLlmClient(
@@ -1005,6 +1065,19 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       },
     });
     expect(placeholderNamePlan.params).not.toHaveProperty("itemName");
+    await expect(
+      client.generateSkillPlan({
+        message_id: "msg-plan-cut-tree",
+        message: "砍 12 块木头",
+        snapshot_context:
+          "online_runtime: executable skills: goTo, collect, cutTree\nresources: tree found",
+      }),
+    ).resolves.toMatchObject({
+      skill: "cutTree",
+      params: {
+        count: 12,
+      },
+    });
     await expect(
       client.generateSkillPlan({
         message_id: "msg-plan-equip",
@@ -1116,7 +1189,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
                 {
                   message: {
                     content:
-                      '{"type":"skill_call","reply":"收到","skill":"cutTree","params":{"count":1}}',
+                      '{"type":"skill_call","reply":"收到","skill":"cutTree","params":{"count":"一棵"}}',
                   },
                 },
               ],

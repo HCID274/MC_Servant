@@ -44,6 +44,7 @@ import type {
   WorkerBullmqRuntime,
   WorkerQueueCatalog,
 } from "../../workers/index.js";
+import type { ResourceServiceBoundary } from "../../world-model/index.js";
 import type { AppLifecyclePlan, AppReadinessDescriptor } from "../contracts.js";
 
 /** 接口层装配结果，用于统一收口纯路由目录与健康检查基线。 */
@@ -280,6 +281,8 @@ export interface AppRuntimeCoreResources<TBotId extends string = string> {
   readonly observation: ObservationRuntimeCache;
   /** Mineflayer（Minecraft 协议客户端） 运行时传输。 */
   readonly transport: MineflayerRuntimeTransport<TBotId>;
+  /** ResourceService（资源服务） 当前运行时共享实例。 */
+  readonly resourceService: ResourceServiceBoundary;
   /** BotActor（机器人执行代理） 最小运行时。 */
   readonly actor: BotActorRuntime<TBotId>;
   /** 按约定顺序关闭运行时核心资源。 */

@@ -1017,6 +1017,133 @@ describe("observation 与 world-model 契约", () => {
     });
   });
 
+  it("ResourceService（世界感知资源服务） 选择树木簇时应优先单个足量簇，否则再累计多个小簇", async () => {
+    const resourceService = createResourceService({
+      now: () => 1_712_000_710,
+      worldKeyPort: {
+        getCurrentWorldKey: () => "multiworld:resource",
+      },
+      refreshPort: {
+        async refreshAroundBot(resourceKey, radius) {
+          return {
+            resource_key: resourceKey,
+            radius,
+            status: "found",
+            world_key: "multiworld:resource",
+            snapshot_version: `single-sufficient:${radius}`,
+            scanned_at: 1_712_000_710,
+            origin: { x: 0, y: 64, z: 0 },
+            blocks: [
+              {
+                block_name: "oak_log",
+                position: { x: 2, y: 64, z: 0 },
+                distance: 2,
+                resource_keys: [resourceKey],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+              {
+                block_name: "oak_log",
+                position: { x: 2, y: 65, z: 0 },
+                distance: 2.5,
+                resource_keys: [resourceKey],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+              {
+                block_name: "spruce_log",
+                position: { x: 6, y: 64, z: 0 },
+                distance: 6,
+                resource_keys: [resourceKey],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+              {
+                block_name: "spruce_log",
+                position: { x: 6, y: 65, z: 0 },
+                distance: 6.5,
+                resource_keys: [resourceKey],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+              {
+                block_name: "spruce_log",
+                position: { x: 6, y: 66, z: 0 },
+                distance: 7,
+                resource_keys: [resourceKey],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+            ],
+            diagnostics: [],
+          };
+        },
+      },
+    });
+
+    const selected = await resourceService.selectTreeClusters(3);
+
+    expect(selected).toMatchObject({
+      status: "selected",
+      selected_log_count: 3,
+    });
+    expect(selected.selected.map((cluster) => cluster.log_block_name)).toEqual(["spruce_log"]);
+  });
+
+  it("ResourceService（世界感知资源服务） 应默认选择树木簇最低原木作为 cutTree（砍树） 推荐目标", async () => {
+    const resourceService = createResourceService({
+      now: () => 1_712_000_720,
+      worldKeyPort: {
+        getCurrentWorldKey: () => "multiworld:resource",
+      },
+      refreshPort: {
+        async refreshAroundBot(resourceKey, radius) {
+          return {
+            resource_key: resourceKey,
+            radius,
+            status: "found",
+            world_key: "multiworld:resource",
+            snapshot_version: `lowest-tree-target:${radius}`,
+            scanned_at: 1_712_000_720,
+            origin: { x: 0, y: 64, z: 0 },
+            blocks: [
+              {
+                block_name: "oak_log",
+                position: { x: 8, y: 65, z: 0 },
+                distance: 1.5,
+                resource_keys: [resourceKey],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+              {
+                block_name: "oak_log",
+                position: { x: 8, y: 64, z: 0 },
+                distance: 8,
+                resource_keys: [resourceKey],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+            ],
+            diagnostics: [],
+          };
+        },
+      },
+    });
+
+    await resourceService.refresh("tree", 16);
+
+    expect(resourceService.classifyTreeClusters().accepted[0]?.recommended_target.position).toEqual(
+      { x: 8, y: 64, z: 0 },
+    );
+  });
+
   it("ResourceService（世界感知资源服务） 应把 refreshPort（刷新端口） 异常转换为 runtime_unavailable（运行时不可用）", async () => {
     const resourceService = createResourceService({
       worldKeyPort: {

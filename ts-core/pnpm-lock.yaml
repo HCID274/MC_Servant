@@ -41,6 +41,9 @@ importers:
       pg:
         specifier: ^8.16.3
         version: 8.20.0
+      vec3:
+        specifier: 0.1.10
+        version: 0.1.10
       ws:
         specifier: ^8.20.0
         version: 8.20.0

@@ -41,6 +41,7 @@
     "mineflayer": "^4.37.0",
     "mineflayer-pathfinder": "^2.4.5",
     "pg": "^8.16.3",
+    "vec3": "0.1.10",
     "ws": "^8.20.0"
   }
 }
