@@ -134,6 +134,8 @@ export interface TaskFailedErrorSnapshot {
   readonly message: string;
   /** 可选错误码。 */
   readonly error_code?: string;
+  /** 可选结构化诊断上下文。 */
+  readonly details?: Readonly<Record<string, unknown>>;
 }
 
 /** 任务 failed（已失败） 事件载荷。 */

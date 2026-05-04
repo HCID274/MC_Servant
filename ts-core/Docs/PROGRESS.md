@@ -250,3 +250,11 @@
 - C 审查结论: 通过;曾打回 1 次 (`lookAt`（看向目标） 与 pathfinder goals（寻路目标） 真实库类型契约未收口,仍可能重复 `point.minus is not a function` 与 `GoalNear`（近距离目标）导出形态问题);B（实现代理）将 `lookAt`（看向目标）端口改为 `Vec3`（三维向量） 实例,并新增集中 `pathfinder-goals`（寻路目标解析器）后通过
 - 关键决策: `place`（放置） 作为 sandbox（沙箱）工具链能力暴露,不升级为正式 skill（技能）且只允许 `crafting_table`（工作台）;真实 Mineflayer（Minecraft 客户端库）动作仍经 BotActor（机器人执行代理）串行进入 runtime/transport（运行时传输层）;放置前复用 T-055（任务） craft（合成）适配,候选位置最多尝试 3 个并把失败 attempts（尝试记录）结构化透传;Mineflayer（Minecraft 客户端库）真实对象类型与 pathfinder（寻路器）导出解析收敛到 runtime/transport（运行时传输层）契约和 helper（辅助函数）
 - 架构冲突: 无
+
+## T-057 | 2026-05-04 | 最小 equip（装备）技能启用与主手切换
+
+- 涉及模块: core-ports（核心端口）技能契约,runtime/transport（运行时传输层） Mineflayer（Minecraft 客户端库）装备适配,BotActor（机器人执行代理）与 BotWorker（机器人工作线程）单写技能入口,conversation/llm（对话大语言模型）规划门禁与提示词,plugin（服务端模组） `/svs`（服务端桥接命令）成功回显,相关测试
+- A 拆解依据: 用户要求实现最小 equip（装备）能力,至少支持 wooden_pickaxe（木镐）和 stone_pickaxe（石镐）,检查当前手持物、背包目标物并调用 runtime（运行时）装备;不得做 armor（护甲）、武器策略或自动最佳工具选择;返修中用户明确指出“装备就是拿在手上”且需要支持装备 bread（面包）到主手,并要求 `/svs`（服务端桥接命令）游戏内回显玩家原始输入而非固定“已转发”
+- C 审查结论: 通过;`bash scripts/pre_review.sh`（评审前预检脚本） 全绿,33 个 test file（测试文件）/340 个 test（测试）通过;`plugin`（服务端模组） `./gradlew build` 通过;用户已实服确认 bread（面包）可装备到主手
+- 关键决策: `equip`（装备） 语义收敛为“把背包目标物品拿到主手”,`destination`（目标槽位） 只开放 `hand`（主手）,不扩展护甲/武器/最佳工具系统;执行层先比较 `heldItem`（当前手持物） 返回 `already_equipped`（已装备）,再从 inventory（背包） 查找目标物并调用 Mineflayer `equip`（装备）,失败以 `missing_item`（缺目标物品） 或 `runtime_equip_failed`（运行时装备失败） 结构化冒泡;`/svs`（服务端桥接命令） 只改成功回显文本,不改变 player_message（玩家消息）协议帧或 TS Core（TypeScript 单核心）入口
+- 架构冲突: 无

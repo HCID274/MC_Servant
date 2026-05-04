@@ -2,6 +2,7 @@ export * from "./types.js";
 export * from "./lifecycle.js";
 export * from "./runtime.js";
 export * from "./dig-block.js";
+export * from "./equip.js";
 export * from "./craft.js";
 export * from "./crafting-table.js";
 export * from "./placement.js";

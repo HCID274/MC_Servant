@@ -164,6 +164,7 @@ export const ONLINE_PLAN_SKILLS = Object.freeze([
   SKILL_DIRECTORY.goTo,
   SKILL_DIRECTORY.cutTree,
   SKILL_DIRECTORY.collect,
+  SKILL_DIRECTORY.equip,
 ] as const);
 
 /** 最小技能规划成功结果。 */

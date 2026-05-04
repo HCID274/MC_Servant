@@ -39,14 +39,7 @@ export const COLLECT_DEFAULT_RADIUS = 32;
 export const COLLECT_MAX_RADIUS = 64;
 
 /** `equip`（装备） 技能允许的目标槽位。 */
-export const EQUIP_DESTINATIONS = Object.freeze([
-  "hand",
-  "off-hand",
-  "head",
-  "torso",
-  "legs",
-  "feet",
-] as const);
+export const EQUIP_DESTINATIONS = Object.freeze(["hand"] as const);
 
 /** `equip`（装备） 技能的目标槽位联合类型。 */
 export type EquipDestination = (typeof EQUIP_DESTINATIONS)[number];
@@ -144,6 +137,8 @@ export const TOOLCHAIN_FAILURE_CODES = Object.freeze([
   "place_failed",
   "cached_position_invalid",
   "cannot_place",
+  "missing_item",
+  "runtime_equip_failed",
   "not_equipped",
   "resource_not_found",
   "unsafe_path",
@@ -606,8 +601,10 @@ export interface EquipSkillExecutionResult {
   readonly item_name: string;
   /** 实际装备槽位。 */
   readonly destination: NonNullable<EquipSkillParams["destination"]> | "hand";
+  /** 装备结果状态。 */
+  readonly status: "already_equipped" | "equipped";
   /** 当前最小执行器的步骤数。 */
-  readonly total_steps: 1;
+  readonly total_steps: 0 | 1;
 }
 
 /** 技能执行结果联合。 */
@@ -781,11 +778,16 @@ export function createCutTreeSkillExecutionResult(
 /** 创建冻结的 `equip`（装备） 技能执行结果。 */
 export function createEquipSkillExecutionResult(
   params: Readonly<EquipSkillParams>,
+  outcome: {
+    readonly status?: EquipSkillExecutionResult["status"];
+    readonly total_steps?: EquipSkillExecutionResult["total_steps"];
+  } = {},
 ): EquipSkillExecutionResult {
   return Object.freeze({
     skill: "equip" as const,
     item_name: params.itemName,
     destination: params.destination ?? "hand",
-    total_steps: 1 as const,
+    status: outcome.status ?? "equipped",
+    total_steps: outcome.total_steps ?? 1,
   });
 }

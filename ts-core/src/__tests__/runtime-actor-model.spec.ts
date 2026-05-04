@@ -54,7 +54,7 @@ function createFakeTransport(input?: {
   }) => Promise<void> | void;
   equip?: (params: {
     readonly itemName: string;
-    readonly destination?: "hand" | "off-hand" | "head" | "torso" | "legs" | "feet";
+    readonly destination?: "hand";
   }) => Promise<void> | void;
   place?: (params: {
     readonly blockName: string;
@@ -602,7 +602,7 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
     expect(actor.getSnapshot().current_task).toBeNull();
   });
 
-  it("应允许 collect（捡拾） 并拒绝未启用 mine（挖掘） / equip（装备） 技能", async () => {
+  it("应允许 collect（捡拾）/equip（装备） 并拒绝未启用 mine（挖掘） 技能", async () => {
     const executed: string[] = [];
     const externalAuth = createExternalAuthState({ status: "not_required" });
     const actor = createBotActorRuntime({
@@ -666,13 +666,24 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
           params: { itemName: "stone_pickaxe", destination: "hand" },
         }),
       ),
-    ).rejects.toThrow(/not enabled in T-046/);
+    ).resolves.toMatchObject({
+      result: {
+        skill: "equip",
+        item_name: "stone_pickaxe",
+        destination: "hand",
+        status: "equipped",
+      },
+    });
 
-    expect(executed).toEqual(["collect:cobblestone:32"]);
+    expect(executed).toEqual(["collect:cobblestone:32", "equip:stone_pickaxe:hand"]);
     expect(actor.getSnapshot().skill_executions).toEqual([
       {
         message_id: "msg-collect",
         skill: "collect",
+      },
+      {
+        message_id: "msg-equip",
+        skill: "equip",
       },
     ]);
   });

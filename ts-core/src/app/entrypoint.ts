@@ -1094,7 +1094,7 @@ function createOnlineConversationPlanner(
       message: task.message.content,
       snapshot_context:
         snapshot_context ??
-        "online_runtime: observation unavailable; executable skills: goTo, collect, cutTree; sandbox toolchain: place(crafting_table)",
+        "online_runtime: observation unavailable; executable skills: goTo, collect, cutTree, equip; sandbox toolchain: place(crafting_table)",
       triage_reason: route.triage.reason,
       ...(memory_context === undefined ? {} : { memory_context }),
       ...(brain_context === undefined ? {} : { brain_context }),

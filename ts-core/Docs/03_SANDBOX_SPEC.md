@@ -268,7 +268,7 @@
      * @param itemName 物品名称
      * @param destination 装备位置
      */
-    equip(itemName: string, destination?: 'hand' | 'off-hand' | 'head' | 'torso' | 'legs' | 'feet'): Promise<ToolchainResult<{ item_name: string; destination: string; world_key: string | null }>>
+    equip(itemName: string, destination?: 'hand'): Promise<{ skill: 'equip'; item_name: string; destination: 'hand'; status: 'already_equipped' | 'equipped'; total_steps: 0 | 1 }>
 
     /**
      * 砍树（复合动作：找到树 → 移动过去 → 挖原木 → 收集掉落物）

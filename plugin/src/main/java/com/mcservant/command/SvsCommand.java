@@ -118,7 +118,7 @@ public final class SvsCommand {
             return 0;
         }
 
-        sendOkReply(context.getSource(), "已转发到 TS Core");
+        sendOkReply(context.getSource(), content);
         return 1;
     }
 

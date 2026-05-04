@@ -2200,7 +2200,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       {
         message_id: "msg-mine",
         content:
-          "这个技能还没有通过验收，当前允许执行 goTo 前往坐标、collect 捡拾、cutTree 砍树和 place 放置工作台喵~",
+          "这个技能还没有通过验收，当前允许执行 goTo 前往坐标、collect 捡拾、cutTree 砍树、equip 装备和 place 放置工作台喵~",
       },
     ]);
     expect(enqueuedTasks).toEqual([]);
@@ -2268,7 +2268,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       {
         message_id: "msg-disabled-skill-error",
         content:
-          "这个技能还没有通过验收，当前允许执行 goTo 前往坐标、collect 捡拾、cutTree 砍树和 place 放置工作台喵~",
+          "这个技能还没有通过验收，当前允许执行 goTo 前往坐标、collect 捡拾、cutTree 砍树、equip 装备和 place 放置工作台喵~",
       },
     ]);
     expect(enqueuedTasks).toEqual([]);

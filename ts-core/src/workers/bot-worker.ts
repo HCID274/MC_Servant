@@ -292,11 +292,30 @@ function createErrorSnapshot(error: unknown): TaskFailedErrorSnapshot {
     return Object.freeze({
       name: error.name,
       message: error.message,
+      ...readStructuredErrorFields(error),
     });
   }
 
   return Object.freeze({
     message: String(error),
+  });
+}
+
+function readStructuredErrorFields(error: Error): {
+  readonly error_code?: string;
+  readonly details?: Readonly<Record<string, unknown>>;
+} {
+  const candidate = error as {
+    readonly error_code?: unknown;
+    readonly details?: unknown;
+  };
+  return Object.freeze({
+    ...(typeof candidate.error_code === "string" && candidate.error_code.trim().length > 0
+      ? { error_code: candidate.error_code }
+      : {}),
+    ...(typeof candidate.details === "object" && candidate.details !== null
+      ? { details: candidate.details as Readonly<Record<string, unknown>> }
+      : {}),
   });
 }
 
@@ -351,7 +370,8 @@ export function createBotWorkerRuntime(input: {
       task.exec_job.type === ExecutionTaskKind.SkillCall &&
       task.exec_job.skill !== SKILL_DIRECTORY.goTo &&
       task.exec_job.skill !== SKILL_DIRECTORY.collect &&
-      task.exec_job.skill !== SKILL_DIRECTORY.cutTree
+      task.exec_job.skill !== SKILL_DIRECTORY.cutTree &&
+      task.exec_job.skill !== SKILL_DIRECTORY.equip
     ) {
       const error = Object.freeze({
         name: "Error",
@@ -435,8 +455,10 @@ export function createBotWorkerRuntime(input: {
           ...("error_code" in executionResult.error
             ? { error_code: executionResult.error.error_code }
             : {}),
-          ...("details" in executionResult.error && executionResult.error.details !== undefined
-            ? { details: executionResult.error.details }
+          ...("details" in executionResult.error &&
+          typeof executionResult.error.details === "object" &&
+          executionResult.error.details !== null
+            ? { details: executionResult.error.details as Readonly<Record<string, unknown>> }
             : {}),
         });
         await emitActions(

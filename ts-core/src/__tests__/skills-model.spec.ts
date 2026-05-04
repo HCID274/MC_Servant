@@ -25,6 +25,7 @@ import {
   getSkillDefinition,
   hasSkillDefinition,
   isCollectSkillParams,
+  isEquipSkillParams,
   isGoToSkillParams,
   isMineSkillParams,
   listSkillDefinitions,
@@ -80,6 +81,9 @@ describe("skills 模块契约", () => {
     expect(isCollectSkillParams({ itemName: "oak_log", radius: 0 })).toBe(false);
     expect(isCollectSkillParams({ itemName: "oak_log", radius: 65 })).toBe(false);
     expect(isCollectSkillParams({ itemName: "oak_log", radius: -1 })).toBe(false);
+    expect(isEquipSkillParams({ itemName: "bread" })).toBe(true);
+    expect(isEquipSkillParams({ itemName: "bread", destination: "hand" })).toBe(true);
+    expect(isEquipSkillParams({ itemName: "bread", destination: "off-hand" })).toBe(false);
   });
 
   it("应支持注册表查找、注册与只读列举边界", () => {
@@ -144,6 +148,8 @@ describe("skills 模块契约", () => {
         "place_failed",
         "cached_position_invalid",
         "cannot_place",
+        "missing_item",
+        "runtime_equip_failed",
         "not_equipped",
         "resource_not_found",
         "unsafe_path",

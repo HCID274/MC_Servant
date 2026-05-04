@@ -7,6 +7,7 @@ import {
   type SkillParamsByName,
   isCollectSkillParams,
   isCutTreeSkillParams,
+  isEquipSkillParams,
   isGoToSkillParams,
 } from "../../core-ports/skills.js";
 import { createSkillCallPlanDraft } from "../planning.js";
@@ -38,10 +39,7 @@ type ConversationSkillPlanStrategyTable = {
 type AnyConversationSkillPlanStrategy =
   ConversationSkillPlanStrategyTable[keyof ConversationSkillPlanStrategyTable];
 
-const T046_DISABLED_PLAN_SKILLS = Object.freeze([
-  SKILL_DIRECTORY.mine,
-  SKILL_DIRECTORY.equip,
-] as const);
+const T046_DISABLED_PLAN_SKILLS = Object.freeze([SKILL_DIRECTORY.mine] as const);
 
 /** skill（技能） 到 guard（守卫） / buildPlan（构建器） 的只读策略表。 */
 export const CONVERSATION_SKILL_PLAN_TABLE = Object.freeze({
@@ -59,6 +57,11 @@ export const CONVERSATION_SKILL_PLAN_TABLE = Object.freeze({
     skill: SKILL_DIRECTORY.cutTree,
     paramsSchema: "params: { count: number }，count 为需要实际进入背包的原木数量",
     guard: isCutTreeSkillParams,
+  }),
+  [SKILL_DIRECTORY.equip]: createSkillPlanStrategy({
+    skill: SKILL_DIRECTORY.equip,
+    paramsSchema: "params: { itemName: string; destination?: 'hand' }，把背包目标物品拿到主手",
+    guard: isEquipSkillParams,
   }),
 } satisfies ConversationSkillPlanStrategyTable);
 

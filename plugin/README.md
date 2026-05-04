@@ -71,7 +71,7 @@ java \
 ## 🎮 `/svs` 命令最短手测
 
 1. 在游戏内以 op 身份（或被 `mcservant.svs.use` 授权的玩家）执行 `/svs hello`。
-2. 桥接已连接：聊天框收到灰色提示 `[svs] 已转发到 TS Core`，TS Core 侧 `/api/replay` 出现 `server_bridge.player_message` 事件；若 TS Core 启用 `SERVER_BRIDGE_CONVERSATION_ENABLED=true`，随后应出现 `task.accepted`（任务已接受） 与 `chat.reply`（聊天回复），并在游戏聊天中看到 Bot（机器人） 回复。
+2. 桥接已连接：聊天框灰色回显玩家原始输入，TS Core 侧 `/api/replay` 出现 `server_bridge.player_message` 事件；若 TS Core 启用 `SERVER_BRIDGE_CONVERSATION_ENABLED=true`，随后应出现 `task.accepted`（任务已接受） 与 `chat.reply`（聊天回复），并在游戏聊天中看到 Bot（机器人） 回复。
 3. 桥接未连接：聊天框收到红色错误 `[svs] 桥接未连接，TS Core 无法接收消息`，无任何帧外发，无 replay（补拉） 事件写入。
 4. 桥接正在重连：聊天框收到红色错误 `[svs] 桥接正在重连 TS Core，稍后重试`。
 5. token（令牌）错误：聊天框收到红色错误 `[svs] 桥接 token 配置错误，TS Core 拒绝连接`，普通日志不会打印 token（令牌）明文。

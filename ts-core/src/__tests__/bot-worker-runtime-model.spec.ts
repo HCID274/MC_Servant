@@ -9,6 +9,7 @@ import {
 import {
   SKILL_DIRECTORY,
   createCollectSkillExecutionResult,
+  createEquipSkillExecutionResult,
   createGoToSkillExecutionResult,
 } from "../skills/index.js";
 import { createBotWorkerRuntime } from "../workers/bot-worker.js";
@@ -204,7 +205,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     ]);
   });
 
-  it("应拒绝未启用 equip（装备） 技能且不调用 BotActor（机器人执行代理）", async () => {
+  it("应允许已通过单技能验收的 equip（装备） 进入 BotActor（机器人执行代理）", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const executedSkills: string[] = [];
     const runtime = createBotWorkerRuntime({
@@ -218,7 +219,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
             executedSkills.push(job.skill);
 
             return {
-              result: createGoToSkillExecutionResult({ x: 0, y: 64, z: 0 }),
+              result: createEquipSkillExecutionResult(job.params),
               snapshot: {} as never,
             };
           },
@@ -248,19 +249,22 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
 
     await runtime.start();
-    await expect(processor?.({ data: task })).rejects.toThrow(/not enabled in T-046/);
+    await expect(processor?.({ data: task })).resolves.toBeUndefined();
 
-    expect(executedSkills).toEqual([]);
+    expect(executedSkills).toEqual(["equip"]);
     expect(runtime.getEvents()).toEqual([
       {
-        type: "task.failed",
+        type: "task.started",
         bot_id: "bot-worker",
         message_id: "msg-worker-equip",
-        status: TaskHistoryStatus.Failed,
-        error: {
-          name: "Error",
-          message: "Skill has not passed independent validation and is not enabled in T-046: equip",
-        },
+        status: TaskHistoryStatus.Started,
+      },
+      {
+        type: "task.completed",
+        bot_id: "bot-worker",
+        message_id: "msg-worker-equip",
+        status: TaskHistoryStatus.Completed,
+        total_steps: 1,
       },
     ]);
   });

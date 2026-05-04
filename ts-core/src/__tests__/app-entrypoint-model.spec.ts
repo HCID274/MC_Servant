@@ -2534,7 +2534,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     await runtime.close();
   });
 
-  it("应在真实在线入口允许 collect（捡拾） / cutTree（砍树） 并拒绝 mine（挖掘） / equip（装备） 未启用技能", async () => {
+  it("应在真实在线入口允许 collect（捡拾）/cutTree（砍树）/equip（装备） 并拒绝 mine（挖掘） 未启用技能", async () => {
     const llmRequests: Array<{ url: string; body: unknown }> = [];
     const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
@@ -2768,6 +2768,41 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           worker: "bot",
           bot_id: "bot-skill-online",
           exec_job: expect.objectContaining({
+            message_id: "msg-online-equip",
+            priority: "normal",
+            skill: "equip",
+            params: { itemName: "stone_pickaxe", destination: "hand" },
+          }),
+        }),
+        options: {
+          jobId: "msg-online-equip",
+          priority: 5,
+        },
+      },
+      {
+        name: "brain",
+        jobName: "brain",
+        data: expect.objectContaining({
+          worker: "brain",
+          payload: expect.objectContaining({
+            kind: "conversation_fact",
+            bot_id: "bot-skill-online",
+            message_id: "msg-online-equip",
+            owner_text: "把石镐拿在手上",
+            route_kind: "plan_exec",
+          }),
+        }),
+        options: {
+          jobId: "conversation-fact-msg-online-equip",
+        },
+      },
+      {
+        name: "bot:bot-skill-online:exec",
+        jobName: "bot",
+        data: expect.objectContaining({
+          worker: "bot",
+          bot_id: "bot-skill-online",
+          exec_job: expect.objectContaining({
             message_id: "msg-online-cut-tree",
             priority: "normal",
             skill: "cutTree",
@@ -2812,11 +2847,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       priority: "normal",
     });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
-      type: "task.discarded",
+      type: "task.accepted",
       bot_id: "bot-skill-online",
       message_id: "msg-online-equip",
-      status: "discarded",
-      reason: "skill_not_enabled",
+      skill: "equip",
+      priority: "normal",
     });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "task.accepted",

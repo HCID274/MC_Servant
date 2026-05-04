@@ -44,6 +44,7 @@ import {
   createMineflayerTransportDescriptor,
   createObservationRuntimeCache,
   executeMineflayerCraft,
+  executeMineflayerEquip,
   executeMineflayerPlaceCraftingTable,
   readMineflayerBlockAt,
   resolveGoalBlockConstructor,
@@ -100,6 +101,9 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
       stone_pickaxe: {
         id: 8,
       },
+      bread: {
+        id: 9,
+      },
     },
     items: {
       "1": {
@@ -133,6 +137,10 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
       "8": {
         id: 8,
         name: "stone_pickaxe",
+      },
+      "9": {
+        id: 9,
+        name: "bread",
       },
     },
     blocksByName: {
@@ -201,6 +209,7 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   closed = false;
   clearedControlStates = 0;
   pathfinderStops = 0;
+  heldItem: MineflayerItemHandle | null = null;
   onGoto?: (goal?: unknown) => void | Promise<void>;
 
   chat(text: string): void {
@@ -318,6 +327,9 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
 
   async equip(item: MineflayerItemHandle, destination: string): Promise<void> {
     this.equipCalls.push({ item, destination });
+    if (destination === "hand") {
+      this.heldItem = item;
+    }
   }
 
   async lookAt(position: Vec3, force?: boolean): Promise<void> {
@@ -502,6 +514,92 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     ).toMatchObject({
       name: "sample_floor",
     });
+  });
+
+  it("equip（装备） 已手持目标工具时应返回 already_equipped（已装备） 且不重复调用 Mineflayer", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.heldItem = { type: 8, name: "stone_pickaxe", count: 1 };
+
+    await expect(
+      executeMineflayerEquip({
+        bot,
+        params: { itemName: "stone_pickaxe", destination: "hand" },
+      }),
+    ).resolves.toEqual({
+      skill: "equip",
+      item_name: "stone_pickaxe",
+      destination: "hand",
+      status: "already_equipped",
+      total_steps: 0,
+    });
+    expect(bot.equipCalls).toEqual([]);
+  });
+
+  it("equip（装备） 应从背包把任意目标物品拿到主手", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.inventoryItems.push({ type: 9, name: "bread", count: 1 });
+
+    await expect(
+      executeMineflayerEquip({
+        bot,
+        params: { itemName: "bread" },
+      }),
+    ).resolves.toEqual({
+      skill: "equip",
+      item_name: "bread",
+      destination: "hand",
+      status: "equipped",
+      total_steps: 1,
+    });
+    expect(bot.equipCalls).toEqual([
+      { item: { type: 9, name: "bread", count: 1 }, destination: "hand" },
+    ]);
+    expect(bot.heldItem).toEqual({ type: 9, name: "bread", count: 1 });
+  });
+
+  it("equip（装备） 背包无目标工具时应抛出 missing_item（缺目标物品）", async () => {
+    const bot = new FakeMineflayerBot();
+
+    await expect(
+      executeMineflayerEquip({
+        bot,
+        params: { itemName: "stone_pickaxe", destination: "hand" },
+      }),
+    ).rejects.toMatchObject({
+      error_code: "missing_item",
+      details: {
+        item_name: "stone_pickaxe",
+        destination: "hand",
+      },
+    });
+    expect(bot.equipCalls).toEqual([]);
+  });
+
+  it("equip（装备） 底层 Mineflayer 失败时应抛出 runtime_equip_failed（运行时装备失败）", async () => {
+    class FailingEquipBot extends FakeMineflayerBot {
+      override async equip(item: MineflayerItemHandle, destination: string): Promise<void> {
+        this.equipCalls.push({ item, destination });
+        throw new Error("equip rejected");
+      }
+    }
+    const bot = new FailingEquipBot();
+    bot.inventoryItems.push({ type: 8, name: "stone_pickaxe", count: 1 });
+
+    await expect(
+      executeMineflayerEquip({
+        bot,
+        params: { itemName: "stone_pickaxe", destination: "hand" },
+      }),
+    ).rejects.toMatchObject({
+      error_code: "runtime_equip_failed",
+      details: {
+        item_name: "stone_pickaxe",
+        destination: "hand",
+      },
+    });
+    expect(bot.equipCalls).toEqual([
+      { item: { type: 8, name: "stone_pickaxe", count: 1 }, destination: "hand" },
+    ]);
   });
 
   it("craft（合成） 应用 Mineflayer recipe（配方） 从现有背包合成 planks（木板） 泛化目标", async () => {

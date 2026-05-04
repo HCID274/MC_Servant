@@ -966,7 +966,12 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     });
     const skillSection = createConversationSkillPlanPromptSection();
 
-    expect(Object.keys(CONVERSATION_SKILL_PLAN_TABLE)).toEqual(["goTo", "collect", "cutTree"]);
+    expect(Object.keys(CONVERSATION_SKILL_PLAN_TABLE)).toEqual([
+      "goTo",
+      "collect",
+      "cutTree",
+      "equip",
+    ]);
     expect(messages[0]?.content).toContain(skillSection);
     expect(messages[0]?.content).toContain("默认以环境快照 [主人] 坐标作为 collect.params.center");
     expect(messages[0]?.content).toContain("执行层会在 32 未命中时自动扩到 64 搜索");
@@ -976,7 +981,8 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).toContain("<param_name>");
     expect(messages[0]?.content).not.toContain('"blockName":"stone"');
     expect(messages[0]?.content).not.toContain('"itemName":"cobblestone"');
-    expect(messages[0]?.content).not.toContain('"itemName":"stone_pickaxe"');
+    expect(messages[0]?.content).toContain("这里的装备就是拿到主手");
+    expect(messages[0]?.content).toContain("不能输出中文物品名");
   });
 
   it("应允许 collect（捡拾） / cutTree（砍树） 并拒绝 mine（挖掘） / equip（装备） 进入在线单技能规划结果", async () => {
@@ -989,6 +995,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       '{"type":"sandbox_code","reply":"收到，我来放一个工作台","code":"await api.bot.place(\\"crafting_table\\")"}',
       '{"type":"sandbox_code","reply":"收到，我来你这里放工作台","code":"await api.bot.goTo(8,64,2); await api.bot.place(\\"crafting_table\\", {x:8,y:64,z:2})"}',
       '{"type":"skill_call","reply":"收到，我先把稿子拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}',
+      '{"type":"skill_call","reply":"收到，我把面包装备到主手","skill":"equip","params":{"itemName":"bread"}}',
     ];
     const client = createConversationLlmClient(
       createConversationLlmConfig({
@@ -1107,9 +1114,30 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       client.generateSkillPlan({
         message_id: "msg-plan-equip",
         message: "把石镐拿在手上",
-        snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
+        snapshot_context: "online_runtime: executable skills: goTo, collect, cutTree, equip, place",
       }),
-    ).rejects.toBeInstanceOf(ConversationLlmSkillNotEnabledError);
+    ).resolves.toMatchObject({
+      type: "skill_call",
+      skill: "equip",
+      params: {
+        itemName: "stone_pickaxe",
+        destination: "hand",
+      },
+    });
+    await expect(
+      client.generateSkillPlan({
+        message_id: "msg-plan-equip-bread",
+        message: "装备面包",
+        snapshot_context:
+          "online_runtime: executable skills: goTo, collect, cutTree, equip\n[背包] bread x1, oak_log x38",
+      }),
+    ).resolves.toMatchObject({
+      type: "skill_call",
+      skill: "equip",
+      params: {
+        itemName: "bread",
+      },
+    });
   });
 
   it("应把 cannot_plan（无法规划） 的 skill_not_enabled（技能未启用） 原因保留为门禁错误", async () => {
