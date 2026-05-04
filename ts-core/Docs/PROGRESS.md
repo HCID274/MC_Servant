@@ -210,3 +210,11 @@
 - C 审查结论: 曾打回 4 次 (首次缺少不可达/不可挖判定且在 world-model（世界模型）按方块名后缀猜原木;二次 `tree` 公共资源键未映射到 Mineflayer（Minecraft 协议客户端）/minecraft-data（Minecraft 数据库） logs tag（原木标签）事实;三次把 Mineflayer `canDigBlock`（能否挖方块）当前 5.1 格距离限制混入 `is_diggable`（可挖）资源事实;其间均未追加进度);B（实现代理）补齐 runtime（运行时） semantic_roles（语义角色）/is_diggable（可挖）/is_reachable（可达）事实、`tree`→`logs` 内部解析别名和 8 格外回归测试后通过
 - 关键决策: 保持 TS Core（TypeScript 核心）公共资源键为 `tree`,由 runtime/transport（运行时传输层）内部解析到 Minecraft（我的世界）原木 tag（标签）事实并返回 `resource_keys=["tree"]`;world-model（世界模型）只消费 `cut_tree_log`（砍树原木）语义角色、可挖事实和可达候选事实,不再按方块名猜测;`is_diggable`（可挖）只表达方块事实,不混入当前执行距离
 - 架构冲突: 无
+
+## T-052C | 2026-05-04 | plugin（服务端模组）树木/矿石相连连锁掉落
+
+- 涉及模块: plugin（服务端模组） Fabric（模组加载器）入口 `MCServantMod`,chainbreak（连锁破坏） handler（处理器）,服务端日志 diagnostics（诊断）
+- A 拆解依据: 用户要求 plugin（服务端模组）在真实方块破坏事件中把一次挖树木/矿石扩展为同类相连资源连锁破坏并生成正常掉落物;边界限定 plugin（服务端模组）与 diagnostics（诊断）,不进入 ResourceService（资源服务）、cutTree（砍树）正式 skill（技能）接入或 LLM（大语言模型）;用户交互中追加普通玩家也应触发,因此触发范围从 bot（机器人）扩展为所有 ServerPlayerEntity（服务端玩家实体）
+- C 审查结论: 通过;B（实现代理）交互中曾处理 bot（机器人）名称过滤、旧 jar（归档包）部署和树叶不自然凋零疑问,最终实现走 `PlayerBlockBreakEvents.AFTER`（破坏后事件）与 `ServerPlayerInteractionManager.tryBreakBlock`（服务端玩家破坏入口）,并由用户实服确认连锁掉落后树叶可按 vanilla（原版）机制自然凋零
+- 关键决策: 树木/矿石识别消费服务端 registry/tag（注册表/标签）事实,不判断自然树或用户需求数量;连锁破坏逐块调用玩家破坏入口而不是手动 drop（掉落）+ setBlockState（设置方块状态）,保留掉落、工具耐久、邻居更新、统计与 Fabric（模组框架） break hook（破坏钩子）等原版副作用;用 ThreadLocal（线程局部变量）递归保护避免 handler（处理器）再次触发自身,并记录 destroyed（破坏数）、scanned（扫描数）、truncated（截断）和 failure reasons（失败原因）
+- 架构冲突: 无
