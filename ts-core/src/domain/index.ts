@@ -30,6 +30,8 @@ export const domainModuleBoundary = {
     "MessageSource",
     "assertNonEmptyString",
     "cloneReadonlyValue",
+    "createStairBFSPlanner",
+    "createDefaultStairBFSSafetyChecker",
     "EventLogEntry",
     "TaskEnvelope",
     "MessageTriage",
@@ -40,3 +42,4 @@ export * from "./contracts.js";
 export * from "./craft-service.js";
 export * from "./invariants.js";
 export * from "./placement-service.js";
+export * from "./stair-bfs-planner.js";

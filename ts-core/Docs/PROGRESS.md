@@ -258,3 +258,11 @@
 - C 审查结论: 通过;`bash scripts/pre_review.sh`（评审前预检脚本） 全绿,33 个 test file（测试文件）/340 个 test（测试）通过;`plugin`（服务端模组） `./gradlew build` 通过;用户已实服确认 bread（面包）可装备到主手
 - 关键决策: `equip`（装备） 语义收敛为“把背包目标物品拿到主手”,`destination`（目标槽位） 只开放 `hand`（主手）,不扩展护甲/武器/最佳工具系统;执行层先比较 `heldItem`（当前手持物） 返回 `already_equipped`（已装备）,再从 inventory（背包） 查找目标物并调用 Mineflayer `equip`（装备）,失败以 `missing_item`（缺目标物品） 或 `runtime_equip_failed`（运行时装备失败） 结构化冒泡;`/svs`（服务端桥接命令） 只改成功回显文本,不改变 player_message（玩家消息）协议帧或 TS Core（TypeScript 单核心）入口
 - 架构冲突: 无
+
+## T-058 | 2026-05-04 | StairBFSPlanner（阶梯广度优先规划器）采矿核心
+
+- 涉及模块: domain（领域） StairBFSPlanner（阶梯广度优先规划器）/WorldScanner（世界扫描器）/SafetyChecker（安全检查器）/OreHandler（矿石处理器）契约,domain（领域）导出边界,领域模型测试
+- A 拆解依据: 用户要求实现采矿规划核心,以“玩家脚下位置”为 BFS（广度优先搜索）节点,状态包含 pos（位置）、dir（方向）、mode down/up（下降/上升模式）、usedFill（已用填充数）,先不填方块规划、失败后才允许低价值方块补路;边界限定 WorldScanner（世界扫描器）、SafetyChecker（安全检查器）、StairBFSPlanner（阶梯规划器）、OreHandler（矿石处理器）与 Executor（执行器）规划部分,明确不接 LLM（大语言模型）、不把 stone（石头）加入资源簇、不做大型洞穴探索或火把系统
+- C 审查结论: 通过;`bash scripts/pre_review.sh`（评审前预检脚本） 全绿,34 个 test file（测试文件）/347 个 test（测试）通过;`git diff --check`（差异空白检查）通过
+- 关键决策: 规划器保持纯 domain（领域）核心,只消费 scanner（扫描器）预分类 block role（方块角色）,不在业务逻辑中硬编码 Mineflayer（Minecraft 客户端库）/minecraft-data（Minecraft 数据库）事实;默认第一阶段只找无填充安全路线,调用方给出 fill budget（填充预算）后才运行第二阶段;step（步骤）输出只包含 nextFoot（下一脚部空间）/nextHead（下一头部空间）挖掘与 nextFloor（下一地板）填充计划,执行动作留给后续任务
+- 架构冲突: 无
