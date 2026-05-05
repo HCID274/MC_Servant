@@ -894,6 +894,13 @@ BotActor 在每个状态转换和关键操作点 emit 事件，写入 event_log�
 | `reflex.done` | 反射动作完成 | `rule_id`, `action_type`, `duration_ms` |
 | `intent.epoch_changed` | epoch 递增 | `new_epoch`, `message_id` |
 
+`result_summary`（结果摘要） 必须兼容统一 `SkillResultSummary`（技能结果摘要）：
+
+- 成功：`skill_name`（技能名）、`status: "completed"`、`target`（目标）、`requested_count`（请求数量）、`completed_count`（完成数量）、`inventory_delta`（背包增量）、`world_key`（世界键）、`duration_ms`（耗时）、`diagnostics`（诊断短标签）。
+- 失败 / 中断：除上述目标进度字段外，必须携带 `failure`（失败摘要），至少包含 `failure_code`（失败码）、`failure_stage`（失败阶段）、`message`（消息）、`recoverable`（是否可恢复）、`current_position`（当前位置）、`inventory_summary`（背包摘要）、`equipment_summary`（装备摘要）、`target_progress`（目标进度）。
+- `operation`（操作名） 是历史兼容字段，语义等价于 `skill_name`；新消费方应优先读取 `skill_name` 与 `failure`，不得按技能私有返回结构猜测终态。
+- `world_key` 只能由 currentWorld（当前世界） / ResourceService（资源服务） / runtime transport（运行时传输层） 上游透传，不允许为结果摘要重新解析维度或拼接世界名。
+
 ---
 
 ## 10. 错误分类

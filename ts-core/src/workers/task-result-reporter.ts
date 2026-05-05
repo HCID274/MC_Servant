@@ -72,27 +72,15 @@ export function formatTaskResultReport(taskCard: BrainTaskCard): string {
 
 function formatCompletedReport(taskCard: BrainTaskCard): string {
   const summary = taskCard.result.result_summary;
-  const duration = formatDuration(taskCard.result.duration_ms);
+  const duration = formatDuration(summary?.duration_ms ?? taskCard.result.duration_ms);
   const world = formatWorld(summary?.world_key);
-
-  if (summary?.operation === "cutTree") {
-    return `任务完成：砍到 ${formatInventoryDelta(summary)}，已捡拾掉落物，耗时 ${duration}，${world}喵~`;
-  }
-
-  if (summary?.operation === "mine") {
-    return `任务完成：挖到 ${formatInventoryDelta(summary)}，耗时 ${duration}，${world}喵~`;
-  }
-
-  if (summary?.operation === "collect") {
-    return `任务完成：捡到 ${formatInventoryDelta(summary)}，耗时 ${duration}喵~`;
-  }
-
-  if (summary?.operation === "equip") {
-    return `任务完成：已装备 ${summary.target ?? "目标物品"}，耗时 ${duration}喵~`;
+  const completedText = formatCompletedSummary(summary);
+  if (completedText !== null) {
+    return `${completedText}，耗时 ${duration}，${world}喵~`;
   }
 
   if (taskCard.execution.type === ExecutionTaskKind.SandboxCode) {
-    const operation = summary?.operation ?? "sandbox_code";
+    const operation = summary?.skill_name ?? summary?.operation ?? "sandbox_code";
     const target = summary?.target === undefined ? "" : ` ${summary.target}`;
     return `任务完成：sandbox TS（沙箱 TypeScript）已执行 ${operation}${target}，共 ${taskCard.result.total_steps} 步，耗时 ${duration}，${world}喵~`;
   }
@@ -108,9 +96,12 @@ function formatFailedReport(
 ): string {
   const error = result.error;
   const details = readDetails(error);
-  const code = readFailureCode(error);
-  const stage = readString(details.failure_stage) ?? result.last_step ?? "unknown";
-  const recoverable = readRecoverable(error);
+  const summary = result.result_summary;
+  const failure = summary?.failure;
+  const code = failure?.failure_code ?? readFailureCode(error);
+  const stage =
+    failure?.failure_stage ?? readString(details.failure_stage) ?? result.last_step ?? "unknown";
+  const recoverable = failure?.recoverable ?? readRecoverable(error);
   const operation = readOperation(taskCard);
   const suggestion = createFailureSuggestion(code);
 
@@ -122,13 +113,16 @@ function formatInterruptedReport(
   result: Extract<BrainTaskCardResult, { readonly status: TaskHistoryStatus.Interrupted }>,
 ): string {
   const summary = result.result_summary;
-  const operation = summary?.operation ?? readOperation(taskCard);
-  const duration = formatDuration(result.duration_ms);
+  const operation = summary?.skill_name ?? summary?.operation ?? readOperation(taskCard);
+  const duration = formatDuration(summary?.duration_ms ?? result.duration_ms);
   return `任务已取消：${operation} 已停止，原因 ${result.reason}，耗时 ${duration}喵~`;
 }
 
 function readOperation(taskCard: BrainTaskCard): string {
   const summary = taskCard.result.result_summary;
+  if (summary?.skill_name !== undefined) {
+    return summary.skill_name;
+  }
   if (summary?.operation !== undefined) {
     return summary.operation;
   }
@@ -136,6 +130,43 @@ function readOperation(taskCard: BrainTaskCard): string {
   return taskCard.execution.type === ExecutionTaskKind.SkillCall
     ? taskCard.execution.skill
     : "sandbox_code";
+}
+
+function formatCompletedSummary(summary: TaskResultSummary | undefined): string | null {
+  if (summary === undefined) {
+    return null;
+  }
+
+  const itemText = formatInventoryDelta(summary);
+  const status = readString(summary.details?.status);
+  const skillName = summary.skill_name ?? summary.operation;
+  const label = COMPLETED_SKILL_LABELS[skillName] ?? skillName;
+  if (skillName === "cutTree") {
+    return `任务完成：砍到 ${itemText}，已捡拾掉落物`;
+  }
+  if (skillName === "equip") {
+    return `任务完成：${formatEquipStatus(status)} ${summary.target ?? "目标物品"}`;
+  }
+  if (skillName === "place" || skillName === "placeCraftingTable") {
+    return `任务完成：已放置 ${summary.target ?? "crafting_table"}`;
+  }
+  if (skillName.startsWith("ensure")) {
+    return `任务完成：${skillName} 已确保 ${summary.target ?? "目标"} x${summary.completed_count ?? 1}`;
+  }
+
+  return `任务完成：${label} ${itemText}`;
+}
+
+const COMPLETED_SKILL_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  cutTree: "砍到",
+  mine: "挖到",
+  collect: "捡到",
+  craft: "合成",
+  goTo: "到达",
+} as const);
+
+function formatEquipStatus(status: string | undefined): string {
+  return status === "already_equipped" ? "已保持装备" : "已装备";
 }
 
 function formatInventoryDelta(summary: TaskResultSummary): string {

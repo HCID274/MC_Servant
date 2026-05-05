@@ -28,7 +28,19 @@ import {
   createSkillCallPlanDraft,
 } from "../conversation/index.js";
 import { ExecutionTaskKind } from "../core-ports/foundation.js";
-import { ExecPriority, TaskHistoryStatus, createSandboxCodeJob } from "../core-ports/tasking.js";
+import {
+  createCollectSkillExecutionResult,
+  createCutTreeSkillExecutionResult,
+  createEquipSkillExecutionResult,
+  createGoToSkillExecutionResult,
+  createMineSkillExecutionResult,
+} from "../core-ports/skills.js";
+import {
+  ExecPriority,
+  TaskHistoryStatus,
+  createSandboxCodeJob,
+  createSkillCallJob,
+} from "../core-ports/tasking.js";
 import { createBrainTaskCard } from "../data/index.js";
 import { ConversationPriority } from "../domain/contracts.js";
 import { SERVER_BRIDGE_PROTOCOL_VERSION } from "../interfaces/index.js";
@@ -50,7 +62,11 @@ import {
   createConversationWorkerTask,
 } from "../workers/contracts.js";
 import { type BrainWorkerRuntimeDependencies, createTaskResultReporter } from "../workers/index.js";
-import { createTaskResultSummaryFromSandboxResult } from "../workers/task-result-summary.js";
+import {
+  createTaskFailureResultSummary,
+  createTaskResultSummaryFromSandboxResult,
+  createTaskResultSummaryFromSkillResult,
+} from "../workers/task-result-summary.js";
 import { createResourceService } from "../world-model/index.js";
 
 class FakeEntrypointMineflayerBot extends EventEmitter implements MineflayerBotHandle {
@@ -550,6 +566,276 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     );
     expect(failedReply?.content).not.toContain("equip 失败码 resource_not_found");
     expect(failedReply?.content).not.toContain("craft 失败码 resource_not_found");
+  });
+
+  it("应为 Phase 1（第一阶段） 技能生成统一 SkillResultSummary（技能结果摘要）", () => {
+    const summaries = [
+      createTaskResultSummaryFromSkillResult(
+        createSkillCallJob({
+          message_id: "msg-summary-go",
+          intent_epoch: 1,
+          snapshot_ts: 1777906762364,
+          priority: ExecPriority.Normal,
+          skill: "goTo",
+          params: { x: 1, y: 2, z: 3 },
+        }),
+        createGoToSkillExecutionResult({ x: 1, y: 2, z: 3 }),
+        { durationMs: 10 },
+      ),
+      createTaskResultSummaryFromSkillResult(
+        createSkillCallJob({
+          message_id: "msg-summary-mine",
+          intent_epoch: 1,
+          snapshot_ts: 1777906762364,
+          priority: ExecPriority.Normal,
+          skill: "mine",
+          params: { blockName: "stone", count: 2 },
+        }),
+        createMineSkillExecutionResult(
+          { blockName: "stone", count: 2 },
+          {
+            world_key: "minecraft:overworld",
+            collected_item_name: "cobblestone",
+            collected_count: 2,
+            mined_count: 2,
+            diagnostics: ["planner=stair_bfs"],
+          },
+        ),
+        { durationMs: 20 },
+      ),
+      createTaskResultSummaryFromSkillResult(
+        createSkillCallJob({
+          message_id: "msg-summary-collect",
+          intent_epoch: 1,
+          snapshot_ts: 1777906762364,
+          priority: ExecPriority.Normal,
+          skill: "collect",
+          params: { itemName: "oak_log" },
+        }),
+        createCollectSkillExecutionResult(
+          { itemName: "oak_log" },
+          { collected: [{ name: "oak_log", count: 3 }] },
+        ),
+        { durationMs: 30 },
+      ),
+      createTaskResultSummaryFromSkillResult(
+        createSkillCallJob({
+          message_id: "msg-summary-cut-tree",
+          intent_epoch: 1,
+          snapshot_ts: 1777906762364,
+          priority: ExecPriority.Normal,
+          skill: "cutTree",
+          params: { count: 4 },
+        }),
+        createCutTreeSkillExecutionResult(
+          { count: 4 },
+          {
+            world_key: "minecraft:overworld",
+            collected_count: 5,
+            clusters: [
+              {
+                cluster_id: "tree-1",
+                log_block_name: "oak_log",
+                estimated_log_count: 5,
+                target: { x: 4, y: 64, z: 4 },
+                collected_count: 5,
+              },
+            ],
+          },
+        ),
+        { durationMs: 40 },
+      ),
+      createTaskResultSummaryFromSkillResult(
+        createSkillCallJob({
+          message_id: "msg-summary-equip",
+          intent_epoch: 1,
+          snapshot_ts: 1777906762364,
+          priority: ExecPriority.Normal,
+          skill: "equip",
+          params: { itemName: "stone_pickaxe" },
+        }),
+        createEquipSkillExecutionResult(
+          { itemName: "stone_pickaxe" },
+          { status: "already_equipped", total_steps: 0 },
+        ),
+        { durationMs: 50 },
+      ),
+    ];
+
+    expect(summaries.map((summary) => summary.skill_name)).toEqual([
+      "goTo",
+      "mine",
+      "collect",
+      "cutTree",
+      "equip",
+    ]);
+    for (const summary of summaries) {
+      expect(summary.status).toBe("completed");
+      expect(summary.operation).toBe(summary.skill_name);
+      expect(summary.duration_ms).toBeGreaterThan(0);
+    }
+    expect(summaries[1]?.inventory_delta).toEqual([{ item_name: "cobblestone", count: 2 }]);
+    expect(summaries[1]?.diagnostics).toEqual(["planner=stair_bfs"]);
+    expect(summaries[4]?.details).toMatchObject({ status: "already_equipped" });
+  });
+
+  it("应为 sandbox TS（沙箱 TypeScript） 工具链能力生成统一成功与失败摘要", () => {
+    const sandboxJob = createSandboxCodeJob({
+      message_id: "msg-toolchain-summary",
+      intent_epoch: 1,
+      snapshot_ts: 1777906762364,
+      priority: ExecPriority.Normal,
+      code: "await api.bot.ensureStonePickaxeEquipped()",
+    });
+    const successResult = {
+      status: TaskHistoryStatus.Completed,
+      summary: { total_steps: 3, duration_ms: 120 },
+      step_results: [
+        {
+          action: "craft",
+          status: "ok",
+          params: { itemName: "crafting_table", count: 1 },
+          result: {
+            ok: true,
+            data: {
+              item_name: "crafting_table",
+              completed_count: 1,
+              world_key: "minecraft:overworld",
+            },
+          },
+        },
+        {
+          action: "placeCraftingTable",
+          status: "ok",
+          params: {},
+          result: {
+            ok: true,
+            data: {
+              block_name: "crafting_table",
+              completed_count: 1,
+              world_key: "minecraft:overworld",
+            },
+          },
+        },
+        {
+          action: "ensureStonePickaxeEquipped",
+          status: "ok",
+          params: {},
+          result: {
+            ok: true,
+            data: {
+              item_name: "stone_pickaxe",
+              completed_count: 1,
+              target_count: 1,
+              world_key: "minecraft:overworld",
+            },
+          },
+        },
+      ],
+    } as unknown as Parameters<typeof createTaskResultSummaryFromSandboxResult>[1];
+    const failureSummary = createTaskFailureResultSummary(
+      createSkillCallJob({
+        message_id: "msg-failure-summary",
+        intent_epoch: 1,
+        snapshot_ts: 1777906762364,
+        priority: ExecPriority.Normal,
+        skill: "mine",
+        params: { blockName: "iron_ore", count: 1 },
+      }),
+      {
+        name: "Error",
+        message: "unsafe_path:lava_risk",
+        error_code: "unsafe_path",
+        details: {
+          failure_stage: "mine",
+          recoverable: true,
+          world_key: "minecraft:overworld",
+          current_position: { x: 0, y: 64, z: 0 },
+          inventory_summary: { occupied_slots: 3 },
+          equipment_summary: { main_hand: { name: "stone_pickaxe" } },
+          target_progress: {
+            action: "mine",
+            target: "iron_ore",
+            requested_count: 1,
+            completed_count: 0,
+          },
+        },
+      },
+      { durationMs: 70 },
+    );
+
+    const successSummary = createTaskResultSummaryFromSandboxResult(sandboxJob, successResult, {
+      durationMs: 120,
+    });
+
+    expect(successSummary).toMatchObject({
+      skill_name: "ensureStonePickaxeEquipped",
+      status: "completed",
+      target: "stone_pickaxe",
+      completed_count: 1,
+      world_key: "minecraft:overworld",
+      duration_ms: 120,
+    });
+    expect(failureSummary.failure).toMatchObject({
+      failure_code: "unsafe_path",
+      failure_stage: "mine",
+      recoverable: true,
+      current_position: { x: 0, y: 64, z: 0 },
+      inventory_summary: { occupied_slots: 3 },
+      equipment_summary: { main_hand: { name: "stone_pickaxe" } },
+      target_progress: {
+        action: "mine",
+        target: "iron_ore",
+        requested_count: 1,
+        completed_count: 0,
+      },
+    });
+  });
+
+  it("应补全直接 skill_call（技能调用） 失败的 SkillResultSummary（技能结果摘要）", () => {
+    const mineJob = createSkillCallJob({
+      message_id: "msg-direct-skill-failure-summary",
+      intent_epoch: 1,
+      snapshot_ts: 1777906762364,
+      priority: ExecPriority.Normal,
+      skill: "mine",
+      params: { blockName: "stone", count: 5 },
+    });
+
+    const summary = createTaskFailureResultSummary(
+      mineJob,
+      {
+        name: "Error",
+        message: "not_equipped:stone:main_hand_empty",
+      },
+      { durationMs: 33 },
+    );
+
+    expect(summary).toMatchObject({
+      skill_name: "mine",
+      operation: "mine",
+      status: "failed",
+      target: "stone",
+      requested_count: 5,
+      completed_count: 0,
+      duration_ms: 33,
+    });
+    expect(summary.failure).toEqual({
+      failure_code: "not_equipped",
+      failure_stage: "mine",
+      message: "not_equipped:stone:main_hand_empty",
+      recoverable: true,
+      current_position: null,
+      inventory_summary: null,
+      equipment_summary: null,
+      target_progress: {
+        action: "mine",
+        target: "stone",
+        requested_count: 5,
+        completed_count: 0,
+        target_count: 5,
+      },
+    });
   });
 
   it("应确保脚本、容器命令与根导出入口边界保持一致", () => {

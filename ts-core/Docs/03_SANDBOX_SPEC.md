@@ -324,6 +324,40 @@
     }
     ```
 
+    **统一结果摘要**：sandbox TS（沙箱 TypeScript） 能力的终态必须进入统一 `SkillResultSummary`（技能结果摘要），供 `TaskResultReporter`（任务结果汇报器）、diagnostics（诊断） 与后续上下文消费：
+
+    ```typescript
+    interface SkillResultSummary {
+      skill_name: string
+      status: 'completed' | 'failed' | 'interrupted'
+      target?: string
+      requested_count?: number
+      completed_count?: number
+      inventory_delta?: Array<{ item_name: string; count: number }>
+      world_key?: string | null
+      duration_ms?: number
+      diagnostics?: string[]
+      failure?: {
+        failure_code: string
+        failure_stage: string
+        message: string
+        recoverable: boolean | null
+        current_position?: Position | null
+        inventory_summary?: Record<string, unknown> | null
+        equipment_summary?: Record<string, unknown> | null
+        target_progress?: {
+          action?: string | null
+          target?: string | null
+          requested_count?: number | null
+          completed_count?: number | null
+          target_count?: number | null
+        } | null
+      }
+    }
+    ```
+
+    `craft`（合成）、`place`（放置）、`equip`（装备）、`mine`（挖掘）、`collect`（捡拾）、`cutTree`（砍树） 与所有 `ensure*`（确保函数） 都必须能转换为上述摘要。没有数量语义的 `equip` / `place` 仍要写入可读状态，例如 `already_equipped`（已装备） 或 `placed`（已放置） 到 `details` / diagnostics（诊断） 中。失败码至少区分 `resource_not_found`（找不到资源）、`unsafe_path`（路径不安全）、`not_equipped`（未装备）、`missing_materials`（缺材料）。
+
     **失败上下文**：所有可编程动作失败时，`FacadeCallError.details`（门面调用错误细节） 必须保留 `failure_stage`（失败阶段）、`current_position`（当前位置摘要）、`inventory_summary`（背包摘要）、`equipment_summary`（装备摘要） 与 `target_progress`（目标完成度）。这些字段进入 sandbox（沙箱） JSONL（结构化日志） 和 step result（步骤结果），供下一轮 Plan（规划）读取，不允许只返回字符串。
 
     **禁止项**：不得新增或暴露 `demoMineIron()`（演示挖铁） 或等价的一键隐藏链路。用户说“挖铁”时，LLM（大语言模型） 应生成可读 sandbox TS（沙箱 TypeScript） 组合，显式调用 `ensure*`（确保函数）、`craft`（合成）、`place`（放置）、`placeCraftingTable`（放置工作台）、`equip`（装备）、`mine`（挖掘）、`collect`（捡拾） 等通用能力；TS Core（TypeScript 核心） 不得把整条链路藏在单个 demo（演示） 方法里。

@@ -433,7 +433,9 @@ export function createBotWorkerRuntime(input: {
             status: TaskHistoryStatus.Completed,
             total_steps: executionResult.total_steps,
             duration_ms: durationMs,
-            result_summary: createTaskResultSummaryFromSkillResult(task.exec_job, executionResult),
+            result_summary: createTaskResultSummaryFromSkillResult(task.exec_job, executionResult, {
+              durationMs,
+            }),
           }),
         );
         events.push(
@@ -477,6 +479,7 @@ export function createBotWorkerRuntime(input: {
             result_summary: createTaskResultSummaryFromSandboxResult(
               task.exec_job,
               executionResult,
+              { durationMs },
             ),
             sandbox_result: Object.freeze({
               ...getSandboxResultRefs(executionResult),
@@ -516,6 +519,7 @@ export function createBotWorkerRuntime(input: {
             result_summary: createTaskResultSummaryFromSandboxResult(
               task.exec_job,
               executionResult,
+              { durationMs },
             ),
             sandbox_result: Object.freeze({
               ...getSandboxResultRefs(executionResult),
@@ -542,7 +546,9 @@ export function createBotWorkerRuntime(input: {
           status: TaskHistoryStatus.Completed,
           total_steps: executionResult.summary.total_steps,
           duration_ms: durationMs,
-          result_summary: createTaskResultSummaryFromSandboxResult(task.exec_job, executionResult),
+          result_summary: createTaskResultSummaryFromSandboxResult(task.exec_job, executionResult, {
+            durationMs,
+          }),
           sandbox_result: getSandboxResultRefs(executionResult),
         }),
       );
@@ -574,11 +580,18 @@ export function createBotWorkerRuntime(input: {
             duration_ms: durationMs,
             interrupt_source: interruptSource,
             reason,
-            result_summary: createTaskFailureResultSummary(task.exec_job, {
-              message: reason,
-              error_code: "task_interrupted",
-              ...(errorSnapshot.details === undefined ? {} : { details: errorSnapshot.details }),
-            }),
+            result_summary: createTaskFailureResultSummary(
+              task.exec_job,
+              {
+                message: reason,
+                error_code: "task_interrupted",
+                ...(errorSnapshot.details === undefined ? {} : { details: errorSnapshot.details }),
+              },
+              {
+                durationMs,
+                status: "interrupted",
+              },
+            ),
           }),
         );
         events.push(
@@ -601,7 +614,9 @@ export function createBotWorkerRuntime(input: {
           total_steps: 0,
           duration_ms: durationMs,
           error: errorSnapshot,
-          result_summary: createTaskFailureResultSummary(task.exec_job, errorSnapshot),
+          result_summary: createTaskFailureResultSummary(task.exec_job, errorSnapshot, {
+            durationMs,
+          }),
           last_step:
             task.exec_job.type === ExecutionTaskKind.SkillCall
               ? "executeSkill"

@@ -18,6 +18,7 @@ import { TaskHistoryStatus } from "../core-ports/tasking.js";
 export function createTaskResultSummaryFromSkillResult(
   job: SkillCallJob,
   result: SkillExecutionResult,
+  options: { readonly durationMs?: number } = {},
 ): TaskResultSummary {
   switch (result.skill) {
     case "goTo":
@@ -26,6 +27,7 @@ export function createTaskResultSummaryFromSkillResult(
         operation: result.skill,
         target: `${result.target.x},${result.target.y},${result.target.z}`,
         completed_count: 1,
+        ...createDurationField(options),
       });
     case "mine": {
       const inventoryDelta = createInventoryDelta(
@@ -41,6 +43,8 @@ export function createTaskResultSummaryFromSkillResult(
         completed_count: result.collected_count,
         ...(inventoryDelta === undefined ? {} : { inventory_delta: inventoryDelta }),
         world_key: result.world_key,
+        ...createDurationField(options),
+        diagnostics: result.diagnostics,
         details: { mined_count: result.mined_count },
       });
     }
@@ -57,6 +61,8 @@ export function createTaskResultSummaryFromSkillResult(
         completed_count: result.collected_count,
         ...(inventoryDelta === undefined ? {} : { inventory_delta: inventoryDelta }),
         world_key: result.world_key,
+        ...createDurationField(options),
+        diagnostics: result.diagnostics,
         details: {
           cluster_count: result.clusters.length,
           status: result.status,
@@ -73,6 +79,7 @@ export function createTaskResultSummaryFromSkillResult(
           item_name: item.name,
           count: item.count,
         })),
+        ...createDurationField(options),
         details: { skipped_count: result.skipped.length },
       });
     case "equip":
@@ -81,6 +88,7 @@ export function createTaskResultSummaryFromSkillResult(
         operation: result.skill,
         target: result.item_name,
         completed_count: 1,
+        ...createDurationField(options),
         details: {
           destination: result.destination,
           status: result.status,
@@ -93,9 +101,10 @@ export function createTaskResultSummaryFromSkillResult(
 export function createTaskResultSummaryFromSandboxResult(
   job: SandboxCodeJob,
   result: RuntimeSandboxExecutionResult,
+  options: { readonly durationMs?: number } = {},
 ): TaskResultSummary {
   if (result.status !== TaskHistoryStatus.Completed) {
-    return createSandboxTerminalResultSummary(job, result);
+    return createSandboxTerminalResultSummary(job, result, options);
   }
 
   const lastStep = [...result.step_results].reverse().find((step) => step.status === "ok");
@@ -113,19 +122,24 @@ export function createTaskResultSummaryFromSandboxResult(
       completed_count: toolchainData.completed_count,
       ...(inventoryDelta === undefined ? {} : { inventory_delta: inventoryDelta }),
       world_key: toolchainData.world_key,
+      ...createDurationField(options),
       details: { total_steps: result.summary.total_steps },
     });
   }
 
   const skillResult = readSandboxSkillResult(resultRecord);
   if (skillResult !== null) {
-    return skillResult;
+    return createTaskResultSummary({
+      ...skillResult,
+      ...createDurationField(options),
+    });
   }
 
   return createTaskResultSummary({
     task_type: job.type,
     operation: lastStep?.action ?? "sandbox_code",
     completed_count: result.status === TaskHistoryStatus.Completed ? result.summary.total_steps : 0,
+    ...createDurationField(options),
     details: { total_steps: result.summary.total_steps },
   });
 }
@@ -133,6 +147,7 @@ export function createTaskResultSummaryFromSandboxResult(
 function createSandboxTerminalResultSummary(
   job: SandboxCodeJob,
   result: RuntimeSandboxExecutionResult,
+  options: { readonly durationMs?: number },
 ): TaskResultSummary {
   const failedStep = [...result.step_results].reverse().find((step) => step.status !== "ok");
   const errorRecord = "error" in result ? asRecord(result.error) : null;
@@ -157,14 +172,31 @@ function createSandboxTerminalResultSummary(
     readNumber(targetProgress?.requested_count) ??
     readNumber(details?.target_count);
   const worldKey = readOptionalString(details?.world_key);
+  const failure = createFailureSummary({
+    code:
+      readOptionalString(errorRecord?.error_code) ??
+      readOptionalString(stepErrorRecord?.error_code) ??
+      "facade_call_failed",
+    stage: readOptionalString(details?.failure_stage) ?? operation,
+    message:
+      readOptionalString(errorRecord?.message) ??
+      readOptionalString(stepErrorRecord?.message) ??
+      "sandbox terminal failure",
+    recoverable:
+      readBoolean(errorRecord?.recoverable) ?? readBoolean(stepErrorRecord?.recoverable) ?? null,
+    details,
+  });
 
   return createTaskResultSummary({
     task_type: job.type,
     operation,
+    status: result.status === TaskHistoryStatus.Interrupted ? "interrupted" : "failed",
     ...(target === undefined ? {} : { target }),
     ...(requestedCount === undefined ? {} : { requested_count: requestedCount }),
-    completed_count: 0,
+    completed_count: readNumber(targetProgress?.completed_count) ?? 0,
     ...(worldKey === undefined ? {} : { world_key: worldKey }),
+    ...createDurationField(options),
+    failure,
     details: {
       ...(details ?? {}),
       total_steps: result.summary.total_steps,
@@ -176,8 +208,10 @@ function createSandboxTerminalResultSummary(
 export function createTaskFailureResultSummary(
   job: ExecJob,
   error: TaskFailedErrorSnapshot,
+  options: { readonly durationMs?: number; readonly status?: "failed" | "interrupted" } = {},
 ): TaskResultSummary {
-  const details = error.details ?? {};
+  const details = createFailureDetailsForJob(job, error.details ?? {});
+  const failureCode = error.error_code ?? readFailureCodeFromMessage(error.message);
   const target = job.type === ExecutionTaskKind.SkillCall ? readSkillTarget(job) : undefined;
   const requestedCount =
     job.type === ExecutionTaskKind.SkillCall ? readSkillRequestedCount(job) : undefined;
@@ -185,11 +219,56 @@ export function createTaskFailureResultSummary(
   return createTaskResultSummary({
     task_type: job.type,
     operation: job.type === ExecutionTaskKind.SkillCall ? job.skill : "sandbox_code",
+    status: options.status ?? "failed",
     ...(target === undefined ? {} : { target }),
     ...(requestedCount === undefined ? {} : { requested_count: requestedCount }),
-    completed_count: 0,
+    completed_count: readTargetProgressCompletedCount(details) ?? 0,
     ...(worldKey === undefined ? {} : { world_key: worldKey }),
+    ...createDurationField(options),
+    failure: createFailureSummary({
+      code: failureCode,
+      stage:
+        readOptionalString(details.failure_stage) ??
+        (job.type === ExecutionTaskKind.SkillCall ? job.skill : "sandbox_code"),
+      message: error.message,
+      recoverable: readBoolean(details.recoverable) ?? inferRecoverable(failureCode),
+      details,
+    }),
     details,
+  });
+}
+
+function createFailureDetailsForJob(
+  job: ExecJob,
+  details: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  if (job.type !== ExecutionTaskKind.SkillCall) {
+    return details;
+  }
+
+  const targetProgress = createSkillTargetProgress(job, details);
+  return Object.freeze({
+    ...details,
+    failure_stage: readOptionalString(details.failure_stage) ?? job.skill,
+    target_progress: targetProgress,
+  });
+}
+
+function createSkillTargetProgress(
+  job: SkillCallJob,
+  details: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const existingProgress = asRecord(details.target_progress);
+  const requestedCount = readSkillRequestedCount(job);
+  const target = readSkillTarget(job);
+
+  return Object.freeze({
+    action: job.skill,
+    target: target ?? null,
+    requested_count: requestedCount ?? null,
+    completed_count: readNumber(existingProgress?.completed_count) ?? 0,
+    target_count: readNumber(existingProgress?.target_count) ?? requestedCount ?? null,
+    ...(existingProgress ?? {}),
   });
 }
 
@@ -207,6 +286,120 @@ function createInventoryDelta(
       count,
     }),
   ]);
+}
+
+function createDurationField(options: { readonly durationMs?: number }): {
+  readonly duration_ms?: number;
+} {
+  return options.durationMs === undefined ? {} : { duration_ms: options.durationMs };
+}
+
+function createFailureSummary(input: {
+  readonly code: string;
+  readonly stage: string;
+  readonly message: string;
+  readonly recoverable: boolean | null;
+  readonly details?: Readonly<Record<string, unknown>> | null;
+}): NonNullable<TaskResultSummary["failure"]> {
+  const details = input.details ?? {};
+  return Object.freeze({
+    failure_code: input.code,
+    failure_stage: input.stage,
+    message: input.message,
+    recoverable: input.recoverable,
+    current_position: readPositionSummary(details.current_position) ?? null,
+    inventory_summary: readNullableRecord(details.inventory_summary) ?? null,
+    equipment_summary: readNullableRecord(details.equipment_summary) ?? null,
+    target_progress: readTargetProgress(details.target_progress) ?? null,
+  });
+}
+
+function readNullableRecord(value: unknown): Readonly<Record<string, unknown>> | null | undefined {
+  if (value === null) {
+    return null;
+  }
+
+  return asRecord(value) ?? undefined;
+}
+
+function readPositionSummary(
+  value: unknown,
+): NonNullable<TaskResultSummary["failure"]>["current_position"] {
+  if (!isRecord(value)) {
+    return value === null ? null : undefined;
+  }
+
+  const x = readNumber(value.x);
+  const y = readNumber(value.y);
+  const z = readNumber(value.z);
+  if (x === undefined || y === undefined || z === undefined) {
+    return undefined;
+  }
+
+  return Object.freeze({ x, y, z });
+}
+
+function readTargetProgress(
+  value: unknown,
+): NonNullable<TaskResultSummary["failure"]>["target_progress"] {
+  if (!isRecord(value)) {
+    return value === null ? null : undefined;
+  }
+
+  const action = readOptionalString(value.action);
+  const target = readOptionalString(value.target);
+  const requestedCount = readNullableNumber(value.requested_count);
+  const completedCount = readNullableNumber(value.completed_count);
+  const targetCount = readNullableNumber(value.target_count);
+
+  return Object.freeze({
+    ...(action === undefined ? {} : { action }),
+    ...(target === undefined ? {} : { target }),
+    ...(requestedCount === undefined ? {} : { requested_count: requestedCount }),
+    ...(completedCount === undefined ? {} : { completed_count: completedCount }),
+    ...(targetCount === undefined ? {} : { target_count: targetCount }),
+  });
+}
+
+function readTargetProgressCompletedCount(
+  details: Readonly<Record<string, unknown>>,
+): number | undefined {
+  const targetProgress = asRecord(details.target_progress);
+  return readNumber(targetProgress?.completed_count);
+}
+
+function readFailureCodeFromMessage(message: string): string {
+  const separatorIndex = message.indexOf(":");
+  return separatorIndex <= 0 ? "unknown_error" : message.slice(0, separatorIndex);
+}
+
+function inferRecoverable(code: string | undefined): boolean | null {
+  if (code === undefined) {
+    return null;
+  }
+
+  if (
+    code === "missing_materials" ||
+    code === "missing_item" ||
+    code === "missing_crafting_table" ||
+    code === "not_equipped" ||
+    code === "resource_not_found" ||
+    code === "unsafe_path"
+  ) {
+    return true;
+  }
+
+  if (
+    code === "runtime_mine_failed" ||
+    code === "runtime_craft_failed" ||
+    code === "runtime_equip_failed" ||
+    code === "place_failed" ||
+    code === "cannot_place"
+  ) {
+    return false;
+  }
+
+  return null;
 }
 
 function readToolchainSuccessData(value: unknown): {
@@ -332,6 +525,18 @@ function readOptionalString(value: unknown): string | undefined {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readNullableNumber(value: unknown): number | null | undefined {
+  if (value === null) {
+    return null;
+  }
+
+  return readNumber(value);
+}
+
+function readBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
