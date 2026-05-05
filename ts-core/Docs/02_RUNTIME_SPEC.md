@@ -900,6 +900,7 @@ BotActor 在每个状态转换和关键操作点 emit 事件，写入 event_log�
 - 失败 / 中断：除上述目标进度字段外，必须携带 `failure`（失败摘要），至少包含 `failure_code`（失败码）、`failure_stage`（失败阶段）、`message`（消息）、`recoverable`（是否可恢复）、`current_position`（当前位置）、`inventory_summary`（背包摘要）、`equipment_summary`（装备摘要）、`target_progress`（目标进度）。
 - `operation`（操作名） 是历史兼容字段，语义等价于 `skill_name`；新消费方应优先读取 `skill_name` 与 `failure`，不得按技能私有返回结构猜测终态。
 - `world_key` 只能由 currentWorld（当前世界） / ResourceService（资源服务） / runtime transport（运行时传输层） 上游透传，不允许为结果摘要重新解析维度或拼接世界名。
+- Failure Capsule（失败胶囊） 只能由执行终态侧基于 `result_summary`（结果摘要） 确定性格式化产生。BotWorker / BotActor（机器人工作线程 / 机器人执行代理） 是执行事实 owner（所有者）；ConversationWorker（对话工作线程） 只能读取并渲染短胶囊,不得补造完整执行事实。
 
 ---
 
@@ -911,7 +912,7 @@ BotActor 执行过程中遇到的错误分三类，处置策略不同：
 
 Bot 尝试执行动作但失败了（挖不到矿、找不到路、背包满了）。这不是系统错误，是游戏世界的正常反馈。
 
-- **处置**：emit `task.failed`，错误信息写入 event_log 和 JSONL。推入 brain 队列，由 BrainWorker 评估是否重规划。
+- **处置**：emit `task.failed`，错误信息和完整失败详情写入 event_log、diagnostics（诊断） 和 JSONL（结构化日志）。实时继续任务只通过短 Failure Capsule（失败胶囊） 暴露给 Plan（规划）；BrainWorker（大脑工作线程） 只做异步长期档案和经验沉淀。
 - **BotActor 状态**：回到 IDLE。
 
 ### 10.2 沙箱执行异常

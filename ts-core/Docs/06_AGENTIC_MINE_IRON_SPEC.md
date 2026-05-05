@@ -83,7 +83,7 @@ Triage（分诊）返回后,由确定性规则决定是否采用投机候选：
 | 记忆型 chat（闲聊）,如"上次 / 之前 / 还记得 / 基地在哪" | 使用 memory（记忆）候选 |
 | 简单 skill_call（技能调用）,如 goTo（移动）/ collect（捡拾）/ cutTree（砍树） | 丢弃检索候选 |
 | sandbox_code（沙箱代码）复杂任务 | 使用 skill index（技能索引）与相关经验候选 |
-| 上轮失败后的继续任务 | 强制加载失败上下文与相关经验 |
+| 上轮失败后的 continuation（继续任务） | 只强制加载短 Failure Capsule（失败胶囊）与必要经验候选 |
 
 本地检索若超过小超时（建议 80ms）,merge gate（合并闸门）不得等待；Plan（规划）确实需要时再通过 `search()`（检索）工具补查。
 
@@ -100,7 +100,7 @@ Triage（分诊）返回后,由确定性规则决定是否采用投机候选：
 - recent context（最近上下文）。
 - inventory/equipment summary（背包/装备摘要）。
 - resource summary（资源摘要）。
-- last failure summary（最近失败摘要）。
+- Failure Capsule（失败胶囊）短摘要,仅在最近一轮失败且当前消息是 continuation（继续任务） 时注入。
 - hot LRU（热点最近最少使用）短索引。
 
 ### 3.2 渐进披露
@@ -134,7 +134,7 @@ await api.bot.collect("raw_iron", 32)
 await api.chat.report("已经挖到粗铁了喵~")
 ```
 
-如果附近没有 `iron_ore`（铁矿）,Plan（规划）应能在失败上下文中改试 `deepslate_iron_ore`（深层铁矿）或扩大矿石搜索范围。
+如果附近没有 `iron_ore`（铁矿）,Plan（规划）应能在 Failure Capsule（失败胶囊） 的提示下改试 `deepslate_iron_ore`（深层铁矿）或清晰汇报附近无矿；不得依赖完整坐标列表或完整资源搜索结果进入 prompt（提示词）。
 
 ### 4.2 ensure（确保）函数
 
@@ -409,18 +409,51 @@ if scanNearbyOre(current):
 
 ## 7. 失败恢复与重新规划
 
-物理动作不可幂等,不得用 BullMQ retry（队列重试）盲目重跑。失败后必须产出结构化上下文：
+物理动作不可幂等,不得用 BullMQ retry（队列重试）盲目重跑。失败恢复采用双轨：
 
+1. prompt（提示词） 只接收短 Failure Capsule（失败胶囊）。
+2. diagnostics（诊断）/ JSONL（结构化日志） 保存完整失败详情,供开发者排错。
+
+Failure Capsule（失败胶囊）只允许包含：
+
+- goal（目标）。
+- failed_action（失败动作）。
 - failure_code（失败码）。
-- failure_message（失败消息）。
-- last_ts_code（上一段 TypeScript 代码）。
-- bot_position（机器人坐标）。
-- inventory/equipment（背包/装备）。
-- target_progress（目标完成度）。
-- resource_search_result（资源搜索结果）。
-- visible_hazard（可见危险）。
+- progress（目标进度）。
+- retry_guard（重复保护）。
+- hint（一个提示）。
 
-下一轮 Plan（规划）必须看到这些信息,并生成新的 TS（TypeScript）组合。建议单个用户目标最多自动 replan（重新规划） 3 次,超过后清晰汇报阻塞原因。
+示例：
+
+```text
+[上一轮失败]
+目标：挖 iron_ore x1
+失败：resource_not_found at mine
+进度：raw_iron 0/1
+避免重复：不要原样重复 mine("iron_ore", 1)
+建议：可尝试 deepslate_iron_ore 或汇报附近无矿
+```
+
+以下内容不得默认进入下一轮 Plan（规划） prompt（提示词）：完整 bot_position（机器人坐标）、完整 inventory/equipment（背包/装备）、完整 resource_search_result（资源搜索结果）、visible_hazard（可见危险）列表、失败轮的 last_ts_code（上一段 TypeScript 代码）、stack trace（堆栈）、runtime details（运行时详情） 与完整 JSONL（结构化日志）。这些内容必须进入 diagnostics（诊断）/ JSONL（结构化日志）。普通非失败轮的 sandbox TS（沙箱 TypeScript） recent context（最近上下文） 仍按 CONVERSATION_SPEC（对话规格） §7.6.4 处理；失败 continuation（继续任务） 时由 Failure Capsule（失败胶囊）替代失败轮完整代码。
+
+事实 owner（所有者） 边界：
+
+- BotWorker / BotActor（机器人工作线程 / 机器人执行代理） 产出执行事实。
+- TaskResultSummary（任务结果摘要） 承载结构化终态。
+- deterministic formatter（确定性格式化器） 从终态摘要生成 Failure Capsule（失败胶囊）。
+- ConversationWorker（对话工作线程） 只把 Failure Capsule（失败胶囊） 合并渲染进 recent context（最近上下文）,不得凭空制造执行事实。
+- BrainWorker（大脑工作线程） 只做异步长期档案,不参与实时 Failure Capsule（失败胶囊） 生成。
+
+continuation（继续任务）规则：如果最近一轮存在 Failure Capsule（失败胶囊）,且用户说"继续 / 再试试 / 想办法 / 换个办法 / 你自己解决"等短句,视为继续同一目标。不得新增 ContextGate LLM（上下文门控大语言模型）。下一轮 Plan（规划）看到 Failure Capsule（失败胶囊） 后不得原样重复 retry_guard（重复保护） 中的动作。
+
+失败分类：
+
+| 类别 | code（失败码） 示例 | 规划要求 |
+|------|---------------------|----------|
+| 可恢复失败 | `missing_materials`、`not_equipped`、`resource_not_found`、`missing_crafting_table`、`crafting_table_unavailable`、`inventory_full`、`unsafe_path`、`unreachable_target`、`drop_not_obtained` | 换策略,如补材料、装备工具、换目标、换路径或汇报附近不足 |
+| 实现阻塞失败 | `unsupported_capability`、`runtime_adapter_error`、`world_mismatch`、`invalid_runtime_object`、`protocol_error`、`plugin_unavailable` | 不得乱试,直接汇报阻塞原因 |
+
+建议单个用户目标最多自动 replan（重新规划） 3 次；超过后清晰汇报阻塞原因。后续触碰 Failure Capsule（失败胶囊） 注入或 Plan prompt（规划提示词） 规则的实现任务,需实服验证真实 LLM（大语言模型）行为。
 
 ---
 
@@ -456,6 +489,6 @@ BrainWorker（大脑工作线程）在以下情况下创建或更新 agent-manag
 3. cheap speculative retrieval（廉价投机检索）并发给出候选经验。
 4. Plan（规划）在真实上下文中生成可读 sandbox TS（沙箱 TypeScript）组合。
 5. 执行层显式使用 ensure（确保）函数和 mine（挖掘）原语。
-6. 若失败,下一轮 Plan（规划）读取结构化失败原因并换策略。
+6. 若失败,下一轮 Plan（规划）读取短 Failure Capsule（失败胶囊） 并换策略,完整失败详情留在 diagnostics（诊断）/ JSONL（结构化日志）。
 7. 成功后 BrainWorker（大脑工作线程）沉淀经验 skill（经验技能）。
 8. 下一次类似任务能通过索引和检索更快加载经验。

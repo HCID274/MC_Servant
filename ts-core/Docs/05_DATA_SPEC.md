@@ -283,7 +283,7 @@ CREATE INDEX idx_task_events_embedding ON mc_servant.task_events
 CREATE INDEX idx_task_events_bot_time  ON mc_servant.task_events (bot_id, created_at DESC);
 ```
 
-B 层全档：每个完成的任务（含 success / failed / interrupted）BrainWorker 写一行。**结构化字段直接列入**（不靠 LLM 抽取），自由文本（owner_text / takeaway）走 embedding。`takeaway` 仅在失败任务或会话收尾跑触发式 LLM 摘要，普通成功任务为 NULL。
+B 层全档：每个完成的任务（含 success / failed / interrupted）BrainWorker 写一行。**结构化字段直接列入**（不靠 LLM 抽取），自由文本（owner_text / takeaway）走 embedding。`takeaway` 仅在失败任务或会话收尾跑触发式 LLM 摘要，普通成功任务为 NULL。失败任务的完整 `TaskResultSummary`（任务结果摘要）、inventory/equipment（背包/装备）、resource_search_result（资源搜索结果）、runtime details（运行时详情） 与错误堆栈只保留在 `task_card`（任务卡）/ JSONL（结构化日志）/ diagnostics（诊断） 中；Plan prompt（规划提示词） 默认只读取短 Failure Capsule（失败胶囊）。
 
 **tsvector 配置说明**：使用 `'simple'` 字典逐字切分中文，配合 `pg_trgm` 三元组索引覆盖关键词召回；语义召回走 `embedding`。
 
@@ -527,6 +527,8 @@ logs/
 | `err` | 错误信息 | 失败时必需 |
 
 **压缩原则**：key 用缩写（`t` 而非 `timestamp`），value 不压缩（可读性优先）。JSONL 是给人 debug 看的，省字段名节省的空间在磁盘上微不足道，但可读性不能牺牲太多。
+
+失败任务的 JSONL（结构化日志） 必须保留完整失败详情,包括结构化 failure_code（失败码）、failure_stage（失败阶段）、current_position（当前位置）、inventory_summary（背包摘要）、equipment_summary（装备摘要）、target_progress（目标进度）、resource_search_result（资源搜索结果）、runtime details（运行时详情） 与必要 stack trace（堆栈）。这些字段供开发者排错,不得默认作为下一轮 LLM（大语言模型） prompt（提示词） 上下文。下一轮 prompt（提示词） 只注入 CONVERSATION_SPEC（对话规格） §7.6.5 定义的短 Failure Capsule（失败胶囊）。
 
 ### 4.3 沙箱执行日志格式（sandbox/）
 

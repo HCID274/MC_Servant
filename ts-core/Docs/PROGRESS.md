@@ -43,6 +43,14 @@
 
 (从这里开始,Reviewer C 通过任务后追加)
 
+## T-068 | 2026-05-05 | Failure Capsule（失败胶囊）文档契约对齐
+
+- 涉及模块: Docs/02_RUNTIME_SPEC.md（运行时规格）,Docs/03_SANDBOX_SPEC.md（沙箱规格）,Docs/04_CONVERSATION_SPEC.md（对话规格）,Docs/05_DATA_SPEC.md（数据规格）,Docs/06_AGENTIC_MINE_IRON_SPEC.md（智能挖铁规格）
+- A 拆解依据: 用户要求把失败后继续任务改成短 Failure Capsule（失败胶囊）进入 Plan prompt（规划提示词）,完整失败详情进入 diagnostics（诊断）/ JSONL（结构化日志）,并明确 ConversationWorker（对话工作线程）只合并渲染、不制造执行事实;边界限定只改文档契约,不写实现代码,不改 PROGRESS（进度文档）
+- C 审查结论: 曾打回 1 次 (Failure Capsule（失败胶囊） 与 existing recent context（已有最近上下文） 关于 sandbox TS（沙箱 TypeScript） 是否注入 prompt（提示词）存在文档冲突);返修后通过。普通非失败轮仍按 recent context（最近上下文）注入 sandbox TS（沙箱 TypeScript）,失败 continuation（继续任务） 场景只注入短 Failure Capsule（失败胶囊）,不注入失败轮完整 last_ts_code（上一段 TypeScript 代码）、完整报错或完整执行结果详情;`git diff --check`（差异空白检查） 通过,`bash scripts/pre_review.sh`（评审前预检脚本） 全绿,34 个 test file（测试文件）/394 个 test（测试）通过;B 已补真实 LLM API（大语言模型接口）验证
+- 关键决策: 选择"失败场景例外"而不是删除全部 sandbox TS（沙箱 TypeScript） 注入,避免误伤普通 recent context（最近上下文） 的可读执行链路,同时让失败继续任务只携带短胶囊以控制 token（词元）膨胀;完整失败详情保留在 diagnostics（诊断）/ JSONL（结构化日志） 供开发者排错
+- 架构冲突: 无
+
 ## T-066 | 2026-05-05 | Plan Prompt v2（规划提示词第二版）与 sandbox_code（沙箱代码）闭环门禁
 
 - 涉及模块: conversation/llm（对话大语言模型） plan prompt（规划提示词）/parser（解析器）,conversation planning tests（规划测试）,app entrypoint（应用入口）异步 brain queue（大脑队列）测试等待点,Docs/04_CONVERSATION_SPEC.md（对话规格文档）

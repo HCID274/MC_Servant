@@ -250,6 +250,13 @@ ConversationWorker 的规划输出有两种路径。**默认走 skill_call**，�
 - 最后必须调用 api.chat.report()
 - 禁止 demoMineIron()（演示挖铁） 或等价一键隐藏脚本
 - 禁止手写 world_key（世界键）
+
+# 上一轮失败
+- 如果 prompt（提示词） 中出现 [上一轮失败] Failure Capsule（失败胶囊）,必须读取其中 goal（目标）、failed_action（失败动作）、failure_code（失败码）、progress（进度）、retry_guard（重复保护） 与 hint（提示）
+- 不得原样重复 retry_guard（重复保护） 中的动作
+- 可恢复失败必须换策略,例如换资源目标、补材料、装备工具、重新选择安全路径或直接汇报附近不足
+- 实现阻塞失败不得乱试,必须汇报阻塞原因
+- 没有合法替代策略时,直接 api.chat.report() 汇报阻塞
 ```
 
 ### 5.3 Plan User Prompt 组装
@@ -325,9 +332,9 @@ interface api {
 }
 ```
 
-`ToolchainResult`（工具链结果） 固定为 `{ok:true,data}` 或 `{ok:false,error}`。`error.code`（错误码） 必须使用结构化失败码,覆盖 `missing_materials`（缺材料）、`missing_crafting_table`（无工作台）、`missing_crafting_table_item`（背包无工作台物品）、`no_placeable_position`（附近无可放位置）、`place_failed`（放置失败）、`cached_position_invalid`（缓存位置失效）、`cannot_place`（无法放置）、`missing_item`（缺目标物品）、`runtime_equip_failed`（运行时装备失败）、`not_equipped`（未装备）、`resource_not_found`（找不到资源）、`unsafe_path`（路径不安全） 等可恢复原因。sandbox（沙箱） 步骤失败必须保留 `failure_stage`（失败阶段）、`current_position`（当前位置摘要）、`inventory_summary`（背包摘要）、`equipment_summary`（装备摘要） 和 `target_progress`（目标完成度），供下一轮上下文读取。Plan（规划）不得生成或引用 `demoMineIron()`（演示挖铁） 或等价一键隐藏脚本。
+`ToolchainResult`（工具链结果） 固定为 `{ok:true,data}` 或 `{ok:false,error}`。`error.code`（错误码） 必须使用结构化失败码,覆盖 `missing_materials`（缺材料）、`missing_crafting_table`（无工作台）、`missing_crafting_table_item`（背包无工作台物品）、`no_placeable_position`（附近无可放位置）、`place_failed`（放置失败）、`cached_position_invalid`（缓存位置失效）、`cannot_place`（无法放置）、`missing_item`（缺目标物品）、`runtime_equip_failed`（运行时装备失败）、`not_equipped`（未装备）、`resource_not_found`（找不到资源）、`unsafe_path`（路径不安全） 等可恢复原因。sandbox（沙箱） 步骤失败必须保留 `failure_stage`（失败阶段）、`current_position`（当前位置摘要）、`inventory_summary`（背包摘要）、`equipment_summary`（装备摘要） 和 `target_progress`（目标完成度）；这些完整详情进入 diagnostics（诊断）/ JSONL（结构化日志） 与 step result（步骤结果）,下一轮 prompt（提示词） 只注入 §7.6.5 的短 Failure Capsule（失败胶囊）。Plan（规划）不得生成或引用 `demoMineIron()`（演示挖铁） 或等价一键隐藏脚本。
 
-`place('crafting_table')`（放置工作台） 若背包没有 crafting table（工作台） 物品，执行层必须先通过 `craft('crafting_table', 1)`（合成工作台） 尝试获得物品；若 runtime（运行时） 配方校验显示缺少中间材料，可继续调用已开放的最小 `craft('planks', n)`（合成木板） 能力补齐，再重试合成工作台。放置阶段必须在当前世界附近预选最多 3 个合法候选点顺序尝试，一个被挡住或验证失败则顺延。材料不足时返回 `missing_materials`（缺材料），不得直接停在“无工作台物品”；工具链 `ok:false`（失败结果） 必须让 sandbox（沙箱） 步骤失败并保留结构化 `error.code`（错误码），供下一轮 Plan（规划）按失败原因补材料或重新选位。
+`place('crafting_table')`（放置工作台） 若背包没有 crafting table（工作台） 物品，执行层必须先通过 `craft('crafting_table', 1)`（合成工作台） 尝试获得物品；若 runtime（运行时） 配方校验显示缺少中间材料，可继续调用已开放的最小 `craft('planks', n)`（合成木板） 能力补齐，再重试合成工作台。放置阶段必须在当前世界附近预选最多 3 个合法候选点顺序尝试，一个被挡住或验证失败则顺延。材料不足时返回 `missing_materials`（缺材料），不得直接停在“无工作台物品”；工具链 `ok:false`（失败结果） 必须让 sandbox（沙箱） 步骤失败并保留结构化 `error.code`（错误码），后续 Plan（规划）只能通过 Failure Capsule（失败胶囊） 的短字段决定补材料或重新选位。
 
 所有资源、坐标和维度上下文必须通过 existing world tag（既有世界标签）、`currentWorld`（当前世界） 或 ResourceService（资源服务） 接口读取；sandbox TS（沙箱 TypeScript） 不得自行拼接 `world_key`（世界键）。
 
@@ -747,6 +754,7 @@ BotActor 通过 `BotActorStateProjection.recent_events: ReadonlyArray<{ message_
 - 渲染范围：**只渲染当前 prompt 之前已经完成的轮次**。当前 user message 由正常 user message 槽位提供，**不得**同时进入 `[最近上下文]`，否则与 user message 重复。
 - 缺失元素跳过对应行；不输出占位符。
 - 沙盒 TS 用 ` ```ts ... ``` ` 围栏多行包裹，其余各项单行渲染。
+- 如果某轮任务失败并生成 Failure Capsule（失败胶囊）,且当前消息被识别为 continuation（继续任务）,该失败轮在 Stage 2-Plan（第二阶段规划） prompt（提示词） 中只渲染 Failure Capsule（失败胶囊）,不渲染该轮完整沙盒 TS、完整报错、完整执行结果详情；完整内容仅保留在 diagnostics（诊断）/ JSONL（结构化日志）。
 - 字面格式（按真实 timestamp 排序，本示例展示典型顺序）：
 
 ```
@@ -764,9 +772,9 @@ Bot：<reply 原文>
 - 整段无任何轮次时，`[最近上下文]` 段省略。
 - 轮与轮之间用一个空行分隔，便于 LLM 阅读。
 
-#### 7.6.4 沙盒 TS 代码超长截断
+#### 7.6.4 沙盒 TS 代码注入与截断
 
-默认完整注入沙盒 TS 代码原文，**不做语义摘要、不调用 LLM 总结、不写规则猜代码含义**。仅以下安全阈值触发截断：
+默认完整注入非失败轮的沙盒 TS 代码原文，**不做语义摘要、不调用 LLM 总结、不写规则猜代码含义**。失败 continuation（继续任务） 是唯一语义例外：上一轮失败的 `last_ts_code`（上一段 TypeScript 代码） 不进入下一轮 Plan（规划） prompt（提示词）,由 §7.6.5 的 Failure Capsule（失败胶囊）替代。仅以下安全阈值触发截断：
 
 - 单段 TS 代码 > 200 行 **或** > 8000 字符。
 - 触发后渲染：
@@ -779,28 +787,72 @@ Bot：<reply 原文>
 ```
 
 - `code_ref` 取该轮主人 `message_id`（链路自带，不新增存储标识）；reflex / system 轮使用其聚合键。
-- 截断仅作用于 TS 代码块；同轮内的执行结果、报错行不允许被截断省略——用户原话「不能删执行结果」。
+- 截断仅作用于 TS 代码块；同轮内的执行结果、报错行不允许被截断省略——用户原话「不能删执行结果」。失败 continuation（继续任务） 例外按 §7.6.3 处理,完整失败轮内容不进 prompt（提示词）,只进 diagnostics（诊断）/ JSONL（结构化日志）。
 
-#### 7.6.5 与 §7.5 / §8 的边界
+#### 7.6.5 Failure Capsule（失败胶囊）短上下文
+
+任务失败后的下一轮 prompt（提示词） 不注入完整失败上下文。只允许注入由执行终态摘要确定性格式化得到的短 Failure Capsule（失败胶囊）,用于告诉 LLM（大语言模型）"刚才失败在哪里、不要原样重试什么、可尝试的一个方向"。
+
+字段只允许包含：
+
+| 字段 | 含义 |
+|------|------|
+| `goal`（目标） | 主人原目标的短描述,例如 `挖 iron_ore x1` |
+| `failed_action`（失败动作） | 失败动作名,例如 `mine` |
+| `failure_code`（失败码） | 结构化失败码,例如 `resource_not_found` |
+| `progress`（目标进度） | 目标完成度,例如 `raw_iron 0/1` |
+| `retry_guard`（重复保护） | 不得原样重复的动作,例如 `不要原样重复 mine("iron_ore", 1)` |
+| `hint`（提示） | 一个确定性短提示,例如 `可尝试 deepslate_iron_ore 或汇报附近无矿` |
+
+渲染示例：
+
+```text
+[上一轮失败]
+目标：挖 iron_ore x1
+失败：resource_not_found at mine
+进度：raw_iron 0/1
+避免重复：不要原样重复 mine("iron_ore", 1)
+建议：可尝试 deepslate_iron_ore 或汇报附近无矿
+```
+
+以下内容不得默认进入 prompt（提示词）：完整 inventory（背包）、完整 equipment（装备）、完整 resource_search_result（资源搜索结果）、完整坐标列表、stack trace（堆栈）、runtime details（运行时详情）、完整 diagnostics（诊断） 和完整 JSONL（结构化日志）。这些内容只进入 diagnostics（诊断）/ JSONL（结构化日志） 供开发者排错。
+
+Failure Capsule（失败胶囊）事实 owner（所有者） 是执行终态侧：BotWorker / BotActor → TaskResultSummary（任务结果摘要） → deterministic formatter（确定性格式化器） → `recent_events`（最近事件） → ConversationWorker（对话工作线程）合并渲染。ConversationWorker 不得凭空制造执行事实,只能读取并展示。
+
+#### 7.6.6 continuation（继续任务）识别
+
+如果最近一轮存在 Failure Capsule（失败胶囊）,且主人只说"继续"、"再试试"、"想办法"、"换个办法"、"你自己解决"或同义短句,ConversationWorker 可用确定性规则把它视为 continuation（继续任务）,把该 Failure Capsule（失败胶囊） 放入 Stage 2-Plan（第二阶段规划） prompt（提示词）。不得新增默认 ContextGate LLM（上下文门控大语言模型）。
+
+失败分类供 prompt（提示词） 使用：
+
+| 类别 | failure_code（失败码） 示例 | Plan（规划）规则 |
+|------|-----------------------------|------------------|
+| 可恢复失败 | `missing_materials`、`not_equipped`、`resource_not_found`、`missing_crafting_table`、`crafting_table_unavailable`、`inventory_full`、`unsafe_path`、`unreachable_target`、`drop_not_obtained` | 必须换策略,不得原样重复 retry_guard（重复保护） |
+| 实现阻塞失败 | `unsupported_capability`、`runtime_adapter_error`、`world_mismatch`、`invalid_runtime_object`、`protocol_error`、`plugin_unavailable` | 不得乱试,直接汇报阻塞原因 |
+
+触碰 Failure Capsule（失败胶囊）渲染、recent context（最近上下文）装配或 Plan prompt（规划提示词）规则的实现任务,需按真实 LLM API（大语言模型接口）验收规则做实服验证。
+
+#### 7.6.7 与 §7.5 / §8 的边界
 
 | 维度 | A 层最近上下文 (§7.6) | inventory diff (§7.5) | A.5 滚动摘要 (§8.2) | B 层任务卡 (§8.3) | C 层资产 (§8.4) |
 |------|----------------------|------------------------|---------------------|-------------------|------------------|
 | 时效 | 实时，合并即写 | 同步，prompt 渲染时算 | 异步，BrainWorker 追加 + 触发重压 | 异步，BrainWorker 写入 | 异步，BrainWorker 自动提拔 |
 | 内容 | 对话 + 沙盒 + 执行结果时间线 | 背包净变化 | 近期事件的有损流水摘要 | 任务卡全档 + embedding | 主人偏好 / 世界事实 / 复用 SOP |
 | 存储 | ConversationWorker 进程内 + BotActor 进程内 `recent_events` | ConversationWorker 进程内缓存 | PG `bot_rolling_summary` | PG `task_events` | PG `bot_memory` |
-| 注入 prompt | 永远（最近 5 轮） | 永远 | 永远（≤1000 字） | 仅 `search()` 工具召回时 | 永远 |
+| 注入 prompt | 永远（最近 10 轮）；失败 continuation（继续任务） 时失败轮只注入 Failure Capsule（失败胶囊） | 永远 | 永远（≤1000 字） | 仅 `search()` 工具召回时 | 永远 |
 | 重启 | 清空（恢复后从 PG 拉对话） | 等同首次对话 | 保留 | 保留 | 保留 |
 | 用途 | 刚才对话和执行链路发生了什么 | 背包多了啥少了啥 | 今天/这周大概记得什么 | 上次 / 上周做过的具体细节 | 长期一直该知道的事实 |
 
 五者互不替代,各自职责清晰：A 层是"刚才说了什么",inventory diff 是"刚才动了什么",A.5 是"近期大概记得什么"（有损但常驻）,B 层是"按需翻档案",C 层是"长期不变的事实清单"。详细分工见 §8。
 
-#### 7.6.6 不变量
+#### 7.6.8 不变量
 
 - skill 模块新增时，**必须**同处实现 `formatRecentEventLine`。缺失 formatter 应在测试或 review 阶段失败；运行时不得调用 LLM 兜底，也不得静默丢弃事件。
-- 沙盒 TS 注入 **不做** 摘要、不调用 LLM 总结、不写规则猜代码含义；唯一允许的偏离是 §7.6.4 的超长截断。
+- 沙盒 TS 注入 **不做** 摘要、不调用 LLM 总结、不写规则猜代码含义；允许的偏离只有 §7.6.4 的超长截断,以及失败 continuation（继续任务） 时用 Failure Capsule（失败胶囊）替代上一轮失败的完整沙盒 TS。
 - 沙盒报错只取 `error.message`，不接 stack trace，不做 LLM 改写。
 - ConversationWorker 不得调用 LLM 总结 skill 结果或对话内容作为回退路径。
 - BotActor 是 `recent_events` 的 single writer；ConversationWorker 是对话轮一侧的 single writer。**两侧不得交叉写**。
+- Failure Capsule（失败胶囊）只能由执行终态摘要确定性格式化产生；ConversationWorker 只合并渲染,不得补造 bot_position（机器人坐标）、inventory（背包） 或 resource_search_result（资源搜索结果） 等完整执行事实。
 - 当前用户输入不重复进 `[最近上下文]`；当前 prompt 之后才完成的事件下一轮再渲染。
 - `recent_events` 不直接写入 §8 长期记忆链路；任务卡是唯一进入 B 层 / A.5 / 候选层的事实源（详见 §8）。
 
@@ -902,7 +954,7 @@ BrainWorker 处理每个任务卡时跑一次 rubric LLM 调用
 为避免把每轮链路扩成 `Triage LLM → ContextGate LLM → Chat/Plan LLM`,系统不新增默认 ContextGate LLM（上下文门控大语言模型）。检索策略分两段：
 
 - 消息进入后,除 control fast-path（控制快路径）外,ConversationWorker 可与 Triage LLM（分诊大语言模型）并发启动 cheap speculative retrieval（廉价投机检索）。该检索只返回候选,不直接注入 prompt。
-- Triage（分诊）返回后,由 deterministic merge gate（确定性合并闸门）决定是否采用候选：简单 skill_call（技能调用）丢弃,记忆型 chat（闲聊）采用 memory（记忆）候选,复杂 sandbox plan（沙箱规划）采用 skill index（技能索引）/经验候选,上轮失败继续则强制加载失败上下文。
+- Triage（分诊）返回后,由 deterministic merge gate（确定性合并闸门）决定是否采用候选：简单 skill_call（技能调用）丢弃,记忆型 chat（闲聊）采用 memory（记忆）候选,复杂 sandbox plan（沙箱规划）采用 skill index（技能索引）/经验候选,上轮失败 continuation（继续任务）只强制加载短 Failure Capsule（失败胶囊） 与必要经验候选,不得注入完整失败日志。
 - Stage 2-Chat / Stage 2-Plan 仍暴露 `search()` 工具给 LLM（大语言模型）,用于候选不足时的按需深查。
 - `search()` 是单次 chat / plan 请求生命周期内的多轮 tool calling（工具调用）,**不是再发起一次新任务请求**。
 
