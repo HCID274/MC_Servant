@@ -17,11 +17,13 @@ import {
   type ToolchainCapabilityName,
   type ToolchainCapabilityResult,
   createCraftService,
+  createMineSkillExecutionResult,
   createPhase1SkillRegistry,
   createPlacementService,
   createSkillCall,
   createSkillCallJob,
   createSkillRegistry,
+  createToolchainEnsureExecutor,
   getSkillDefinition,
   hasSkillDefinition,
   isCollectSkillParams,
@@ -250,6 +252,307 @@ describe("skills 模块契约", () => {
     expect(calls).toEqual([{ itemName: "stick", count: 2 }]);
   });
 
+  it("ToolchainEnsure（工具链确保） 应能从空手编排到石镐装备", async () => {
+    const inventory: { item_name: string; count: number }[] = [];
+    const actions: string[] = [];
+    const ensure = createToolchainEnsureExecutor({
+      inventory: {
+        readInventoryItems: () => inventory,
+        countLogs: (items) =>
+          items.reduce((sum, item) => sum + (item.item_name === "oak_log" ? item.count : 0), 0),
+      },
+      async cutTree(params) {
+        actions.push(`cutTree:${params.count}`);
+        addInventory(inventory, "oak_log", Math.max(4, params.count));
+        return {
+          skill: "cutTree",
+          requested_count: params.count,
+          world_key: "minecraft:overworld",
+          collected_count: Math.max(4, params.count),
+          completed: true,
+          status: "completed",
+          clusters: [],
+          diagnostics: [],
+          total_steps: 1,
+        };
+      },
+      async collect() {
+        actions.push("collect");
+        return {
+          skill: "collect",
+          item_name: null,
+          center: { x: 0, y: 64, z: 0 },
+          radius: 8,
+          collected: [],
+          skipped: [],
+          total_steps: 1,
+        };
+      },
+      async place(params) {
+        actions.push(`place:${params.blockName}`);
+        return {
+          ok: true,
+          data: {
+            block_name: params.blockName,
+            completed_count: 1,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async craft(params) {
+        actions.push(`craft:${params.itemName}`);
+        if (params.itemName === "wooden_pickaxe" && countInventory(inventory, "oak_log") <= 0) {
+          return createMissingMaterialsFailure("wooden_pickaxe", "oak_planks", 3);
+        }
+        if (params.itemName === "stone_pickaxe" && countInventory(inventory, "cobblestone") < 3) {
+          return createMissingMaterialsFailure(
+            "stone_pickaxe",
+            "cobblestone",
+            3 - countInventory(inventory, "cobblestone"),
+          );
+        }
+        addInventory(inventory, params.itemName, params.count);
+        return {
+          ok: true,
+          data: {
+            item_name: params.itemName,
+            completed_count: params.count,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async equip(params) {
+        actions.push(`equip:${params.itemName}`);
+        if (countInventory(inventory, params.itemName) <= 0) {
+          throw new Error(`missing_item:${params.itemName}`);
+        }
+        return {
+          skill: "equip",
+          item_name: params.itemName,
+          destination: "hand",
+          status: "equipped",
+          total_steps: 1,
+        };
+      },
+      async mine(params) {
+        actions.push(`mine:${params.blockName}:${params.count}`);
+        addInventory(inventory, "cobblestone", params.count);
+        return createMineSkillExecutionResult(params, {
+          world_key: "minecraft:overworld",
+          collected_item_name: "cobblestone",
+          collected_count: params.count,
+          mined_count: params.count,
+          total_steps: params.count,
+        });
+      },
+    });
+
+    const result = await ensure.ensureStonePickaxeEquipped();
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        item_name: "stone_pickaxe",
+        completed_count: 1,
+        target_count: 1,
+      },
+    });
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        "place:crafting_table",
+        "craft:wooden_pickaxe",
+        "cutTree:1",
+        "mine:stone:3",
+        "craft:stone_pickaxe",
+        "equip:stone_pickaxe",
+      ]),
+    );
+  });
+
+  it("ToolchainEnsure（工具链确保） 应保留底层失败原因与动作摘要", async () => {
+    const ensure = createToolchainEnsureExecutor({
+      inventory: {
+        readInventoryItems: () => [],
+        countLogs: () => 0,
+      },
+      async craft() {
+        return {
+          ok: false,
+          error: {
+            code: "missing_materials",
+            message: "Inventory does not contain enough recipe ingredients",
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async place() {
+        return {
+          ok: false,
+          error: {
+            code: "no_placeable_position",
+            message: "No placeable position nearby",
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async equip() {
+        throw new Error("missing_item:wooden_pickaxe");
+      },
+      async mine() {
+        throw new Error("runtime_mine_failed:test");
+      },
+      async collect() {
+        throw new Error("collect should not run");
+      },
+    });
+
+    const result = await ensure.ensureCraftingTablePlaced();
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "no_placeable_position",
+      },
+    });
+    expect(result.ok ? [] : result.error.details?.actions).toEqual([
+      {
+        action: "place",
+        target: "crafting_table",
+        requested_count: 1,
+        completed_count: 0,
+        status: "failed",
+        world_key: "minecraft:overworld",
+        reason: "no_placeable_position",
+      },
+    ]);
+  });
+
+  it("ToolchainEnsure（工具链确保） 合成石镐缺 1 个圆石时应补到目标总数", async () => {
+    const inventory: { item_name: string; count: number }[] = [
+      { item_name: "cobblestone", count: 2 },
+      { item_name: "wooden_pickaxe", count: 1 },
+    ];
+    const actions: string[] = [];
+    const ensure = createToolchainEnsureExecutor({
+      readCurrentWorldKey: () => "minecraft:overworld",
+      inventory: {
+        readInventoryItems: () => inventory,
+        countLogs: () => 0,
+      },
+      async place(params) {
+        actions.push(`place:${params.blockName}`);
+        return {
+          ok: true,
+          data: {
+            block_name: params.blockName,
+            completed_count: 1,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async craft(params) {
+        actions.push(`craft:${params.itemName}`);
+        if (params.itemName === "stone_pickaxe" && countInventory(inventory, "cobblestone") < 3) {
+          return createMissingMaterialsFailure(
+            "stone_pickaxe",
+            "cobblestone",
+            3 - countInventory(inventory, "cobblestone"),
+          );
+        }
+        addInventory(inventory, params.itemName, params.count);
+        return {
+          ok: true,
+          data: {
+            item_name: params.itemName,
+            completed_count: params.count,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async equip(params) {
+        actions.push(`equip:${params.itemName}`);
+        return {
+          skill: "equip",
+          item_name: params.itemName,
+          destination: "hand",
+          status: "equipped",
+          total_steps: 1,
+        };
+      },
+      async mine(params) {
+        actions.push(`mine:${params.blockName}:${params.count}`);
+        addInventory(inventory, "cobblestone", params.count);
+        return createMineSkillExecutionResult(params, {
+          world_key: "minecraft:overworld",
+          collected_item_name: "cobblestone",
+          collected_count: params.count,
+          mined_count: params.count,
+          total_steps: params.count,
+        });
+      },
+      async collect() {
+        throw new Error("collect should not run");
+      },
+    });
+
+    const result = await ensure.ensureStonePickaxeEquipped();
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        item_name: "stone_pickaxe",
+        world_key: "minecraft:overworld",
+      },
+    });
+    expect(actions).toContain("mine:stone:1");
+    expect(actions.filter((action) => action === "craft:stone_pickaxe")).toHaveLength(2);
+  });
+
+  it("ToolchainEnsure（工具链确保） 背包已有足够原木时不得触发 cutTree（砍树）", async () => {
+    let cutTreeCalls = 0;
+    const ensure = createToolchainEnsureExecutor({
+      readCurrentWorldKey: () => "minecraft:overworld",
+      inventory: {
+        readInventoryItems: () => [{ item_name: "oak_log", count: 8 }],
+        countLogs: (items) =>
+          items.reduce((sum, item) => sum + (item.item_name === "oak_log" ? item.count : 0), 0),
+      },
+      async cutTree() {
+        cutTreeCalls += 1;
+        throw new Error("cutTree should not run");
+      },
+      async craft() {
+        throw new Error("craft should not run");
+      },
+      async place() {
+        throw new Error("place should not run");
+      },
+      async equip() {
+        throw new Error("equip should not run");
+      },
+      async mine() {
+        throw new Error("mine should not run");
+      },
+      async collect() {
+        throw new Error("collect should not run");
+      },
+    });
+
+    const result = await ensure.ensureLogs({ count: 4 });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        item_name: "logs",
+        completed_count: 8,
+        target_count: 4,
+        world_key: "minecraft:overworld",
+        actions: [],
+      },
+    });
+    expect(cutTreeCalls).toBe(0);
+  });
+
   it("应让 skill_call 构造与运行时任务共享同一套强类型目录", () => {
     const skillCall = createSkillCall({
       skill: SKILL_DIRECTORY.collect,
@@ -279,3 +582,55 @@ describe("skills 模块契约", () => {
     expect(Object.isFrozen(skillCallJob.skillCall.params)).toBe(true);
   });
 });
+
+function addInventory(
+  inventory: { item_name: string; count: number }[],
+  itemName: string,
+  count: number,
+): void {
+  const existing = inventory.find((item) => item.item_name === itemName);
+  if (existing === undefined) {
+    inventory.push({ item_name: itemName, count });
+    return;
+  }
+
+  existing.count += count;
+}
+
+function countInventory(
+  inventory: readonly { readonly item_name: string; readonly count: number }[],
+  itemName: string,
+): number {
+  return inventory.reduce((sum, item) => sum + (item.item_name === itemName ? item.count : 0), 0);
+}
+
+function createMissingMaterialsFailure(
+  targetItemName: string,
+  missingItemName: string,
+  missing: number,
+): ToolchainCapabilityResult<{ readonly world_key: string | null }> {
+  return {
+    ok: false,
+    error: {
+      code: "missing_materials",
+      message: "Inventory does not contain enough recipe ingredients",
+      world_key: "minecraft:overworld",
+      details: {
+        target_item_name: targetItemName,
+        missing_item_name: missingItemName,
+        missing,
+        candidates: [
+          {
+            item_name: targetItemName,
+            missing: [
+              {
+                item_name: missingItemName,
+                missing,
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+}

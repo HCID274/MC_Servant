@@ -2,6 +2,7 @@ import type { Vec3 } from "vec3";
 import type { MineflayerObservationInput } from "../../core-ports/observation.js";
 import type {
   ResourceRefreshRadius,
+  RuntimeResourceBlockSemanticRole,
   RuntimeResourceRefreshResult,
 } from "../../core-ports/runtime.js";
 import type {
@@ -509,6 +510,8 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   ): Promise<RuntimeResourceRefreshResult>;
   /** 读取当前世界键，供 ResourceService（世界感知资源服务） 内部路由使用。 */
   getCurrentWorldKey(): string;
+  /** 按 runtime（运行时） 资源语义角色统计背包物品。 */
+  countInventoryItemsBySemanticRole(role: RuntimeResourceBlockSemanticRole): number;
   /** 采样当前 Mineflayer（Minecraft 协议客户端） 观测输入；未 ready（就绪） 时返回 null。 */
   readObservationInput(ownerName?: string): MineflayerObservationInput | null;
   /** 获取当前连接描述快照。 */

@@ -18,6 +18,7 @@ import type {
 import type {
   SkillName,
   SkillParamsByName,
+  ToolchainCapabilityName,
   ToolchainCapabilityParamsByName,
 } from "../core-ports/skills.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
@@ -722,7 +723,12 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
         equip: (...args) => __sandboxCall("bot.equip", args),
         cutTree: (...args) => __sandboxCall("bot.cutTree", args),
         craft: (...args) => __sandboxCall("bot.craft", args),
-        place: (...args) => __sandboxCall("bot.place", args)
+        place: (...args) => __sandboxCall("bot.place", args),
+        ensureLogs: (...args) => __sandboxCall("bot.ensureLogs", args),
+        ensureCraftingTablePlaced: (...args) => __sandboxCall("bot.ensureCraftingTablePlaced", args),
+        ensureWoodenPickaxeEquipped: (...args) => __sandboxCall("bot.ensureWoodenPickaxeEquipped", args),
+        ensureCobblestone: (...args) => __sandboxCall("bot.ensureCobblestone", args),
+        ensureStonePickaxeEquipped: (...args) => __sandboxCall("bot.ensureStonePickaxeEquipped", args)
       }),
       chat: Object.freeze({
         say: (...args) => __sandboxCall("chat.say", args),
@@ -937,6 +943,33 @@ function normalizeSandboxCallParams(
     return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["place"];
   }
 
+  if (action === "ensureLogs") {
+    if (typeof first === "number") {
+      return { count: first } as SandboxStepParamsByAction["ensureLogs"];
+    }
+
+    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["ensureLogs"];
+  }
+
+  if (action === "ensureCobblestone") {
+    if (typeof first === "number") {
+      return { count: first } as SandboxStepParamsByAction["ensureCobblestone"];
+    }
+
+    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["ensureCobblestone"];
+  }
+
+  if (
+    action === "ensureCraftingTablePlaced" ||
+    action === "ensureWoodenPickaxeEquipped" ||
+    action === "ensureStonePickaxeEquipped"
+  ) {
+    return cloneReadonlyValue(first ?? {}) as
+      | SandboxStepParamsByAction["ensureCraftingTablePlaced"]
+      | SandboxStepParamsByAction["ensureWoodenPickaxeEquipped"]
+      | SandboxStepParamsByAction["ensureStonePickaxeEquipped"];
+  }
+
   if (action === "cutTree") {
     return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["cutTree"];
   }
@@ -958,7 +991,7 @@ async function executeSandboxBotFacadeCall(
     throw new Error("cutTree is not executable in the current runtime sandbox");
   }
 
-  if (action === "craft" || action === "place") {
+  if (isToolchainSandboxAction(action)) {
     if (typeof facade.executeToolchainCapability !== "function") {
       throw new Error(`Toolchain capability ${action} is not configured in current sandbox`);
     }
@@ -981,6 +1014,20 @@ async function executeSandboxBotFacadeCall(
   }
 
   return facade.executeBotSkill(action, params as SkillParamsByName[typeof action], control);
+}
+
+function isToolchainSandboxAction(
+  action: Exclude<SandboxStepActionName, "say" | "report">,
+): action is ToolchainCapabilityName {
+  return (
+    action === "craft" ||
+    action === "place" ||
+    action === "ensureLogs" ||
+    action === "ensureCraftingTablePlaced" ||
+    action === "ensureWoodenPickaxeEquipped" ||
+    action === "ensureCobblestone" ||
+    action === "ensureStonePickaxeEquipped"
+  );
 }
 
 function isToolchainCapabilityFailure(value: unknown): value is {

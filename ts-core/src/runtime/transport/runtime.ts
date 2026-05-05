@@ -263,6 +263,15 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
     getCurrentWorldKey(): string {
       return bot === null ? "unknown" : createMineflayerWorldKey(bot);
     },
+    countInventoryItemsBySemanticRole(role: RuntimeResourceBlockSemanticRole): number {
+      const currentBot = getReadOnlyWorldReadyBot();
+
+      if (currentBot === null) {
+        return 0;
+      }
+
+      return countMineflayerInventoryItemsBySemanticRole(currentBot, role);
+    },
     readObservationInput(ownerName?: string): MineflayerObservationInput | null {
       const currentBot = getReadOnlyWorldReadyBot();
 
@@ -856,6 +865,67 @@ function createRuntimeResourceSemanticRoles(
   return blockHasRuntimeResourceTag(registry, block, "logs") ||
     blockMatchesRuntimeResourceFact(registry, block, "tree")
     ? Object.freeze(["cut_tree_log"] as const)
+    : Object.freeze([]);
+}
+
+function countMineflayerInventoryItemsBySemanticRole(
+  bot: MineflayerBotHandle,
+  role: RuntimeResourceBlockSemanticRole,
+): number {
+  const matchingItemIds = createInventoryItemIdsForSemanticRole(bot.registry, role);
+
+  if (matchingItemIds.size === 0) {
+    return 0;
+  }
+
+  return (bot.inventory?.items() ?? []).reduce(
+    (sum, item) =>
+      item.type !== undefined && matchingItemIds.has(item.type) ? sum + (item.count ?? 1) : sum,
+    0,
+  );
+}
+
+function createInventoryItemIdsForSemanticRole(
+  registry: unknown,
+  role: RuntimeResourceBlockSemanticRole,
+): ReadonlySet<number> {
+  if (role !== "cut_tree_log") {
+    return new Set();
+  }
+
+  const itemIds = new Set<number>();
+  const registryRecord = asRecord(registry);
+  const blocksByName = asRecord(registryRecord?.blocksByName);
+  const itemsByName = asRecord(registryRecord?.itemsByName);
+
+  if (blocksByName === undefined) {
+    return itemIds;
+  }
+
+  for (const blockFact of Object.values(blocksByName)) {
+    const fact = asRecord(blockFact);
+    if (fact === undefined || !isCutTreeLogLikeBlockFact(fact)) {
+      continue;
+    }
+
+    for (const dropId of readRegistryBlockDropIds(fact)) {
+      itemIds.add(dropId);
+    }
+
+    const blockName = typeof fact.name === "string" ? fact.name : null;
+    const itemFact = blockName === null ? undefined : asRecord(itemsByName?.[blockName]);
+    const itemId = readNumber(itemFact?.id, Number.NaN);
+    if (Number.isInteger(itemId)) {
+      itemIds.add(itemId);
+    }
+  }
+
+  return itemIds;
+}
+
+function readRegistryBlockDropIds(fact: Readonly<Record<string, unknown>>): readonly number[] {
+  return Array.isArray(fact.drops)
+    ? Object.freeze(fact.drops.filter((dropId): dropId is number => Number.isInteger(dropId)))
     : Object.freeze([]);
 }
 

@@ -185,6 +185,24 @@ export interface ToolchainFailure {
   readonly details?: Readonly<Record<string, unknown>>;
 }
 
+/** 工具链 ensure（确保） 内部执行过的可审计动作摘要。 */
+export interface ToolchainActionSummary {
+  /** 被调用的通用能力名。 */
+  readonly action: ToolchainCapabilityName | SkillName;
+  /** 动作目标。 */
+  readonly target: string;
+  /** 动作请求数量；不适用时为 1。 */
+  readonly requested_count: number;
+  /** 动作完成数量；失败或不可得时为 0。 */
+  readonly completed_count: number;
+  /** 动作结果状态。 */
+  readonly status: "completed" | "skipped" | "failed";
+  /** 底层能力返回的当前世界键。 */
+  readonly world_key?: string | null;
+  /** 可选结构化原因。 */
+  readonly reason?: string;
+}
+
 /** 工具链能力成功结果。 */
 export interface ToolchainCapabilitySuccess<TData extends object> {
   /** 固定成功标记。 */
@@ -287,12 +305,16 @@ export interface ToolchainCapabilityData {
   readonly world_key: string | null;
   /** 完成数量；不适用时为 1。 */
   readonly completed_count: number;
+  /** 目标完成数量；ensure（确保） 能力用于表达最终目标。 */
+  readonly target_count?: number;
   /** 关键产物或目标标准名称。 */
   readonly item_name?: string;
   /** 关键方块标准名称。 */
   readonly block_name?: string;
   /** 可选方块位置；必须来自当前 runtime（运行时） 世界交互结果。 */
   readonly position?: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>;
+  /** ensure（确保） 能力的动作摘要。 */
+  readonly actions?: readonly ToolchainActionSummary[];
 }
 
 /** 工具链能力结果映射。 */
@@ -462,6 +484,35 @@ export function isCraftCapabilityParams(params: unknown): params is CraftCapabil
   }
 
   return isNonEmptyString(params.itemName) && isPositiveInteger(params.count);
+}
+
+/** 校验 `ensureLogs`（确保原木） 工具链参数。 */
+export function isEnsureLogsCapabilityParams(
+  params: unknown,
+): params is EnsureLogsCapabilityParams {
+  if (!isRecord(params) || !hasOnlyAllowedKeys(params, ["count"])) {
+    return false;
+  }
+
+  return isPositiveInteger(params.count);
+}
+
+/** 校验 `ensureCobblestone`（确保圆石） 工具链参数。 */
+export function isEnsureCobblestoneCapabilityParams(
+  params: unknown,
+): params is EnsureCobblestoneCapabilityParams {
+  if (!isRecord(params) || !hasOnlyAllowedKeys(params, ["count"])) {
+    return false;
+  }
+
+  return isPositiveInteger(params.count);
+}
+
+/** 校验无参数 ensure（确保） 工具链参数。 */
+export function isEmptyEnsureCapabilityParams(
+  params: unknown,
+): params is EmptyEnsureCapabilityParams {
+  return isRecord(params) && hasOnlyAllowedKeys(params, []);
 }
 
 /** 创建与技能目录强绑定的只读技能调用结构。 */
@@ -700,13 +751,38 @@ export interface PlaceToolchainAdapter {
   ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
 }
 
+/** ensure（确保） 工具链执行适配器集合。 */
+export interface ToolchainEnsureAdapter {
+  /** 确保背包中有足够原木。 */
+  ensureLogs?(
+    params: Readonly<EnsureLogsCapabilityParams>,
+  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
+  /** 确保当前世界存在可用工作台。 */
+  ensureCraftingTablePlaced?(
+    params: Readonly<EmptyEnsureCapabilityParams>,
+  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
+  /** 确保木镐已装备到主手。 */
+  ensureWoodenPickaxeEquipped?(
+    params: Readonly<EmptyEnsureCapabilityParams>,
+  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
+  /** 确保背包中有足够圆石。 */
+  ensureCobblestone?(
+    params: Readonly<EnsureCobblestoneCapabilityParams>,
+  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
+  /** 确保石镐已装备到主手。 */
+  ensureStonePickaxeEquipped?(
+    params: Readonly<EmptyEnsureCapabilityParams>,
+  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
+}
+
 /** 技能执行器依赖集合。 */
 export interface SkillExecutionDependencies
   extends MineSkillAdapter,
     CollectSkillAdapter,
     EquipSkillAdapter,
     CraftToolchainAdapter,
-    PlaceToolchainAdapter {
+    PlaceToolchainAdapter,
+    ToolchainEnsureAdapter {
   /** `goTo`（前往坐标） 移动适配器。 */
   readonly goToMovement: GoToMovementAdapter;
   /** `cutTree`（砍树） 在真实 app（应用）装配时注入；未注入时保持禁用。 */

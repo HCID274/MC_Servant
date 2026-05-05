@@ -17,7 +17,11 @@ import type {
 } from "../../runtime/index.js";
 import { createSandboxExecutionRequest, executeSandboxCodeRequest } from "../../sandbox/index.js";
 import { formatSandboxRecentEventLine } from "../../sandbox/recent-event.js";
-import { createCutTreeSkillExecutor, createMineSkillExecutor } from "../../skills/index.js";
+import {
+  createCutTreeSkillExecutor,
+  createMineSkillExecutor,
+  createToolchainEnsureExecutor,
+} from "../../skills/index.js";
 import { formatSkillRecentEventLine } from "../../skills/recent-event.js";
 import { createResourceService } from "../../world-model/index.js";
 import type { ResourceServiceBoundary } from "../../world-model/index.js";
@@ -67,35 +71,54 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
     const externalAuthPlan =
       dependencies.externalAuthPlan ??
       createExternalAuthExecutionPlan(externalAuth, dependencies.externalAuthSecret);
+    const mineSkill = createMineSkillExecutor({
+      resourceService: created.resourceService,
+      miner: created.transport,
+      equipment: {
+        readMainHandItemName: () =>
+          created.transport?.readObservationInput()?.equipment.main_hand?.item_name ?? null,
+      },
+    });
+    const cutTreeSkill = createCutTreeSkillExecutor({
+      resourceService: created.resourceService,
+      digger: created.transport,
+      collector: {
+        collect: created.transport.collect.bind(created.transport),
+      },
+      inventory: {
+        readInventoryItems: () => created.transport?.readObservationInput()?.inventory.items ?? [],
+      },
+    });
+    const ensureToolchain = createToolchainEnsureExecutor({
+      readCurrentWorldKey: () => created.transport?.getCurrentWorldKey() ?? null,
+      inventory: {
+        readInventoryItems: () => created.transport?.readObservationInput()?.inventory.items ?? [],
+        countLogs: () => created.transport?.countInventoryItemsBySemanticRole("cut_tree_log") ?? 0,
+      },
+      craft: created.transport.craft.bind(created.transport),
+      place: created.transport.place.bind(created.transport),
+      equip: created.transport.equip.bind(created.transport),
+      mine: mineSkill,
+      collect: created.transport.collect.bind(created.transport),
+      cutTree: cutTreeSkill,
+    });
     created.actor = createBotActorRuntime({
       botId: bootstrap.bot_id,
       transport: created.transport,
       observation: created.observation,
       skillExecution: {
         goToMovement: created.transport,
-        mine: createMineSkillExecutor({
-          resourceService: created.resourceService,
-          miner: created.transport,
-          equipment: {
-            readMainHandItemName: () =>
-              created.transport?.readObservationInput()?.equipment.main_hand?.item_name ?? null,
-          },
-        }),
+        mine: mineSkill,
         collect: created.transport.collect.bind(created.transport),
         equip: created.transport.equip.bind(created.transport),
         craft: created.transport.craft.bind(created.transport),
         place: created.transport.place.bind(created.transport),
-        cutTree: createCutTreeSkillExecutor({
-          resourceService: created.resourceService,
-          digger: created.transport,
-          collector: {
-            collect: created.transport.collect.bind(created.transport),
-          },
-          inventory: {
-            readInventoryItems: () =>
-              created.transport?.readObservationInput()?.inventory.items ?? [],
-          },
-        }),
+        cutTree: cutTreeSkill,
+        ensureLogs: ensureToolchain.ensureLogs,
+        ensureCraftingTablePlaced: ensureToolchain.ensureCraftingTablePlaced,
+        ensureWoodenPickaxeEquipped: ensureToolchain.ensureWoodenPickaxeEquipped,
+        ensureCobblestone: ensureToolchain.ensureCobblestone,
+        ensureStonePickaxeEquipped: ensureToolchain.ensureStonePickaxeEquipped,
       },
       externalAuth,
       externalAuthPlan,

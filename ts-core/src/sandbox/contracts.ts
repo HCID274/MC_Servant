@@ -10,6 +10,9 @@
 import type { ExecutionTaskKind } from "../core-ports/foundation.js";
 import type {
   CraftCapabilityParams,
+  EmptyEnsureCapabilityParams,
+  EnsureCobblestoneCapabilityParams,
+  EnsureLogsCapabilityParams,
   PlaceCapabilityParams,
   SkillName,
   SkillParamsByName,
@@ -53,10 +56,23 @@ export const SANDBOX_BOT_METHOD_NAMES = [
   "equip",
   "craft",
   "place",
+  "ensureLogs",
+  "ensureCraftingTablePlaced",
+  "ensureWoodenPickaxeEquipped",
+  "ensureCobblestone",
+  "ensureStonePickaxeEquipped",
 ] as const;
 
 /** `bot`（动作） 分区方法名联合类型。 */
-export type SandboxBotMethodName = SkillName | "craft" | "place";
+export type SandboxBotMethodName =
+  | SkillName
+  | "craft"
+  | "place"
+  | "ensureLogs"
+  | "ensureCraftingTablePlaced"
+  | "ensureWoodenPickaxeEquipped"
+  | "ensureCobblestone"
+  | "ensureStonePickaxeEquipped";
 
 /** sandbox（沙箱） 工具链能力契约清单；未实现前不得注入为真实 Facade（门面） 方法。 */
 export const SANDBOX_TOOLCHAIN_CAPABILITY_NAMES = TOOLCHAIN_CAPABILITY_NAMES;
@@ -136,6 +152,16 @@ export interface SandboxStepParamsByAction extends Pick<SkillParamsByName, Skill
   readonly craft: CraftCapabilityParams;
   /** `place`（放置） 的参数结构。 */
   readonly place: PlaceCapabilityParams;
+  /** `ensureLogs`（确保原木） 的参数结构。 */
+  readonly ensureLogs: EnsureLogsCapabilityParams;
+  /** `ensureCraftingTablePlaced`（确保工作台已放置） 的参数结构。 */
+  readonly ensureCraftingTablePlaced: EmptyEnsureCapabilityParams;
+  /** `ensureWoodenPickaxeEquipped`（确保木镐已装备） 的参数结构。 */
+  readonly ensureWoodenPickaxeEquipped: EmptyEnsureCapabilityParams;
+  /** `ensureCobblestone`（确保圆石） 的参数结构。 */
+  readonly ensureCobblestone: EnsureCobblestoneCapabilityParams;
+  /** `ensureStonePickaxeEquipped`（确保石镐已装备） 的参数结构。 */
+  readonly ensureStonePickaxeEquipped: EmptyEnsureCapabilityParams;
   /** `say`（聊天输出） 的参数结构。 */
   readonly say: {
     /** 输出消息。 */

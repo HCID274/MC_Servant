@@ -274,3 +274,11 @@
 - C 审查结论: 曾打回 2 次 (首次实现让 ore（矿石）在 runtime（运行时）重新 findBlocks（查找方块）、自行读取 bot.game.dimension（机器人维度）、硬编码掉落/工具事实且 mine.ts（挖掘文件）过大;二次审查发现 stone（石头）仍偏向短段重规划/边挖边看,unknown block（未知方块）邻近风险被乐观放行,已有洞复用未按总 walking distance（行走距离）丢弃);B（实现代理）拆分事实/工具/队列模块,改为完整预规划队列、矿石相邻站位、unknown（未知）保守拒绝、反向下降硬拒绝与已有洞 32 步总距离限制后通过
 - 关键决策: 普通资源采集以 StairBFSPlanner（阶梯广度优先规划器）从当前脚位生成完整 dig queue（挖掘队列）,不先全局扫描最近 stone（石头）,也不在执行阶段按掉落结果二次重规划;矿石路径保留 ResourceService（资源服务）作为候选真源,runtime（运行时）只规划到安全相邻 standingPos（站位）再挖目标方块;MC（Minecraft,我的世界）掉落、工具与方块角色事实由 Mineflayer（Minecraft 客户端库）/minecraft-data（Minecraft 数据库） registry（注册表）读取;已有 air（空气）阶梯靠低挖掘代价自然胜出,但不引入 tunnel memory（隧道记忆）
 - 架构冲突: 无;LLM（大语言模型）失败 retry（重试）闭环已标记为需 Planner A（规划代理）确认/另拆的范围项,不作为本条 runtime（运行时） mine（挖掘）验收条件
+
+## T-060 | 2026-05-05 | Toolchain ensure（工具链确保）函数组
+
+- 涉及模块: skills（技能） toolchain-ensure（工具链确保）编排器,core-ports（核心端口）工具链能力契约,sandbox（沙箱） Facade API（门面接口） 与执行器,BotActor（机器人执行代理）工具链分发,runtime/transport（运行时传输层）背包语义计数,app（应用装配）生产注入,conversation/llm（对话大语言模型） planner prompt（规划提示词）,Docs/03_SANDBOX_SPEC.md（沙箱规格文档）/Docs/04_CONVERSATION_SPEC.md（对话规格文档）,相关测试
+- A 拆解依据: 用户要求实现可复用 ensure（确保）函数组 `ensureLogs(count)`（确保原木）、`ensureCraftingTablePlaced()`（确保工作台已放置）、`ensureWoodenPickaxeEquipped()`（确保木镐已装备）、`ensureCobblestone(count)`（确保圆石）、`ensureStonePickaxeEquipped()`（确保石镐已装备）,只能组合 cutTree（砍树）/collect（捡拾）/craft（合成）/place（放置）/equip（装备）/mine（挖掘）等底层通用能力,不得新增 `demoMineIron()`（演示挖铁） 或绕过 BotActor（机器人执行代理）直接操作 runtime（运行时）
+- C 审查结论: 曾打回 1 次 (首次实现把 `ensureCobblestone(count)`（确保圆石） 的目标总数语义与缺口数量混用,导致已有 2 个 cobblestone（圆石）且缺 1 个时不挖 stone（石头）;真实 app（应用）装配未注入 runtime（运行时）语义原木计数,背包已有原木仍触发 cutTree（砍树）;ensure（确保）结果丢弃底层 world_key（世界键）);B（实现代理）补齐目标总数转换、`countInventoryItemsBySemanticRole("cut_tree_log")`（按砍树原木语义角色统计背包）与 ToolchainActionSummary（动作摘要）世界键透传后通过
+- 关键决策: ensure（确保） 层保持高层编排,不写配方/掉落/工具等级等 MC（Minecraft,我的世界）事实;缺料恢复先把 runtime craft（运行时合成）返回的 missing（缺口）换算为 ensure（确保）目标总数,再调用普通能力补齐;原木识别下沉到 runtime/transport（运行时传输层）基于 Mineflayer（Minecraft 客户端库）/minecraft-data（Minecraft 数据库） registry（注册表）与 `cut_tree_log`（砍树原木）语义角色统计,不在 ensure（确保）里按名称后缀猜测;planner prompt（规划提示词）只暴露可读的 `api.bot.ensureStonePickaxeEquipped()`（确保石镐已装备）等通用函数,不隐藏整条挖铁 demo（演示）链
+- 架构冲突: 无

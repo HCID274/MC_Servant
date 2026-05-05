@@ -114,7 +114,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(SANDBOX_READONLY_SECTIONS).toEqual(["world", "knowledge", "memory", "owner", "task"]);
   });
 
-  it("应声明工具链能力契约且把 craft（合成） / place（放置） 注入当前 Facade（门面）", () => {
+  it("应声明工具链能力契约且把 craft/place/ensure（合成/放置/确保） 注入当前 Facade（门面）", () => {
     const facadeContract = createSandboxFacadeContract();
 
     expect(SANDBOX_TOOLCHAIN_CAPABILITY_NAMES).toEqual([
@@ -136,7 +136,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(Object.keys(facadeContract.bot)).toEqual([...SANDBOX_BOT_METHOD_NAMES]);
     expect(facadeContract.bot).toHaveProperty("craft");
     expect(facadeContract.bot).toHaveProperty("place");
-    expect(facadeContract.bot).not.toHaveProperty("ensureStonePickaxeEquipped");
+    expect(facadeContract.bot).toHaveProperty("ensureStonePickaxeEquipped");
   });
 
   it("应提供渐进披露索引并按 namespace（命名空间） 描述 Facade API（门面接口）", () => {
@@ -315,6 +315,47 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(result.step_results).toMatchObject([
       {
         action: "craft",
+        status: "ok",
+      },
+    ]);
+  });
+
+  it("应让 sandbox_code（沙箱代码） 调用 ensure（确保） 工具链能力", async () => {
+    const calls: unknown[] = [];
+    const result = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "await api.bot.ensureStonePickaxeEquipped()",
+        messageId: "T-060-ensure",
+      }),
+      facade: {
+        async executeBotSkill() {
+          throw new Error("unexpected skill call");
+        },
+        async executeToolchainCapability(capability, params) {
+          calls.push({ capability, params });
+
+          return {
+            ok: true,
+            data: {
+              item_name: "stone_pickaxe",
+              completed_count: 1,
+              target_count: 1,
+              world_key: "minecraft:overworld",
+              actions: [],
+            },
+          };
+        },
+        async writeChat() {
+          throw new Error("unexpected chat call");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Completed);
+    expect(calls).toEqual([{ capability: "ensureStonePickaxeEquipped", params: {} }]);
+    expect(result.step_results).toMatchObject([
+      {
+        action: "ensureStonePickaxeEquipped",
         status: "ok",
       },
     ]);

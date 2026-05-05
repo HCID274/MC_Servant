@@ -182,8 +182,8 @@
     T-054（任务）后，工具链能力分为两类：
 
     - 已注册 Phase 1（第一阶段） 技能：`goTo`（前往）、`mine`（挖掘）、`cutTree`（砍树）、`collect`（捡拾）、`equip`（装备）。
-    - 仅声明契约、等待后续实现的工具链能力：`ensureLogs`（确保原木）、`ensureCraftingTablePlaced`（确保工作台已放置）、`ensureWoodenPickaxeEquipped`（确保木镐已装备）、`ensureCobblestone`（确保圆石）、`ensureStonePickaxeEquipped`（确保石镐已装备）。
-    - 已有最小工具链基础能力：`craft`（合成） 与 `place`（放置）。其中 `place`（放置） Phase 1（第一阶段） 只允许放置 `crafting_table`（工作台），不得扩展成通用建筑系统。
+    - 已实现工具链基础能力：`craft`（合成） 与 `place`（放置）。其中 `place`（放置） Phase 1（第一阶段） 只允许放置 `crafting_table`（工作台），不得扩展成通用建筑系统。
+    - 已实现可复用 ensure（确保）函数：`ensureLogs`（确保原木）、`ensureCraftingTablePlaced`（确保工作台已放置）、`ensureWoodenPickaxeEquipped`（确保木镐已装备）、`ensureCobblestone`（确保圆石）、`ensureStonePickaxeEquipped`（确保石镐已装备）。ensure 只能组合底层通用能力，必须返回目标完成度、动作摘要和结构化失败原因。
 
     未实现能力不得注入真实 Facade API（门面接口） 伪装可用；实现前必须返回结构化 unsupported failure（不支持失败） 或不出现在当前 prompt（提示词） 可用方法中。
 
@@ -278,11 +278,11 @@
     /**
      * 可复用 ensure（确保）函数。ensure 内部只能组合底层通用原语，不得变成一次性挖铁脚本。
      */
-    ensureLogs(count: number): Promise<ToolchainResult<{ item_name: string; completed_count: number; world_key: string | null }>>
-    ensureCraftingTablePlaced(): Promise<ToolchainResult<{ block_name: string; completed_count: number; world_key: string | null }>>
-    ensureWoodenPickaxeEquipped(): Promise<ToolchainResult<{ item_name: string; completed_count: number; world_key: string | null }>>
-    ensureCobblestone(count: number): Promise<ToolchainResult<{ item_name: string; completed_count: number; world_key: string | null }>>
-    ensureStonePickaxeEquipped(): Promise<ToolchainResult<{ item_name: string; completed_count: number; world_key: string | null }>>
+    ensureLogs(count: number): Promise<ToolchainResult<{ item_name: string; completed_count: number; target_count: number; world_key: string | null; actions: ToolchainActionSummary[] }>>
+    ensureCraftingTablePlaced(): Promise<ToolchainResult<{ block_name: string; completed_count: number; target_count: number; world_key: string | null; actions: ToolchainActionSummary[] }>>
+    ensureWoodenPickaxeEquipped(): Promise<ToolchainResult<{ item_name: string; completed_count: number; target_count: number; world_key: string | null; actions: ToolchainActionSummary[] }>>
+    ensureCobblestone(count: number): Promise<ToolchainResult<{ item_name: string; completed_count: number; target_count: number; world_key: string | null; actions: ToolchainActionSummary[] }>>
+    ensureStonePickaxeEquipped(): Promise<ToolchainResult<{ item_name: string; completed_count: number; target_count: number; world_key: string | null; actions: ToolchainActionSummary[] }>>
 
     /**
      * 攻击实体

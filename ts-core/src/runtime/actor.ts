@@ -11,11 +11,16 @@ import {
   type SkillExecutionResult,
   type SkillName,
   type SkillParamsByName,
+  type ToolchainCapabilityData,
   type ToolchainCapabilityName,
   type ToolchainCapabilityParamsByName,
+  type ToolchainCapabilityResult,
   isCollectSkillParams,
   isCraftCapabilityParams,
   isCutTreeSkillParams,
+  isEmptyEnsureCapabilityParams,
+  isEnsureCobblestoneCapabilityParams,
+  isEnsureLogsCapabilityParams,
   isEquipSkillParams,
   isGoToSkillParams,
   isMineSkillParams,
@@ -331,26 +336,32 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       ) {
         assertSandboxFacadeCallActive(control);
 
-        if (capability !== "craft" && capability !== "place") {
-          throw new Error(
-            `Toolchain capability ${capability} is not executable in current sandbox`,
-          );
-        }
         if (capability === "craft" && !isCraftCapabilityParams(params)) {
           throw new Error("sandbox craft params are invalid");
         }
         if (capability === "place" && !isPlaceCapabilityParams(params)) {
           throw new Error("sandbox place params are invalid");
         }
+        if (capability === "ensureLogs" && !isEnsureLogsCapabilityParams(params)) {
+          throw new Error("sandbox ensureLogs params are invalid");
+        }
+        if (capability === "ensureCobblestone" && !isEnsureCobblestoneCapabilityParams(params)) {
+          throw new Error("sandbox ensureCobblestone params are invalid");
+        }
+        if (
+          (capability === "ensureCraftingTablePlaced" ||
+            capability === "ensureWoodenPickaxeEquipped" ||
+            capability === "ensureStonePickaxeEquipped") &&
+          !isEmptyEnsureCapabilityParams(params)
+        ) {
+          throw new Error(`sandbox ${capability} params are invalid`);
+        }
 
-        const result =
-          capability === "craft"
-            ? await skillExecution.craft(
-                params as unknown as ToolchainCapabilityParamsByName["craft"],
-              )
-            : await skillExecution.place(
-                params as unknown as ToolchainCapabilityParamsByName["place"],
-              );
+        const result = await executeActorToolchainCapability({
+          capability,
+          params,
+          skillExecution,
+        });
         if (!result.ok) {
           throw createToolchainCapabilityError(
             result.error.code,
@@ -1030,6 +1041,66 @@ function formatToolchainErrorDetails(
   } catch {
     return " details=<unserializable>";
   }
+}
+
+async function executeActorToolchainCapability<TName extends ToolchainCapabilityName>(input: {
+  readonly capability: TName;
+  readonly params: Readonly<ToolchainCapabilityParamsByName[TName]>;
+  readonly skillExecution: SkillExecutionDependencies;
+}): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>> {
+  switch (input.capability) {
+    case "craft":
+      return input.skillExecution.craft(
+        input.params as Readonly<ToolchainCapabilityParamsByName["craft"]>,
+      );
+    case "place":
+      return input.skillExecution.place(
+        input.params as Readonly<ToolchainCapabilityParamsByName["place"]>,
+      );
+    case "ensureLogs":
+      return readConfiguredEnsure(
+        input.skillExecution.ensureLogs,
+        input.capability,
+      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensureLogs"]>);
+    case "ensureCraftingTablePlaced":
+      return readConfiguredEnsure(
+        input.skillExecution.ensureCraftingTablePlaced,
+        input.capability,
+      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensureCraftingTablePlaced"]>);
+    case "ensureWoodenPickaxeEquipped":
+      return readConfiguredEnsure(
+        input.skillExecution.ensureWoodenPickaxeEquipped,
+        input.capability,
+      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensureWoodenPickaxeEquipped"]>);
+    case "ensureCobblestone":
+      return readConfiguredEnsure(
+        input.skillExecution.ensureCobblestone,
+        input.capability,
+      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensureCobblestone"]>);
+    case "ensureStonePickaxeEquipped":
+      return readConfiguredEnsure(
+        input.skillExecution.ensureStonePickaxeEquipped,
+        input.capability,
+      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensureStonePickaxeEquipped"]>);
+    case "equip":
+    case "mine":
+      throw new Error(
+        `Toolchain capability ${input.capability} is available as bot.${input.capability} skill`,
+      );
+  }
+}
+
+function readConfiguredEnsure<TParams>(
+  handler:
+    | ((params: Readonly<TParams>) => Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>)
+    | undefined,
+  capability: ToolchainCapabilityName,
+): (params: Readonly<TParams>) => Promise<ToolchainCapabilityResult<ToolchainCapabilityData>> {
+  if (handler === undefined) {
+    throw new Error(`Toolchain capability ${capability} is not executable in current sandbox`);
+  }
+
+  return handler;
 }
 
 const defaultRuntimeRecentEventFormatter: RuntimeRecentEventFormatter = Object.freeze({

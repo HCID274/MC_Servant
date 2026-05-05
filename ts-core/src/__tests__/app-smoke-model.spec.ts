@@ -9,10 +9,48 @@ import {
   createAppProcessRuntime,
   createAppSmokeAssembly,
 } from "../app/index.js";
+import { ExecPriority, createSandboxCodeJob } from "../core-ports/tasking.js";
 import type { MineflayerBotHandle } from "../runtime/transport.js";
 
 class FakeAppMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username: string;
+  readonly game = {
+    dimension: "minecraft:overworld",
+  };
+  readonly registry = {
+    itemsByName: {
+      oak_log: {
+        id: 41,
+      },
+    },
+    items: {
+      "41": {
+        id: 41,
+        name: "oak_log",
+      },
+    },
+    blocksByName: {
+      oak_log: {
+        id: 40,
+        name: "oak_log",
+        material: "mineable/axe",
+        diggable: true,
+        drops: [41],
+        states: [{ name: "axis" }],
+      },
+    },
+  };
+  readonly inventoryItems = [{ type: 41, name: "oak_log", count: 8 }];
+  readonly inventory = {
+    items: () => this.inventoryItems,
+    emptySlotCount: () => 35,
+    slots: [],
+  };
+  readonly entity = {
+    position: { x: 0, y: 64, z: 0 },
+    velocity: { y: 0 },
+  };
+  readonly heldItem = null;
 
   constructor(
     username: string,
@@ -25,6 +63,10 @@ class FakeAppMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   quit(): void {
     this.onQuit();
     this.emit("end");
+  }
+
+  loadPlugin(): void {
+    // 测试替身只需要满足 Mineflayer（Minecraft 协议客户端） 插件加载形态。
   }
 }
 
@@ -217,6 +259,56 @@ describe("app（应用装配） 骨架", () => {
     expect(snapshot.transport.connected).toBe(false);
     expect(snapshot.transport.state).toBe("failed");
     expect(snapshot.transport.last_error).toContain("ended before login or spawn");
+
+    await runtime.close();
+
+    expect(closeOrder).toContain("runtime_transport");
+  });
+
+  it("运行时核心装配应使用 runtime（运行时）语义事实统计已有原木", async () => {
+    const closeOrder: string[] = [];
+    const bootstrap = createAppBootstrapContract({
+      botId: "bot-ensure-logs",
+      now: "2026-05-05T00:00:00.000Z",
+    });
+
+    const runtime = await createAppRuntimeCoreResources(bootstrap, {
+      transport: {
+        createBot: () => {
+          const bot = new FakeAppMineflayerBot("bot-ensure-logs", () => {
+            closeOrder.push("runtime_transport");
+          });
+
+          setTimeout(() => bot.emit("spawn"), 0);
+
+          return bot;
+        },
+      },
+    });
+    const outcome = await runtime.actor.executeSandboxCode(
+      createSandboxCodeJob({
+        message_id: "ensure-logs-existing",
+        intent_epoch: 1,
+        snapshot_ts: Date.parse("2026-05-05T00:00:00.000Z"),
+        priority: ExecPriority.Normal,
+        code: "await api.bot.ensureLogs(4)",
+      }),
+    );
+
+    expect(outcome.result.status).toBe("completed");
+    expect(outcome.result.step_results[0]).toMatchObject({
+      action: "ensureLogs",
+      status: "ok",
+      result: {
+        ok: true,
+        data: {
+          completed_count: 8,
+          target_count: 4,
+          world_key: "minecraft:overworld",
+          actions: [],
+        },
+      },
+    });
 
     await runtime.close();
 

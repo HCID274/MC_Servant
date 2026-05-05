@@ -77,7 +77,7 @@ const phase1SkillMetadata = new Map(
 );
 
 const facadeNamespaceDescriptions = Object.freeze({
-  bot: "bot(write): goTo(x,y,z), mine(blockName,count), collect(itemName,radius?), equip(itemName,destination?), cutTree(count), craft(itemName,count), place('crafting_table', near?)",
+  bot: "bot(write): goTo(x,y,z), mine(blockName,count), collect(itemName,radius?), equip(itemName,destination?), cutTree(count), craft(itemName,count), place('crafting_table', near?), ensureLogs(count), ensureCraftingTablePlaced(), ensureWoodenPickaxeEquipped(), ensureCobblestone(count), ensureStonePickaxeEquipped()",
   chat: "chat(write): say(message), report(message); both write through BotActor controlled chat",
   world:
     "world(read): currently unavailable in minimal runtime sandbox; call describe('world') before relying on reads",
@@ -186,6 +186,36 @@ export function createSandboxFacadeContract(): SandboxFacadeContract {
         name: "place",
         access: "write",
         parameterKeys: ["blockName", "near"],
+        emitsStep: true,
+      }),
+      ensureLogs: createMethodContract({
+        name: "ensureLogs",
+        access: "write",
+        parameterKeys: ["count"],
+        emitsStep: true,
+      }),
+      ensureCraftingTablePlaced: createMethodContract({
+        name: "ensureCraftingTablePlaced",
+        access: "write",
+        parameterKeys: [],
+        emitsStep: true,
+      }),
+      ensureWoodenPickaxeEquipped: createMethodContract({
+        name: "ensureWoodenPickaxeEquipped",
+        access: "write",
+        parameterKeys: [],
+        emitsStep: true,
+      }),
+      ensureCobblestone: createMethodContract({
+        name: "ensureCobblestone",
+        access: "write",
+        parameterKeys: ["count"],
+        emitsStep: true,
+      }),
+      ensureStonePickaxeEquipped: createMethodContract({
+        name: "ensureStonePickaxeEquipped",
+        access: "write",
+        parameterKeys: [],
         emitsStep: true,
       }),
     }),

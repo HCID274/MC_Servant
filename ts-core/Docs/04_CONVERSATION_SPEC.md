@@ -281,11 +281,11 @@ interface api {
     collect(itemName: string, radius?: number): Promise<{collected: number}>
     equip(itemName: string, destination?: 'hand'): Promise<{skill:'equip',item_name:string,destination:'hand',status:'already_equipped'|'equipped',total_steps:0|1}>
     cutTree(count: number): Promise<{collected: number}>
-    ensureLogs(count: number): Promise<ToolchainResult<{item_name:string,completed_count:number,world_key:string|null}>>
-    ensureCraftingTablePlaced(): Promise<ToolchainResult<{block_name:string,completed_count:number,world_key:string|null}>>
-    ensureWoodenPickaxeEquipped(): Promise<ToolchainResult<{item_name:string,completed_count:number,world_key:string|null}>>
-    ensureCobblestone(count: number): Promise<ToolchainResult<{item_name:string,completed_count:number,world_key:string|null}>>
-    ensureStonePickaxeEquipped(): Promise<ToolchainResult<{item_name:string,completed_count:number,world_key:string|null}>>
+    ensureLogs(count: number): Promise<ToolchainResult<{item_name:string,completed_count:number,target_count:number,world_key:string|null,actions:ToolchainActionSummary[]}>>
+    ensureCraftingTablePlaced(): Promise<ToolchainResult<{block_name:string,completed_count:number,target_count:number,world_key:string|null,actions:ToolchainActionSummary[]}>>
+    ensureWoodenPickaxeEquipped(): Promise<ToolchainResult<{item_name:string,completed_count:number,target_count:number,world_key:string|null,actions:ToolchainActionSummary[]}>>
+    ensureCobblestone(count: number): Promise<ToolchainResult<{item_name:string,completed_count:number,target_count:number,world_key:string|null,actions:ToolchainActionSummary[]}>>
+    ensureStonePickaxeEquipped(): Promise<ToolchainResult<{item_name:string,completed_count:number,target_count:number,world_key:string|null,actions:ToolchainActionSummary[]}>>
     attack(entityName: string): Promise<{killed: boolean}>
     getStatus(): Promise<BotStatus>
     getInventory(): Promise<InventoryItem[]>
