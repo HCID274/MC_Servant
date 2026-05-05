@@ -512,6 +512,18 @@ function assertLlmCallMetrics(metrics: LlmCallMetrics | undefined): void {
   }
 }
 
+function assertLlmDiagnosticSinkSummary(
+  diagnosticSink: LlmDiagnosticSummary["diagnostic_sink"] | undefined,
+): void {
+  if (diagnosticSink === undefined) {
+    return;
+  }
+
+  assertPositiveNumber(diagnosticSink.queued, "diagnostic_sink.queued");
+  assertPositiveNumber(diagnosticSink.dropped_count, "diagnostic_sink.dropped_count");
+  assertPositiveNumber(diagnosticSink.error_count, "diagnostic_sink.error_count");
+}
+
 /**
  * 创建 LLM（大语言模型） 最近调用诊断摘要。
  *
@@ -543,6 +555,7 @@ export function createLlmDiagnosticSummary(
   if (input.status === "error" && errorSummary !== undefined) {
     assertNonEmptyString(errorSummary, "error_summary");
   }
+  assertLlmDiagnosticSinkSummary(input.diagnostic_sink);
 
   return cloneReadonlyValue({
     stage: input.stage,
@@ -553,6 +566,9 @@ export function createLlmDiagnosticSummary(
     created_at: input.created_at,
     ...(errorSummary === undefined ? {} : { error_summary: errorSummary }),
     ...(input.metrics === undefined ? {} : { metrics: cloneReadonlyValue(input.metrics) }),
+    ...(input.diagnostic_sink === undefined
+      ? {}
+      : { diagnostic_sink: cloneReadonlyValue(input.diagnostic_sink) }),
   });
 }
 

@@ -16,7 +16,6 @@ import {
   createConversationLlmClient,
   createConversationLlmConfig,
   createConversationRecentContextStore,
-  withConversationLlmDiagnosticsWriteMs,
 } from "../conversation/index.js";
 import type { RuntimeEventType } from "../core-ports/events.js";
 import { createBotActorStateProjection } from "../core-ports/index.js";
@@ -32,7 +31,11 @@ import {
   createRedisIntentEpochStore,
 } from "../db/index.js";
 import {
+  type AsyncDiagnosticSink,
+  type LlmDiagnosticLogSink,
+  type LlmDiagnosticSinkSummary,
   type LlmDiagnosticSummary,
+  createAsyncDiagnosticSink,
   createLlmDiagnosticSummary,
   createLocalBrainDiagnosticLogSink,
   createLocalConversationReplyLogSink,
@@ -158,6 +161,10 @@ export interface AppStartupSummary<TBotId extends string = string> {
 export interface AppOnlineLlmDependencies extends ConversationLlmDependencies {
   /** 运行时注入的接口密钥。 */
   readonly api_key?: string;
+  /** 可注入 LLM（大语言模型） 本地 JSONL（结构化日志） 写入器，主要供测试慢写/失败路径。 */
+  readonly diagnostic_log_sink?: LlmDiagnosticLogSink;
+  /** LLM（大语言模型） 本地诊断异步队列上限。 */
+  readonly diagnostic_queue_max_size?: number;
 }
 
 /** 真实在线 BrainWorker（大脑工作线程） embedding（向量）依赖注入集合。 */
@@ -425,10 +432,15 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     replayStore.append(event);
     await userAppendRealtimeEvent?.(event);
   };
+  const onlineLlmDiagnosticSink = createOnlineLlmDiagnosticAsyncSink(
+    input.bootstrap,
+    input.dependencies?.llm,
+  );
   const onlineLlmClient = createOnlineConversationLlmClient(
     input.bootstrap,
     input.dependencies?.llm,
-    (record) => {
+    onlineLlmDiagnosticSink,
+    (record, diagnosticSinkStats) => {
       const summary = createLlmDiagnosticSummary(
         {
           stage: record.stage,
@@ -438,6 +450,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
           log_ref: record.log_ref,
           created_at: record.created_at,
           metrics: record.metrics,
+          ...(diagnosticSinkStats === undefined ? {} : { diagnostic_sink: diagnosticSinkStats }),
           ...(record.error_summary === undefined ? {} : { error_summary: record.error_summary }),
         },
         {
@@ -495,10 +508,12 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
           conversationWorker,
           intentEpoch: latestIntentEpoch,
           latestLlmDiagnostic,
+          llmDiagnosticSink: onlineLlmDiagnosticSink,
           lastEventSeq: replayStore.getLastSeq(),
         }),
       replayEvents: input.dependencies?.services?.replayEvents ?? replayStore.read,
-      latestLlmDiagnostic: () => latestLlmDiagnostic,
+      latestLlmDiagnostic: () =>
+        createLiveLlmDiagnosticSummary(latestLlmDiagnostic, onlineLlmDiagnosticSink),
       appendRealtimeEvent: appendOnlineRealtimeEvent,
     });
     const onlineServices = services;
@@ -633,7 +648,8 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         input.bootstrap,
         input.dependencies?.llm,
         brainDiagnosticSink,
-        (record) => {
+        onlineLlmDiagnosticSink,
+        (record, diagnosticSinkStats) => {
           latestLlmDiagnostic = createLlmDiagnosticSummary(
             {
               stage: record.stage,
@@ -643,6 +659,9 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
               log_ref: record.log_ref,
               created_at: record.created_at,
               metrics: record.metrics,
+              ...(diagnosticSinkStats === undefined
+                ? {}
+                : { diagnostic_sink: diagnosticSinkStats }),
               ...(record.error_summary === undefined
                 ? {}
                 : { error_summary: record.error_summary }),
@@ -916,6 +935,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       async close(): Promise<void> {
         await closeOnlineRuntimeInOrder({
           runtime: createdRuntime,
+          llmDiagnosticSink: onlineLlmDiagnosticSink,
           resourceEventSubscription,
           botWorker: createdBotWorker,
           brainWorker: createdBrainWorker,
@@ -928,6 +948,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   } catch (error) {
     await closeOnlineRuntimeInOrder({
       runtime,
+      llmDiagnosticSink: onlineLlmDiagnosticSink,
       resourceEventSubscription,
       botWorker,
       brainWorker,
@@ -1385,7 +1406,11 @@ async function refreshResourceServiceByRadiusLadder(
 function createOnlineConversationLlmClient<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
   dependencies: AppOnlineLlmDependencies | undefined,
-  onDiagnosticSummary: (record: ConversationLlmDiagnosticRecord) => void,
+  asyncDiagnosticSink: AsyncDiagnosticSink<ConversationLlmDiagnosticRecord> | undefined,
+  onDiagnosticSummary: (
+    record: ConversationLlmDiagnosticRecord,
+    diagnosticSinkStats?: LlmDiagnosticSinkSummary,
+  ) => void,
   write: ((message: string) => void) | undefined,
 ): ConversationLlmClient | undefined {
   if (!bootstrap.llm.enabled) {
@@ -1396,10 +1421,6 @@ function createOnlineConversationLlmClient<TBotId extends string>(
     throw new Error("LLM_API_KEY must be injected for online runtime");
   }
   const apiKey = dependencies.api_key;
-  const localDiagnosticLogSink = createLocalLlmDiagnosticLogSink({
-    baseDir: bootstrap.config.logs.baseDir,
-    sensitiveValues: [apiKey],
-  });
 
   return createConversationLlmClient(
     createConversationLlmConfig({
@@ -1415,16 +1436,11 @@ function createOnlineConversationLlmClient<TBotId extends string>(
     }),
     {
       ...dependencies,
-      onDiagnostic: async (record) => {
-        const writeStartedAt = createDefaultMonotonicNow();
-        await localDiagnosticLogSink(record);
-        const recordWithWriteMetrics = withConversationLlmDiagnosticsWriteMs(
-          record,
-          createDefaultMonotonicNow() - writeStartedAt,
-        );
-        onDiagnosticSummary(recordWithWriteMetrics);
-        write?.(renderLlmDiagnosticMessage(recordWithWriteMetrics, [apiKey]));
-        await dependencies?.onDiagnostic?.(recordWithWriteMetrics);
+      onDiagnostic: (record) => {
+        const diagnosticSinkStats = asyncDiagnosticSink?.enqueue(record);
+        onDiagnosticSummary(record, diagnosticSinkStats);
+        write?.(renderLlmDiagnosticMessage(record, [apiKey]));
+        runDetachedLlmDiagnosticCallback(dependencies?.onDiagnostic, record);
       },
     },
   );
@@ -1432,6 +1448,53 @@ function createOnlineConversationLlmClient<TBotId extends string>(
 
 function createDefaultMonotonicNow(): number {
   return globalThis.performance?.now() ?? Date.now();
+}
+
+function createOnlineLlmDiagnosticAsyncSink<TBotId extends string>(
+  bootstrap: AppBootstrapContract<TBotId>,
+  dependencies: AppOnlineLlmDependencies | undefined,
+): AsyncDiagnosticSink<ConversationLlmDiagnosticRecord> | undefined {
+  if (!bootstrap.llm.enabled) {
+    return undefined;
+  }
+
+  if (dependencies?.api_key === undefined) {
+    throw new Error("LLM_API_KEY must be injected for online runtime");
+  }
+
+  const write: (record: ConversationLlmDiagnosticRecord) => Promise<void> =
+    dependencies.diagnostic_log_sink ??
+    createLocalLlmDiagnosticLogSink({
+      baseDir: bootstrap.config.logs.baseDir,
+      sensitiveValues: [dependencies.api_key],
+    });
+
+  return createAsyncDiagnosticSink<ConversationLlmDiagnosticRecord>({
+    maxQueueSize: dependencies.diagnostic_queue_max_size ?? 128,
+    write,
+    getDropPriority: (record) => {
+      if (!record.ok) {
+        return 3;
+      }
+
+      return record.stage === "brain" ? 1 : 2;
+    },
+  });
+}
+
+function runDetachedLlmDiagnosticCallback(
+  callback: ConversationLlmDependencies["onDiagnostic"] | undefined,
+  record: ConversationLlmDiagnosticRecord,
+): void {
+  if (callback === undefined) {
+    return;
+  }
+
+  try {
+    void Promise.resolve(callback(record)).catch(() => undefined);
+  } catch {
+    // 诊断回调是旁路能力，不能反向影响 Chat（闲聊）/Plan（规划） 主流程。
+  }
 }
 
 /** 创建在线 BrainWorker（大脑工作线程） embedding API（向量接口） 生成器。 */
@@ -1478,7 +1541,11 @@ function createOnlineBrainWorkerLlmClient<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
   llmDependencies: AppOnlineLlmDependencies | undefined,
   diagnosticSink: BrainWorkerRuntimeDependencies["diagnosticSink"] | undefined,
-  onDiagnosticSummary: (record: ConversationLlmDiagnosticRecord) => void,
+  asyncDiagnosticSink: AsyncDiagnosticSink<ConversationLlmDiagnosticRecord> | undefined,
+  onDiagnosticSummary: (
+    record: ConversationLlmDiagnosticRecord,
+    diagnosticSinkStats?: LlmDiagnosticSinkSummary,
+  ) => void,
   write: ((message: string) => void) | undefined,
 ): BrainWorkerRuntimeDependencies["llm"] {
   if (!bootstrap.llm.enabled) {
@@ -1490,10 +1557,6 @@ function createOnlineBrainWorkerLlmClient<TBotId extends string>(
     throw new Error("LLM_API_KEY must be injected for BrainWorker LLM");
   }
   const fetchImpl = llmDependencies?.fetch;
-  const localDiagnosticLogSink = createLocalLlmDiagnosticLogSink({
-    baseDir: bootstrap.config.logs.baseDir,
-    sensitiveValues: [apiKey],
-  });
 
   return createOpenAiCompatibleBrainWorkerLlmClient(
     createConversationLlmConfig({
@@ -1510,16 +1573,11 @@ function createOnlineBrainWorkerLlmClient<TBotId extends string>(
     {
       ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
       ...(diagnosticSink === undefined ? {} : { diagnosticSink }),
-      onDiagnostic: async (record) => {
-        const writeStartedAt = createDefaultMonotonicNow();
-        await localDiagnosticLogSink(record);
-        const recordWithWriteMetrics = withConversationLlmDiagnosticsWriteMs(
-          record,
-          createDefaultMonotonicNow() - writeStartedAt,
-        );
-        onDiagnosticSummary(recordWithWriteMetrics);
-        write?.(renderLlmDiagnosticMessage(recordWithWriteMetrics, [apiKey]));
-        await llmDependencies?.onDiagnostic?.(recordWithWriteMetrics);
+      onDiagnostic: (record) => {
+        const diagnosticSinkStats = asyncDiagnosticSink?.enqueue(record);
+        onDiagnosticSummary(record, diagnosticSinkStats);
+        write?.(renderLlmDiagnosticMessage(record, [apiKey]));
+        runDetachedLlmDiagnosticCallback(llmDependencies?.onDiagnostic, record);
       },
     },
   );
@@ -1693,6 +1751,7 @@ function createOnlineInterfaceStatusSnapshot<TBotId extends string>(input: {
   readonly conversationWorker: ConversationWorkerRuntime | undefined;
   readonly intentEpoch: number;
   readonly latestLlmDiagnostic: LlmDiagnosticSummary | null;
+  readonly llmDiagnosticSink: AsyncDiagnosticSink<ConversationLlmDiagnosticRecord> | undefined;
   readonly lastEventSeq: number;
 }): InterfaceBotStatusSnapshot {
   const actorSnapshot = input.runtime?.actor.getSnapshot();
@@ -1725,7 +1784,21 @@ function createOnlineInterfaceStatusSnapshot<TBotId extends string>(input: {
       conversation: input.conversationWorker !== undefined,
       bot: input.botWorker !== undefined,
     },
-    llm: input.latestLlmDiagnostic,
+    llm: createLiveLlmDiagnosticSummary(input.latestLlmDiagnostic, input.llmDiagnosticSink),
+  });
+}
+
+function createLiveLlmDiagnosticSummary(
+  summary: LlmDiagnosticSummary | null,
+  asyncDiagnosticSink: AsyncDiagnosticSink<ConversationLlmDiagnosticRecord> | undefined,
+): LlmDiagnosticSummary | null {
+  if (summary === null || asyncDiagnosticSink === undefined) {
+    return summary;
+  }
+
+  return createLlmDiagnosticSummary({
+    ...summary,
+    diagnostic_sink: asyncDiagnosticSink.getStats(),
   });
 }
 
@@ -1836,6 +1909,7 @@ async function appendServerBridgeEnvelope<TBotId extends string>(input: {
  */
 async function closeOnlineRuntimeInOrder(input: {
   runtime: AppRuntimeCoreResources | undefined;
+  llmDiagnosticSink: AsyncDiagnosticSink<ConversationLlmDiagnosticRecord> | undefined;
   resourceEventSubscription: ObservationEventSubscription | undefined;
   botWorker: BotWorkerRuntime | undefined;
   brainWorker: BrainWorkerRuntime | undefined;
@@ -1849,6 +1923,7 @@ async function closeOnlineRuntimeInOrder(input: {
     () => input.conversationWorker?.close(),
     () => input.botWorker?.close(),
     () => input.brainWorker?.close(),
+    () => input.llmDiagnosticSink?.flush(),
     () => input.resourceEventSubscription?.close(),
     () => input.runtime?.close(),
     () => input.services?.close(),

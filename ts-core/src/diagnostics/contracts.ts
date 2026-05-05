@@ -479,6 +479,20 @@ export interface LlmDiagnosticSummary {
   readonly error_summary?: string;
   /** 最近一次调用的性能指标摘要，不包含 prompt（提示词）全文。 */
   readonly metrics?: LlmCallMetrics;
+  /** 本地异步 diagnostics（诊断） 写入汇点状态。 */
+  readonly diagnostic_sink?: LlmDiagnosticSinkSummary;
+}
+
+/** LLM（大语言模型） 本地异步 diagnostics（诊断） 写入汇点状态摘要。 */
+export interface LlmDiagnosticSinkSummary {
+  /** 等待本地落盘的记录数。 */
+  readonly queued: number;
+  /** 是否有一条记录正在后台写入。 */
+  readonly in_flight: boolean;
+  /** 因队列上限丢弃的记录数。 */
+  readonly dropped_count: number;
+  /** 后台写入失败次数。 */
+  readonly error_count: number;
 }
 
 /** llm（大语言模型） 调用的分段性能指标。 */

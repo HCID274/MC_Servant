@@ -1221,6 +1221,8 @@ ConversationWorker 只依赖此接口，不依赖具体 SDK。Phase 1 实现 Min
 
 状态接口只暴露最近一次 LLM 性能摘要和 `log_ref`，不得暴露 prompt 全文或真实密钥。完整 transcript 与 meta 仍只进入 `logs/llm/*.jsonl`，写入前必须脱敏。
 
+LLM diagnostics 本地 JSONL 写入必须走 bounded async sink（有界异步汇点）：Chat/Plan/BrainWorker 主路径只同步更新最近摘要并投递记录，不等待磁盘落盘。状态摘要可附带 `diagnostic_sink`，字段为 `queued`、`in_flight`、`dropped_count`、`error_count`。队列满时优先保留失败调用，允许丢弃成功类低价值诊断；写入失败只增加 `error_count`，不得让用户任务失败。进程关闭时必须 `flush()` 剩余记录。
+
 ---
 
 ## 17. 配置参数速查

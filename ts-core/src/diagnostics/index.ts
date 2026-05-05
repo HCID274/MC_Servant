@@ -28,6 +28,7 @@ export const diagnosticsModuleBoundary = {
     "createSandboxLogLine",
     "createLocalConversationReplyLogSink",
     "createLocalLlmDiagnosticLogSink",
+    "createAsyncDiagnosticSink",
     "createLocalBrainDiagnosticLogSink",
     "createLocalTaskLogExcerptReader",
   ],
@@ -35,6 +36,7 @@ export const diagnosticsModuleBoundary = {
 
 export * from "./contracts.js";
 export * from "./logs.js";
+export * from "./async-sink.js";
 export * from "./conversation-reply-log.js";
 export * from "./llm-log.js";
 export * from "./brain-log.js";
