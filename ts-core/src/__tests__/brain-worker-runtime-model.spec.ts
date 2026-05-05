@@ -332,6 +332,65 @@ describe("BrainWorker（大脑工作线程） 真实运行时", () => {
     ]);
   });
 
+  it("BrainWorker（大脑工作线程） LLM（大语言模型）调用应写入 brain stage（大脑阶段）性能诊断", async () => {
+    const llmDiagnostics: unknown[] = [];
+    const client = createOpenAiCompatibleBrainWorkerLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "bot-brain",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content:
+                      '{"candidates":[{"kind":"MEMORY","content":"日月川=x=12 y=64 z=-9","confidence":0.9}]}',
+                  },
+                },
+              ],
+              usage: { prompt_tokens: 80, completion_tokens: 20 },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        now: () => new Date("2026-05-03T04:10:00.000Z"),
+        onDiagnostic: (record) => {
+          llmDiagnostics.push(record);
+        },
+      },
+    );
+
+    const candidates = await client.generateMemoryCandidates({
+      source: "conversation_fact",
+      message_id: "msg-brain-llm-metrics",
+      owner_text: "这里定义为日月川了",
+      existing_memory: { USER: "", MEMORY: "", SKILL: "" },
+      owner_position: { x: 12, y: 64, z: -9 },
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(llmDiagnostics).toEqual([
+      expect.objectContaining({
+        stage: "brain",
+        message_id: "msg-brain-llm-metrics",
+        model: "bl-auto",
+        log_ref: "llm/2026-05-03/brain-msg-brain-llm-metrics.jsonl",
+        metrics: expect.objectContaining({
+          input_tokens: 80,
+          output_tokens: 20,
+          ttft_ms: null,
+          ttft_unavailable: "non_streaming",
+        }),
+      }),
+    ]);
+  });
+
   it("rubric（评分规则） 产出 0 候选时应写 brain.rubric.empty（空评分）诊断", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const diagnostics: unknown[] = [];

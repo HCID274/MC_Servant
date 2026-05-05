@@ -2373,8 +2373,10 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(chatRequestBody.messages?.[0]?.content).not.toContain("当前状态摘要：");
     expect(chatRequestBody.messages?.[0]?.content).not.toContain("世界交互：");
     expect(events).toContain("chat:当然可以，我在这里喵~");
-    expect(writes).toContain(
-      "TS Core LLM chat ok: model=bl-auto message_id=msg-online-chat log_ref=llm/2026-04-24/chat-msg-online-chat.jsonl",
+    expect(writes).toContainEqual(
+      expect.stringContaining(
+        "TS Core LLM chat ok: model=bl-auto message_id=msg-online-chat request_ms=",
+      ),
     );
     const statusResponse = await runtime.services.http.server.inject({
       method: "GET",
@@ -2403,6 +2405,12 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           model: "bl-auto",
           log_ref: "llm/2026-04-24/chat-msg-online-chat.jsonl",
           created_at: "2026-04-24T10:00:00.000Z",
+          metrics: {
+            input_tokens: 12,
+            output_tokens: 5,
+            ttft_ms: null,
+            ttft_unavailable: "non_streaming",
+          },
         },
       },
     });

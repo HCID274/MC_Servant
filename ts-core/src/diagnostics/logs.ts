@@ -21,6 +21,7 @@ import {
   DIAGNOSTIC_LOG_CHANNELS,
   type DiagnosticLogChannel,
   type JsonlErrorSnapshot,
+  type LlmCallMetrics,
   type LlmDiagnosticSummary,
   type LlmJsonlLine,
   type SandboxExperienceDraft,
@@ -338,7 +339,7 @@ export function createSandboxCodeRef(input: { date: string; job_id: string }): s
  */
 export function createLlmLogRef(input: {
   date: string;
-  stage: "triage" | "chat" | "plan";
+  stage: "triage" | "chat" | "plan" | "brain";
   message_id: string;
 }): string {
   return createDatedStorageRef({
@@ -477,6 +478,7 @@ export function createLlmLogLine<TLine extends LlmJsonlLine>(input: TLine): TLin
     assertPositiveNumber(input.meta.input_tokens, "meta.input_tokens");
     assertPositiveNumber(input.meta.output_tokens, "meta.output_tokens");
     assertPositiveNumber(input.meta.ms, "meta.ms");
+    assertLlmCallMetrics(input.meta.metrics);
     assertJsonlErrorSnapshot(input.err);
     if (!input.meta.ok && input.err === undefined) {
       throw new Error("llm meta with ok=false must include err");
@@ -484,6 +486,30 @@ export function createLlmLogLine<TLine extends LlmJsonlLine>(input: TLine): TLin
   }
 
   return cloneReadonlyValue(input);
+}
+
+function assertLlmCallMetrics(metrics: LlmCallMetrics | undefined): void {
+  if (metrics === undefined) {
+    return;
+  }
+
+  assertPositiveNumber(metrics.queue_wait_ms, "metrics.queue_wait_ms");
+  assertPositiveNumber(metrics.prompt_build_ms, "metrics.prompt_build_ms");
+  assertPositiveNumber(metrics.request_total_ms, "metrics.request_total_ms");
+  assertPositiveNumber(metrics.response_parse_ms, "metrics.response_parse_ms");
+  assertPositiveNumber(metrics.tool_round_count, "metrics.tool_round_count");
+  for (const value of metrics.tool_round_ms) {
+    assertPositiveNumber(value, "metrics.tool_round_ms");
+  }
+  if (metrics.diagnostics_write_ms !== null) {
+    assertPositiveNumber(metrics.diagnostics_write_ms, "metrics.diagnostics_write_ms");
+  }
+  assertPositiveNumber(metrics.input_tokens, "metrics.input_tokens");
+  assertPositiveNumber(metrics.output_tokens, "metrics.output_tokens");
+  assertPositiveNumber(metrics.tokens_per_second, "metrics.tokens_per_second");
+  if (metrics.ttft_ms !== null) {
+    assertPositiveNumber(metrics.ttft_ms, "metrics.ttft_ms");
+  }
 }
 
 /**
@@ -526,6 +552,7 @@ export function createLlmDiagnosticSummary(
     log_ref: input.log_ref,
     created_at: input.created_at,
     ...(errorSummary === undefined ? {} : { error_summary: errorSummary }),
+    ...(input.metrics === undefined ? {} : { metrics: cloneReadonlyValue(input.metrics) }),
   });
 }
 

@@ -1206,6 +1206,21 @@ ConversationWorker 只依赖此接口，不依赖具体 SDK。Phase 1 实现 Min
 | Plan (skill_call) | 0.2 | 结构化输出要稳定 |
 | Plan (sandbox_code) | 0.3 | 代码要正确，但允许一定灵活性 |
 
+### 16.3 LLM 性能指标
+
+每次 LLM 调用必须产出 `metrics` 摘要，覆盖 `triage`、`chat`、`plan` 与 BrainWorker 的 `brain` 调用。字段包括：
+
+- `queue_wait_ms`：消息进入队列到本阶段 LLM 调用开始前的等待时间。
+- `prompt_build_ms`：prompt/messages 构建耗时。
+- `request_total_ms`：OpenAI compatible API 请求总耗时；tool calling 多轮时为所有请求累计。
+- `response_parse_ms`：assistant 响应解析与结构校验耗时。
+- `tool_round_count` / `tool_round_ms`：`search()` 工具调用轮数与每轮耗时。
+- `diagnostics_write_ms`：诊断写入耗时；写入前不可得时为 `null`。
+- `input_tokens` / `output_tokens` / `tokens_per_second`：token 用量与非流式估算生成速度。
+- `ttft_ms`：当前非 stream 模式必须记录为 `null`，并带 `ttft_unavailable: "non_streaming"`，不得伪造首字延迟。
+
+状态接口只暴露最近一次 LLM 性能摘要和 `log_ref`，不得暴露 prompt 全文或真实密钥。完整 transcript 与 meta 仍只进入 `logs/llm/*.jsonl`，写入前必须脱敏。
+
 ---
 
 ## 17. 配置参数速查

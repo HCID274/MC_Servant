@@ -450,7 +450,7 @@ export type SandboxJsonlLine =
   | SandboxTerminalJsonlLine;
 
 /** llm（大语言模型） 通道当前声明的调用阶段。 */
-export const LLM_LOG_STAGES = ["triage", "chat", "plan"] as const;
+export const LLM_LOG_STAGES = ["triage", "chat", "plan", "brain"] as const;
 
 /** llm（大语言模型） 通道调用阶段联合类型。 */
 export type LlmLogStage = (typeof LLM_LOG_STAGES)[number];
@@ -477,6 +477,36 @@ export interface LlmDiagnosticSummary {
   readonly created_at: string;
   /** 失败摘要。 */
   readonly error_summary?: string;
+  /** 最近一次调用的性能指标摘要，不包含 prompt（提示词）全文。 */
+  readonly metrics?: LlmCallMetrics;
+}
+
+/** llm（大语言模型） 调用的分段性能指标。 */
+export interface LlmCallMetrics {
+  /** 队列等待耗时。 */
+  readonly queue_wait_ms: number;
+  /** prompt（提示词）构建耗时。 */
+  readonly prompt_build_ms: number;
+  /** OpenAI compatible API（OpenAI 兼容接口）请求总耗时。 */
+  readonly request_total_ms: number;
+  /** 响应解析耗时。 */
+  readonly response_parse_ms: number;
+  /** tool call（工具调用）轮数。 */
+  readonly tool_round_count: number;
+  /** 每轮 tool call（工具调用）耗时。 */
+  readonly tool_round_ms: readonly number[];
+  /** diagnostics（诊断）写入耗时；写入前不可得时为 null。 */
+  readonly diagnostics_write_ms: number | null;
+  /** 输入 token（令牌）数。 */
+  readonly input_tokens: number;
+  /** 输出 token（令牌）数。 */
+  readonly output_tokens: number;
+  /** 生成速度；非流式下用完成总耗时估算。 */
+  readonly tokens_per_second: number;
+  /** 首字延迟；当前非 stream（流式响应）链路显式不可得。 */
+  readonly ttft_ms: number | null;
+  /** 首字延迟不可得原因。 */
+  readonly ttft_unavailable?: "non_streaming";
 }
 
 /** llm（大语言模型） transcript（原始对话记录） 允许的角色。 */
@@ -523,6 +553,8 @@ export interface LlmMetaJsonlLine {
     ms: number;
     /** 调用是否成功。 */
     ok: boolean;
+    /** 分段性能指标。 */
+    metrics?: LlmCallMetrics;
   }>;
   /** 失败错误摘要。 */
   readonly err?: JsonlErrorSnapshot;

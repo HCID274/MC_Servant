@@ -7,3 +7,4 @@ export * from "./prompts/index.js";
 export * from "./skill-plan-table.js";
 export * from "./stage.js";
 export * from "./client.js";
+export * from "./diagnostics.js";

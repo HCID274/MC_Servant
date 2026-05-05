@@ -1,6 +1,10 @@
-import type { ConversationLlmConfig, ConversationLlmMessage } from "../conversation/llm.js";
-import { requestChatCompletionPayload } from "../conversation/llm/http.js";
-import { extractAssistantReply, parseJsonRecord } from "../conversation/llm/parsers.js";
+import type {
+  ConversationLlmConfig,
+  ConversationLlmDependencies,
+  ConversationLlmMessage,
+} from "../conversation/llm.js";
+import { parseJsonRecord } from "../conversation/llm/parsers.js";
+import { executeStage } from "../conversation/llm/stage.js";
 import type { SnapshotPosition } from "../core-ports/observation.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
 import {
@@ -105,10 +109,14 @@ export type BrainMemoryCapacityResolution = Readonly<{
 /** BrainWorker（大脑工作线程） LLM（大语言模型） 依赖。 */
 export interface BrainWorkerLlmDependencies {
   readonly fetch?: typeof fetch;
+  /** BrainWorker（大脑工作线程） LLM（大语言模型） 调用诊断旁路。 */
+  readonly onDiagnostic?: ConversationLlmDependencies["onDiagnostic"];
   /** BrainWorker（大脑工作线程） rubric（评分规则）解析诊断旁路。 */
   readonly diagnosticSink?: BrainDiagnosticLogSink;
   /** 当前时钟。 */
   readonly now?: () => Date;
+  /** 可注入单调时钟，用于性能分段指标。 */
+  readonly monotonicNow?: () => number;
 }
 
 /** 创建 OpenAI compatible（OpenAI 兼容） BrainWorker（大脑工作线程） LLM（大语言模型） 客户端。 */
@@ -117,17 +125,30 @@ export function createOpenAiCompatibleBrainWorkerLlmClient(
   dependencies: BrainWorkerLlmDependencies = {},
 ): BrainWorkerLlmClient {
   const fetchImpl = dependencies.fetch ?? fetch;
+  const now = dependencies.now ?? (() => new Date());
+  const monotonicNow = dependencies.monotonicNow ?? createDefaultMonotonicNow;
 
   return Object.freeze({
     model: config.model,
     async generateFailureTakeaway(input: BrainFailureTakeawayInput): Promise<string> {
       assertNonEmptyString(input.log_excerpt, "log_excerpt");
 
+      const promptBuildStartedAt = monotonicNow();
+      const messages = createFailureTakeawayMessages(input);
+      const promptBuildMs = elapsedMs(monotonicNow, promptBuildStartedAt);
+
       return clampSingleLine(
         await requestPlainText({
           config,
           fetchImpl,
-          messages: createFailureTakeawayMessages(input),
+          now,
+          monotonicNow,
+          ...(dependencies.onDiagnostic === undefined
+            ? {}
+            : { onDiagnostic: dependencies.onDiagnostic }),
+          message_id: input.task_card.message_id,
+          messages,
+          prompt_build_ms: promptBuildMs,
         }),
         80,
       );
@@ -136,11 +157,22 @@ export function createOpenAiCompatibleBrainWorkerLlmClient(
       assertNonEmptyString(input.bot_id, "bot_id");
       assertNonEmptyString(input.rolling_summary, "rolling_summary");
 
+      const promptBuildStartedAt = monotonicNow();
+      const messages = createSessionTakeawayMessages(input);
+      const promptBuildMs = elapsedMs(monotonicNow, promptBuildStartedAt);
+
       return clampSingleLine(
         await requestPlainText({
           config,
           fetchImpl,
-          messages: createSessionTakeawayMessages(input),
+          now,
+          monotonicNow,
+          ...(dependencies.onDiagnostic === undefined
+            ? {}
+            : { onDiagnostic: dependencies.onDiagnostic }),
+          message_id: `session-${input.bot_id}`,
+          messages,
+          prompt_build_ms: promptBuildMs,
         }),
         120,
       );
@@ -148,11 +180,22 @@ export function createOpenAiCompatibleBrainWorkerLlmClient(
     async compressRollingSummary(content: string): Promise<string> {
       assertNonEmptyString(content, "content");
 
+      const promptBuildStartedAt = monotonicNow();
+      const messages = createRollingSummaryCompressionMessages(content);
+      const promptBuildMs = elapsedMs(monotonicNow, promptBuildStartedAt);
+
       return clampMultiline(
         await requestPlainText({
           config,
           fetchImpl,
-          messages: createRollingSummaryCompressionMessages(content),
+          now,
+          monotonicNow,
+          ...(dependencies.onDiagnostic === undefined
+            ? {}
+            : { onDiagnostic: dependencies.onDiagnostic }),
+          message_id: "rolling-summary",
+          messages,
+          prompt_build_ms: promptBuildMs,
         }),
         1000,
       );
@@ -162,11 +205,22 @@ export function createOpenAiCompatibleBrainWorkerLlmClient(
     ): Promise<readonly BrainMemoryRubricCandidate[]> {
       assertNonEmptyString(input.owner_text, "owner_text");
 
+      const promptBuildStartedAt = monotonicNow();
+      const messages = createMemoryRubricMessages(input);
+      const promptBuildMs = elapsedMs(monotonicNow, promptBuildStartedAt);
+
       return parseRubricCandidates(
         await requestPlainText({
           config,
           fetchImpl,
-          messages: createMemoryRubricMessages(input),
+          now,
+          monotonicNow,
+          ...(dependencies.onDiagnostic === undefined
+            ? {}
+            : { onDiagnostic: dependencies.onDiagnostic }),
+          message_id: input.message_id ?? input.task_card?.message_id ?? "memory-rubric",
+          messages,
+          prompt_build_ms: promptBuildMs,
         }),
         {
           input,
@@ -183,11 +237,22 @@ export function createOpenAiCompatibleBrainWorkerLlmClient(
     ): Promise<BrainMemoryCapacityResolution> {
       assertNonEmptyString(input.candidate_content, "candidate_content");
 
+      const promptBuildStartedAt = monotonicNow();
+      const messages = createMemoryCapacityMessages(input);
+      const promptBuildMs = elapsedMs(monotonicNow, promptBuildStartedAt);
+
       return parseMemoryCapacityResolution(
         await requestPlainText({
           config,
           fetchImpl,
-          messages: createMemoryCapacityMessages(input),
+          now,
+          monotonicNow,
+          ...(dependencies.onDiagnostic === undefined
+            ? {}
+            : { onDiagnostic: dependencies.onDiagnostic }),
+          message_id: `memory-capacity-${input.kind}`,
+          messages,
+          prompt_build_ms: promptBuildMs,
         }),
         input.max_chars,
       );
@@ -367,15 +432,30 @@ function createMemoryCapacityMessages(
 async function requestPlainText(input: {
   readonly config: ConversationLlmConfig;
   readonly fetchImpl: typeof fetch;
+  readonly now: () => Date;
+  readonly monotonicNow: () => number;
+  readonly onDiagnostic?: ConversationLlmDependencies["onDiagnostic"];
+  readonly message_id: string;
   readonly messages: readonly ConversationLlmMessage[];
+  readonly prompt_build_ms: number;
 }): Promise<string> {
-  const payload = await requestChatCompletionPayload({
+  const result = await executeStage({
     config: input.config,
     fetchImpl: input.fetchImpl,
+    now: input.now,
+    monotonicNow: input.monotonicNow,
+    ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
+    stage: "brain",
+    message_id: input.message_id,
     messages: input.messages,
+    prompt_build_ms: input.prompt_build_ms,
+    parse: (content) => content,
+    onFailure: ({ error }) => {
+      throw error;
+    },
   });
 
-  return extractAssistantReply(payload);
+  return result.value;
 }
 
 async function parseRubricCandidates(
@@ -519,4 +599,14 @@ function clampByChars(value: string, maxChars: number): string {
   const chars = Array.from(value);
 
   return chars.length <= maxChars ? value : chars.slice(0, maxChars).join("");
+}
+
+function createDefaultMonotonicNow(): number {
+  return globalThis.performance?.now() ?? Date.now();
+}
+
+function elapsedMs(now: () => number, startedAt: number): number {
+  const value = now() - startedAt;
+
+  return Number.isFinite(value) && value >= 0 ? Math.round(value) : 0;
 }

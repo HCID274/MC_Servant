@@ -551,10 +551,10 @@ logs/
 {"t":1712930000,"role":"system","content":"你是一个消息分类器..."}
 {"t":1712930000,"role":"user","content":"Bot 状态：idle\n---\n[主人] 帮我砍树"}
 {"t":1712930001,"role":"assistant","content":"{\"intent\":\"task\",\"priority\":\"normal\",\"reason\":\"用户要求采集\"}"}
-{"t":1712930001,"meta":{"input_tokens":120,"output_tokens":35,"ms":800,"ok":true}}
+{"t":1712930001,"meta":{"input_tokens":120,"output_tokens":35,"ms":800,"ok":true,"metrics":{"queue_wait_ms":12,"prompt_build_ms":4,"request_total_ms":760,"response_parse_ms":2,"tool_round_count":0,"tool_round_ms":[],"diagnostics_write_ms":null,"input_tokens":120,"output_tokens":35,"tokens_per_second":46,"ttft_ms":null,"ttft_unavailable":"non_streaming"}}}
 ```
 
-每次调用按 `{stage}-{message_id}.jsonl` 命名。一个用户消息如果触发了 Triage + Plan 两次 LLM 调用，会产出两个文件。
+每次调用按 `{stage}-{message_id}.jsonl` 命名。一个用户消息如果触发了 Triage + Plan 两次 LLM 调用，会产出两个文件。`stage` 允许 `triage` / `chat` / `plan` / `brain`；BrainWorker 的失败复盘、会话 takeaway、滚动摘要压缩与记忆 rubric 也必须落同一 llm 通道。当前不启用 stream（流式响应），所以 `ttft_ms` 必须为 `null`，不得用总耗时冒充首字延迟。
 
 ### 4.5 日志写入实现
 

@@ -16,6 +16,7 @@ import {
   createConversationLlmClient,
   createConversationLlmConfig,
   createConversationRecentContextStore,
+  withConversationLlmDiagnosticsWriteMs,
 } from "../conversation/index.js";
 import type { RuntimeEventType } from "../core-ports/events.js";
 import { createBotActorStateProjection } from "../core-ports/index.js";
@@ -436,6 +437,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
           model: record.model,
           log_ref: record.log_ref,
           created_at: record.created_at,
+          metrics: record.metrics,
           ...(record.error_summary === undefined ? {} : { error_summary: record.error_summary }),
         },
         {
@@ -631,6 +633,29 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         input.bootstrap,
         input.dependencies?.llm,
         brainDiagnosticSink,
+        (record) => {
+          latestLlmDiagnostic = createLlmDiagnosticSummary(
+            {
+              stage: record.stage,
+              message_id: record.message_id,
+              status: record.ok ? "ok" : "error",
+              model: record.model,
+              log_ref: record.log_ref,
+              created_at: record.created_at,
+              metrics: record.metrics,
+              ...(record.error_summary === undefined
+                ? {}
+                : { error_summary: record.error_summary }),
+            },
+            {
+              sensitiveValues:
+                input.dependencies?.llm?.api_key === undefined
+                  ? []
+                  : [input.dependencies.llm.api_key],
+            },
+          );
+        },
+        input.write,
       );
 
     brainWorker = createBrainWorkerRuntime({
@@ -1071,6 +1096,7 @@ function createOnlineConversationTriage(
       message_id: task.message.message_id,
       message: task.message.content,
       bot_summary: "online_runtime_ready",
+      queue_wait_ms: createLlmQueueWaitMs(task.message.snapshot_ts),
       ...(brain_context === undefined ? {} : { brain_context }),
     });
 
@@ -1095,6 +1121,7 @@ function createOnlineConversationReplyGenerator(
       bot_id: task.bot_id,
       message_id: task.message.message_id,
       message: task.message.content,
+      queue_wait_ms: createLlmQueueWaitMs(task.message.snapshot_ts),
       ...(snapshot_context === undefined ? {} : { snapshot_context }),
       ...(memory_context === undefined ? {} : { memory_context }),
       ...(brain_context === undefined ? {} : { brain_context }),
@@ -1119,6 +1146,7 @@ function createOnlineConversationPlanner(
       bot_id: task.bot_id,
       message_id: task.message.message_id,
       message: task.message.content,
+      queue_wait_ms: createLlmQueueWaitMs(task.message.snapshot_ts),
       snapshot_context:
         snapshot_context ??
         "online_runtime: observation unavailable; executable skills: goTo, collect, cutTree, equip; sandbox toolchain: craft, place(crafting_table)",
@@ -1127,6 +1155,13 @@ function createOnlineConversationPlanner(
       ...(brain_context === undefined ? {} : { brain_context }),
       ...(search_tool === undefined ? {} : { search_tool }),
     });
+}
+
+function createLlmQueueWaitMs(snapshotTs: number): number {
+  const snapshotMs = snapshotTs < 1_000_000_000_000 ? snapshotTs * 1000 : snapshotTs;
+  const elapsed = Date.now() - snapshotMs;
+
+  return Number.isFinite(elapsed) && elapsed > 0 ? Math.round(elapsed) : 0;
 }
 
 function createOnlineBrainContextProvider(
@@ -1381,13 +1416,22 @@ function createOnlineConversationLlmClient<TBotId extends string>(
     {
       ...dependencies,
       onDiagnostic: async (record) => {
-        onDiagnosticSummary(record);
+        const writeStartedAt = createDefaultMonotonicNow();
         await localDiagnosticLogSink(record);
-        write?.(renderLlmDiagnosticMessage(record, [apiKey]));
-        await dependencies?.onDiagnostic?.(record);
+        const recordWithWriteMetrics = withConversationLlmDiagnosticsWriteMs(
+          record,
+          createDefaultMonotonicNow() - writeStartedAt,
+        );
+        onDiagnosticSummary(recordWithWriteMetrics);
+        write?.(renderLlmDiagnosticMessage(recordWithWriteMetrics, [apiKey]));
+        await dependencies?.onDiagnostic?.(recordWithWriteMetrics);
       },
     },
   );
+}
+
+function createDefaultMonotonicNow(): number {
+  return globalThis.performance?.now() ?? Date.now();
 }
 
 /** 创建在线 BrainWorker（大脑工作线程） embedding API（向量接口） 生成器。 */
@@ -1434,6 +1478,8 @@ function createOnlineBrainWorkerLlmClient<TBotId extends string>(
   bootstrap: AppBootstrapContract<TBotId>,
   llmDependencies: AppOnlineLlmDependencies | undefined,
   diagnosticSink: BrainWorkerRuntimeDependencies["diagnosticSink"] | undefined,
+  onDiagnosticSummary: (record: ConversationLlmDiagnosticRecord) => void,
+  write: ((message: string) => void) | undefined,
 ): BrainWorkerRuntimeDependencies["llm"] {
   if (!bootstrap.llm.enabled) {
     return undefined;
@@ -1444,6 +1490,10 @@ function createOnlineBrainWorkerLlmClient<TBotId extends string>(
     throw new Error("LLM_API_KEY must be injected for BrainWorker LLM");
   }
   const fetchImpl = llmDependencies?.fetch;
+  const localDiagnosticLogSink = createLocalLlmDiagnosticLogSink({
+    baseDir: bootstrap.config.logs.baseDir,
+    sensitiveValues: [apiKey],
+  });
 
   return createOpenAiCompatibleBrainWorkerLlmClient(
     createConversationLlmConfig({
@@ -1460,6 +1510,17 @@ function createOnlineBrainWorkerLlmClient<TBotId extends string>(
     {
       ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
       ...(diagnosticSink === undefined ? {} : { diagnosticSink }),
+      onDiagnostic: async (record) => {
+        const writeStartedAt = createDefaultMonotonicNow();
+        await localDiagnosticLogSink(record);
+        const recordWithWriteMetrics = withConversationLlmDiagnosticsWriteMs(
+          record,
+          createDefaultMonotonicNow() - writeStartedAt,
+        );
+        onDiagnosticSummary(recordWithWriteMetrics);
+        write?.(renderLlmDiagnosticMessage(recordWithWriteMetrics, [apiKey]));
+        await llmDependencies?.onDiagnostic?.(recordWithWriteMetrics);
+      },
     },
   );
 }
@@ -1507,13 +1568,17 @@ function renderLlmDiagnosticMessage(
       model: record.model,
       log_ref: record.log_ref,
       created_at: record.created_at,
+      metrics: record.metrics,
       ...(record.error_summary === undefined ? {} : { error_summary: record.error_summary }),
     },
     { sensitiveValues },
   );
   const base =
     `TS Core LLM ${record.stage} ${record.ok ? "ok" : "failed"}: ` +
-    `model=${record.model} message_id=${record.message_id} log_ref=${record.log_ref}`;
+    `model=${record.model} message_id=${record.message_id} ` +
+    `request_ms=${record.metrics.request_total_ms} parse_ms=${record.metrics.response_parse_ms} ` +
+    `tokens=${record.metrics.input_tokens}/${record.metrics.output_tokens} ` +
+    `tps=${record.metrics.tokens_per_second} log_ref=${record.log_ref}`;
 
   return summary.error_summary === undefined ? base : `${base} error=${summary.error_summary}`;
 }

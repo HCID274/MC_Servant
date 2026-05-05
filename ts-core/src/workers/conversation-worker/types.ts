@@ -57,6 +57,8 @@ export type ConversationWorkerRuntimeEvent =
       readonly ok: boolean;
       /** 失败摘要。 */
       readonly error_summary?: string;
+      /** 分段性能指标。 */
+      readonly metrics: ConversationLlmDiagnosticRecord["metrics"];
     }
   | {
       /** 事件类型。 */

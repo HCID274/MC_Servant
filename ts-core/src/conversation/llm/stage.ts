@@ -1,5 +1,5 @@
 import type { BrainSearchInput } from "../../data/contracts/index.js";
-import type { LlmLogStage } from "../../diagnostics/contracts.js";
+import type { LlmCallMetrics, LlmLogStage } from "../../diagnostics/contracts.js";
 import { createLlmLogLine, createLlmLogRef } from "../../diagnostics/logs.js";
 import { BRAIN_SEARCH_MAX_TOOL_ROUNDS, createBrainSearchToolResult } from "../brain-context.js";
 import {
@@ -32,6 +32,8 @@ export interface ConversationLlmStageRuntime {
   readonly now: () => Date;
   /** 诊断回调。 */
   readonly onDiagnostic?: ConversationLlmDependencies["onDiagnostic"];
+  /** 单调时钟，用于性能分段统计。 */
+  readonly monotonicNow?: () => number;
 }
 
 /** LLM（大语言模型） 阶段执行输入。 */
@@ -42,6 +44,10 @@ export interface ConversationLlmStageInput<TResult> extends ConversationLlmStage
   readonly message_id: string;
   /** 已组装的 OpenAI（开放人工智能） 兼容消息。 */
   readonly messages: readonly ConversationLlmMessage[];
+  /** 队列等待耗时。 */
+  readonly queue_wait_ms?: number;
+  /** prompt（提示词）构建耗时。 */
+  readonly prompt_build_ms?: number;
   /** assistant（助手） 文本解析器。 */
   readonly parse: (content: string) => TResult;
   /** 失败策略。 */
@@ -80,6 +86,8 @@ export async function executeStage<TResult>(
 ): Promise<ConversationLlmStageSuccess<TResult>> {
   const startedAt = input.now();
   const startedAtMs = startedAt.getTime();
+  const monotonicNow = input.monotonicNow ?? createDefaultMonotonicNow;
+  const stageStartedAt = monotonicNow();
   const logRef = createLlmLogRef({
     date: startedAt.toISOString().slice(0, 10),
     stage: input.stage,
@@ -92,12 +100,32 @@ export async function executeStage<TResult>(
     message_id: input.message_id,
     messages: input.messages,
   });
+  let latestPayload: Awaited<ReturnType<typeof requestChatCompletionPayload>> | undefined;
+  let latestRequestTotalMs = 0;
+  let latestResponseParseMs = 0;
+  let latestToolRoundMs: readonly number[] = [];
 
   try {
-    const toolExecution = await executeSearchToolLoop(input);
+    const toolExecution = await executeSearchToolLoop(input, monotonicNow);
     const payload = toolExecution.payload;
-    const value = input.parse(extractAssistantReply(payload));
+    latestPayload = payload;
+    latestRequestTotalMs = toolExecution.requestTotalMs;
+    latestToolRoundMs = toolExecution.toolRoundMs;
+    const parseStartedAt = monotonicNow();
+    let value: TResult;
+    try {
+      value = input.parse(extractAssistantReply(payload));
+    } finally {
+      latestResponseParseMs = elapsedMs(monotonicNow, parseStartedAt);
+    }
     const finishedAt = input.now();
+    const metrics = createLlmCallMetrics({
+      input,
+      payload,
+      request_total_ms: toolExecution.requestTotalMs,
+      response_parse_ms: latestResponseParseMs,
+      tool_round_ms: toolExecution.toolRoundMs,
+    });
     const diagnostics = createConversationLlmDiagnosticRecord({
       stage: input.stage,
       model: input.config.model,
@@ -105,6 +133,7 @@ export async function executeStage<TResult>(
       log_ref: logRef,
       created_at: finishedAt.toISOString(),
       ok: true,
+      metrics,
       lines: [
         ...invocationLines,
         ...toolExecution.extraLines,
@@ -115,6 +144,7 @@ export async function executeStage<TResult>(
             output_tokens: payload.usage?.completion_tokens ?? 0,
             ms: Math.max(0, finishedAt.getTime() - startedAtMs),
             ok: true,
+            metrics,
           },
         }),
       ],
@@ -129,6 +159,14 @@ export async function executeStage<TResult>(
   } catch (error) {
     const finishedAt = input.now();
     const errorSnapshot = createErrorSnapshot(error);
+    const metrics = createLlmCallMetrics({
+      input,
+      ...(latestPayload === undefined ? {} : { payload: latestPayload }),
+      request_total_ms:
+        latestRequestTotalMs > 0 ? latestRequestTotalMs : elapsedMs(monotonicNow, stageStartedAt),
+      response_parse_ms: latestResponseParseMs,
+      tool_round_ms: latestToolRoundMs,
+    });
     const diagnostics = createConversationLlmDiagnosticRecord({
       stage: input.stage,
       model: input.config.model,
@@ -136,6 +174,7 @@ export async function executeStage<TResult>(
       log_ref: logRef,
       created_at: finishedAt.toISOString(),
       ok: false,
+      metrics,
       error_summary: errorSnapshot.message,
       lines: [
         ...invocationLines,
@@ -146,6 +185,7 @@ export async function executeStage<TResult>(
             output_tokens: 0,
             ms: Math.max(0, finishedAt.getTime() - startedAtMs),
             ok: false,
+            metrics,
           },
           err: errorSnapshot,
         }),
@@ -165,27 +205,40 @@ export async function executeStage<TResult>(
   }
 }
 
-async function executeSearchToolLoop<TResult>(input: ConversationLlmStageInput<TResult>): Promise<{
+async function executeSearchToolLoop<TResult>(
+  input: ConversationLlmStageInput<TResult>,
+  monotonicNow: () => number,
+): Promise<{
   readonly payload: Awaited<ReturnType<typeof requestChatCompletionPayload>>;
   readonly extraLines: readonly ReturnType<typeof createLlmLogLine>[];
+  readonly requestTotalMs: number;
+  readonly toolRoundMs: readonly number[];
 }> {
   if (input.searchTool === undefined) {
+    const requestStartedAt = monotonicNow();
     const payload = await requestChatCompletionPayload({
       fetchImpl: input.fetchImpl,
       config: input.config,
       messages: input.messages,
     });
+    const requestMs = elapsedMs(monotonicNow, requestStartedAt);
 
     return Object.freeze({
       payload,
       extraLines: [createAssistantTranscriptLine(payload, input.now())],
+      requestTotalMs: requestMs,
+      toolRoundMs: Object.freeze([]),
     });
   }
 
   let messages = [...input.messages];
   const extraLines: ReturnType<typeof createLlmLogLine>[] = [];
+  const toolRoundMs: number[] = [];
+  let requestTotalMs = 0;
 
   for (let round = 0; round <= BRAIN_SEARCH_MAX_TOOL_ROUNDS; round += 1) {
+    const roundStartedAt = monotonicNow();
+    const requestStartedAt = monotonicNow();
     const payload = await requestChatCompletionPayload({
       fetchImpl: input.fetchImpl,
       config: input.config,
@@ -193,6 +246,7 @@ async function executeSearchToolLoop<TResult>(input: ConversationLlmStageInput<T
       tools: [SEARCH_TOOL_DEFINITION],
       tool_choice: round >= BRAIN_SEARCH_MAX_TOOL_ROUNDS ? "none" : "auto",
     });
+    requestTotalMs += elapsedMs(monotonicNow, requestStartedAt);
     const toolCalls = extractAssistantToolCalls(payload).filter(
       (toolCall) => toolCall.function.name === "search",
     );
@@ -200,7 +254,12 @@ async function executeSearchToolLoop<TResult>(input: ConversationLlmStageInput<T
     if (toolCalls.length === 0 || round >= BRAIN_SEARCH_MAX_TOOL_ROUNDS) {
       extraLines.push(createAssistantTranscriptLine(payload, input.now()));
 
-      return Object.freeze({ payload, extraLines });
+      return Object.freeze({
+        payload,
+        extraLines,
+        requestTotalMs,
+        toolRoundMs: Object.freeze([...toolRoundMs]),
+      });
     }
 
     extraLines.push(createAssistantTranscriptLine(payload, input.now()));
@@ -238,9 +297,53 @@ async function executeSearchToolLoop<TResult>(input: ConversationLlmStageInput<T
         }),
       );
     }
+    toolRoundMs.push(elapsedMs(monotonicNow, roundStartedAt));
   }
 
   throw new Error("search tool loop failed to produce final response");
+}
+
+function createLlmCallMetrics(input: {
+  readonly input: Pick<ConversationLlmStageInput<unknown>, "queue_wait_ms" | "prompt_build_ms">;
+  readonly payload?: Awaited<ReturnType<typeof requestChatCompletionPayload>>;
+  readonly request_total_ms: number;
+  readonly response_parse_ms: number;
+  readonly tool_round_ms: readonly number[];
+}): LlmCallMetrics {
+  const inputTokens = input.payload?.usage?.prompt_tokens ?? 0;
+  const outputTokens = input.payload?.usage?.completion_tokens ?? 0;
+  const denominatorSeconds = Math.max(0.001, input.request_total_ms / 1000);
+
+  return Object.freeze({
+    queue_wait_ms: normalizeDuration(input.input.queue_wait_ms ?? 0),
+    prompt_build_ms: normalizeDuration(input.input.prompt_build_ms ?? 0),
+    request_total_ms: normalizeDuration(input.request_total_ms),
+    response_parse_ms: normalizeDuration(input.response_parse_ms),
+    tool_round_count: input.tool_round_ms.length,
+    tool_round_ms: Object.freeze(input.tool_round_ms.map(normalizeDuration)),
+    diagnostics_write_ms: null,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    tokens_per_second: normalizeDuration(outputTokens / denominatorSeconds),
+    ttft_ms: null,
+    ttft_unavailable: "non_streaming",
+  });
+}
+
+function createDefaultMonotonicNow(): number {
+  return globalThis.performance?.now() ?? Date.now();
+}
+
+function elapsedMs(now: () => number, startedAt: number): number {
+  return normalizeDuration(now() - startedAt);
+}
+
+function normalizeDuration(value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    return 0;
+  }
+
+  return Math.round(value);
 }
 
 function createAssistantTranscriptLine(

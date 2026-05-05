@@ -151,6 +151,58 @@ describe("conversation llm（对话大语言模型） 运行时", () => {
     expect(diagnostics).toEqual([result.diagnostics]);
   });
 
+  it("应记录 LLM（大语言模型）分段性能指标且非 stream（流式响应）ttft 显式不可得", async () => {
+    const ticks = [0, 6, 10, 20, 80, 90, 95];
+    const nextTick = () => ticks.shift() ?? 85;
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        monotonicNow: nextTick,
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: "ok" } }],
+              usage: { prompt_tokens: 12, completion_tokens: 3 },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      },
+    );
+
+    const result = await client.generateChatReply({
+      message_id: "msg-llm-metrics",
+      message: "只回复 ok",
+      queue_wait_ms: 42,
+    });
+
+    expect(result.diagnostics.metrics).toEqual({
+      queue_wait_ms: 42,
+      prompt_build_ms: 6,
+      request_total_ms: 60,
+      response_parse_ms: 5,
+      tool_round_count: 0,
+      tool_round_ms: [],
+      diagnostics_write_ms: null,
+      input_tokens: 12,
+      output_tokens: 3,
+      tokens_per_second: 50,
+      ttft_ms: null,
+      ttft_unavailable: "non_streaming",
+    });
+    expect(result.diagnostics.lines.at(-1)).toMatchObject({
+      meta: {
+        metrics: result.diagnostics.metrics,
+      },
+    });
+  });
+
   it("Chat（闲聊） 应暴露 search() tool（工具） 并把 brain.search（大脑检索） 结果回填给 LLM", async () => {
     const capturedBodies: unknown[] = [];
     const searchCalls: unknown[] = [];

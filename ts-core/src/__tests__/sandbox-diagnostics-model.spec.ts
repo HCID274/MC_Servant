@@ -743,6 +743,20 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       log_ref: "llm/2026-04-13/triage-msg-001.jsonl",
       created_at: "2026-04-13T12:00:00.000Z",
       error_summary: "upstream timeout",
+      metrics: {
+        queue_wait_ms: 4,
+        prompt_build_ms: 2,
+        request_total_ms: 80,
+        response_parse_ms: 1,
+        tool_round_count: 0,
+        tool_round_ms: [],
+        diagnostics_write_ms: 3,
+        input_tokens: 30,
+        output_tokens: 10,
+        tokens_per_second: 125,
+        ttft_ms: null,
+        ttft_unavailable: "non_streaming",
+      },
     });
 
     expect(llmSummary).toEqual({
@@ -753,6 +767,20 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       log_ref: "llm/2026-04-13/triage-msg-001.jsonl",
       created_at: "2026-04-13T12:00:00.000Z",
       error_summary: "upstream timeout",
+      metrics: {
+        queue_wait_ms: 4,
+        prompt_build_ms: 2,
+        request_total_ms: 80,
+        response_parse_ms: 1,
+        tool_round_count: 0,
+        tool_round_ms: [],
+        diagnostics_write_ms: 3,
+        input_tokens: 30,
+        output_tokens: 10,
+        tokens_per_second: 125,
+        ttft_ms: null,
+        ttft_unavailable: "non_streaming",
+      },
     });
     expect(Object.isFrozen(llmSummary)).toBe(true);
 

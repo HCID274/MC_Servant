@@ -10,6 +10,33 @@ export function createConversationLlmDiagnosticRecord(
   return cloneReadonlyValue(input);
 }
 
+/** 返回补齐 diagnostics_write_ms（诊断写入耗时） 后的诊断记录。 */
+export function withConversationLlmDiagnosticsWriteMs(
+  record: ConversationLlmDiagnosticRecord,
+  diagnosticsWriteMs: number,
+): ConversationLlmDiagnosticRecord {
+  const metrics = Object.freeze({
+    ...record.metrics,
+    diagnostics_write_ms: Math.max(0, Math.round(diagnosticsWriteMs)),
+  });
+
+  return createConversationLlmDiagnosticRecord({
+    ...record,
+    metrics,
+    lines: record.lines.map((line) =>
+      "meta" in line
+        ? createLlmLogLine({
+            ...line,
+            meta: {
+              ...line.meta,
+              metrics,
+            },
+          })
+        : line,
+    ),
+  });
+}
+
 /** 创建 LLM（大语言模型） 调用头与 transcript（原始对话记录） 行。 */
 export function createLlmInvocationLines(input: {
   t: number;

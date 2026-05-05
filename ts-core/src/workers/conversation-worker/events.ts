@@ -16,6 +16,7 @@ export function appendLlmDiagnosticEvent(
       log_ref: diagnostics.log_ref,
       created_at: diagnostics.created_at,
       ok: diagnostics.ok,
+      metrics: diagnostics.metrics,
       ...(diagnostics.error_summary === undefined
         ? {}
         : { error_summary: diagnostics.error_summary }),

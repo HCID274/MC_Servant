@@ -1,6 +1,6 @@
 import { SKILL_DIRECTORY } from "../../core-ports/skills.js";
 import type { BrainSearchInput, BrainSearchResult } from "../../data/contracts/index.js";
-import type { LlmJsonlLine, LlmLogStage } from "../../diagnostics/contracts.js";
+import type { LlmCallMetrics, LlmJsonlLine, LlmLogStage } from "../../diagnostics/contracts.js";
 import type {
   ConversationCompositeTriage,
   ConversationHistoryTurn,
@@ -75,6 +75,8 @@ export interface ConversationLlmDiagnosticRecord {
   readonly error_summary?: string;
   /** 本次调用生成的 JSONL（结构化日志） 行。 */
   readonly lines: readonly LlmJsonlLine[];
+  /** 本次调用的分段性能指标。 */
+  readonly metrics: LlmCallMetrics;
 }
 
 /** 闲聊回复生成结果。 */
@@ -111,6 +113,8 @@ export interface ConversationLlmChatInput {
   readonly state_context?: string;
   /** 可选 Brain search（大脑检索） tool（工具）。 */
   readonly search_tool?: ConversationLlmSearchTool;
+  /** 从消息入队到本阶段 LLM（大语言模型） 调用开始前的等待耗时。 */
+  readonly queue_wait_ms?: number;
 }
 
 /** 分诊请求输入。 */
@@ -125,6 +129,8 @@ export interface ConversationLlmTriageInput {
   readonly bot_summary?: string;
   /** A.5 + C(USER/MEMORY) 常驻 Brain context（大脑上下文）。 */
   readonly brain_context?: string;
+  /** 从消息入队到本阶段 LLM（大语言模型） 调用开始前的等待耗时。 */
+  readonly queue_wait_ms?: number;
 }
 
 /** 最小移动规划请求输入。 */
@@ -147,6 +153,8 @@ export interface ConversationLlmPlanInput {
   readonly brain_context?: string;
   /** 可选 Brain search（大脑检索） tool（工具）。 */
   readonly search_tool?: ConversationLlmSearchTool;
+  /** 从消息入队到本阶段 LLM（大语言模型） 调用开始前的等待耗时。 */
+  readonly queue_wait_ms?: number;
 }
 
 /** 闲聊调用成功结果。 */
@@ -183,6 +191,8 @@ export interface ConversationLlmDependencies {
   readonly fetch?: typeof fetch;
   /** 可注入当前时间。 */
   readonly now?: () => Date;
+  /** 可注入单调时钟，用于性能分段指标。 */
+  readonly monotonicNow?: () => number;
   /** 诊断回调。 */
   readonly onDiagnostic?: (record: ConversationLlmDiagnosticRecord) => void | Promise<void>;
 }
