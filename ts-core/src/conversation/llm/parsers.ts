@@ -63,6 +63,7 @@ export function parseConversationSkillPlan(content: string): ConversationLlmPlan
     if (typeof record.code !== "string" || record.code.trim().length === 0) {
       throw new ConversationLlmPlanError("planner sandbox code must be a non-empty string");
     }
+    validateSandboxPlanCode(record.code);
 
     return createSandboxCodePlanDraft({
       reply: record.reply,
@@ -111,6 +112,20 @@ export function extractBraceWrappedJson(content: string): string | undefined {
   }
 
   return content.slice(firstBraceIndex, lastBraceIndex + 1);
+}
+
+/**
+ * sandbox_code（沙箱代码） 是多步任务闭环入口：解析层只做与规划契约直接相关的最低门禁，
+ * 具体 TypeScript（类型脚本） 语义仍交给 sandbox（沙箱） 编译和执行层处理。
+ */
+function validateSandboxPlanCode(code: string): void {
+  if (code.includes("demoMineIron")) {
+    throw new ConversationLlmPlanError("planner sandbox code must not call demoMineIron");
+  }
+
+  if (!code.includes("api.chat.report")) {
+    throw new ConversationLlmPlanError("planner sandbox code must call api.chat.report");
+  }
 }
 
 function isSkillNotEnabledCannotPlan(record: Record<string, unknown>): boolean {

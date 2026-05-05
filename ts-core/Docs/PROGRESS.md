@@ -43,6 +43,14 @@
 
 (从这里开始,Reviewer C 通过任务后追加)
 
+## T-066 | 2026-05-05 | Plan Prompt v2（规划提示词第二版）与 sandbox_code（沙箱代码）闭环门禁
+
+- 涉及模块: conversation/llm（对话大语言模型） plan prompt（规划提示词）/parser（解析器）,conversation planning tests（规划测试）,app entrypoint（应用入口）异步 brain queue（大脑队列）测试等待点,Docs/04_CONVERSATION_SPEC.md（对话规格文档）
+- A 拆解依据: 用户要求重构 Plan Prompt v2（规划提示词第二版）,用规则与短正例/反例约束 LLM（大语言模型）组合 `ensure`（确保）/`craft`（合成）/`place`（放置）/`equip`（装备）/`mine`（挖掘） 等原子能力,禁止 `demoMineIron()`（演示挖铁）隐藏脚本,要求 sandbox_code（沙箱代码）检查 `ToolchainResult`（工具链结果）并最终 `api.chat.report()`（汇报）;边界限定 conversation/llm prompts（对话大语言模型提示词）、skill plan table（技能规划表）、parser（解析器）与 prompt tests（提示词测试）,不新增 demo（演示）脚本,不改技能执行语义
+- C 审查结论: 通过;改动未进入 runtime（运行时）/skills（技能）/BotActor（机器人执行代理）执行语义,也未新增 plugin（服务端模组）或 ResourceService（资源服务）改动;prompt（提示词）没有写死配方、掉落、工具等级或路线规划,只约束 LLM（大语言模型）不得猜 MC（Minecraft,我的世界）事实、不得手写 `world_key`（世界键）、不得输出坐标/矿簇/阶梯路线;parser（解析器）仅做最低契约门禁,拒绝明确的 `demoMineIron`（演示挖铁）和缺失 `api.chat.report`（汇报调用）的 sandbox_code（沙箱代码）;`git diff --check`（差异空白检查）、`pnpm typecheck`（类型检查）、`pnpm lint`（代码检查）均通过,相关 Vitest（测试框架） 实际跑 34 个 test file（测试文件）/394 个 test（测试）通过,`bash scripts/pre_review.sh`（评审前预检脚本） 全绿;真实本地 OpenAI compatible API（OpenAI 兼容接口） 验证中,“砍 12 块木头”输出 `skill_call cutTree({count:12})`,“做一把石镐”输出包含 `ensureStonePickaxeEquipped()`（确保石镐装备）与 `api.chat.report()`（汇报）的 sandbox_code（沙箱代码）,“去挖铁”输出 `ensureStonePickaxeEquipped()`（确保石镐装备）+ `mine("iron_ore",1)`（挖铁矿）+ `mine("deepslate_iron_ore",1)`（挖深层铁矿）兜底且无 `demoMineIron()`（演示挖铁）/`oak_planks`（橡木木板）
+- 关键决策: 选择 prompt（提示词）规则 + 短正反例 + parser（解析器）最低门禁的组合,而不是新增硬编码 demo（演示）函数或把 MC（Minecraft,我的世界）事实塞进提示词;单步任务仍优先走 `skill_call`（技能调用）,多步工具链才走 `sandbox_code`（沙箱代码）,并把失败检查与最终汇报作为规划契约,保证后续 TaskResultReporter（任务结果汇报器）与 sandbox（沙箱）失败上下文能闭环
+- 架构冲突: 无
+
 ## T-OPS-001 | 2026-05-01 | Docker（容器引擎）一键启停与开发模式入口
 
 - 涉及模块: 根目录 Compose（编排）与启停脚本,ts-core（TS 单核心） Dockerfile（镜像构建文件）/ README（说明文档）,旧 Python（旧后端）入口

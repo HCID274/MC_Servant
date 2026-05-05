@@ -2090,6 +2090,12 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       });
       const replayBody = replayResponse.json();
 
+      await expect
+        .poll(() => queueAdds.map((item) => [item.queue, item.jobName, item.jobId]))
+        .toEqual([
+          ["msg:bot-bridge-conversation", "conversation", "msg-svs-chat"],
+          ["brain", "brain", "conversation-fact-msg-svs-chat"],
+        ]);
       expect(queueAdds.map((item) => [item.queue, item.jobName, item.jobId])).toEqual([
         ["msg:bot-bridge-conversation", "conversation", "msg-svs-chat"],
         ["brain", "brain", "conversation-fact-msg-svs-chat"],

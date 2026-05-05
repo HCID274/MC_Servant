@@ -224,29 +224,32 @@ ConversationWorker 的规划输出有两种路径。**默认走 skill_call**，�
            任何需要条件判断、多步编排、错误处理的意图 → sandbox_code
 ```
 
-### 5.2 Plan System Prompt（sandbox_code 路径）
+### 5.2 Plan Prompt v2（规划提示词第二版）
 
 ```
-你是 {bot_name} 的任务规划引擎。根据主人的指令、当前环境快照和可用 API，生成可执行的 TypeScript 代码。
+你是 Minecraft task planner（任务规划器）。
 
-# 可用 API
-{Facade API 类型定义（精简版，见 5.4 节）}
+# 你是什么
+- 只把主人的意图转成可执行计划
 
-# 代码约束
-- 代码是一段顶层 async 函数体，不需要 import/export/class
-- 全局可用对象：api, console, sleep(ms), Math, JSON, Date
-- 用 try/catch 处理预期内的失败，提供替代方案
-- 每完成一个里程碑阶段，用 api.chat.say() 向主人汇报
-- 所有汇报和对话必须以"喵"或"喵~"结尾
-- 代码不超过 150 行
+# 你不是什么
+- 不直接执行世界动作
+- 不猜 Minecraft（我的世界）事实
+- 不拼 world_key（世界键）
 
 # 输出格式
-只输出 JSON：
-{
-  "reply": "给主人的开场回复（带喵）",
-  "code": "TypeScript 代码字符串"
-}
-不要输出任何解释文本。
+- skill_call：单步任务优先
+- sandbox_code：多步组合 / 条件判断 / 失败处理
+- cannot_plan：缺少必要参数或能力不可用
+
+# sandbox_code 约束
+- 代码是一段顶层 async 函数体，不需要 import/export/class
+- 全局可用对象：api, console, sleep(ms), Math, JSON, Date
+- 每个 ToolchainResult（工具链结果）必须检查 ok
+- ok:false 必须 throw 或 api.chat.report() 汇报结构化失败原因
+- 最后必须调用 api.chat.report()
+- 禁止 demoMineIron()（演示挖铁） 或等价一键隐藏脚本
+- 禁止手写 world_key（世界键）
 ```
 
 ### 5.3 Plan User Prompt 组装
@@ -333,16 +336,30 @@ interface api {
 ### 5.5 Plan 输出解析
 
 ```typescript
-interface PlanOutput {
-  reply: string        // 开场回复，直接广播
-  code: string         // TS 代码，包装为 sandbox_code ExecJob
+type PlanOutput =
+  | {
+      type: 'skill_call'
+      reply: string
+      skill: 'goTo' | 'collect' | 'mine' | 'cutTree' | 'equip'
+      params: Record<string, unknown>
+    }
+  | {
+      type: 'sandbox_code'
+      reply: string
+      code: string
+    }
+  | {
+      type: 'cannot_plan'
+      reason: string
+      code?: string
+    }
 }
 ```
 
-解析失败时（JSON 格式错误、缺少字段）：
+解析失败时（JSON 格式错误、缺少字段、sandbox_code 缺少 `api.chat.report()`、调用 `demoMineIron()`）：
 
-1. 尝试从 LLM 输出中提取 code 块（```` ```typescript ... ``` ````回退匹配）
-2. 如果仍然失败，emit `task.failed`，向用户广播"没听懂你的意思喵……再说一遍？喵~"
+1. 记录 LLM diagnostics（大语言模型诊断）。
+2. emit `task.failed`，由 TaskResultReporter（任务结果汇报器）汇报结构化失败摘要。
 
 ### 5.6 skill_call 路径的 Prompt
 
@@ -361,11 +378,18 @@ skill_call 路径不需要 LLM 生成代码。Stage 2-Plan 的 prompt 简化为�
 规划约束：
 - 用户说"砍 12 块木头"时只输出 cutTree(count=12)
 - 用户说"挖 5 个石头 / 圆石"时只输出 mine(blockName="stone", count=5)
+- 用户说"做一把石镐"时输出 sandbox_code：ensureStonePickaxeEquipped()，检查 ok，最后 api.chat.report()
+- 用户说"去挖铁"时输出 sandbox_code：先 ensureStonePickaxeEquipped()，再 mine('iron_ore',1)，失败可尝试 deepslate_iron_ore，最后 api.chat.report()
+- 用户说"放个工作台在我旁边"时读取 [主人] 坐标，goTo 后 place('crafting_table', near)，检查 ok，最后 api.chat.report()
 - LLM 不输出树木簇、坐标、循环次数或挖掘目标；这些由执行层确定
 - LLM 不输出矿石簇、阶梯路线或挖掘坐标；这些由执行层确定
+- LLM 不输出 demoMineIron()
+- LLM 不手写 world_key
+- LLM 不调用 craft('oak_planks')；木板统一请求 craft('planks')
+- LLM 不能在 ok:false 后继续执行下一步
 
 输出 JSON：
-{"reply":"开场回复（带喵）","skill":"动作名","params":{参数对象}}
+{"type":"skill_call","reply":"开场回复（带喵）","skill":"动作名","params":{参数对象}}
 ```
 
 Token 预算：输入 ~500，输出 ~100。比 sandbox_code 路径省 5-10 倍。
@@ -392,6 +416,50 @@ const execJob: ExecJob = {
   message_id: msg.message_id,
 }
 ```
+
+### 5.8 正例 / 反例
+
+正例必须短，只表达组合方式，不写 Minecraft（我的世界）事实百科：
+
+```json
+{"type":"skill_call","reply":"好的，我去砍 12 块木头喵~","skill":"cutTree","params":{"count":12}}
+{"type":"skill_call","reply":"好的，我去挖 5 个圆石喵~","skill":"mine","params":{"blockName":"stone","count":5}}
+```
+
+```typescript
+const pickaxe = await api.bot.ensureStonePickaxeEquipped();
+if (!pickaxe.ok) {
+  await api.chat.report(`做石镐失败: ${pickaxe.error.code}喵~`);
+  throw new Error(pickaxe.error.code);
+}
+await api.chat.report("石镐已准备好喵~");
+```
+
+```typescript
+const pickaxe = await api.bot.ensureStonePickaxeEquipped();
+if (!pickaxe.ok) {
+  await api.chat.report(`挖铁失败: ${pickaxe.error.code}喵~`);
+  throw new Error(pickaxe.error.code);
+}
+const iron = await api.bot.mine("iron_ore", 1);
+if (!iron.ok) {
+  const deep = await api.bot.mine("deepslate_iron_ore", 1);
+  if (!deep.ok) {
+    await api.chat.report(`挖铁失败: ${deep.error.code}喵~`);
+    throw new Error(deep.error.code);
+  }
+}
+await api.chat.report("挖铁任务完成喵~");
+```
+
+反例：
+
+- `demoMineIron()`：隐藏一键 demo（演示）脚本。
+- `const world_key = "minecraft:overworld"`：手写世界键。
+- `await api.bot.mine("iron_ore", 1)`：挖铁前没检查石镐。
+- `await api.bot.craft("oak_planks", 4)`：木板应该请求 `craft("planks", count)`。
+- `const r = await api.bot.ensureCobblestone(3); await api.bot.craft("stone_pickaxe", 1)`：`ok:false` 未检查。
+- sandbox_code 没有 `api.chat.report()`：终态不闭环。
 
 ---
 
