@@ -177,10 +177,20 @@ export type ToolchainFailureCode = (typeof TOOLCHAIN_FAILURE_CODES)[number];
 export interface ToolchainFailure {
   /** 结构化失败码。 */
   readonly code: ToolchainFailureCode;
+  /** 失败发生阶段；用于 sandbox（沙箱） 后续上下文与 replan（重新规划）。 */
+  readonly failure_stage?: string;
   /** 面向 diagnostics（诊断） 与 replan（重新规划） 的短消息。 */
   readonly message: string;
   /** 当前世界键；必须来自 currentWorld（当前世界）/ResourceService（资源服务） 既有接口。 */
   readonly world_key: string | null;
+  /** 失败时 Bot（机器人） 当前位置摘要。 */
+  readonly position?: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>;
+  /** 失败时背包摘要。 */
+  readonly inventory?: Readonly<Record<string, unknown>>;
+  /** 失败时装备摘要。 */
+  readonly equipment?: Readonly<Record<string, unknown>>;
+  /** 失败时目标完成度摘要。 */
+  readonly progress?: Readonly<Record<string, unknown>>;
   /** 可选补充上下文，不承载手写 Minecraft（我的世界） 事实。 */
   readonly details?: Readonly<Record<string, unknown>>;
 }
@@ -228,6 +238,7 @@ export type ToolchainCapabilityResult<TData extends object> =
 export const TOOLCHAIN_CAPABILITY_NAMES = Object.freeze([
   "craft",
   "place",
+  "placeCraftingTable",
   "equip",
   "mine",
   "ensureLogs",
@@ -283,6 +294,8 @@ export interface ToolchainCapabilityParamsByName {
   readonly craft: CraftCapabilityParams;
   /** `place`（放置） 参数。 */
   readonly place: PlaceCapabilityParams;
+  /** `placeCraftingTable`（放置工作台） 无参数快捷入口。 */
+  readonly placeCraftingTable: EmptyEnsureCapabilityParams;
   /** `equip`（装备） 复用技能参数。 */
   readonly equip: EquipSkillParams;
   /** `mine`（挖掘） 复用技能参数。 */

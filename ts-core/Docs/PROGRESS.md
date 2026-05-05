@@ -282,3 +282,11 @@
 - C 审查结论: 曾打回 1 次 (首次实现把 `ensureCobblestone(count)`（确保圆石） 的目标总数语义与缺口数量混用,导致已有 2 个 cobblestone（圆石）且缺 1 个时不挖 stone（石头）;真实 app（应用）装配未注入 runtime（运行时）语义原木计数,背包已有原木仍触发 cutTree（砍树）;ensure（确保）结果丢弃底层 world_key（世界键）);B（实现代理）补齐目标总数转换、`countInventoryItemsBySemanticRole("cut_tree_log")`（按砍树原木语义角色统计背包）与 ToolchainActionSummary（动作摘要）世界键透传后通过
 - 关键决策: ensure（确保） 层保持高层编排,不写配方/掉落/工具等级等 MC（Minecraft,我的世界）事实;缺料恢复先把 runtime craft（运行时合成）返回的 missing（缺口）换算为 ensure（确保）目标总数,再调用普通能力补齐;原木识别下沉到 runtime/transport（运行时传输层）基于 Mineflayer（Minecraft 客户端库）/minecraft-data（Minecraft 数据库） registry（注册表）与 `cut_tree_log`（砍树原木）语义角色统计,不在 ensure（确保）里按名称后缀猜测;planner prompt（规划提示词）只暴露可读的 `api.bot.ensureStonePickaxeEquipped()`（确保石镐已装备）等通用函数,不隐藏整条挖铁 demo（演示）链
 - 架构冲突: 无
+
+## T-061 | 2026-05-05 | sandbox TS（沙箱 TypeScript）可编程 API（接口）与失败上下文
+
+- 涉及模块: core-ports（核心端口）工具链能力契约,sandbox（沙箱） contracts（契约）/Facade API（门面接口）/execution（执行器）,BotActor（机器人执行代理）工具链分发与 FacadeCallError（门面调用错误）包装,Docs/03_SANDBOX_SPEC.md（沙箱规格文档）/Docs/04_CONVERSATION_SPEC.md（对话规格文档）,相关测试
+- A 拆解依据: 用户要求暴露 sandbox TS（沙箱 TypeScript） 可编程 API（接口）,补齐 `placeCraftingTable()`（放置工作台） 受控入口,并让 craft（合成）/place（放置）/equip（装备）/mine（挖掘）/ensure*（确保函数） 失败时保留 `failure_stage`（失败阶段）、`current_position`（当前位置）、`inventory_summary`（背包摘要）、`equipment_summary`（装备摘要） 与 `target_progress`（目标进度） 等结构化上下文;边界限定 sandbox（沙箱）、skills（技能注册/契约）、runtime（运行时）、diagnostics（诊断） 与 BotActor（机器人执行代理）,不改 Plan LLM（规划大语言模型） prompt（提示词）,不做自动挖铁
+- C 审查结论: 通过;`git diff --check`（差异空白检查）通过,定向 Vitest（测试框架） 命令实际跑全量 34 个 test file（测试文件）/377 个 test（测试）通过,`bash scripts/pre_review.sh`（评审前预检脚本） 全绿;未发现 Plan LLM（规划大语言模型）源码改动、plugin（服务端模组）越界或 `demoMineIron()`（演示挖铁）隐藏链路
+- 关键决策: `placeCraftingTable()`（放置工作台） 只作为 `place({blockName:"crafting_table"})`（放置工作台参数）的零参数别名,不封装合成/装备/挖矿等额外链路;失败上下文在 BotActor（机器人执行代理）统一读取 observation（观测）快照并注入 FacadeCallError.details（门面调用错误细节）,保证 skill（技能）路径和 toolchain（工具链）路径诊断形态一致,同时不让 sandbox（沙箱） 直接读取 runtime（运行时）内部状态
+- 架构冲突: 无

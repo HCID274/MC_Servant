@@ -56,6 +56,7 @@ export const SANDBOX_BOT_METHOD_NAMES = [
   "equip",
   "craft",
   "place",
+  "placeCraftingTable",
   "ensureLogs",
   "ensureCraftingTablePlaced",
   "ensureWoodenPickaxeEquipped",
@@ -68,6 +69,7 @@ export type SandboxBotMethodName =
   | SkillName
   | "craft"
   | "place"
+  | "placeCraftingTable"
   | "ensureLogs"
   | "ensureCraftingTablePlaced"
   | "ensureWoodenPickaxeEquipped"
@@ -152,6 +154,8 @@ export interface SandboxStepParamsByAction extends Pick<SkillParamsByName, Skill
   readonly craft: CraftCapabilityParams;
   /** `place`（放置） 的参数结构。 */
   readonly place: PlaceCapabilityParams;
+  /** `placeCraftingTable`（放置工作台） 的参数结构。 */
+  readonly placeCraftingTable: EmptyEnsureCapabilityParams;
   /** `ensureLogs`（确保原木） 的参数结构。 */
   readonly ensureLogs: EnsureLogsCapabilityParams;
   /** `ensureCraftingTablePlaced`（确保工作台已放置） 的参数结构。 */

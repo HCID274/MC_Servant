@@ -120,6 +120,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(SANDBOX_TOOLCHAIN_CAPABILITY_NAMES).toEqual([
       "craft",
       "place",
+      "placeCraftingTable",
       "equip",
       "mine",
       "ensureLogs",
@@ -136,6 +137,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(Object.keys(facadeContract.bot)).toEqual([...SANDBOX_BOT_METHOD_NAMES]);
     expect(facadeContract.bot).toHaveProperty("craft");
     expect(facadeContract.bot).toHaveProperty("place");
+    expect(facadeContract.bot).toHaveProperty("placeCraftingTable");
     expect(facadeContract.bot).toHaveProperty("ensureStonePickaxeEquipped");
   });
 
@@ -274,6 +276,45 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(result.step_results).toMatchObject([
       {
         action: "place",
+        status: "ok",
+      },
+    ]);
+  });
+
+  it("应让 sandbox_code（沙箱代码） 调用 placeCraftingTable（放置工作台） 快捷 API", async () => {
+    const calls: unknown[] = [];
+    const result = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "await api.bot.placeCraftingTable()",
+        messageId: "T-061-place-table",
+      }),
+      facade: {
+        async executeBotSkill() {
+          throw new Error("unexpected skill call");
+        },
+        async executeToolchainCapability(capability, params) {
+          calls.push({ capability, params });
+
+          return {
+            ok: true,
+            data: {
+              block_name: "crafting_table",
+              completed_count: 1,
+              world_key: "minecraft:overworld",
+            },
+          };
+        },
+        async writeChat() {
+          throw new Error("unexpected chat call");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Completed);
+    expect(calls).toEqual([{ capability: "placeCraftingTable", params: {} }]);
+    expect(result.step_results).toMatchObject([
+      {
+        action: "placeCraftingTable",
         status: "ok",
       },
     ]);

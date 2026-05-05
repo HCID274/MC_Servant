@@ -129,6 +129,7 @@ describe("skills 模块契约", () => {
     expect(TOOLCHAIN_CAPABILITY_NAMES).toEqual([
       "craft",
       "place",
+      "placeCraftingTable",
       "equip",
       "mine",
       "ensureLogs",

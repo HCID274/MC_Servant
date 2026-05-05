@@ -724,6 +724,7 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
         cutTree: (...args) => __sandboxCall("bot.cutTree", args),
         craft: (...args) => __sandboxCall("bot.craft", args),
         place: (...args) => __sandboxCall("bot.place", args),
+        placeCraftingTable: (...args) => __sandboxCall("bot.placeCraftingTable", args),
         ensureLogs: (...args) => __sandboxCall("bot.ensureLogs", args),
         ensureCraftingTablePlaced: (...args) => __sandboxCall("bot.ensureCraftingTablePlaced", args),
         ensureWoodenPickaxeEquipped: (...args) => __sandboxCall("bot.ensureWoodenPickaxeEquipped", args),
@@ -960,11 +961,13 @@ function normalizeSandboxCallParams(
   }
 
   if (
+    action === "placeCraftingTable" ||
     action === "ensureCraftingTablePlaced" ||
     action === "ensureWoodenPickaxeEquipped" ||
     action === "ensureStonePickaxeEquipped"
   ) {
     return cloneReadonlyValue(first ?? {}) as
+      | SandboxStepParamsByAction["placeCraftingTable"]
       | SandboxStepParamsByAction["ensureCraftingTablePlaced"]
       | SandboxStepParamsByAction["ensureWoodenPickaxeEquipped"]
       | SandboxStepParamsByAction["ensureStonePickaxeEquipped"];
@@ -1022,6 +1025,7 @@ function isToolchainSandboxAction(
   return (
     action === "craft" ||
     action === "place" ||
+    action === "placeCraftingTable" ||
     action === "ensureLogs" ||
     action === "ensureCraftingTablePlaced" ||
     action === "ensureWoodenPickaxeEquipped" ||

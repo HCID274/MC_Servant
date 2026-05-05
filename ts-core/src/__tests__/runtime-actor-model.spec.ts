@@ -166,6 +166,46 @@ function createFakeTransport(input?: {
     stopCurrentAction() {
       input?.stopCurrentAction?.();
     },
+    getCurrentWorldKey() {
+      return "minecraft:overworld";
+    },
+    countInventoryItemsBySemanticRole() {
+      return 0;
+    },
+    readObservationInput() {
+      return {
+        timestamp: 1_712_930_000_000,
+        snapshot_version: "minecraft:overworld:test",
+        bot: {
+          position: { x: 12, y: 64, z: -7 },
+          world_key: "minecraft:overworld",
+          health: 20,
+          food: 20,
+          experience: 0,
+          is_on_fire: false,
+          is_in_water: false,
+          y_velocity: 0,
+        },
+        inventory: {
+          items: [{ slot: 0, item_name: "oak_log", count: 2 }],
+          total_items: 2,
+          occupied_slots: 1,
+          free_slots: 35,
+        },
+        equipment: {
+          head: null,
+          chest: null,
+          legs: null,
+          feet: null,
+          main_hand: { slot: "main_hand", item_name: "crafting_table", count: 1 },
+          off_hand: null,
+          has_weapon_equipped: false,
+        },
+        nearby_entities: [],
+        nearby_blocks: [],
+        time: { phase: "day", time_of_day: 6000 },
+      };
+    },
     getSnapshot() {
       return Object.freeze({
         bot_id: "bot-actor" as const,
@@ -1143,6 +1183,45 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
     ]);
   });
 
+  it("应让 sandbox_code（沙箱代码） 的 bot.placeCraftingTable（放置工作台） 复用工具链执行边界", async () => {
+    const placements: Array<{ readonly blockName: string }> = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        place: (params) => {
+          placements.push({ blockName: params.blockName });
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
+    });
+
+    await actor.start();
+    const outcome = await actor.executeSandboxCode(
+      createSandboxCodeJob({
+        message_id: "msg-sandbox-place-table",
+        intent_epoch: 1,
+        snapshot_ts: 1_712_930_002_550,
+        priority: ExecPriority.Normal,
+        code: "await api.bot.placeCraftingTable()",
+      }),
+    );
+
+    expect(outcome.result.status).toBe("completed");
+    expect(placements).toEqual([{ blockName: "crafting_table" }]);
+    expect(outcome.result.step_results).toMatchObject([
+      {
+        action: "placeCraftingTable",
+        status: "ok",
+        params: {},
+      },
+    ]);
+  });
+
   it("应让 sandbox_code（沙箱代码） 的 bot.craft（合成） 复用工具链执行边界", async () => {
     const crafts: Array<{ readonly itemName: string; readonly count: number }> = [];
     const externalAuth = createExternalAuthState({ status: "not_required" });
@@ -1218,6 +1297,72 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
     expect(outcome.result.error).toMatchObject({
       name: "FacadeCallError",
       error_code: "missing_materials",
+      details: {
+        failure_stage: "place",
+        current_position: { x: 12, y: 64, z: -7 },
+        inventory_summary: {
+          items: [{ slot: 0, item_name: "oak_log", count: 2 }],
+        },
+        equipment_summary: {
+          main_hand: { slot: "main_hand", item_name: "crafting_table", count: 1 },
+        },
+        target_progress: {
+          action: "place",
+          target: "crafting_table",
+        },
+      },
+    });
+  });
+
+  it("应让 sandbox_code（沙箱代码） 的 bot.mine（挖掘） 技能失败保留可重规划上下文", async () => {
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        mine: () => {
+          throw new Error("not_equipped:stone:main_hand_empty");
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
+    });
+
+    await actor.start();
+    const outcome = await actor.executeSandboxCode(
+      createSandboxCodeJob({
+        message_id: "msg-sandbox-mine-fail",
+        intent_epoch: 1,
+        snapshot_ts: 1_712_930_002_700,
+        priority: ExecPriority.Normal,
+        code: "await api.bot.mine('stone', 5)",
+      }),
+    );
+
+    expect(outcome.result.status).toBe("failed");
+    if (outcome.result.status !== "failed") {
+      throw new Error("expected sandbox mine failure");
+    }
+    expect(outcome.result.error).toMatchObject({
+      name: "FacadeCallError",
+      error_code: "not_equipped",
+      details: {
+        failure_stage: "mine",
+        current_position: { x: 12, y: 64, z: -7 },
+        inventory_summary: {
+          items: [{ slot: 0, item_name: "oak_log", count: 2 }],
+        },
+        equipment_summary: {
+          main_hand: { slot: "main_hand", item_name: "crafting_table", count: 1 },
+        },
+        target_progress: {
+          action: "mine",
+          target: "stone",
+          requested_count: 5,
+        },
+      },
     });
   });
 

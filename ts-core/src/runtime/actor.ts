@@ -11,6 +11,7 @@ import {
   type SkillExecutionResult,
   type SkillName,
   type SkillParamsByName,
+  TOOLCHAIN_FAILURE_CODES,
   type ToolchainCapabilityData,
   type ToolchainCapabilityName,
   type ToolchainCapabilityParamsByName,
@@ -281,53 +282,62 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       ): Promise<Readonly<Record<string, unknown>>> {
         assertSandboxFacadeCallActive(control);
 
-        switch (skill) {
-          case SKILL_DIRECTORY.goTo:
-            if (!isGoToSkillParams(params)) {
-              throw new Error("sandbox goTo params are invalid");
-            }
+        try {
+          switch (skill) {
+            case SKILL_DIRECTORY.goTo:
+              if (!isGoToSkillParams(params)) {
+                throw new Error("sandbox goTo params are invalid");
+              }
 
-            return (await skillExecution.goToMovement.goTo(params)) as unknown as Readonly<
-              Record<string, unknown>
-            >;
-          case SKILL_DIRECTORY.collect:
-            if (!isCollectSkillParams(params)) {
-              throw new Error("sandbox collect params are invalid");
-            }
+              return (await skillExecution.goToMovement.goTo(params)) as unknown as Readonly<
+                Record<string, unknown>
+              >;
+            case SKILL_DIRECTORY.collect:
+              if (!isCollectSkillParams(params)) {
+                throw new Error("sandbox collect params are invalid");
+              }
 
-            return (await skillExecution.collect(params)) as unknown as Readonly<
-              Record<string, unknown>
-            >;
-          case SKILL_DIRECTORY.mine:
-            if (!isMineSkillParams(params)) {
-              throw new Error("sandbox mine params are invalid");
-            }
+              return (await skillExecution.collect(params)) as unknown as Readonly<
+                Record<string, unknown>
+              >;
+            case SKILL_DIRECTORY.mine:
+              if (!isMineSkillParams(params)) {
+                throw new Error("sandbox mine params are invalid");
+              }
 
-            return (await skillExecution.mine(params)) as unknown as Readonly<
-              Record<string, unknown>
-            >;
-          case SKILL_DIRECTORY.equip:
-            if (!isEquipSkillParams(params)) {
-              throw new Error("sandbox equip params are invalid");
-            }
+              return (await skillExecution.mine(params)) as unknown as Readonly<
+                Record<string, unknown>
+              >;
+            case SKILL_DIRECTORY.equip:
+              if (!isEquipSkillParams(params)) {
+                throw new Error("sandbox equip params are invalid");
+              }
 
-            return (await skillExecution.equip(params)) as unknown as Readonly<
-              Record<string, unknown>
-            >;
-          case SKILL_DIRECTORY.cutTree:
-            if (!isCutTreeSkillParams(params)) {
-              throw new Error("sandbox cutTree params are invalid");
-            }
-            if (skillExecution.cutTree === undefined) {
-              throw new Error("Skill cutTree execution dependency is not configured");
-            }
+              return (await skillExecution.equip(params)) as unknown as Readonly<
+                Record<string, unknown>
+              >;
+            case SKILL_DIRECTORY.cutTree:
+              if (!isCutTreeSkillParams(params)) {
+                throw new Error("sandbox cutTree params are invalid");
+              }
+              if (skillExecution.cutTree === undefined) {
+                throw new Error("Skill cutTree execution dependency is not configured");
+              }
 
-            return (await skillExecution.cutTree(params)) as unknown as Readonly<
-              Record<string, unknown>
-            >;
+              return (await skillExecution.cutTree(params)) as unknown as Readonly<
+                Record<string, unknown>
+              >;
+          }
+
+          throw new Error(`Unsupported sandbox skill: ${String(skill)}`);
+        } catch (error) {
+          throw createSandboxFacadeExecutionError({
+            action: skill,
+            params: params as Readonly<Record<string, unknown>>,
+            error,
+            transport: input.transport,
+          });
         }
-
-        throw new Error(`Unsupported sandbox skill: ${String(skill)}`);
       },
       async executeToolchainCapability<TName extends ToolchainCapabilityName>(
         capability: TName,
@@ -350,6 +360,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         }
         if (
           (capability === "ensureCraftingTablePlaced" ||
+            capability === "placeCraftingTable" ||
             capability === "ensureWoodenPickaxeEquipped" ||
             capability === "ensureStonePickaxeEquipped") &&
           !isEmptyEnsureCapabilityParams(params)
@@ -357,20 +368,36 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           throw new Error(`sandbox ${capability} params are invalid`);
         }
 
-        const result = await executeActorToolchainCapability({
-          capability,
-          params,
-          skillExecution,
-        });
-        if (!result.ok) {
-          throw createToolchainCapabilityError(
-            result.error.code,
-            result.error.message,
-            result.error.details,
-          );
-        }
+        try {
+          const result = await executeActorToolchainCapability({
+            capability,
+            params,
+            skillExecution,
+          });
+          if (!result.ok) {
+            throw createToolchainCapabilityError(
+              result.error.code,
+              result.error.message,
+              createSandboxFailureDetails({
+                action: capability,
+                params: params as Readonly<Record<string, unknown>>,
+                details: result.error.details,
+                failureStage: result.error.failure_stage,
+                progress: result.error.progress,
+                transport: input.transport,
+              }),
+            );
+          }
 
-        return result as unknown as Readonly<Record<string, unknown>>;
+          return result as unknown as Readonly<Record<string, unknown>>;
+        } catch (error) {
+          throw createSandboxFacadeExecutionError({
+            action: capability,
+            params: params as Readonly<Record<string, unknown>>,
+            error,
+            transport: input.transport,
+          });
+        }
       },
       async writeChat(
         method: "say" | "report",
@@ -1029,6 +1056,118 @@ function createToolchainCapabilityError(
   });
 }
 
+function createSandboxFacadeExecutionError(input: {
+  readonly action: string;
+  readonly params: Readonly<Record<string, unknown>>;
+  readonly error: unknown;
+  readonly transport: MineflayerRuntimeTransport<string>;
+}): Error {
+  return createToolchainCapabilityError(
+    readSandboxFacadeErrorCode(input.error),
+    getErrorMessage(input.error),
+    createSandboxFailureDetails({
+      action: input.action,
+      params: input.params,
+      details: readSandboxFacadeErrorDetails(input.error),
+      transport: input.transport,
+    }),
+  );
+}
+
+function readSandboxFacadeErrorCode(error: unknown): string {
+  if (typeof error !== "object" || error === null) {
+    return "facade_call_failed";
+  }
+
+  const errorCode = (error as { readonly error_code?: unknown }).error_code;
+  if (typeof errorCode === "string" && errorCode.trim().length > 0) {
+    return errorCode;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return TOOLCHAIN_FAILURE_CODES.find((code) => message.includes(code)) ?? "facade_call_failed";
+}
+
+function readSandboxFacadeErrorDetails(
+  error: unknown,
+): Readonly<Record<string, unknown>> | undefined {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+
+  const details = (error as { readonly details?: unknown }).details;
+  return typeof details === "object" && details !== null && !Array.isArray(details)
+    ? (details as Readonly<Record<string, unknown>>)
+    : undefined;
+}
+
+function createSandboxFailureDetails(input: {
+  readonly action: string;
+  readonly params: Readonly<Record<string, unknown>>;
+  readonly details?: Readonly<Record<string, unknown>> | undefined;
+  readonly failureStage?: string | undefined;
+  readonly progress?: Readonly<Record<string, unknown>> | undefined;
+  readonly transport: MineflayerRuntimeTransport<string>;
+}): Readonly<Record<string, unknown>> {
+  const observation = safelyReadObservation(input.transport);
+  const targetProgress =
+    input.progress ??
+    createTargetProgress({
+      action: input.action,
+      params: input.params,
+      details: input.details,
+    });
+
+  return Object.freeze({
+    ...(input.details ?? {}),
+    failure_stage: input.failureStage ?? input.action,
+    current_position: observation?.bot.position ?? null,
+    inventory_summary: observation?.inventory ?? null,
+    equipment_summary: observation?.equipment ?? null,
+    target_progress: targetProgress,
+    world_key: observation?.bot.world_key ?? null,
+  });
+}
+
+function safelyReadObservation(
+  transport: MineflayerRuntimeTransport<string>,
+): NonNullable<ReturnType<MineflayerRuntimeTransport<string>["readObservationInput"]>> | null {
+  try {
+    return transport.readObservationInput();
+  } catch {
+    return null;
+  }
+}
+
+function createTargetProgress(input: {
+  readonly action: string;
+  readonly params: Readonly<Record<string, unknown>>;
+  readonly details?: Readonly<Record<string, unknown>> | undefined;
+}): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    action: input.action,
+    target:
+      readString(input.params.itemName) ??
+      readString(input.params.blockName) ??
+      readString(input.details?.item_name) ??
+      readString(input.details?.block_name) ??
+      readString(input.details?.target_item_name) ??
+      null,
+    requested_count:
+      readNumber(input.params.count) ?? readNumber(input.details?.target_count) ?? null,
+    completed_count: readNumber(input.details?.completed_count) ?? null,
+    target_count: readNumber(input.details?.target_count) ?? null,
+  });
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function formatToolchainErrorDetails(
   details: Readonly<Record<string, unknown>> | undefined,
 ): string {
@@ -1057,6 +1196,8 @@ async function executeActorToolchainCapability<TName extends ToolchainCapability
       return input.skillExecution.place(
         input.params as Readonly<ToolchainCapabilityParamsByName["place"]>,
       );
+    case "placeCraftingTable":
+      return input.skillExecution.place({ blockName: "crafting_table" });
     case "ensureLogs":
       return readConfiguredEnsure(
         input.skillExecution.ensureLogs,

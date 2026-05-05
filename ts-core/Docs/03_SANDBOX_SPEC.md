@@ -252,6 +252,7 @@
     * 放置指定方块。Phase 1 仅允许 crafting_table；若背包没有工作台物品，先通过 craft 能力合成 1 个；若配方校验显示缺少中间材料，再通过 craft('planks', n) 这类已开放最小合成能力补齐，随后由 runtime 在当前世界中选择最多 3 个附近合法候选点顺序尝试。工具链返回 ok:false 时必须使沙箱步骤失败并保留结构化 error.code，不得把失败当成成功执行。
      */
     place(blockName: 'crafting_table', near?: Position): Promise<ToolchainResult<{ block_name: string; completed_count: number; world_key: string | null; position?: Position }>>
+    placeCraftingTable(): Promise<ToolchainResult<{ block_name: 'crafting_table'; completed_count: number; world_key: string | null; position?: Position }>>
 
     /**
      * 收集附近掉落物
@@ -323,7 +324,9 @@
     }
     ```
 
-    **禁止项**：不得新增或暴露 `demoMineIron()`（演示挖铁） 或等价的一键隐藏链路。用户说“挖铁”时，LLM（大语言模型） 应生成可读 sandbox TS（沙箱 TypeScript） 组合，显式调用 `ensure*`（确保函数）、`craft`（合成）、`place`（放置）、`equip`（装备）、`mine`（挖掘）、`collect`（捡拾） 等通用能力；TS Core（TypeScript 核心） 不得把整条链路藏在单个 demo（演示） 方法里。
+    **失败上下文**：所有可编程动作失败时，`FacadeCallError.details`（门面调用错误细节） 必须保留 `failure_stage`（失败阶段）、`current_position`（当前位置摘要）、`inventory_summary`（背包摘要）、`equipment_summary`（装备摘要） 与 `target_progress`（目标完成度）。这些字段进入 sandbox（沙箱） JSONL（结构化日志） 和 step result（步骤结果），供下一轮 Plan（规划）读取，不允许只返回字符串。
+
+    **禁止项**：不得新增或暴露 `demoMineIron()`（演示挖铁） 或等价的一键隐藏链路。用户说“挖铁”时，LLM（大语言模型） 应生成可读 sandbox TS（沙箱 TypeScript） 组合，显式调用 `ensure*`（确保函数）、`craft`（合成）、`place`（放置）、`placeCraftingTable`（放置工作台）、`equip`（装备）、`mine`（挖掘）、`collect`（捡拾） 等通用能力；TS Core（TypeScript 核心） 不得把整条链路藏在单个 demo（演示） 方法里。
 
     **世界定位硬约束**：上述所有能力涉及资源、坐标、维度或缓存时，必须从 existing world tag（既有世界标签）、`currentWorld`（当前世界） 或 ResourceService（资源服务） 读取世界上下文。sandbox TS（沙箱 TypeScript）、skills（技能） 与 runtime（运行时） 不得自行读取维度字段并拼接 `world_key`（世界键），也不得跨世界复用资源缓存。
 
