@@ -55,10 +55,13 @@ import type {
   CraftingTablePlacementCache,
   MineflayerBlockHandle,
   MineflayerBotHandle,
+  MineflayerControlState,
   MineflayerEntityHandle,
   MineflayerItemHandle,
   MineflayerRecipeHandle,
 } from "../runtime/transport.js";
+import { createMineBlockFactReader } from "../runtime/transport/mine-block-facts.js";
+import { planMineQueue } from "../runtime/transport/mine-queue.js";
 
 class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-mc";
@@ -104,6 +107,9 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
       bread: {
         id: 9,
       },
+      raw_iron: {
+        id: 10,
+      },
     },
     items: {
       "1": {
@@ -142,10 +148,45 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
         id: 9,
         name: "bread",
       },
+      "10": {
+        id: 10,
+        name: "raw_iron",
+      },
     },
     blocksByName: {
       crafting_table: {
         id: 7,
+      },
+      air: {
+        id: 20,
+        name: "air",
+        diggable: false,
+        drops: [],
+      },
+      dirt: {
+        id: 21,
+        name: "dirt",
+        diggable: false,
+        drops: [],
+      },
+      stone: {
+        id: 22,
+        name: "stone",
+        diggable: true,
+        drops: [1],
+        harvestTools: {
+          "2": true,
+          "8": true,
+        },
+      },
+      iron_ore: {
+        id: 23,
+        name: "iron_ore",
+        diggable: true,
+        drops: [10],
+        harvestTools: {
+          "8": true,
+        },
       },
     },
   };
@@ -157,6 +198,7 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly receivedMovements: unknown[] = [];
   readonly resetGoals: unknown[] = [];
   readonly resourceBlocks: MineflayerBlockHandle[] = [];
+  readonly dugAirPositions = new Set<string>();
   readonly inventoryItems: MineflayerItemHandle[] = [];
   readonly entities: Record<string, MineflayerEntityHandle | undefined> = {};
   readonly craftRecipes = new Map<number, MineflayerRecipeHandle[]>();
@@ -166,6 +208,18 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     readonly table: MineflayerBlockHandle | undefined;
   }[] = [];
   readonly equipCalls: { readonly item: MineflayerItemHandle; readonly destination: string }[] = [];
+  readonly unequipCalls: string[] = [];
+  readonly controlStateCalls: {
+    readonly control: MineflayerControlState;
+    readonly state: boolean;
+  }[] = [];
+  readonly gotoCalls: unknown[] = [];
+  readonly digCalls: MineflayerBlockHandle[] = [];
+  readonly digPositions: {
+    readonly block: { readonly x: number; readonly y: number; readonly z: number } | undefined;
+    readonly bot: { readonly x: number; readonly y: number; readonly z: number } | undefined;
+  }[] = [];
+  suppressDigDrops = false;
   readonly lookAtCalls: {
     readonly position: { readonly x: number; readonly y: number; readonly z: number };
     readonly force?: boolean;
@@ -203,12 +257,18 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
       this.pathfinderStops += 1;
     },
     goto: async (goal?: unknown): Promise<void> => {
+      this.gotoCalls.push(goal);
       await this.onGoto?.(goal);
+      const goalPosition = asGoalPosition(goal);
+      if (goalPosition !== null) {
+        this.entity.position = goalPosition;
+      }
     },
   };
   closed = false;
   clearedControlStates = 0;
   pathfinderStops = 0;
+  findBlocksCalls = 0;
   heldItem: MineflayerItemHandle | null = null;
   onGoto?: (goal?: unknown) => void | Promise<void>;
 
@@ -222,10 +282,29 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     this.clearedControlStates += 1;
   }
 
+  setControlState(control: MineflayerControlState, state: boolean): void {
+    this.controlStateCalls.push({ control, state });
+    if (control !== "forward" || !state) {
+      return;
+    }
+
+    const target = this.lookAtCalls.at(-1)?.position;
+    if (target === undefined) {
+      return;
+    }
+
+    this.entity.position = {
+      x: Math.floor(target.x) + 0.5,
+      y: Math.floor(target.y - 1),
+      z: Math.floor(target.z) + 0.5,
+    };
+  }
+
   findBlocks(input: {
     matching: (block: MineflayerBlockHandle) => boolean;
     count: number;
   }): readonly { readonly x: number; readonly y: number; readonly z: number }[] {
+    this.findBlocksCalls += 1;
     return this.resourceBlocks
       .filter(input.matching)
       .map((block) => block.position)
@@ -241,6 +320,15 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     readonly y: number;
     readonly z: number;
   }): MineflayerBlockHandle | null {
+    if (this.dugAirPositions.has(formatPositionKey(position))) {
+      return {
+        name: "air",
+        type: 20,
+        position,
+        diggable: false,
+      };
+    }
+
     return (
       this.resourceBlocks.find(
         (block) =>
@@ -252,11 +340,46 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   }
 
   dig(block: MineflayerBlockHandle): void {
+    this.digCalls.push(block);
+    this.digPositions.push({
+      block: block.position,
+      bot: this.entity.position,
+    });
+    if (this.suppressDigDrops) {
+      this.resourceBlocks.splice(
+        0,
+        this.resourceBlocks.length,
+        ...this.resourceBlocks.filter((candidate) => candidate !== block),
+      );
+      if (block.position !== undefined) {
+        this.dugAirPositions.add(formatPositionKey(block.position));
+      }
+      return;
+    }
+    const drops = readFakeBlockDrops(this.registry, block.name);
+    for (const drop of drops) {
+      const itemName = this.registry.items[String(drop)]?.name;
+      if (itemName === undefined) {
+        continue;
+      }
+      const stack = this.inventoryItems.find((item) => item.type === drop);
+      if (stack === undefined) {
+        this.inventoryItems.push({ type: drop, name: itemName, count: 1 });
+      } else {
+        this.inventoryItems.splice(this.inventoryItems.indexOf(stack), 1, {
+          ...stack,
+          count: (stack.count ?? 0) + 1,
+        });
+      }
+    }
     this.resourceBlocks.splice(
       0,
       this.resourceBlocks.length,
       ...this.resourceBlocks.filter((candidate) => candidate !== block),
     );
+    if (block.position !== undefined) {
+      this.dugAirPositions.add(formatPositionKey(block.position));
+    }
   }
 
   canDigBlock(block: MineflayerBlockHandle): boolean {
@@ -329,6 +452,13 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     this.equipCalls.push({ item, destination });
     if (destination === "hand") {
       this.heldItem = item;
+    }
+  }
+
+  async unequip(destination: string): Promise<void> {
+    this.unequipCalls.push(destination);
+    if (destination === "hand") {
+      this.heldItem = null;
     }
   }
 
@@ -428,12 +558,112 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   }
 }
 
+function readFakeBlockDrops(
+  registry: FakeMineflayerBot["registry"],
+  blockName: string | undefined,
+): readonly number[] {
+  if (blockName === undefined) {
+    return [];
+  }
+
+  const fact =
+    registry.blocksByName[blockName as keyof FakeMineflayerBot["registry"]["blocksByName"]];
+  const drops = fact === undefined || !("drops" in fact) ? [] : fact.drops;
+
+  return Array.isArray(drops) ? drops : [];
+}
+
+function populateFlatMiningFixture(
+  bot: FakeMineflayerBot,
+  input: {
+    readonly target: { readonly x: number; readonly y: number; readonly z: number };
+    readonly targetBlockName: "stone" | "iron_ore";
+  },
+): void {
+  for (let x = -1; x <= 2; x += 1) {
+    for (let y = 60; y <= 67; y += 1) {
+      for (let z = -1; z <= 1; z += 1) {
+        const isTarget = x === input.target.x && y === input.target.y && z === input.target.z;
+        const isAir = y >= 64;
+        bot.resourceBlocks.push({
+          name: isTarget ? input.targetBlockName : isAir ? "air" : "dirt",
+          type: isTarget ? (input.targetBlockName === "stone" ? 22 : 23) : isAir ? 20 : 21,
+          position: { x, y, z },
+          diggable: isTarget,
+        });
+      }
+    }
+  }
+}
+
+function populateMiningBox(
+  bot: FakeMineflayerBot,
+  input: {
+    readonly minX: number;
+    readonly maxX: number;
+    readonly minY: number;
+    readonly maxY: number;
+    readonly minZ: number;
+    readonly maxZ: number;
+    readonly blockName: "stone" | "dirt" | "air";
+  },
+): void {
+  for (let x = input.minX; x <= input.maxX; x += 1) {
+    for (let y = input.minY; y <= input.maxY; y += 1) {
+      for (let z = input.minZ; z <= input.maxZ; z += 1) {
+        setFakeBlock(bot, { x, y, z }, input.blockName);
+      }
+    }
+  }
+}
+
+function setFakeBlock(
+  bot: FakeMineflayerBot,
+  position: { readonly x: number; readonly y: number; readonly z: number },
+  blockName: "air" | "dirt" | "stone" | "iron_ore",
+): void {
+  const type = bot.registry.blocksByName[blockName].id;
+  const existingIndex = bot.resourceBlocks.findIndex(
+    (block) =>
+      block.position?.x === position.x &&
+      block.position.y === position.y &&
+      block.position.z === position.z,
+  );
+  const block: MineflayerBlockHandle = {
+    name: blockName,
+    type,
+    position,
+    diggable: blockName !== "air",
+  };
+  if (existingIndex < 0) {
+    bot.resourceBlocks.push(block);
+    return;
+  }
+
+  bot.resourceBlocks.splice(existingIndex, 1, block);
+}
+
 function formatPositionKey(position: {
   readonly x: number;
   readonly y: number;
   readonly z: number;
 }): string {
   return `${position.x}:${position.y}:${position.z}`;
+}
+
+function asGoalPosition(
+  goal: unknown,
+): { readonly x: number; readonly y: number; readonly z: number } | null {
+  if (goal === null || typeof goal !== "object") {
+    return null;
+  }
+  const candidate = goal as { readonly x?: unknown; readonly y?: unknown; readonly z?: unknown };
+
+  return typeof candidate.x === "number" &&
+    typeof candidate.y === "number" &&
+    typeof candidate.z === "number"
+    ? { x: candidate.x, y: candidate.y, z: candidate.z }
+    : null;
 }
 
 const fakePathfinderModule = {
@@ -742,6 +972,157 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       },
     });
     expect(bot.craftCalls).toEqual([{ recipe, count: 1, table: tableBlock }]);
+  });
+
+  it("craft（合成） 应基于 Mineflayer recipe（配方） 递归补齐中间材料", async () => {
+    const bot = new FakeMineflayerBot();
+    const planksRecipe: MineflayerRecipeHandle = {
+      result: { id: 4, count: 4 },
+      delta: [
+        { id: 5, count: -1 },
+        { id: 4, count: 4 },
+      ],
+      requiresTable: false,
+    };
+    const stickRecipe: MineflayerRecipeHandle = {
+      result: { id: 6, count: 4 },
+      delta: [
+        { id: 4, count: -2 },
+        { id: 6, count: 4 },
+      ],
+      requiresTable: false,
+    };
+    const pickaxeRecipe: MineflayerRecipeHandle = {
+      result: { id: 2, count: 1 },
+      delta: [
+        { id: 4, count: -3 },
+        { id: 6, count: -2 },
+        { id: 2, count: 1 },
+      ],
+      requiresTable: true,
+    };
+    const tableBlock: MineflayerBlockHandle = {
+      type: 7,
+      name: "crafting_table",
+      position: { x: 1, y: 64, z: 1 },
+    };
+    bot.resourceBlocks.push(tableBlock);
+    bot.inventoryItems.push({ type: 5, name: "birch_log", count: 1 });
+    bot.craftRecipes.set(4, [planksRecipe]);
+    bot.craftRecipes.set(6, [stickRecipe]);
+    bot.craftRecipes.set(2, [pickaxeRecipe]);
+
+    await expect(
+      executeMineflayerCraft({
+        bot,
+        params: { itemName: "wooden_pickaxe", count: 1 },
+        worldKey: "minecraft:overworld",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {
+        world_key: "minecraft:overworld",
+        completed_count: 1,
+        item_name: "wooden_pickaxe",
+      },
+    });
+    expect(bot.craftCalls).toEqual([
+      { recipe: planksRecipe, count: 1, table: undefined },
+      { recipe: stickRecipe, count: 1, table: undefined },
+      { recipe: pickaxeRecipe, count: 1, table: tableBlock },
+    ]);
+  });
+
+  it("craft（合成） 应在某种木板不足时用 recipe（配方） 事实补齐可用木板变体", async () => {
+    const bot = new FakeMineflayerBot();
+    const birchPlanksRecipe: MineflayerRecipeHandle = {
+      result: { id: 4, count: 4 },
+      delta: [
+        { id: 5, count: -1 },
+        { id: 4, count: 4 },
+      ],
+      requiresTable: false,
+    };
+    const oakPickaxeRecipe: MineflayerRecipeHandle = {
+      result: { id: 2, count: 1 },
+      delta: [
+        { id: 3, count: -3 },
+        { id: 6, count: -2 },
+        { id: 2, count: 1 },
+      ],
+      requiresTable: true,
+    };
+    const birchPickaxeRecipe: MineflayerRecipeHandle = {
+      result: { id: 2, count: 1 },
+      delta: [
+        { id: 4, count: -3 },
+        { id: 6, count: -2 },
+        { id: 2, count: 1 },
+      ],
+      requiresTable: true,
+    };
+    const tableBlock: MineflayerBlockHandle = {
+      type: 7,
+      name: "crafting_table",
+      position: { x: 1, y: 64, z: 1 },
+    };
+    bot.resourceBlocks.push(tableBlock);
+    bot.inventoryItems.push(
+      { type: 3, name: "oak_planks", count: 2 },
+      { type: 5, name: "birch_log", count: 1 },
+      { type: 6, name: "stick", count: 2 },
+    );
+    bot.craftRecipes.set(4, [birchPlanksRecipe]);
+    bot.craftRecipes.set(2, [oakPickaxeRecipe, birchPickaxeRecipe]);
+
+    await expect(
+      executeMineflayerCraft({
+        bot,
+        params: { itemName: "wooden_pickaxe", count: 1 },
+        worldKey: "minecraft:overworld",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {
+        world_key: "minecraft:overworld",
+        completed_count: 1,
+        item_name: "wooden_pickaxe",
+      },
+    });
+    expect(bot.craftCalls).toEqual([
+      { recipe: birchPlanksRecipe, count: 1, table: undefined },
+      { recipe: birchPickaxeRecipe, count: 1, table: tableBlock },
+    ]);
+  });
+
+  it("craft（合成） 收到具体木板变体时应按 planks（木板） 泛化目标处理", async () => {
+    const bot = new FakeMineflayerBot();
+    const birchPlanksRecipe: MineflayerRecipeHandle = {
+      result: { id: 4, count: 4 },
+      delta: [
+        { id: 5, count: -1 },
+        { id: 4, count: 4 },
+      ],
+      requiresTable: false,
+    };
+    bot.inventoryItems.push({ type: 5, name: "birch_log", count: 1 });
+    bot.craftRecipes.set(4, [birchPlanksRecipe]);
+
+    await expect(
+      executeMineflayerCraft({
+        bot,
+        params: { itemName: "oak_planks", count: 1 },
+        worldKey: "minecraft:overworld",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {
+        world_key: "minecraft:overworld",
+        completed_count: 4,
+        item_name: "birch_planks",
+      },
+    });
+    expect(bot.craftCalls).toEqual([{ recipe: birchPlanksRecipe, count: 1, table: undefined }]);
   });
 
   it("place（放置） 应复用仍存在的 crafting table（工作台） 缓存", async () => {
@@ -1193,6 +1574,369 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       status: "runtime_unavailable",
       diagnostics: ["runtime_unavailable", "mineflayer_transport_not_connected"],
     });
+  });
+
+  it("mine（挖掘） 应通过 StairBFSPlanner（阶梯规划器） 安全短段挖到 stone（石头） 并按背包增量返回", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-mine-stair-bfs-stone",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          bot.heldItem = { type: 2, name: "wooden_pickaxe", count: 1 };
+          bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
+          populateFlatMiningFixture(bot, {
+            target: { x: 1, y: 63, z: 0 },
+            targetBlockName: "stone",
+          });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(transport.mine({ blockName: "stone", count: 1 })).resolves.toMatchObject({
+      skill: "mine",
+      block_name: "stone",
+      world_key: "multiworld:resource",
+      collected_item_name: "cobblestone",
+      collected_count: 1,
+      mined_count: 1,
+      diagnostics: ["stair_bfs_phase:no_fill"],
+    });
+    expect(createdBots[0]?.resourceBlocks.some((block) => block.name === "stone")).toBe(false);
+    expect(createdBots[0]?.findBlocksCalls).toBe(0);
+    expect(createdBots[0]?.receivedMovements).toEqual([]);
+    expect(createdBots[0]?.gotoCalls).toEqual([]);
+    expect(createdBots[0]?.controlStateCalls).toContainEqual({
+      control: "forward",
+      state: true,
+    });
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("mine（挖掘） 普通资源应沿 StairBFS（阶梯广度优先搜索） 路线发现候选而不是先全局 findBlocks（查找方块）", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-mine-stair-bfs-stone-count",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
+          for (let x = -1; x <= 6; x += 1) {
+            for (let y = 58; y <= 67; y += 1) {
+              for (let z = -1; z <= 1; z += 1) {
+                const isStartBody = x === 0 && y >= 64 && z === 0;
+                bot.resourceBlocks.push({
+                  name: isStartBody ? "air" : "stone",
+                  type: isStartBody ? 20 : 22,
+                  position: { x, y, z },
+                  diggable: !isStartBody,
+                });
+              }
+            }
+          }
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(transport.mine({ blockName: "stone", count: 3 })).resolves.toMatchObject({
+      skill: "mine",
+      block_name: "stone",
+      collected_item_name: "cobblestone",
+      collected_count: 3,
+      mined_count: 3,
+    });
+    expect(createdBots[0]?.findBlocksCalls).toBe(0);
+    expect(createdBots[0]?.gotoCalls).toEqual([]);
+    expect(createdBots[0]?.controlStateCalls).toContainEqual({
+      control: "forward",
+      state: true,
+    });
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("mine（挖掘） 队列规划应按总 walking distance（行走距离）丢弃超过 32 步的已有洞候选", () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = { x: 0, y: 70, z: 0 };
+    bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
+    populateMiningBox(bot, {
+      minX: -3,
+      maxX: 42,
+      minY: 24,
+      maxY: 73,
+      minZ: -3,
+      maxZ: 3,
+      blockName: "stone",
+    });
+    setFakeBlock(bot, { x: 0, y: 70, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 71, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 72, z: 0 }, "air");
+    for (let step = 1; step <= 40; step += 1) {
+      const foot = { x: step, y: 70 - step, z: 0 };
+      setFakeBlock(bot, foot, "air");
+      setFakeBlock(bot, { x: foot.x, y: foot.y + 1, z: foot.z }, "air");
+      setFakeBlock(bot, { x: foot.x, y: foot.y + 2, z: foot.z }, "air");
+    }
+    for (const step of [10, 20, 30]) {
+      const foot = { x: step, y: 70 - step, z: 0 };
+      setFakeBlock(bot, foot, "dirt");
+      setFakeBlock(bot, { x: foot.x, y: foot.y + 1, z: foot.z }, "dirt");
+      setFakeBlock(bot, { x: foot.x, y: foot.y + 2, z: foot.z }, "dirt");
+    }
+
+    const queue = planMineQueue({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      blockName: "stone",
+      requiredTargetCount: 1,
+    });
+
+    expect(queue).not.toBeNull();
+    const firstDig = queue?.actions.find((action) => action.kind === "dig");
+    expect(firstDig?.pos.x).toBeLessThanOrEqual(0);
+    expect(queue?.actions.some((action) => action.pos.x > 32)).toBe(false);
+  });
+
+  it("mine（挖掘） ore（矿石） 应只执行 ResourceService（资源服务） 传入候选，不调用 findBlocks（查找方块）重扫", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-mine-ore-resource-target",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          bot.heldItem = { type: 8, name: "stone_pickaxe", count: 1 };
+          bot.inventoryItems.push({ type: 8, name: "stone_pickaxe", count: 1 });
+          populateFlatMiningFixture(bot, {
+            target: { x: 1, y: 63, z: 0 },
+            targetBlockName: "iron_ore",
+          });
+          bot.resourceBlocks.push({
+            type: 23,
+            name: "iron_ore",
+            position: { x: 20, y: 63, z: 0 },
+            diggable: true,
+          });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.mine({
+        blockName: "iron_ore",
+        count: 1,
+        targets: [
+          {
+            block_name: "iron_ore",
+            position: { x: 1, y: 63, z: 0 },
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      block_name: "iron_ore",
+      world_key: "multiworld:resource",
+      collected_item_name: "raw_iron",
+      collected_count: 1,
+      mined_count: 1,
+    });
+    expect(createdBots[0]?.findBlocksCalls).toBe(0);
+    expect(createdBots[0]?.digCalls.some((block) => block.position?.x === 20)).toBe(false);
+    const targetDig = createdBots[0]?.digPositions.find(
+      (entry) => entry.block?.x === 1 && entry.block.y === 63 && entry.block.z === 0,
+    );
+    expect(targetDig?.bot).not.toEqual({ x: 1, y: 63, z: 0 });
+    expect(
+      Math.hypot(
+        (targetDig?.bot?.x ?? 99) - 1.5,
+        (targetDig?.bot?.y ?? 99) + 1.65 - 63.5,
+        (targetDig?.bot?.z ?? 99) - 0.5,
+      ),
+    ).toBeLessThanOrEqual(5.1);
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("mine（挖掘） 应先规划完整 dig queue（挖掘队列），穿过泥土后再挖够 stone（石头）", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-mine-stair-bfs-full-queue",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 70, z: 0 };
+          bot.heldItem = { type: 2, name: "wooden_pickaxe", count: 1 };
+          bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
+          for (let x = -1; x <= 14; x += 1) {
+            for (let y = 58; y <= 73; y += 1) {
+              for (let z = -1; z <= 1; z += 1) {
+                const isStartBody = x === 0 && y >= 70 && z === 0;
+                const isDirtLayer = y >= 66;
+                bot.resourceBlocks.push({
+                  name: isStartBody ? "air" : isDirtLayer ? "dirt" : "stone",
+                  type: isStartBody ? 20 : isDirtLayer ? 21 : 22,
+                  position: { x, y, z },
+                  diggable: !isStartBody,
+                });
+              }
+            }
+          }
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(transport.mine({ blockName: "stone", count: 6 })).resolves.toMatchObject({
+      skill: "mine",
+      block_name: "stone",
+      collected_item_name: "cobblestone",
+      collected_count: 6,
+      mined_count: 6,
+    });
+    expect(createdBots[0]?.findBlocksCalls).toBe(0);
+    expect(createdBots[0]?.gotoCalls).toEqual([]);
+    expect(createdBots[0]?.unequipCalls).toContain("hand");
+    expect(createdBots[0]?.equipCalls.length).toBeGreaterThan(0);
+    expect(
+      createdBots[0]?.digCalls
+        .slice(0, 3)
+        .map((block) => block.position)
+        .map((position) => position?.y),
+    ).toEqual([71, 70, 69]);
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("mine（挖掘） 规划阶段拿不到足够目标方块时不得先挖开路方块", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-mine-stair-bfs-no-partial-dig",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 70, z: 0 };
+          bot.heldItem = { type: 2, name: "wooden_pickaxe", count: 1 };
+          bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
+          for (let x = -1; x <= 6; x += 1) {
+            for (let y = 64; y <= 73; y += 1) {
+              for (let z = -1; z <= 1; z += 1) {
+                const isStartBody = x === 0 && y >= 70 && z === 0;
+                bot.resourceBlocks.push({
+                  name: isStartBody ? "air" : "dirt",
+                  type: isStartBody ? 20 : 21,
+                  position: { x, y, z },
+                  diggable: !isStartBody,
+                });
+              }
+            }
+          }
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(transport.mine({ blockName: "stone", count: 1 })).rejects.toThrow(
+      "unsafe_path:stone:no_safe_route",
+    );
+    expect(createdBots[0]?.dugAirPositions.size).toBe(0);
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("mine（挖掘） 执行完整预规划队列后掉落不足应失败，不得二次重规划继续短挖", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-mine-stair-bfs-no-runtime-replan",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 70, z: 0 };
+          bot.heldItem = { type: 2, name: "wooden_pickaxe", count: 1 };
+          bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
+          bot.suppressDigDrops = true;
+          for (let x = -1; x <= 8; x += 1) {
+            for (let y = 62; y <= 73; y += 1) {
+              for (let z = -1; z <= 1; z += 1) {
+                const isStartBody = x === 0 && y >= 70 && z === 0;
+                bot.resourceBlocks.push({
+                  name: isStartBody ? "air" : "stone",
+                  type: isStartBody ? 20 : 22,
+                  position: { x, y, z },
+                  diggable: !isStartBody,
+                });
+              }
+            }
+          }
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(transport.mine({ blockName: "stone", count: 2 })).rejects.toThrow(
+      "drop_not_obtained:cobblestone:0/2:planned queue completed without enough inventory diff",
+    );
+    expect(createdBots[0]?.digCalls.filter((block) => block.name === "stone")).toHaveLength(2);
+
+    await transport.disconnect("test shutdown");
   });
 
   it("应在适配层修正 1.20.3+ entity_velocity（实体速度） 嵌套向量，避免 Mineflayer 写入 NaN", async () => {

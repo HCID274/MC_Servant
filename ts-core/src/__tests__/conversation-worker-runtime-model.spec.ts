@@ -2145,7 +2145,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
   });
 
-  it("应拒绝 planner（规划器） 产出的未启用 mine（挖掘） 技能且不入执行队列", async () => {
+  it("应接受 planner（规划器） 产出的 mine（挖掘） 技能并入执行队列", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const replies: Array<{ message_id: string; content: string }> = [];
     const enqueuedTasks: unknown[] = [];
@@ -2196,20 +2196,30 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       }),
     });
 
-    expect(replies).toEqual([
-      {
-        message_id: "msg-mine",
-        content:
-          "这个技能还没有通过验收，当前允许执行 goTo 前往坐标、collect 捡拾、cutTree 砍树、equip 装备和 place 放置工作台喵~",
+    expect(replies).toEqual([{ message_id: "msg-mine", content: "收到，我去挖石头喵~" }]);
+    expect(enqueuedTasks).toHaveLength(1);
+    expect(enqueuedTasks[0]).toMatchObject({
+      priority: 5,
+      task: {
+        worker: "bot",
+        bot_id: "bot-cw",
+        queue: "bot:bot-cw:exec",
+        exec_job: {
+          message_id: "msg-mine",
+          intent_epoch: 6,
+          snapshot_ts: 105,
+          priority: "normal",
+          skill: "mine",
+          params: { blockName: "stone", count: 2 },
+        },
       },
-    ]);
-    expect(enqueuedTasks).toEqual([]);
+    });
     expect(runtime.getEvents()).toContainEqual({
-      type: "task.discarded",
+      type: "task.accepted",
       bot_id: "bot-cw",
       message_id: "msg-mine",
-      status: "discarded",
-      reason: "skill_not_enabled",
+      skill: "mine",
+      priority: "normal",
     });
   });
 

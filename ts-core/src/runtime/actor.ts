@@ -14,9 +14,11 @@ import {
   type ToolchainCapabilityName,
   type ToolchainCapabilityParamsByName,
   isCollectSkillParams,
+  isCraftCapabilityParams,
   isCutTreeSkillParams,
   isEquipSkillParams,
   isGoToSkillParams,
+  isMineSkillParams,
   isPlaceCapabilityParams,
 } from "../core-ports/skills.js";
 import {
@@ -235,6 +237,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
     mine: input.transport.mine.bind(input.transport),
     collect: input.transport.collect.bind(input.transport),
     equip: input.transport.equip.bind(input.transport),
+    craft: input.transport.craft.bind(input.transport),
     place:
       typeof input.transport.place === "function"
         ? input.transport.place.bind(input.transport)
@@ -291,9 +294,13 @@ export function createBotActorRuntime<TBotId extends string>(input: {
               Record<string, unknown>
             >;
           case SKILL_DIRECTORY.mine:
-            throw new Error(
-              `Skill ${skill} has not passed independent validation and is not enabled in T-046`,
-            );
+            if (!isMineSkillParams(params)) {
+              throw new Error("sandbox mine params are invalid");
+            }
+
+            return (await skillExecution.mine(params)) as unknown as Readonly<
+              Record<string, unknown>
+            >;
           case SKILL_DIRECTORY.equip:
             if (!isEquipSkillParams(params)) {
               throw new Error("sandbox equip params are invalid");
@@ -324,16 +331,26 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       ) {
         assertSandboxFacadeCallActive(control);
 
-        if (capability !== "place") {
+        if (capability !== "craft" && capability !== "place") {
           throw new Error(
             `Toolchain capability ${capability} is not executable in current sandbox`,
           );
         }
-        if (!isPlaceCapabilityParams(params)) {
+        if (capability === "craft" && !isCraftCapabilityParams(params)) {
+          throw new Error("sandbox craft params are invalid");
+        }
+        if (capability === "place" && !isPlaceCapabilityParams(params)) {
           throw new Error("sandbox place params are invalid");
         }
 
-        const result = await skillExecution.place(params);
+        const result =
+          capability === "craft"
+            ? await skillExecution.craft(
+                params as unknown as ToolchainCapabilityParamsByName["craft"],
+              )
+            : await skillExecution.place(
+                params as unknown as ToolchainCapabilityParamsByName["place"],
+              );
         if (!result.ok) {
           throw createToolchainCapabilityError(
             result.error.code,
@@ -1106,9 +1123,7 @@ async function executeActorSkillCallJob(
 
       return dependencies.cutTree(job.params);
     case SKILL_DIRECTORY.mine:
-      throw new Error(
-        `Skill ${job.skill} has not passed independent validation and is not enabled in T-046`,
-      );
+      return dependencies.mine(job.params);
     case SKILL_DIRECTORY.equip:
       return dependencies.equip(job.params);
   }

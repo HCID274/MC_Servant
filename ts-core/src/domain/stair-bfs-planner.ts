@@ -100,6 +100,7 @@ export type StairBFSStepRejectReason =
   | "water_risk"
   | "falling_block_risk"
   | "deep_pit_risk"
+  | "reverse_down_step"
   | "fill_not_allowed"
   | "fill_budget_exhausted"
   | "unknown_block";
@@ -156,6 +157,7 @@ interface SearchNode {
   readonly state: StairBFSState;
   readonly states: readonly StairBFSState[];
   readonly steps: readonly StairBFSStep[];
+  readonly cost: number;
 }
 
 interface SearchResult {
@@ -166,15 +168,25 @@ interface SearchResult {
 const DEFAULT_MAX_STEPS = 12;
 const MAX_SHORT_SEGMENT_STEPS = 16;
 const DEFAULT_MAX_EXPANDED_STATES = 512;
+const STEP_BASE_COST = 10;
+const STEP_DIG_COST = 120;
+const STEP_FILL_COST = 240;
+const STEP_TURN_COST = 6;
+const STEP_HEIGHT_CHANGE_COST = 4;
 
 /** 创建默认 SafetyChecker（安全检查器），只依赖 scanner（扫描器） 提供的预分类方块角色。 */
 export function createDefaultStairBFSSafetyChecker(): StairBFSSafetyChecker {
   return Object.freeze({
     isValidStep(input: Readonly<StairBFSStepValidationInput>): StairBFSStepValidation {
+      if (input.heightDelta === -1 && isOppositeDirection(input.current.dir, input.nextDir)) {
+        return invalidStep("reverse_down_step");
+      }
+
       const nextFoot = input.next;
       const nextHead = addY(input.next, 1);
+      const nextTop = addY(input.next, 2);
       const nextFloor = addY(input.next, -1);
-      const bodyBlocks = [nextFoot, nextHead] as const;
+      const bodyBlocks = [nextFoot, nextHead, nextTop] as const;
 
       for (const bodyPos of bodyBlocks) {
         const block = readKnownBlock(input.scanner, bodyPos);
@@ -192,11 +204,23 @@ export function createDefaultStairBFSSafetyChecker(): StairBFSSafetyChecker {
         }
       }
 
-      if (hasNearbyRole(input.scanner, [nextFoot, nextHead], "lava")) {
-        return invalidStep("lava_risk");
+      const lavaRisk = hasNearbyRole(
+        input.scanner,
+        [nextFoot, nextHead, nextTop],
+        "lava",
+        "lava_risk",
+      );
+      if (lavaRisk !== undefined) {
+        return invalidStep(lavaRisk);
       }
-      if (hasNearbyRole(input.scanner, [nextFoot, nextHead], "water")) {
-        return invalidStep("water_risk");
+      const waterRisk = hasNearbyRole(
+        input.scanner,
+        [nextFoot, nextHead, nextTop],
+        "water",
+        "water_risk",
+      );
+      if (waterRisk !== undefined) {
+        return invalidStep(waterRisk);
       }
 
       const dig = bodyBlocks.filter((pos) =>
@@ -340,9 +364,10 @@ function search(input: {
       state: freezeState(input.start),
       states: Object.freeze([freezeState(input.start)]),
       steps: Object.freeze([]),
+      cost: 0,
     },
   ];
-  const seen = new Set<string>([stateKey(input.start)]);
+  const bestCostByState = new Map<string, number>([[stateKey(input.start), 0]]);
   const rejectedSteps: StairBFSRejectedStep[] = [];
   let exploredStates = 0;
 
@@ -391,11 +416,14 @@ function search(input: {
         mode: node.state.mode,
         usedFill: node.state.usedFill + validation.fill.length,
       });
+      const stepCost = calculateStepCost(node.state, candidate, validation);
+      const nextCost = node.cost + stepCost;
       const key = stateKey(nextState);
-      if (seen.has(key)) {
+      const bestKnownCost = bestCostByState.get(key);
+      if (bestKnownCost !== undefined && bestKnownCost <= nextCost) {
         continue;
       }
-      seen.add(key);
+      bestCostByState.set(key, nextCost);
       const step = freezeStep({
         from: node.state,
         to: nextState,
@@ -408,13 +436,41 @@ function search(input: {
         state: nextState,
         states: Object.freeze([...node.states, nextState]),
         steps: Object.freeze([...node.steps, step]),
+        cost: nextCost,
       });
+      queue.sort(compareSearchNodeCost);
     }
   }
 
   return {
     diagnostics: freezeDiagnostics({ exploredStates, rejectedSteps }),
   };
+}
+
+function calculateStepCost(
+  current: Readonly<StairBFSState>,
+  candidate: Readonly<{
+    readonly nextDir: StairBFSDirection;
+    readonly heightDelta: -1 | 0 | 1;
+  }>,
+  validation: Readonly<StairBFSStepValidation>,
+): number {
+  return (
+    STEP_BASE_COST +
+    validation.dig.length * STEP_DIG_COST +
+    validation.fill.length * STEP_FILL_COST +
+    (current.dir === candidate.nextDir ? 0 : STEP_TURN_COST) +
+    (candidate.heightDelta === 0 ? 0 : STEP_HEIGHT_CHANGE_COST)
+  );
+}
+
+function compareSearchNodeCost(left: Readonly<SearchNode>, right: Readonly<SearchNode>): number {
+  const costDelta = left.cost - right.cost;
+  if (costDelta !== 0) {
+    return costDelta;
+  }
+
+  return left.steps.length - right.steps.length;
 }
 
 function listCandidates(state: StairBFSState): readonly {
@@ -546,6 +602,15 @@ function turnRight(dir: StairBFSDirection): StairBFSDirection {
   }
 }
 
+function isOppositeDirection(left: StairBFSDirection, right: StairBFSDirection): boolean {
+  return (
+    (left === "north" && right === "south") ||
+    (left === "south" && right === "north") ||
+    (left === "east" && right === "west") ||
+    (left === "west" && right === "east")
+  );
+}
+
 function readKnownBlock(
   scanner: StairBFSWorldScanner,
   pos: Readonly<StairBFSBlockPos>,
@@ -568,16 +633,20 @@ function hasNearbyRole(
   scanner: StairBFSWorldScanner,
   centers: readonly StairBFSBlockPos[],
   role: StairBFSBlockRole,
-): boolean {
+  riskReason: StairBFSStepRejectReason,
+): StairBFSStepRejectReason | undefined {
   for (const center of centers) {
     for (const neighbor of neighborsWithinOne(center)) {
       const block = readKnownBlock(scanner, neighbor);
-      if (block === undefined || block.role === role) {
-        return true;
+      if (block === undefined) {
+        return "unknown_block";
+      }
+      if (block.role === role) {
+        return riskReason;
       }
     }
   }
-  return false;
+  return undefined;
 }
 
 function hasDeepPitRisk(scanner: StairBFSWorldScanner, floor: StairBFSBlockPos): boolean {

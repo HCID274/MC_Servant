@@ -238,10 +238,8 @@
     follow(distance?: number): Promise<void>
 
     /**
-     * 挖掘指定方块
-     * @param blockName 方块名称（如 'oak_log', 'stone', 'diamond_ore'）
-     * @param count 挖掘数量
-     * @returns 实际挖到的数量
+     * 挖掘指定资源方块。stone 不进入 ResourceService，执行层直接 runtime scan；iron_ore / deepslate_iron_ore 先走 ResourceService 具体方块簇，再用 StairBFSPlanner 生成安全短段。完成标准来自 runtime 基于背包增量返回的 collected_count。
+     * 失败必须保留结构化原因：not_equipped、resource_not_found、unsafe_path、unreachable_target、drop_not_obtained、runtime_mine_failed。
      */
     mine(blockName: string, count: number): Promise<ToolchainResult<{ block_name: string; completed_count: number; world_key: string | null }>>
 

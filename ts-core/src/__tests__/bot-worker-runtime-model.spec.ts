@@ -11,6 +11,7 @@ import {
   createCollectSkillExecutionResult,
   createEquipSkillExecutionResult,
   createGoToSkillExecutionResult,
+  createMineSkillExecutionResult,
 } from "../skills/index.js";
 import { createBotWorkerRuntime } from "../workers/bot-worker.js";
 import {
@@ -267,6 +268,71 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
         total_steps: 1,
       },
     ]);
+  });
+
+  it("应允许已通过单技能验收的 mine（挖掘） 进入 BotActor（机器人执行代理）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const executedSkills: string[] = [];
+    const runtime = createBotWorkerRuntime({
+      queue: {
+        name: "bot:bot-worker:exec",
+        connection: {},
+      },
+      dependencies: {
+        actor: {
+          async executeSkill(job) {
+            executedSkills.push(job.skill);
+
+            if (job.skill !== SKILL_DIRECTORY.mine) {
+              throw new Error("expected mine skill");
+            }
+
+            return {
+              result: createMineSkillExecutionResult(job.params, {
+                collected_item_name: "cobblestone",
+                collected_count: 5,
+                mined_count: 5,
+                total_steps: 5,
+              }),
+              snapshot: {} as never,
+            };
+          },
+          async executeSandboxCode() {
+            throw new Error("sandbox should not run");
+          },
+        },
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+    const task = createBotWorkerTask({
+      bot_id: "bot-worker",
+      exec_job: createSkillCallJob({
+        message_id: "msg-worker-mine",
+        intent_epoch: 1,
+        snapshot_ts: 112,
+        priority: ExecPriority.Normal,
+        skill: SKILL_DIRECTORY.mine,
+        params: { blockName: "stone", count: 5 },
+      }),
+    });
+
+    await runtime.start();
+    await processor?.({ data: task });
+
+    expect(executedSkills).toEqual(["mine"]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.completed",
+      bot_id: "bot-worker",
+      message_id: "msg-worker-mine",
+      status: TaskHistoryStatus.Completed,
+      total_steps: 5,
+    });
   });
 
   it("应允许已通过单技能验收的 collect（捡拾） 进入 BotActor（机器人执行代理）", async () => {

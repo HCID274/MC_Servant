@@ -266,3 +266,11 @@
 - C 审查结论: 通过;`bash scripts/pre_review.sh`（评审前预检脚本） 全绿,34 个 test file（测试文件）/347 个 test（测试）通过;`git diff --check`（差异空白检查）通过
 - 关键决策: 规划器保持纯 domain（领域）核心,只消费 scanner（扫描器）预分类 block role（方块角色）,不在业务逻辑中硬编码 Mineflayer（Minecraft 客户端库）/minecraft-data（Minecraft 数据库）事实;默认第一阶段只找无填充安全路线,调用方给出 fill budget（填充预算）后才运行第二阶段;step（步骤）输出只包含 nextFoot（下一脚部空间）/nextHead（下一头部空间）挖掘与 nextFloor（下一地板）填充计划,执行动作留给后续任务
 - 架构冲突: 无
+
+## T-059 | 2026-05-05 | mine（挖掘）技能接入 StairBFSPlanner（阶梯广度优先规划器）
+
+- 涉及模块: skills（技能） mine（挖掘）执行器,ResourceService（资源服务）矿石候选,runtime/transport（运行时传输层） mine（挖掘）适配与队列构建,domain（领域） StairBFSPlanner（阶梯广度优先规划器）安全规则,core-ports（核心端口）技能契约,BotActor（机器人执行代理）/sandbox（沙箱）入口,conversation/llm（对话大语言模型） mine（挖掘）门禁,相关测试
+- A 拆解依据: 用户要求 mine（挖掘） 能用 T-058（任务） StairBFSPlanner（阶梯规划器）安全采集 stone（石头）和 ore（矿石）;stone（石头）不进 ResourceService（资源服务）资源簇,从 bot（机器人）当前位置先规划完整阶梯 dig queue（挖掘队列）再执行到底;ore（矿石）必须消费 ResourceService（资源服务）按具体 blockName（方块名）给出的目标候选;执行前检查工具,执行后用 inventory diff（背包增量）判断掉落,世界定位只走既有 worldKey（世界键）接口;不碰 plugin（服务端模组）
+- C 审查结论: 曾打回 2 次 (首次实现让 ore（矿石）在 runtime（运行时）重新 findBlocks（查找方块）、自行读取 bot.game.dimension（机器人维度）、硬编码掉落/工具事实且 mine.ts（挖掘文件）过大;二次审查发现 stone（石头）仍偏向短段重规划/边挖边看,unknown block（未知方块）邻近风险被乐观放行,已有洞复用未按总 walking distance（行走距离）丢弃);B（实现代理）拆分事实/工具/队列模块,改为完整预规划队列、矿石相邻站位、unknown（未知）保守拒绝、反向下降硬拒绝与已有洞 32 步总距离限制后通过
+- 关键决策: 普通资源采集以 StairBFSPlanner（阶梯广度优先规划器）从当前脚位生成完整 dig queue（挖掘队列）,不先全局扫描最近 stone（石头）,也不在执行阶段按掉落结果二次重规划;矿石路径保留 ResourceService（资源服务）作为候选真源,runtime（运行时）只规划到安全相邻 standingPos（站位）再挖目标方块;MC（Minecraft,我的世界）掉落、工具与方块角色事实由 Mineflayer（Minecraft 客户端库）/minecraft-data（Minecraft 数据库） registry（注册表）读取;已有 air（空气）阶梯靠低挖掘代价自然胜出,但不引入 tunnel memory（隧道记忆）
+- 架构冲突: 无;LLM（大语言模型）失败 retry（重试）闭环已标记为需 Planner A（规划代理）确认/另拆的范围项,不作为本条 runtime（运行时） mine（挖掘）验收条件

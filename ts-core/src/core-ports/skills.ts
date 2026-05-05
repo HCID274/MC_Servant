@@ -62,6 +62,26 @@ export interface MineSkillParams {
   readonly count: number;
 }
 
+/** `mine`（挖掘） 内部执行目标候选；只能由 ResourceService（资源服务） 或 runtime（运行时）事实源注入。 */
+export interface MineSkillTargetCandidate {
+  /** 具体方块名。 */
+  readonly block_name: string;
+  /** 目标方块坐标。 */
+  readonly position: Readonly<{
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+  }>;
+}
+
+/** `mine`（挖掘） 内部执行请求；公共 sandbox（沙箱） 仍只暴露 MineSkillParams。 */
+export interface MineSkillExecutionRequest extends MineSkillParams {
+  /** 当前世界键，必须由既有 worldKey（世界键） 端口传入。 */
+  readonly worldKey?: string | null;
+  /** ResourceService（资源服务） 选出的具体候选；ore（矿石） 路径必须提供。 */
+  readonly targets?: readonly MineSkillTargetCandidate[];
+}
+
 /** `cutTree`（砍树） 技能参数。 */
 export interface CutTreeSkillParams {
   /** 期望砍伐的树木数量。 */
@@ -132,6 +152,8 @@ export const TOOLCHAIN_FAILURE_CODES = Object.freeze([
   "crafting_table_unavailable",
   "recipe_not_found",
   "runtime_craft_failed",
+  "runtime_mine_failed",
+  "drop_not_obtained",
   "missing_crafting_table_item",
   "no_placeable_position",
   "place_failed",
@@ -433,6 +455,15 @@ export function isPlaceCapabilityParams(params: unknown): params is PlaceCapabil
   );
 }
 
+/** 校验 `craft`（合成） 工具链参数。 */
+export function isCraftCapabilityParams(params: unknown): params is CraftCapabilityParams {
+  if (!isRecord(params) || !hasOnlyAllowedKeys(params, ["itemName", "count"])) {
+    return false;
+  }
+
+  return isNonEmptyString(params.itemName) && isPositiveInteger(params.count);
+}
+
 /** 创建与技能目录强绑定的只读技能调用结构。 */
 export function createSkillCall<TInput extends SkillCallInput>(input: TInput): TInput {
   return Object.freeze({
@@ -508,8 +539,16 @@ export interface MineSkillExecutionResult {
   readonly skill: "mine";
   /** 目标方块标准名称。 */
   readonly block_name: string;
+  /** 当前世界 / 维度键。 */
+  readonly world_key: string | null;
+  /** 预期进入背包的掉落物标准名称。 */
+  readonly collected_item_name: string | null;
+  /** 已确认进入背包的目标掉落物数量。 */
+  readonly collected_count: number;
   /** 实际完成的挖掘数量。 */
   readonly mined_count: number;
+  /** 执行诊断。 */
+  readonly diagnostics: readonly string[];
   /** 当前最小执行器的步骤数。 */
   readonly total_steps: number;
 }
@@ -624,7 +663,7 @@ export interface GoToMovementAdapter {
 /** `mine`（挖掘） 技能执行适配器。 */
 export interface MineSkillAdapter {
   /** 按方块标准名称执行最小真实挖掘。 */
-  mine(params: Readonly<SkillParamsByName["mine"]>): Promise<MineSkillExecutionResult>;
+  mine(params: Readonly<MineSkillExecutionRequest>): Promise<MineSkillExecutionResult>;
 }
 
 /** `collect`（捡拾） 技能执行适配器。 */
@@ -645,6 +684,14 @@ export interface EquipSkillAdapter {
   equip(params: Readonly<SkillParamsByName["equip"]>): Promise<EquipSkillExecutionResult>;
 }
 
+/** `craft`（合成） 工具链执行适配器。 */
+export interface CraftToolchainAdapter {
+  /** 合成当前阶段允许的工具链物品。 */
+  craft(
+    params: Readonly<CraftCapabilityParams>,
+  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
+}
+
 /** `place`（放置） 工具链执行适配器。 */
 export interface PlaceToolchainAdapter {
   /** 放置当前阶段允许的工具链方块。 */
@@ -658,6 +705,7 @@ export interface SkillExecutionDependencies
   extends MineSkillAdapter,
     CollectSkillAdapter,
     EquipSkillAdapter,
+    CraftToolchainAdapter,
     PlaceToolchainAdapter {
   /** `goTo`（前往坐标） 移动适配器。 */
   readonly goToMovement: GoToMovementAdapter;
@@ -684,12 +732,24 @@ export function createGoToSkillExecutionResult(
 /** 创建冻结的 `mine`（挖掘） 技能执行结果。 */
 export function createMineSkillExecutionResult(
   params: Readonly<MineSkillParams>,
+  outcome: {
+    readonly world_key?: string | null;
+    readonly collected_item_name?: string | null;
+    readonly collected_count?: number;
+    readonly mined_count?: number;
+    readonly diagnostics?: readonly string[];
+    readonly total_steps?: number;
+  } = {},
 ): MineSkillExecutionResult {
   return Object.freeze({
     skill: "mine" as const,
     block_name: params.blockName,
-    mined_count: params.count,
-    total_steps: params.count,
+    world_key: outcome.world_key ?? null,
+    collected_item_name: outcome.collected_item_name ?? null,
+    collected_count: outcome.collected_count ?? outcome.mined_count ?? params.count,
+    mined_count: outcome.mined_count ?? params.count,
+    diagnostics: Object.freeze([...(outcome.diagnostics ?? [])]),
+    total_steps: outcome.total_steps ?? outcome.mined_count ?? params.count,
   });
 }
 

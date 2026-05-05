@@ -28,4 +28,5 @@ export * from "./contracts.js";
 export * from "./registry.js";
 export * from "./cut-tree.js";
 export * from "./execution.js";
+export * from "./mine.js";
 export * from "./recent-event.js";

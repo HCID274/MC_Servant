@@ -9,6 +9,7 @@
 
 import type { ExecutionTaskKind } from "../core-ports/foundation.js";
 import type {
+  CraftCapabilityParams,
   PlaceCapabilityParams,
   SkillName,
   SkillParamsByName,
@@ -50,11 +51,12 @@ export const SANDBOX_BOT_METHOD_NAMES = [
   "cutTree",
   "collect",
   "equip",
+  "craft",
   "place",
 ] as const;
 
 /** `bot`（动作） 分区方法名联合类型。 */
-export type SandboxBotMethodName = SkillName | "place";
+export type SandboxBotMethodName = SkillName | "craft" | "place";
 
 /** sandbox（沙箱） 工具链能力契约清单；未实现前不得注入为真实 Facade（门面） 方法。 */
 export const SANDBOX_TOOLCHAIN_CAPABILITY_NAMES = TOOLCHAIN_CAPABILITY_NAMES;
@@ -130,6 +132,8 @@ export type SandboxStepActionName = (typeof SANDBOX_STEP_ACTION_NAMES)[number];
 
 /** 沙箱步骤动作与参数结构的映射表。 */
 export interface SandboxStepParamsByAction extends Pick<SkillParamsByName, SkillName> {
+  /** `craft`（合成） 的参数结构。 */
+  readonly craft: CraftCapabilityParams;
   /** `place`（放置） 的参数结构。 */
   readonly place: PlaceCapabilityParams;
   /** `say`（聊天输出） 的参数结构。 */

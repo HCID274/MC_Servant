@@ -12,8 +12,8 @@ import type {
   EquipSkillParams,
   GoToSkillExecutionResult,
   GoToSkillParams,
+  MineSkillExecutionRequest,
   MineSkillExecutionResult,
-  MineSkillParams,
   PlaceCapabilityParams,
   ToolchainCapabilityData,
   ToolchainCapabilityResult,
@@ -164,6 +164,18 @@ export interface MineflayerRegistryBlockFact {
   readonly id: number;
   /** 标准方块名。 */
   readonly name?: string;
+  /** 是否可挖，来自 minecraft-data（Minecraft 数据库）。 */
+  readonly diggable?: boolean;
+  /** 掉落物数字标识列表，来自 minecraft-data（Minecraft 数据库）。 */
+  readonly drops?: readonly number[];
+  /** 碰撞盒类型。 */
+  readonly boundingBox?: string;
+  /** 材质分类。 */
+  readonly material?: string;
+  /** 是否为坠落方块。 */
+  readonly falling?: boolean;
+  /** 可采集工具 id 集合。 */
+  readonly harvestTools?: Readonly<Record<string, unknown>>;
 }
 
 /** Mineflayer（Minecraft 协议客户端） registry（注册表） 最小结构。 */
@@ -226,6 +238,16 @@ export interface MineflayerChatPort {
   /** 向 Minecraft（我的世界） 游戏聊天频道写入文本。 */
   chat?(text: string): void | Promise<void>;
 }
+
+/** Mineflayer（Minecraft 协议客户端） 低级移动控制键。 */
+export type MineflayerControlState =
+  | "forward"
+  | "back"
+  | "left"
+  | "right"
+  | "jump"
+  | "sprint"
+  | "sneak";
 
 /** Mineflayer（Minecraft 协议客户端） 插件与寻路能力端口。 */
 export interface MineflayerPluginPort {
@@ -314,10 +336,17 @@ export interface MineflayerInventoryPort {
   };
   /** 装备物品到目标槽位。 */
   equip?(item: MineflayerItemHandle, destination: string): void | Promise<void>;
+  /** 卸下指定槽位物品；用于挖掘软方块时避免消耗工具耐久。 */
+  unequip?(destination: string): void | Promise<void>;
 }
 
 /** Mineflayer（Minecraft 协议客户端） 移动能力端口。 */
-export interface MineflayerMovementPort extends MineflayerLifecyclePort, MineflayerPluginPort {}
+export interface MineflayerMovementPort extends MineflayerLifecyclePort, MineflayerPluginPort {
+  /** 设置 Mineflayer（Minecraft 协议客户端） 底层控制键状态。 */
+  setControlState?(control: MineflayerControlState, state: boolean): void;
+  /** 清空 Mineflayer（Minecraft 协议客户端） 所有底层控制键状态。 */
+  clearControlStates?(): void;
+}
 
 /** Mineflayer（Minecraft 协议客户端） Bot 句柄的能力组合。 */
 export interface MineflayerBotHandle
@@ -456,7 +485,7 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   /** 通过受控移动能力执行 goTo（前往坐标）。 */
   goTo(params: Readonly<GoToSkillParams>): Promise<GoToSkillExecutionResult>;
   /** 通过受控挖掘能力执行 mine（挖掘）。 */
-  mine(params: Readonly<MineSkillParams>): Promise<MineSkillExecutionResult>;
+  mine(params: Readonly<MineSkillExecutionRequest>): Promise<MineSkillExecutionResult>;
   /** 挖掘指定坐标的单个方块，用于资源簇推荐目标执行。 */
   digBlockAt(position: Readonly<MineflayerVec3Like>): Promise<void>;
   /** 通过受控实体与移动能力执行 collect（捡拾）。 */

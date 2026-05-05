@@ -20,6 +20,7 @@ import {
 import type { RuntimeEventType } from "../core-ports/events.js";
 import { createBotActorStateProjection } from "../core-ports/index.js";
 import type { EnvironmentSnapshot, SnapshotPosition } from "../core-ports/observation.js";
+import { TaskHistoryStatus } from "../core-ports/tasking.js";
 import {
   type IntentEpochStore,
   type PostgresBrainSearchStore,
@@ -740,6 +741,30 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
           });
           await conversationBotWorkerActionSink(action);
 
+          const failureReply = createTaskFailureReplyFromBotWorkerAction({ action });
+          if (failureReply !== null) {
+            try {
+              await createdRuntime.actor.broadcastReply({
+                message_id: failureReply.messageId,
+                content: failureReply.content,
+              });
+              await appendOnlineRealtimeEvent(
+                createRealtimeEventFromConversationReply({
+                  botId: input.bootstrap.bot_id,
+                  messageId: failureReply.messageId,
+                  content: failureReply.content,
+                  createdAt: new Date().toISOString(),
+                }),
+              );
+            } catch (error) {
+              input.write?.(
+                `TS Core task failure reply skipped: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
+          }
+
           if (realtimeEvent !== null) {
             await appendOnlineRealtimeEvent(realtimeEvent);
           }
@@ -1094,7 +1119,7 @@ function createOnlineConversationPlanner(
       message: task.message.content,
       snapshot_context:
         snapshot_context ??
-        "online_runtime: observation unavailable; executable skills: goTo, collect, cutTree, equip; sandbox toolchain: place(crafting_table)",
+        "online_runtime: observation unavailable; executable skills: goTo, collect, cutTree, equip; sandbox toolchain: craft, place(crafting_table)",
       triage_reason: route.triage.reason,
       ...(memory_context === undefined ? {} : { memory_context }),
       ...(brain_context === undefined ? {} : { brain_context }),
@@ -1530,6 +1555,68 @@ export function createRealtimeEventFromBotWorkerAction(input: {
     created_at: input.createdAt,
     payload: input.action.lifecycle.payload as unknown as Readonly<Record<string, unknown>>,
   });
+}
+
+/** 从 BotWorker（机器人工作线程） 终态失败动作构造确定性聊天回显。 */
+export function createTaskFailureReplyFromBotWorkerAction(input: {
+  /** BotWorker（机器人工作线程） 输出动作。 */
+  readonly action: BotWorkerAction;
+}): { readonly messageId: string; readonly content: string } | null {
+  if (input.action.type !== "enqueue_brain") {
+    return null;
+  }
+
+  if ("kind" in input.action.task.payload) {
+    return null;
+  }
+
+  const taskCard = input.action.task.payload.task_card;
+  if (taskCard.result.status !== TaskHistoryStatus.Failed) {
+    return null;
+  }
+
+  const message = taskCard.result.error.message;
+  if (taskCard.execution.type === "skill_call" && taskCard.execution.skill === "mine") {
+    return Object.freeze({
+      messageId: `${taskCard.message_id}:task_failed`,
+      content: formatMineFailureChatReply(message),
+    });
+  }
+
+  return Object.freeze({
+    messageId: `${taskCard.message_id}:task_failed`,
+    content: `执行失败：${message}喵~`,
+  });
+}
+
+function formatMineFailureChatReply(message: string): string {
+  if (
+    message === "not_equipped:stone:main_hand_empty" ||
+    message === "not_equipped:stone:requires_wooden_or_stone_pickaxe"
+  ) {
+    return "挖石头需要先拿着 wooden_pickaxe（木镐）或 stone_pickaxe（石镐），我现在没有装备可用镐喵~";
+  }
+
+  if (
+    message === "not_equipped:iron_ore:requires_stone_pickaxe" ||
+    message === "not_equipped:deepslate_iron_ore:requires_stone_pickaxe"
+  ) {
+    return "挖铁矿需要先拿着 stone_pickaxe（石镐），我现在没有装备石镐喵~";
+  }
+
+  if (message.startsWith("resource_not_found:")) {
+    return `附近没有找到可挖的目标资源：${message}喵~`;
+  }
+
+  if (message.startsWith("runtime_mine_failed:")) {
+    return `挖掘执行失败：${message}喵~`;
+  }
+
+  if (message.startsWith("drop_not_obtained:")) {
+    return `挖掘后背包没有获得足够掉落物：${message}喵~`;
+  }
+
+  return `mine（挖掘）失败：${message}喵~`;
 }
 
 function supportsPostgresTaskHistoryStore(db: unknown): boolean {

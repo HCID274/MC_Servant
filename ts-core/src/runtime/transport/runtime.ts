@@ -182,7 +182,12 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
     async mine(params: Readonly<MineSkillParams>) {
       const currentBot = ensureWorldInteractionReady("mine");
       const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
-      return executeMineflayerMine({ bot: currentBot, pathfinder, pathfinderModule, params });
+      return executeMineflayerMine({
+        bot: currentBot,
+        pathfinder,
+        pathfinderModule,
+        params: { ...params, worldKey: createMineflayerWorldKey(currentBot) },
+      });
     },
     async digBlockAt(position: Readonly<MineflayerVec3Like>) {
       const currentBot = ensureWorldInteractionReady("digBlockAt");

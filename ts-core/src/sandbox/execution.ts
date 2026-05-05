@@ -721,6 +721,7 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
         collect: (...args) => __sandboxCall("bot.collect", args),
         equip: (...args) => __sandboxCall("bot.equip", args),
         cutTree: (...args) => __sandboxCall("bot.cutTree", args),
+        craft: (...args) => __sandboxCall("bot.craft", args),
         place: (...args) => __sandboxCall("bot.place", args)
       }),
       chat: Object.freeze({
@@ -914,6 +915,17 @@ function normalizeSandboxCallParams(
     return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["equip"];
   }
 
+  if (action === "craft") {
+    if (typeof first === "string") {
+      return {
+        itemName: first,
+        count: Number(args[1] ?? 1),
+      } as SandboxStepParamsByAction["craft"];
+    }
+
+    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["craft"];
+  }
+
   if (action === "place") {
     if (typeof first === "string") {
       return {
@@ -946,14 +958,14 @@ async function executeSandboxBotFacadeCall(
     throw new Error("cutTree is not executable in the current runtime sandbox");
   }
 
-  if (action === "place") {
+  if (action === "craft" || action === "place") {
     if (typeof facade.executeToolchainCapability !== "function") {
-      throw new Error("Toolchain capability place is not configured in current sandbox");
+      throw new Error(`Toolchain capability ${action} is not configured in current sandbox`);
     }
 
     const result = await facade.executeToolchainCapability(
-      "place",
-      params as ToolchainCapabilityParamsByName["place"],
+      action,
+      params as ToolchainCapabilityParamsByName[typeof action],
       control,
     );
 

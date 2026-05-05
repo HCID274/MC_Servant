@@ -114,7 +114,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(SANDBOX_READONLY_SECTIONS).toEqual(["world", "knowledge", "memory", "owner", "task"]);
   });
 
-  it("应声明工具链能力契约且只把已实现 place（放置） 注入当前 Facade（门面）", () => {
+  it("应声明工具链能力契约且把 craft（合成） / place（放置） 注入当前 Facade（门面）", () => {
     const facadeContract = createSandboxFacadeContract();
 
     expect(SANDBOX_TOOLCHAIN_CAPABILITY_NAMES).toEqual([
@@ -134,7 +134,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       expect.arrayContaining(["missing_materials", "cannot_place", "unsafe_path"]),
     );
     expect(Object.keys(facadeContract.bot)).toEqual([...SANDBOX_BOT_METHOD_NAMES]);
-    expect(facadeContract.bot).not.toHaveProperty("craft");
+    expect(facadeContract.bot).toHaveProperty("craft");
     expect(facadeContract.bot).toHaveProperty("place");
     expect(facadeContract.bot).not.toHaveProperty("ensureStonePickaxeEquipped");
   });
@@ -274,6 +274,47 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(result.step_results).toMatchObject([
       {
         action: "place",
+        status: "ok",
+      },
+    ]);
+  });
+
+  it("应让 sandbox_code（沙箱代码） 调用 craft（合成） 工具链能力", async () => {
+    const calls: unknown[] = [];
+    const result = await executeSandboxCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "await api.bot.craft('wooden_pickaxe', 1)",
+        messageId: "T-055-craft",
+      }),
+      facade: {
+        async executeBotSkill() {
+          throw new Error("unexpected skill call");
+        },
+        async executeToolchainCapability(capability, params) {
+          calls.push({ capability, params });
+
+          return {
+            ok: true,
+            data: {
+              item_name: "wooden_pickaxe",
+              completed_count: 1,
+              world_key: "minecraft:overworld",
+            },
+          };
+        },
+        async writeChat() {
+          throw new Error("unexpected chat call");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Completed);
+    expect(calls).toEqual([
+      { capability: "craft", params: { itemName: "wooden_pickaxe", count: 1 } },
+    ]);
+    expect(result.step_results).toMatchObject([
+      {
+        action: "craft",
         status: "ok",
       },
     ]);

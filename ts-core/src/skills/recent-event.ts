@@ -2,6 +2,7 @@ import type {
   CollectSkillExecutionResult,
   CutTreeSkillExecutionResult,
   GoToSkillExecutionResult,
+  MineSkillExecutionResult,
   SkillExecutionResult,
   SkillName,
 } from "../core-ports/skills.js";
@@ -29,6 +30,12 @@ export type SkillRecentEventLineInput =
       readonly status: SkillRecentEventStatus;
       readonly result?: CutTreeSkillExecutionResult;
       readonly message?: string;
+    }
+  | {
+      readonly skill: "mine";
+      readonly status: SkillRecentEventStatus;
+      readonly result?: MineSkillExecutionResult;
+      readonly message?: string;
     };
 
 type SkillRecentEventFormatter<TSkill extends SkillRecentEventLineInput["skill"]> = (
@@ -40,6 +47,7 @@ export const SKILL_RECENT_EVENT_FORMATTERS = Object.freeze({
   [SKILL_DIRECTORY.goTo]: formatGoToRecentEventLine,
   [SKILL_DIRECTORY.collect]: formatCollectRecentEventLine,
   [SKILL_DIRECTORY.cutTree]: formatCutTreeRecentEventLine,
+  [SKILL_DIRECTORY.mine]: formatMineRecentEventLine,
 } satisfies {
   readonly [TName in SkillRecentEventLineInput["skill"]]: SkillRecentEventFormatter<TName>;
 });
@@ -53,6 +61,8 @@ export function formatSkillRecentEventLine(input: SkillRecentEventLineInput): st
       return SKILL_RECENT_EVENT_FORMATTERS.collect(input);
     case SKILL_DIRECTORY.cutTree:
       return SKILL_RECENT_EVENT_FORMATTERS.cutTree(input);
+    case SKILL_DIRECTORY.mine:
+      return SKILL_RECENT_EVENT_FORMATTERS.mine(input);
   }
 }
 
@@ -62,11 +72,27 @@ export function assertSkillRecentEventFormatters(skills: readonly SkillName[]): 
     if (
       (skill === SKILL_DIRECTORY.goTo ||
         skill === SKILL_DIRECTORY.collect ||
-        skill === SKILL_DIRECTORY.cutTree) &&
+        skill === SKILL_DIRECTORY.cutTree ||
+        skill === SKILL_DIRECTORY.mine) &&
       SKILL_RECENT_EVENT_FORMATTERS[skill] === undefined
     ) {
       throw new Error(`Missing recent event formatter for skill ${skill}`);
     }
+  }
+}
+
+function formatMineRecentEventLine(input: Extract<SkillRecentEventLineInput, { skill: "mine" }>) {
+  switch (input.status) {
+    case "completed":
+      return input.result === undefined
+        ? "mine 成功"
+        : `mine 成功,获得 ${input.result.collected_item_name ?? input.result.block_name} x${input.result.collected_count}`;
+    case "failed":
+      return `mine 失败：${normalizeMessage(input.message)}`;
+    case "interrupted":
+      return `mine 中断：${normalizeMessage(input.message)}`;
+    case "cancelled":
+      return `mine 取消：${normalizeMessage(input.message)}`;
   }
 }
 

@@ -226,11 +226,14 @@ Phase 1（第一阶段）可以使用 recipe allowlist（配方白名单）限�
 
 stone（石头） 太常见,不得进入 ResourceService（资源服务）资源簇,避免缓存被低价值高频方块污染。采集圆石时直接在 runtime（运行时） 读取附近最近可挖 `stone`（石头）/等价石头目标,成功标准看库存 `cobblestone`（圆石） 是否增加。
 
+T-059（任务） 的最小执行链保持这条边界：stone（石头） 只走 runtime scan（运行时扫描）；iron_ore（铁矿） / deepslate_iron_ore（深层铁矿） 先走 ResourceService（资源服务） 具体方块名簇。两类目标最终都由 runtime（运行时） 用 StairBFSPlanner（阶梯广度优先规划器） 生成 8 到 16 步安全短段并按背包增量确认。
+
 ### 5.4 完成标准
 
 - 挖 stone（石头） 阶段：以 `cobblestone`（圆石） 背包增量为准。
 - 挖 iron_ore（铁矿） 阶段：以 `raw_iron`（粗铁） 背包增量为准。
 - 不得假设"挖了方块名 X 就得到物品名 X"。
+- 失败必须区分 `not_equipped`（未装备）、`resource_not_found`（找不到资源）、`unsafe_path`（路径危险）、`unreachable_target`（目标不可达）、`drop_not_obtained`（掉落未获得） 与 `runtime_mine_failed`（运行时挖掘失败）。
 
 ---
 

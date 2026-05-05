@@ -56,6 +56,7 @@ function createFakeTransport(input?: {
     readonly itemName: string;
     readonly destination?: "hand";
   }) => Promise<void> | void;
+  craft?: (params: { readonly itemName: string; readonly count: number }) => Promise<void> | void;
   place?: (params: {
     readonly blockName: string;
     readonly near?: { readonly x: number; readonly y: number; readonly z: number };
@@ -129,6 +130,22 @@ function createFakeTransport(input?: {
       await input?.equip?.(params);
 
       return createEquipSkillExecutionResult(params);
+    },
+    async craft(params) {
+      if (!connected) {
+        throw new Error("not connected");
+      }
+
+      await input?.craft?.(params);
+
+      return {
+        ok: true,
+        data: {
+          world_key: "minecraft:overworld",
+          completed_count: params.count,
+          item_name: params.itemName,
+        },
+      };
     },
     async place(params) {
       if (!connected) {
@@ -602,7 +619,7 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
     expect(actor.getSnapshot().current_task).toBeNull();
   });
 
-  it("应允许 collect（捡拾）/equip（装备） 并拒绝未启用 mine（挖掘） 技能", async () => {
+  it("应允许 mine（挖掘）/collect（捡拾）/equip（装备） 走 BotActor（机器人执行代理） 单写者入口", async () => {
     const executed: string[] = [];
     const externalAuth = createExternalAuthState({ status: "not_required" });
     const actor = createBotActorRuntime({
@@ -636,7 +653,13 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
           params: { blockName: "stone", count: 2 },
         }),
       ),
-    ).rejects.toThrow(/not enabled in T-046/);
+    ).resolves.toMatchObject({
+      result: {
+        skill: "mine",
+        block_name: "stone",
+        mined_count: 2,
+      },
+    });
     await expect(
       actor.executeSkill(
         createSkillCallJob({
@@ -675,8 +698,16 @@ describe("BotActor（机器人执行代理） 单写技能入口", () => {
       },
     });
 
-    expect(executed).toEqual(["collect:cobblestone:32", "equip:stone_pickaxe:hand"]);
+    expect(executed).toEqual([
+      "mine:stone:2",
+      "collect:cobblestone:32",
+      "equip:stone_pickaxe:hand",
+    ]);
     expect(actor.getSnapshot().skill_executions).toEqual([
+      {
+        message_id: "msg-mine",
+        skill: "mine",
+      },
       {
         message_id: "msg-collect",
         skill: "collect",
@@ -1108,6 +1139,45 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
         action: "place",
         status: "ok",
         params: { blockName: "crafting_table" },
+      },
+    ]);
+  });
+
+  it("应让 sandbox_code（沙箱代码） 的 bot.craft（合成） 复用工具链执行边界", async () => {
+    const crafts: Array<{ readonly itemName: string; readonly count: number }> = [];
+    const externalAuth = createExternalAuthState({ status: "not_required" });
+    const actor = createBotActorRuntime({
+      botId: "bot-actor",
+      transport: createFakeTransport({
+        worldReady: true,
+        craft: (params) => {
+          crafts.push({ itemName: params.itemName, count: params.count });
+        },
+      }),
+      observation: createObservationRuntimeCache(),
+      externalAuth,
+      externalAuthPlan: createExternalAuthExecutionPlan(externalAuth),
+      sandboxExecution: testSandboxExecution,
+    });
+
+    await actor.start();
+    const outcome = await actor.executeSandboxCode(
+      createSandboxCodeJob({
+        message_id: "msg-sandbox-craft",
+        intent_epoch: 1,
+        snapshot_ts: 1_712_930_002_600,
+        priority: ExecPriority.Normal,
+        code: "await api.bot.craft('wooden_pickaxe', 1)",
+      }),
+    );
+
+    expect(outcome.result.status).toBe("completed");
+    expect(crafts).toEqual([{ itemName: "wooden_pickaxe", count: 1 }]);
+    expect(outcome.result.step_results).toMatchObject([
+      {
+        action: "craft",
+        status: "ok",
+        params: { itemName: "wooden_pickaxe", count: 1 },
       },
     ]);
   });

@@ -9,6 +9,7 @@ import {
   isCutTreeSkillParams,
   isEquipSkillParams,
   isGoToSkillParams,
+  isMineSkillParams,
 } from "../../core-ports/skills.js";
 import { createSkillCallPlanDraft } from "../planning.js";
 import { ConversationLlmPlanError, ConversationLlmSkillNotEnabledError } from "./errors.js";
@@ -39,7 +40,7 @@ type ConversationSkillPlanStrategyTable = {
 type AnyConversationSkillPlanStrategy =
   ConversationSkillPlanStrategyTable[keyof ConversationSkillPlanStrategyTable];
 
-const T046_DISABLED_PLAN_SKILLS = Object.freeze([SKILL_DIRECTORY.mine] as const);
+const T046_DISABLED_PLAN_SKILLS = Object.freeze([] as const);
 
 /** skill（技能） 到 guard（守卫） / buildPlan（构建器） 的只读策略表。 */
 export const CONVERSATION_SKILL_PLAN_TABLE = Object.freeze({
@@ -52,6 +53,12 @@ export const CONVERSATION_SKILL_PLAN_TABLE = Object.freeze({
     skill: SKILL_DIRECTORY.collect,
     paramsSchema: `params: { itemName?: string; center?: { x: number; y: number; z: number }; radius?: number }，radius 默认 ${COLLECT_DEFAULT_RADIUS}，允许范围 ${COLLECT_MIN_RADIUS} 到 ${COLLECT_MAX_RADIUS}`,
     guard: isCollectSkillParams,
+  }),
+  [SKILL_DIRECTORY.mine]: createSkillPlanStrategy({
+    skill: SKILL_DIRECTORY.mine,
+    paramsSchema:
+      "params: { blockName: 'stone' | 'iron_ore' | 'deepslate_iron_ore'; count: number }，count 为需要实际进入背包的掉落物数量",
+    guard: isMineSkillParams,
   }),
   [SKILL_DIRECTORY.cutTree]: createSkillPlanStrategy({
     skill: SKILL_DIRECTORY.cutTree,

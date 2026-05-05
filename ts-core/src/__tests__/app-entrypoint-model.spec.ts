@@ -17,6 +17,7 @@ import {
   createOnlineConversationActorStateProjectionProvider,
   createRealtimeEventFromBotWorkerAction,
   createRealtimeEventFromConversationReply,
+  createTaskFailureReplyFromBotWorkerAction,
   renderAppStartupSummary,
   runAppEntrypoint,
   startAppOnlineRuntime,
@@ -309,6 +310,45 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       },
     });
     expect(Object.isFrozen(replyEvent.payload)).toBe(true);
+  });
+
+  it("应把 mine（挖掘） 执行失败转换为游戏聊天可见原因", () => {
+    const action = createBotWorkerActions({
+      task: createBotWorkerTask({
+        bot_id: "bot-realtime-action",
+        exec_job: {
+          type: ExecutionTaskKind.SkillCall,
+          message_id: "msg-mine-failed-reply",
+          intent_epoch: 3,
+          snapshot_ts: 1777906762364,
+          priority: ExecPriority.Normal,
+          skillCall: {
+            skill: "mine",
+            params: { blockName: "stone", count: 5 },
+          },
+          skill: "mine",
+          params: { blockName: "stone", count: 5 },
+        },
+        owner_text: "给我挖5个石头",
+      }),
+      phase: "terminal",
+      status: TaskHistoryStatus.Failed,
+      total_steps: 0,
+      duration_ms: 23,
+      error: {
+        name: "Error",
+        message: "not_equipped:stone:requires_wooden_or_stone_pickaxe",
+      },
+      last_step: "executeSkill",
+    });
+
+    const reply = createTaskFailureReplyFromBotWorkerAction({ action: action[1] });
+
+    expect(reply).toEqual({
+      messageId: "msg-mine-failed-reply:task_failed",
+      content:
+        "挖石头需要先拿着 wooden_pickaxe（木镐）或 stone_pickaxe（石镐），我现在没有装备可用镐喵~",
+    });
   });
 
   it("应确保脚本、容器命令与根导出入口边界保持一致", () => {
@@ -2534,7 +2574,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     await runtime.close();
   });
 
-  it("应在真实在线入口允许 collect（捡拾）/cutTree（砍树）/equip（装备） 并拒绝 mine（挖掘） 未启用技能", async () => {
+  it("应在真实在线入口允许 mine（挖掘）/collect（捡拾）/cutTree（砍树）/equip（装备） 技能", async () => {
     const llmRequests: Array<{ url: string; body: unknown }> = [];
     const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
@@ -2733,6 +2773,41 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           worker: "bot",
           bot_id: "bot-skill-online",
           exec_job: expect.objectContaining({
+            message_id: "msg-online-mine",
+            priority: "normal",
+            skill: "mine",
+            params: { blockName: "stone", count: 2 },
+          }),
+        }),
+        options: {
+          jobId: "msg-online-mine",
+          priority: 5,
+        },
+      },
+      {
+        name: "brain",
+        jobName: "brain",
+        data: expect.objectContaining({
+          worker: "brain",
+          payload: expect.objectContaining({
+            kind: "conversation_fact",
+            bot_id: "bot-skill-online",
+            message_id: "msg-online-mine",
+            owner_text: "去挖两块石头",
+            route_kind: "plan_exec",
+          }),
+        }),
+        options: {
+          jobId: "conversation-fact-msg-online-mine",
+        },
+      },
+      {
+        name: "bot:bot-skill-online:exec",
+        jobName: "bot",
+        data: expect.objectContaining({
+          worker: "bot",
+          bot_id: "bot-skill-online",
+          exec_job: expect.objectContaining({
             message_id: "msg-online-collect",
             priority: "normal",
             skill: "collect",
@@ -2833,11 +2908,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       },
     ]);
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
-      type: "task.discarded",
+      type: "task.accepted",
       bot_id: "bot-skill-online",
       message_id: "msg-online-mine",
-      status: "discarded",
-      reason: "skill_not_enabled",
+      skill: "mine",
+      priority: "normal",
     });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "task.accepted",

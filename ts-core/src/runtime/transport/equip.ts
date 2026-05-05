@@ -7,6 +7,8 @@ import {
 import { matchesMinecraftItemName, normalizeMinecraftName } from "./naming.js";
 import type { MineflayerInventoryPort } from "./types.js";
 
+const EQUIP_TIMEOUT_MS = 5_000;
+
 /** 执行 equip（装备） 技能的 Mineflayer（Minecraft 协议客户端） 适配器。 */
 export async function executeMineflayerEquip(input: {
   readonly bot: MineflayerInventoryPort;
@@ -53,7 +55,18 @@ export async function executeMineflayerEquip(input: {
   }
 
   try {
-    await input.bot.equip(item, input.params.destination ?? "hand");
+    const equipResult = await runEquipWithTimeout(
+      () => input.bot.equip?.(item, input.params.destination ?? "hand"),
+      EQUIP_TIMEOUT_MS,
+    );
+    if (
+      equipResult === "timeout" &&
+      (input.bot.heldItem === undefined ||
+        input.bot.heldItem === null ||
+        !matchesMinecraftItemName(input.bot.heldItem, normalizedItemName))
+    ) {
+      throw new Error(`Mineflayer equip timed out after ${EQUIP_TIMEOUT_MS}ms`);
+    }
   } catch (error) {
     throw createEquipFailure(
       "runtime_equip_failed",
@@ -63,6 +76,18 @@ export async function executeMineflayerEquip(input: {
   }
 
   return createEquipSkillExecutionResult({ ...input.params, itemName: normalizedItemName });
+}
+
+async function runEquipWithTimeout(
+  operation: () => Promise<void> | void | undefined,
+  timeoutMs: number,
+): Promise<"completed" | "timeout"> {
+  return Promise.race([
+    Promise.resolve(operation()).then(() => "completed" as const),
+    new Promise<"timeout">((resolve) => {
+      setTimeout(() => resolve("timeout"), timeoutMs);
+    }),
+  ]);
 }
 
 function createEquipFailure(

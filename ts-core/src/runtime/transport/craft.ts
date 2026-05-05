@@ -16,6 +16,14 @@ import type {
 import { readMineflayerBlockAt } from "./world-reader.js";
 
 const CRAFTING_TABLE_SEARCH_RADIUS = 6;
+const CRAFT_RECURSION_LIMIT = 5;
+const PHASE1_CRAFT_ALLOWLIST = Object.freeze([
+  "planks",
+  "stick",
+  "crafting_table",
+  "wooden_pickaxe",
+  "stone_pickaxe",
+] as const);
 
 type CraftTransportResult = ToolchainCapabilityResult<ToolchainCapabilityData>;
 
@@ -32,6 +40,59 @@ export async function executeMineflayerCraft(input: {
     return capabilitiesError;
   }
 
+  const requestedTarget = normalizeCraftName(input.params.itemName);
+  const normalizedTarget = isWoodenRepairMaterial(input.bot.registry, requestedTarget)
+    ? "planks"
+    : requestedTarget;
+  if (!isPhase1CraftAllowed(normalizedTarget)) {
+    return createCraftFailure({
+      code: "unsupported_capability",
+      message: `Craft target is not enabled in Phase 1: ${input.params.itemName}`,
+      worldKey: input.worldKey,
+      details: { item_name: input.params.itemName },
+    });
+  }
+
+  return executeMineflayerCraftInternal({
+    ...input,
+    params: {
+      itemName: normalizedTarget,
+      count: input.params.count,
+    },
+    depth: 0,
+    visited: new Set<string>(),
+    allowIntermediateTarget: false,
+  });
+}
+
+async function executeMineflayerCraftInternal(input: {
+  readonly bot: MineflayerBotHandle;
+  readonly params: Readonly<CraftCapabilityParams>;
+  readonly worldKey: string | null;
+  readonly craftingTableCache?: CraftingTablePlacementCache;
+  readonly depth: number;
+  readonly visited: Set<string>;
+  readonly allowIntermediateTarget: boolean;
+}): Promise<CraftTransportResult> {
+  const normalizedTarget = normalizeCraftName(input.params.itemName);
+  if (!input.allowIntermediateTarget && !isPhase1CraftAllowed(normalizedTarget)) {
+    return createCraftFailure({
+      code: "unsupported_capability",
+      message: `Craft target is not enabled in Phase 1: ${input.params.itemName}`,
+      worldKey: input.worldKey,
+      details: { item_name: input.params.itemName },
+    });
+  }
+
+  if (input.depth > CRAFT_RECURSION_LIMIT || input.visited.has(normalizedTarget)) {
+    return createCraftFailure({
+      code: "missing_materials",
+      message: "Craft dependency chain cannot be resolved",
+      worldKey: input.worldKey,
+      details: { item_name: normalizedTarget, depth: input.depth },
+    });
+  }
+
   const targetCandidates = resolveCraftTargetCandidates(input.bot.registry, input.params.itemName);
 
   if (targetCandidates.length === 0) {
@@ -44,12 +105,39 @@ export async function executeMineflayerCraft(input: {
   }
 
   const craftingTable = await findNearbyCraftingTable(input.bot, input.craftingTableCache);
-  const craftPlan = selectCraftPlan({
+  let craftPlan = selectCraftPlan({
     bot: input.bot,
     candidates: targetCandidates,
     count: input.params.count,
     craftingTable,
   });
+
+  if (craftPlan.status === "failed" && craftPlan.code === "missing_materials") {
+    const prepared = await craftMissingMaterials({
+      bot: input.bot,
+      candidates: targetCandidates,
+      count: input.params.count,
+      craftingTable,
+      worldKey: input.worldKey,
+      ...(input.craftingTableCache === undefined
+        ? {}
+        : { craftingTableCache: input.craftingTableCache }),
+      depth: input.depth,
+      visited: input.visited,
+      targetName: normalizedTarget,
+    });
+
+    if (!prepared.ok) {
+      return prepared;
+    }
+
+    craftPlan = selectCraftPlan({
+      bot: input.bot,
+      candidates: targetCandidates,
+      count: input.params.count,
+      craftingTable,
+    });
+  }
 
   if (craftPlan.status === "ready") {
     try {
@@ -79,6 +167,121 @@ export async function executeMineflayerCraft(input: {
     worldKey: input.worldKey,
     ...(craftPlan.details === undefined ? {} : { details: craftPlan.details }),
   });
+}
+
+async function craftMissingMaterials(input: {
+  readonly bot: MineflayerBotHandle;
+  readonly candidates: readonly { readonly itemName: string; readonly itemId: number }[];
+  readonly count: number;
+  readonly craftingTable: MineflayerBlockHandle | null;
+  readonly worldKey: string | null;
+  readonly craftingTableCache?: CraftingTablePlacementCache;
+  readonly depth: number;
+  readonly visited: Set<string>;
+  readonly targetName: string;
+}): Promise<CraftTransportResult | { readonly ok: true }> {
+  const recipe = selectRepresentativeRecipe({
+    bot: input.bot,
+    candidates: input.candidates,
+    count: input.count,
+    craftingTable: input.craftingTable,
+  });
+
+  if (recipe === null) {
+    return { ok: true as const };
+  }
+
+  const missingMaterials = createMissingMaterialDetails(input.bot, recipe, input.count);
+  const visited = new Set(input.visited);
+  visited.add(input.targetName);
+
+  for (const material of missingMaterials) {
+    const itemName = typeof material.item_name === "string" ? material.item_name : null;
+    const missing = typeof material.missing === "number" ? material.missing : 0;
+    if (itemName === null || missing <= 0) {
+      continue;
+    }
+
+    const result = await executeMineflayerCraftInternal({
+      bot: input.bot,
+      params: { itemName, count: missing },
+      worldKey: input.worldKey,
+      ...(input.craftingTableCache === undefined
+        ? {}
+        : { craftingTableCache: input.craftingTableCache }),
+      depth: input.depth + 1,
+      visited,
+      allowIntermediateTarget: true,
+    });
+
+    if (!result.ok) {
+      if (isWoodenRepairMaterial(input.bot.registry, itemName)) {
+        const genericPlanksResult = await executeMineflayerCraftInternal({
+          bot: input.bot,
+          params: { itemName: "planks", count: missing },
+          worldKey: input.worldKey,
+          ...(input.craftingTableCache === undefined
+            ? {}
+            : { craftingTableCache: input.craftingTableCache }),
+          depth: input.depth + 1,
+          visited,
+          allowIntermediateTarget: true,
+        });
+
+        if (genericPlanksResult.ok) {
+          continue;
+        }
+      }
+
+      if (result.error.code === "recipe_not_found") {
+        return createCraftFailure({
+          code: "missing_materials",
+          message: "Inventory does not contain enough recipe ingredients",
+          worldKey: input.worldKey,
+          details: {
+            target_item_name: input.targetName,
+            missing_item_name: itemName,
+            missing,
+          },
+        });
+      }
+
+      return result;
+    }
+  }
+
+  return { ok: true as const };
+}
+
+function isWoodenRepairMaterial(registry: unknown, itemName: string): boolean {
+  const registryFacts = registry as MineflayerRegistryFacts | undefined;
+  const repairItems = registryFacts?.itemsByName?.wooden_pickaxe?.repairWith ?? [];
+
+  return repairItems.includes(itemName);
+}
+
+function selectRepresentativeRecipe(input: {
+  readonly bot: MineflayerBotHandle;
+  readonly candidates: readonly { readonly itemName: string; readonly itemId: number }[];
+  readonly count: number;
+  readonly craftingTable: MineflayerBlockHandle | null;
+}): MineflayerRecipeHandle | null {
+  for (const candidate of input.candidates) {
+    const tableReadyRecipe = input.bot.recipesFor?.(candidate.itemId, null, input.count, true)[0];
+    const allRecipe = input.bot.recipesAll?.(candidate.itemId, null, true)[0];
+    const currentTableRecipe = input.bot.recipesFor?.(
+      candidate.itemId,
+      null,
+      input.count,
+      input.craftingTable,
+    )[0];
+    const recipe = currentTableRecipe ?? tableReadyRecipe ?? allRecipe;
+    if (recipe !== undefined) {
+      return recipe;
+    }
+  }
+
+  return null;
 }
 
 function validateCraftingCapabilities(
@@ -318,6 +521,10 @@ function createCraftFailure(input: {
 
 function normalizeCraftName(value: string): string {
   return value.trim().toLowerCase().replaceAll(" ", "_").replaceAll("-", "_");
+}
+
+function isPhase1CraftAllowed(itemName: string): boolean {
+  return (PHASE1_CRAFT_ALLOWLIST as readonly string[]).includes(itemName);
 }
 
 function getErrorMessage(error: unknown): string {

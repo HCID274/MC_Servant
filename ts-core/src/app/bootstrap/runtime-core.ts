@@ -17,7 +17,7 @@ import type {
 } from "../../runtime/index.js";
 import { createSandboxExecutionRequest, executeSandboxCodeRequest } from "../../sandbox/index.js";
 import { formatSandboxRecentEventLine } from "../../sandbox/recent-event.js";
-import { createCutTreeSkillExecutor } from "../../skills/index.js";
+import { createCutTreeSkillExecutor, createMineSkillExecutor } from "../../skills/index.js";
 import { formatSkillRecentEventLine } from "../../skills/recent-event.js";
 import { createResourceService } from "../../world-model/index.js";
 import type { ResourceServiceBoundary } from "../../world-model/index.js";
@@ -73,9 +73,17 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
       observation: created.observation,
       skillExecution: {
         goToMovement: created.transport,
-        mine: created.transport.mine.bind(created.transport),
+        mine: createMineSkillExecutor({
+          resourceService: created.resourceService,
+          miner: created.transport,
+          equipment: {
+            readMainHandItemName: () =>
+              created.transport?.readObservationInput()?.equipment.main_hand?.item_name ?? null,
+          },
+        }),
         collect: created.transport.collect.bind(created.transport),
         equip: created.transport.equip.bind(created.transport),
+        craft: created.transport.craft.bind(created.transport),
         place: created.transport.place.bind(created.transport),
         cutTree: createCutTreeSkillExecutor({
           resourceService: created.resourceService,
@@ -176,6 +184,12 @@ function createOnlineRuntimeRecentEventFormatter(): RuntimeRecentEventFormatter 
             ...(input.message === undefined ? {} : { message: input.message }),
           });
         case SKILL_DIRECTORY.mine:
+          return formatSkillRecentEventLine({
+            skill: SKILL_DIRECTORY.mine,
+            status: input.status,
+            ...(input.result?.skill === SKILL_DIRECTORY.mine ? { result: input.result } : {}),
+            ...(input.message === undefined ? {} : { message: input.message }),
+          });
         case SKILL_DIRECTORY.equip:
           return formatUnsupportedSkillRecentEventLine(input);
         default:

@@ -958,7 +958,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     );
   });
 
-  it("单技能规划 prompt（提示词） 应由策略表生成技能段且不写死 MC（Minecraft） 示例物品", () => {
+  it("单技能规划 prompt（提示词） 应由策略表生成技能段并暴露工具链能力", () => {
     const messages = createConversationPlanMessages({
       message_id: "msg-plan-template",
       message: "把地上的东西捡起来",
@@ -969,6 +969,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(Object.keys(CONVERSATION_SKILL_PLAN_TABLE)).toEqual([
       "goTo",
       "collect",
+      "mine",
       "cutTree",
       "equip",
     ]);
@@ -976,6 +977,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).toContain("默认以环境快照 [主人] 坐标作为 collect.params.center");
     expect(messages[0]?.content).toContain("执行层会在 32 未命中时自动扩到 64 搜索");
     expect(messages[0]?.content).toContain('await api.bot.place("crafting_table")');
+    expect(messages[0]?.content).toContain("api.bot.craft(itemName, count)");
     expect(messages[0]?.content).toContain("必须读取环境快照 [主人] 位置");
     expect(messages[0]?.content).toContain("<skill_name>");
     expect(messages[0]?.content).toContain("<param_name>");
@@ -985,7 +987,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).toContain("不能输出中文物品名");
   });
 
-  it("应允许 collect（捡拾） / cutTree（砍树） 并拒绝 mine（挖掘） / equip（装备） 进入在线单技能规划结果", async () => {
+  it("应允许 mine（挖掘） / collect（捡拾） / cutTree（砍树） / equip（装备） 进入在线单技能规划结果", async () => {
     const responses = [
       '{"type":"skill_call","reply":"收到，我去挖石头","skill":"mine","params":{"blockName":"stone","count":2}}',
       '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":32}}',
@@ -994,6 +996,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       '{"type":"skill_call","reply":"收到，我去砍 12 块木头","skill":"cutTree","params":{"count":12}}',
       '{"type":"sandbox_code","reply":"收到，我来放一个工作台","code":"await api.bot.place(\\"crafting_table\\")"}',
       '{"type":"sandbox_code","reply":"收到，我来你这里放工作台","code":"await api.bot.goTo(8,64,2); await api.bot.place(\\"crafting_table\\", {x:8,y:64,z:2})"}',
+      '{"type":"sandbox_code","reply":"收到，我先做木镐再挖石头","code":"await api.bot.place(\\"crafting_table\\"); await api.bot.craft(\\"wooden_pickaxe\\", 1); await api.bot.equip(\\"wooden_pickaxe\\"); await api.bot.mine(\\"stone\\", 5)"}',
       '{"type":"skill_call","reply":"收到，我先把稿子拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}',
       '{"type":"skill_call","reply":"收到，我把面包装备到主手","skill":"equip","params":{"itemName":"bread"}}',
     ];
@@ -1034,7 +1037,14 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         message: "去挖两块石头",
         snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
       }),
-    ).rejects.toBeInstanceOf(ConversationLlmSkillNotEnabledError);
+    ).resolves.toMatchObject({
+      type: "skill_call",
+      skill: "mine",
+      params: {
+        blockName: "stone",
+        count: 2,
+      },
+    });
     await expect(
       client.generateSkillPlan({
         message_id: "msg-plan-collect",
@@ -1109,6 +1119,17 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     ).resolves.toMatchObject({
       type: "sandbox_code",
       code: 'await api.bot.goTo(8,64,2); await api.bot.place("crafting_table", {x:8,y:64,z:2})',
+    });
+    await expect(
+      client.generateSkillPlan({
+        message_id: "msg-plan-craft-pickaxe-then-mine",
+        message: "找工作台做一个木镐,然后去挖石头",
+        snapshot_context:
+          "online_runtime: executable skills: goTo, collect, cutTree, equip, mine, place; sandbox toolchain: craft, place(crafting_table)\n[背包] oak_log x38",
+      }),
+    ).resolves.toMatchObject({
+      type: "sandbox_code",
+      code: 'await api.bot.place("crafting_table"); await api.bot.craft("wooden_pickaxe", 1); await api.bot.equip("wooden_pickaxe"); await api.bot.mine("stone", 5)',
     });
     await expect(
       client.generateSkillPlan({

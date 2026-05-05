@@ -77,7 +77,7 @@ const phase1SkillMetadata = new Map(
 );
 
 const facadeNamespaceDescriptions = Object.freeze({
-  bot: "bot(write): goTo(x,y,z), mine(blockName,count), collect(itemName,radius?), equip(itemName,destination?), cutTree(count), place('crafting_table', near?)",
+  bot: "bot(write): goTo(x,y,z), mine(blockName,count), collect(itemName,radius?), equip(itemName,destination?), cutTree(count), craft(itemName,count), place('crafting_table', near?)",
   chat: "chat(write): say(message), report(message); both write through BotActor controlled chat",
   world:
     "world(read): currently unavailable in minimal runtime sandbox; call describe('world') before relying on reads",
@@ -175,6 +175,12 @@ export function createSandboxFacadeContract(): SandboxFacadeContract {
         parameterKeys: phase1SkillMetadata.get("equip")?.parameterKeys ?? [],
         emitsStep: true,
         alignedSkill: SANDBOX_BOT_SKILL_BINDINGS.equip,
+      }),
+      craft: createMethodContract({
+        name: "craft",
+        access: "write",
+        parameterKeys: ["itemName", "count"],
+        emitsStep: true,
       }),
       place: createMethodContract({
         name: "place",
