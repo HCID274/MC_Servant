@@ -16,6 +16,7 @@ import {
 } from "../core-ports/events.js";
 import { EventLogLevel, type MessageSource } from "../core-ports/foundation.js";
 import type { InterruptSource } from "../core-ports/runtime.js";
+import type { TaskResultSummary } from "../core-ports/task-result.js";
 import type { TaskTerminalStatus } from "../core-ports/tasking.js";
 import {
   type ExecJob,
@@ -159,6 +160,7 @@ export function createTaskTerminalLifecycleEvent(
         status: TaskHistoryStatus.Completed;
         total_steps: number;
         duration_ms: number;
+        result_summary?: TaskResultSummary;
       }
     | {
         job: ExecJob;
@@ -167,6 +169,7 @@ export function createTaskTerminalLifecycleEvent(
         duration_ms: number;
         error: TaskFailedErrorSnapshot;
         last_step?: string;
+        result_summary?: TaskResultSummary;
       }
     | {
         job: ExecJob;
@@ -175,6 +178,7 @@ export function createTaskTerminalLifecycleEvent(
         duration_ms: number;
         interrupt_source: InterruptSource;
         reason: string;
+        result_summary?: TaskResultSummary;
       },
 ): TaskLifecycleEvent<TaskTerminalStatus> {
   if (!isTaskTerminalStatus(input.status)) {
@@ -185,6 +189,9 @@ export function createTaskTerminalLifecycleEvent(
     ...createTaskLifecyclePayloadBase(input.job, input.status),
     total_steps: input.total_steps,
     duration_ms: input.duration_ms,
+    ...(input.result_summary === undefined
+      ? {}
+      : { result_summary: freezeTaskValue(input.result_summary) }),
   };
 
   switch (input.status) {

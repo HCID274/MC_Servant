@@ -12,7 +12,7 @@ import type {
   ResourceServiceBoundary,
 } from "../world-model/contracts.js";
 
-const DEFAULT_CUT_TREE_SETTLE_MS = 500;
+const DEFAULT_CUT_TREE_SETTLE_MS = 1_000;
 const CUT_TREE_COLLECT_RADIUS = 8;
 
 /** cutTree（砍树） 坐标挖掘端口；真实实现由 BotActor（机器人执行代理） 持有的 transport（传输层） 提供。 */
@@ -77,7 +77,7 @@ export function createCutTreeSkillExecutor(input: {
       }
 
       const collectResult = await input.collector.collect({
-        center: calculateClusterCenter(cluster),
+        center: calculateLowestLogCollectCenter(cluster),
         radius: CUT_TREE_COLLECT_RADIUS,
       });
       totalSteps += collectResult.total_steps;
@@ -130,25 +130,35 @@ export function createCutTreeSkillExecutor(input: {
   };
 }
 
-function calculateClusterCenter(cluster: AcceptedTreeCluster): Readonly<SnapshotPosition> {
+function calculateLowestLogCollectCenter(cluster: AcceptedTreeCluster): Readonly<SnapshotPosition> {
   if (cluster.logs.length === 0) {
     return cluster.recommended_target.position;
   }
 
-  const sum = cluster.logs.reduce(
-    (accumulator, position) => ({
-      x: accumulator.x + position.x,
-      y: accumulator.y + position.y,
-      z: accumulator.z + position.z,
-    }),
-    { x: 0, y: 0, z: 0 },
-  );
+  const recommended = cluster.recommended_target.position;
+  const lowest = cluster.logs.reduce((currentLowest, position) => {
+    if (position.y < currentLowest.y) {
+      return position;
+    }
+
+    if (position.y > currentLowest.y) {
+      return currentLowest;
+    }
+
+    return squaredDistance(position, recommended) < squaredDistance(currentLowest, recommended)
+      ? position
+      : currentLowest;
+  }, cluster.logs[0] ?? recommended);
 
   return Object.freeze({
-    x: sum.x / cluster.logs.length,
-    y: sum.y / cluster.logs.length,
-    z: sum.z / cluster.logs.length,
+    x: lowest.x,
+    y: lowest.y,
+    z: lowest.z,
   });
+}
+
+function squaredDistance(a: Readonly<SnapshotPosition>, b: Readonly<SnapshotPosition>): number {
+  return (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2;
 }
 
 function selectNextUnattemptedCluster(

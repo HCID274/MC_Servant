@@ -290,3 +290,11 @@
 - C 审查结论: 通过;`git diff --check`（差异空白检查）通过,定向 Vitest（测试框架） 命令实际跑全量 34 个 test file（测试文件）/377 个 test（测试）通过,`bash scripts/pre_review.sh`（评审前预检脚本） 全绿;未发现 Plan LLM（规划大语言模型）源码改动、plugin（服务端模组）越界或 `demoMineIron()`（演示挖铁）隐藏链路
 - 关键决策: `placeCraftingTable()`（放置工作台） 只作为 `place({blockName:"crafting_table"})`（放置工作台参数）的零参数别名,不封装合成/装备/挖矿等额外链路;失败上下文在 BotActor（机器人执行代理）统一读取 observation（观测）快照并注入 FacadeCallError.details（门面调用错误细节）,保证 skill（技能）路径和 toolchain（工具链）路径诊断形态一致,同时不让 sandbox（沙箱） 直接读取 runtime（运行时）内部状态
 - 架构冲突: 无
+
+## T-062 | 2026-05-05 | TaskResultReporter（任务结果汇报器）终态主动汇报
+
+- 涉及模块: core-ports（核心端口）任务结果摘要契约,BotWorker（机器人工作线程）终态动作与中断识别,TaskResultReporter（任务结果汇报器）模板渲染,app（应用装配）双端同步接线,realtime（实时推送）/game chat（游戏聊天）输出,task history（任务历史）任务卡,result summary（结果摘要）,runtime/transport（运行时传输层） collect（捡拾）返修,skills（技能） cutTree（砍树）捡拾中心与等待策略,Docs/02_RUNTIME_SPEC.md（运行时规格文档）/Docs/03_SANDBOX_SPEC.md（沙箱规格文档）/Docs/04_CONVERSATION_SPEC.md（对话规格文档）,相关测试
+- A 拆解依据: 用户要求每个任务 completed（完成）/failed（失败）/interrupted（中断）后由确定性 TaskResultReporter（任务结果汇报器）主动同步游戏聊天与网页端,成功汇报任务类型、完成数量、关键背包增量、耗时和世界摘要,失败汇报失败码、阶段、可恢复性与下一步建议,中断不得误报成功;边界限定 BotWorker（机器人工作线程）、任务生命周期事件、realtime（实时推送）、game chat（游戏聊天输出）、task history（任务历史）、diagnostics（诊断） 与 core-ports（核心端口）摘要契约,明确不改 Plan prompt（规划提示词）、不让 BotActor（机器人执行代理）决定文案、不用 LLM（大语言模型）总结
+- C 审查结论: 曾打回 1 次 (sandbox（沙箱） 前置步骤成功、后续步骤失败时,result summary（结果摘要） 会误取最后成功 step（步骤） 导致用户看到错误操作名;Docs/04_CONVERSATION_SPEC.md（对话规格文档） 仍写旧的 0.5 秒与树簇中心 collect（捡拾）语义);B（实现代理）改为失败/中断摘要优先取失败 step（步骤） action（动作）/FacadeCallError.method（门面调用错误方法）/failure_stage（失败阶段）,并同步文档到 1 秒等待、最低原木中心、半径 8 与 3 格高度带后通过;`git diff --check`（差异空白检查）通过,`pnpm typecheck`（类型检查）通过,`pnpm test -- app-entrypoint-model.spec.ts`（入口模型测试）实际跑全量 34 个 test file（测试文件）/384 个 test（测试）通过,`bash scripts/pre_review.sh`（评审前预检脚本） 全绿
+- 关键决策: TaskResultReporter（任务结果汇报器）只消费 BotWorker（机器人工作线程）产出的终态任务卡,在 app（应用装配）层统一调用 `broadcastReply`（广播回复） 与 realtime（实时推送） `chat.reply`,不把汇报决策塞进 BotActor（机器人执行代理）;result summary（结果摘要）作为跨 game chat（游戏聊天）/web UI（网页界面）/task history（任务历史）的轻量事实契约,skill_call（技能调用）和 sandbox_code（沙箱代码）共用模板;collect（捡拾）返修保留严格“同高度带内可见掉落物清空”语义,但忽略树冠高处滞留掉落物并把拾取靠近范围收紧到 0.75,避免部分捡拾误报完成或被树叶滞留物拖死
+- 架构冲突: 无

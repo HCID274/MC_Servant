@@ -17,7 +17,6 @@ import {
   createOnlineConversationActorStateProjectionProvider,
   createRealtimeEventFromBotWorkerAction,
   createRealtimeEventFromConversationReply,
-  createTaskFailureReplyFromBotWorkerAction,
   renderAppStartupSummary,
   runAppEntrypoint,
   startAppOnlineRuntime,
@@ -50,7 +49,8 @@ import {
   createBrainWorkerTask,
   createConversationWorkerTask,
 } from "../workers/contracts.js";
-import type { BrainWorkerRuntimeDependencies } from "../workers/index.js";
+import { type BrainWorkerRuntimeDependencies, createTaskResultReporter } from "../workers/index.js";
+import { createTaskResultSummaryFromSandboxResult } from "../workers/task-result-summary.js";
 import { createResourceService } from "../world-model/index.js";
 
 class FakeEntrypointMineflayerBot extends EventEmitter implements MineflayerBotHandle {
@@ -312,7 +312,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(Object.isFrozen(replyEvent.payload)).toBe(true);
   });
 
-  it("应把 mine（挖掘） 执行失败转换为游戏聊天可见原因", () => {
+  it("应把任务终态转换为游戏聊天可见结果且同一终态只汇报一次", () => {
     const action = createBotWorkerActions({
       task: createBotWorkerTask({
         bot_id: "bot-realtime-action",
@@ -341,14 +341,215 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       },
       last_step: "executeSkill",
     });
-
-    const reply = createTaskFailureReplyFromBotWorkerAction({ action: action[1] });
-
-    expect(reply).toEqual({
-      messageId: "msg-mine-failed-reply:task_failed",
-      content:
-        "挖石头需要先拿着 wooden_pickaxe（木镐）或 stone_pickaxe（石镐），我现在没有装备可用镐喵~",
+    const completedAction = createBotWorkerActions({
+      task: createBotWorkerTask({
+        bot_id: "bot-realtime-action",
+        exec_job: {
+          type: ExecutionTaskKind.SkillCall,
+          message_id: "msg-cut-tree-completed-reply",
+          intent_epoch: 4,
+          snapshot_ts: 1777906762364,
+          priority: ExecPriority.Normal,
+          skillCall: {
+            skill: "cutTree",
+            params: { count: 12 },
+          },
+          skill: "cutTree",
+          params: { count: 12 },
+        },
+        owner_text: "砍12块木头",
+      }),
+      phase: "terminal",
+      status: TaskHistoryStatus.Completed,
+      total_steps: 2,
+      duration_ms: 3100,
+      result_summary: {
+        task_type: ExecutionTaskKind.SkillCall,
+        operation: "cutTree",
+        target: "oak_log",
+        requested_count: 12,
+        completed_count: 12,
+        inventory_delta: [{ item_name: "oak_log", count: 12 }],
+        world_key: "minecraft:overworld",
+      },
     });
+
+    const reporter = createTaskResultReporter();
+    const failureReply = reporter.consume(action[1]);
+    const completedReply = reporter.consume(completedAction[1]);
+
+    expect(failureReply).toMatchObject({
+      message_id: "msg-mine-failed-reply:task_result",
+    });
+    expect(failureReply?.content).toContain("任务失败：mine 失败码 not_equipped");
+    expect(failureReply?.content).toContain("阶段 executeSkill");
+    expect(failureReply?.content).toContain("可恢复");
+    expect(completedReply?.content).toContain("任务完成：砍到 oak_log x12");
+    expect(completedReply?.content).toContain("已捡拾掉落物");
+    expect(reporter.consume(completedAction[1])).toBeNull();
+  });
+
+  it("应汇报 sandbox TS（沙箱 TypeScript） 报错与中断终态", () => {
+    const task = createBotWorkerTask({
+      bot_id: "bot-realtime-action",
+      exec_job: createSandboxCodeJob({
+        message_id: "msg-sandbox-result",
+        intent_epoch: 5,
+        snapshot_ts: 1777906762364,
+        priority: ExecPriority.Normal,
+        code: "await api.bot.mine('iron_ore', 1)",
+      }),
+      owner_text: "挖铁矿",
+    });
+    const failedActions = createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Failed,
+      total_steps: 1,
+      duration_ms: 900,
+      error: {
+        name: "FacadeCallError",
+        message: "resource_not_found:iron_ore",
+        error_code: "resource_not_found",
+        details: {
+          failure_stage: "mine",
+          recoverable: true,
+          world_key: "minecraft:overworld",
+        },
+      },
+      last_step: "mine",
+      result_summary: {
+        task_type: ExecutionTaskKind.SandboxCode,
+        operation: "mine",
+        target: "iron_ore",
+        requested_count: 1,
+        completed_count: 0,
+        world_key: "minecraft:overworld",
+      },
+    });
+    const interruptedActions = createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Interrupted,
+      total_steps: 1,
+      duration_ms: 1200,
+      interrupt_source: {
+        type: "control",
+        command: "cancel",
+      },
+      reason: "owner requested cancel",
+      result_summary: {
+        task_type: ExecutionTaskKind.SandboxCode,
+        operation: "mine",
+        target: "iron_ore",
+        requested_count: 1,
+        completed_count: 0,
+        world_key: "minecraft:overworld",
+      },
+    });
+
+    const reporter = createTaskResultReporter();
+    const failedReply = reporter.consume(failedActions[1]);
+    const interruptedReply = reporter.consume(interruptedActions[1]);
+
+    expect(failedReply?.content).toContain(
+      "任务失败：mine 失败码 resource_not_found，阶段 mine，可恢复",
+    );
+    expect(failedReply?.content).toContain("下一步建议换位置或扩大搜索范围");
+    expect(interruptedReply?.content).toContain("任务已取消：mine 已停止");
+    expect(interruptedReply?.content).not.toContain("任务完成");
+  });
+
+  it("应在 sandbox TS（沙箱 TypeScript） 前置成功后准确汇报后续失败操作", () => {
+    const sandboxJob = createSandboxCodeJob({
+      message_id: "msg-sandbox-step-failure",
+      intent_epoch: 6,
+      snapshot_ts: 1777906762364,
+      priority: ExecPriority.Normal,
+      code: [
+        "await api.bot.craft('wooden_pickaxe', 1)",
+        "await api.bot.equip('wooden_pickaxe')",
+        "await api.bot.mine('iron_ore', 1)",
+      ].join("\n"),
+    });
+    const sandboxResult = {
+      status: TaskHistoryStatus.Failed,
+      summary: { total_steps: 3 },
+      step_results: [
+        {
+          action: "craft",
+          status: "ok",
+          params: { itemName: "wooden_pickaxe", count: 1 },
+          result: { ok: true, data: { item_name: "wooden_pickaxe", completed_count: 1 } },
+        },
+        {
+          action: "equip",
+          status: "ok",
+          params: { itemName: "wooden_pickaxe" },
+          result: { skill: "equip", item_name: "wooden_pickaxe" },
+        },
+        {
+          action: "mine",
+          status: "err",
+          params: { blockName: "iron_ore", count: 1 },
+          error: {
+            name: "FacadeCallError",
+            message: "resource_not_found:iron_ore",
+            error_code: "resource_not_found",
+          },
+        },
+      ],
+      error: {
+        name: "FacadeCallError",
+        message: "resource_not_found:iron_ore",
+        error_code: "resource_not_found",
+        method: "mine",
+        details: {
+          failure_stage: "mine",
+          recoverable: true,
+          world_key: "minecraft:overworld",
+          target_progress: {
+            action: "mine",
+            target: "iron_ore",
+            requested_count: 1,
+            completed_count: 0,
+          },
+        },
+      },
+    } as unknown as Parameters<typeof createTaskResultSummaryFromSandboxResult>[1];
+    const task = createBotWorkerTask({
+      bot_id: "bot-realtime-action",
+      exec_job: sandboxJob,
+      owner_text: "做镐再挖铁矿",
+    });
+    const failedActions = createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Failed,
+      total_steps: 3,
+      duration_ms: 1600,
+      error: {
+        name: "FacadeCallError",
+        message: "resource_not_found:iron_ore",
+        error_code: "resource_not_found",
+        details: {
+          failure_stage: "mine",
+          recoverable: true,
+          world_key: "minecraft:overworld",
+        },
+      },
+      last_step: "mine",
+      result_summary: createTaskResultSummaryFromSandboxResult(sandboxJob, sandboxResult),
+    });
+
+    const reporter = createTaskResultReporter();
+    const failedReply = reporter.consume(failedActions[1]);
+
+    expect(failedReply?.content).toContain(
+      "任务失败：mine 失败码 resource_not_found，阶段 mine，可恢复",
+    );
+    expect(failedReply?.content).not.toContain("equip 失败码 resource_not_found");
+    expect(failedReply?.content).not.toContain("craft 失败码 resource_not_found");
   });
 
   it("应确保脚本、容器命令与根导出入口边界保持一致", () => {

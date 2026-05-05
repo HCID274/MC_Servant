@@ -9,6 +9,7 @@ import { Worker, type WorkerOptions } from "bullmq";
 
 import type { TaskFailedErrorSnapshot } from "../core-ports/events.js";
 import { ExecutionTaskKind } from "../core-ports/foundation.js";
+import type { InterruptSignal } from "../core-ports/runtime.js";
 import {
   SKILL_DIRECTORY,
   isCollectSkillParams,
@@ -37,6 +38,11 @@ import {
   createBotWorkerTask,
 } from "./contracts.js";
 import type { ExecQueueName } from "./queues.js";
+import {
+  createTaskFailureResultSummary,
+  createTaskResultSummaryFromSandboxResult,
+  createTaskResultSummaryFromSkillResult,
+} from "./task-result-summary.js";
 
 /** BotWorker（机器人工作线程） 处理过程事件。 */
 export type BotWorkerRuntimeEvent =
@@ -73,6 +79,18 @@ export type BotWorkerRuntimeEvent =
       readonly status: TaskHistoryStatus.Failed;
       /** 错误摘要。 */
       readonly error: TaskFailedErrorSnapshot;
+    }
+  | {
+      /** 事件类型。 */
+      readonly type: "task.interrupted";
+      /** 目标 Bot 标识。 */
+      readonly bot_id: string;
+      /** 原始消息标识。 */
+      readonly message_id: string;
+      /** 生命周期状态。 */
+      readonly status: TaskHistoryStatus.Interrupted;
+      /** 中断原因。 */
+      readonly reason: string;
     }
   | {
       /** 事件类型。 */
@@ -403,14 +421,38 @@ export function createBotWorkerRuntime(input: {
     let terminalFailureHandled = false;
 
     try {
-      const outcome =
-        task.exec_job.type === ExecutionTaskKind.SkillCall
-          ? await input.dependencies.actor.executeSkill(task.exec_job)
-          : await input.dependencies.actor.executeSandboxCode(task.exec_job);
+      if (task.exec_job.type === ExecutionTaskKind.SkillCall) {
+        const outcome = await input.dependencies.actor.executeSkill(task.exec_job);
+        const executionResult = outcome.result;
+        const durationMs = Math.max(0, now() - startedAt);
+
+        await emitActions(
+          createBotWorkerActions({
+            task,
+            phase: "terminal",
+            status: TaskHistoryStatus.Completed,
+            total_steps: executionResult.total_steps,
+            duration_ms: durationMs,
+            result_summary: createTaskResultSummaryFromSkillResult(task.exec_job, executionResult),
+          }),
+        );
+        events.push(
+          Object.freeze({
+            type: "task.completed" as const,
+            bot_id: task.bot_id,
+            message_id: task.exec_job.message_id,
+            status: TaskHistoryStatus.Completed,
+            total_steps: executionResult.total_steps,
+          }),
+        );
+        return;
+      }
+
+      const outcome = await input.dependencies.actor.executeSandboxCode(task.exec_job);
       const executionResult = outcome.result;
       const durationMs = Math.max(0, now() - startedAt);
 
-      if ("status" in executionResult && executionResult.status === TaskHistoryStatus.Failed) {
+      if (executionResult.status === TaskHistoryStatus.Failed) {
         const errorSnapshot = Object.freeze({
           name: executionResult.error.name,
           message: executionResult.error.message,
@@ -432,6 +474,10 @@ export function createBotWorkerRuntime(input: {
             duration_ms: durationMs,
             error: errorSnapshot,
             last_step: executionResult.step_results.at(-1)?.action ?? "executeSandboxCode",
+            result_summary: createTaskResultSummaryFromSandboxResult(
+              task.exec_job,
+              executionResult,
+            ),
             sandbox_result: Object.freeze({
               ...getSandboxResultRefs(executionResult),
               error: executionResult.error,
@@ -453,21 +499,51 @@ export function createBotWorkerRuntime(input: {
         });
       }
 
+      if (executionResult.status === TaskHistoryStatus.Interrupted) {
+        const reason = executionResult.error.message;
+        await emitActions(
+          createBotWorkerActions({
+            task,
+            phase: "terminal",
+            status: TaskHistoryStatus.Interrupted,
+            total_steps: executionResult.summary.total_steps,
+            duration_ms: durationMs,
+            interrupt_source: {
+              type: "system",
+              cause: "stalled",
+            },
+            reason,
+            result_summary: createTaskResultSummaryFromSandboxResult(
+              task.exec_job,
+              executionResult,
+            ),
+            sandbox_result: Object.freeze({
+              ...getSandboxResultRefs(executionResult),
+              error: executionResult.error,
+            }),
+          }),
+        );
+        events.push(
+          Object.freeze({
+            type: "task.interrupted" as const,
+            bot_id: task.bot_id,
+            message_id: task.exec_job.message_id,
+            status: TaskHistoryStatus.Interrupted,
+            reason,
+          }),
+        );
+        return;
+      }
+
       await emitActions(
         createBotWorkerActions({
           task,
           phase: "terminal",
           status: TaskHistoryStatus.Completed,
-          total_steps:
-            "summary" in executionResult
-              ? executionResult.summary.total_steps
-              : executionResult.total_steps,
+          total_steps: executionResult.summary.total_steps,
           duration_ms: durationMs,
-          ...(task.exec_job.type === ExecutionTaskKind.SandboxCode
-            ? {
-                sandbox_result: getSandboxResultRefs(executionResult),
-              }
-            : {}),
+          result_summary: createTaskResultSummaryFromSandboxResult(task.exec_job, executionResult),
+          sandbox_result: getSandboxResultRefs(executionResult),
         }),
       );
       events.push(
@@ -476,10 +552,7 @@ export function createBotWorkerRuntime(input: {
           bot_id: task.bot_id,
           message_id: task.exec_job.message_id,
           status: TaskHistoryStatus.Completed,
-          total_steps:
-            "summary" in executionResult
-              ? executionResult.summary.total_steps
-              : executionResult.total_steps,
+          total_steps: executionResult.summary.total_steps,
         }),
       );
     } catch (error) {
@@ -489,6 +562,36 @@ export function createBotWorkerRuntime(input: {
 
       const errorSnapshot = createErrorSnapshot(error);
       const durationMs = Math.max(0, now() - startedAt);
+      const interruptSource = readInterruptedErrorSource(error);
+      if (interruptSource !== null) {
+        const reason = readInterruptedErrorReason(error) ?? errorSnapshot.message;
+        await emitActions(
+          createBotWorkerActions({
+            task,
+            phase: "terminal",
+            status: TaskHistoryStatus.Interrupted,
+            total_steps: 0,
+            duration_ms: durationMs,
+            interrupt_source: interruptSource,
+            reason,
+            result_summary: createTaskFailureResultSummary(task.exec_job, {
+              message: reason,
+              error_code: "task_interrupted",
+              ...(errorSnapshot.details === undefined ? {} : { details: errorSnapshot.details }),
+            }),
+          }),
+        );
+        events.push(
+          Object.freeze({
+            type: "task.interrupted" as const,
+            bot_id: task.bot_id,
+            message_id: task.exec_job.message_id,
+            status: TaskHistoryStatus.Interrupted,
+            reason,
+          }),
+        );
+        return;
+      }
 
       await emitActions(
         createBotWorkerActions({
@@ -498,6 +601,7 @@ export function createBotWorkerRuntime(input: {
           total_steps: 0,
           duration_ms: durationMs,
           error: errorSnapshot,
+          result_summary: createTaskFailureResultSummary(task.exec_job, errorSnapshot),
           last_step:
             task.exec_job.type === ExecutionTaskKind.SkillCall
               ? "executeSkill"
@@ -539,4 +643,37 @@ export function createBotWorkerRuntime(input: {
       return Object.freeze([...events]);
     },
   });
+}
+
+function readInterruptedErrorSource(error: unknown): InterruptSignal["source"] | null {
+  if (error === null || typeof error !== "object") {
+    return null;
+  }
+
+  const candidate = error as {
+    readonly error_code?: unknown;
+    readonly interrupt_source?: unknown;
+  };
+  if (candidate.error_code !== "task_interrupted") {
+    return null;
+  }
+  if (candidate.interrupt_source === null || typeof candidate.interrupt_source !== "object") {
+    return null;
+  }
+
+  return candidate.interrupt_source as InterruptSignal["source"];
+}
+
+function readInterruptedErrorReason(error: unknown): string | undefined {
+  if (error === null || typeof error !== "object") {
+    return undefined;
+  }
+
+  const details = (error as { readonly details?: unknown }).details;
+  if (details === null || typeof details !== "object") {
+    return undefined;
+  }
+
+  const reason = (details as { readonly reason?: unknown }).reason;
+  return typeof reason === "string" && reason.trim().length > 0 ? reason : undefined;
 }

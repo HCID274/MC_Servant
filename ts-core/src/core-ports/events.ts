@@ -8,6 +8,7 @@
 import type { EventLogEntry } from "./foundation.js";
 import type { ThreatLevel, ThreatRuleId } from "./observation.js";
 import type { BotStatus, InterruptSource } from "./runtime.js";
+import type { TaskResultSummary } from "./task-result.js";
 import type {
   ExecJob,
   TaskDiscardReason,
@@ -120,6 +121,8 @@ export interface TaskTerminalEventPayloadBase<TStatus extends TaskTerminalStatus
   readonly total_steps: number;
   /** 总耗时。 */
   readonly duration_ms: number;
+  /** 任务终态结果摘要，用于 UI（用户界面） 和聊天模板展示。 */
+  readonly result_summary?: TaskResultSummary;
 }
 
 /** 任务 completed（已完成） 事件载荷。 */

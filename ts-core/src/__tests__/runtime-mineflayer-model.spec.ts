@@ -2649,6 +2649,124 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     });
   });
 
+  it("collect（捡拾） 范围内仍有可见掉落物时不得因已捡到一部分而提前成功", async () => {
+    const collectBot = new FakeMineflayerBot();
+    collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    let gotoCalls = 0;
+    collectBot.entities.firstLogDrop = {
+      id: 18,
+      name: "item",
+      displayName: "Item",
+      position: { x: 2, y: 64, z: 0 },
+      item: {
+        name: "oak_log",
+      },
+    };
+    collectBot.entities.secondLogDrop = {
+      id: 19,
+      name: "item",
+      displayName: "Item",
+      position: { x: 3, y: 64, z: 0 },
+      item: {
+        name: "oak_log",
+      },
+    };
+    collectBot.onGoto = () => {
+      gotoCalls += 1;
+
+      if (gotoCalls === 1) {
+        collectBot.inventoryItems.push({
+          name: "oak_log",
+          count: 1,
+        });
+        collectBot.entities.firstLogDrop = undefined;
+        return;
+      }
+
+      throw new Error("second drop is still unreachable");
+    };
+
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-collect-drain-radius",
+      }),
+      {
+        createBot: () => collectBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    collectBot.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.collect({
+        center: { x: 0, y: 64, z: 0 },
+        radius: 8,
+        timeoutMs: 350,
+      }),
+    ).rejects.toThrow("unreachable");
+    expect(gotoCalls).toBeGreaterThan(1);
+  });
+
+  it("collect（捡拾） 应忽略与 Bot（机器人） 高度差超过 3 格的树叶滞留掉落物", async () => {
+    const collectBot = new FakeMineflayerBot();
+    collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    let gotoCalls = 0;
+    collectBot.entities.groundLogDrop = {
+      id: 20,
+      name: "item",
+      displayName: "Item",
+      position: { x: 2, y: 64, z: 0 },
+      item: {
+        name: "oak_log",
+      },
+    };
+    collectBot.entities.hangingLeafDrop = {
+      id: 21,
+      name: "item",
+      displayName: "Item",
+      position: { x: 2, y: 69, z: 0 },
+      item: {
+        name: "oak_sapling",
+      },
+    };
+    collectBot.onGoto = () => {
+      gotoCalls += 1;
+      collectBot.inventoryItems.push({
+        name: "oak_log",
+        count: 1,
+      });
+      collectBot.entities.groundLogDrop = undefined;
+    };
+
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-collect-ignore-hanging-drop",
+      }),
+      {
+        createBot: () => collectBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    collectBot.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.collect({
+        center: { x: 0, y: 64, z: 0 },
+        radius: 8,
+        timeoutMs: 1000,
+      }),
+    ).resolves.toMatchObject({
+      collected: [{ name: "oak_log", count: 1 }],
+    });
+    expect(gotoCalls).toBe(1);
+  });
+
   it("collect（捡拾） 不得把登录后的旧背包同步误判为本次捡拾成功", async () => {
     const collectBot = new FakeMineflayerBot();
     collectBot.entity.position = { x: 0, y: 64, z: 0 };
@@ -2770,6 +2888,61 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       collected: [{ name: "shield", count: 1 }],
     });
     expect(goalNames).toEqual(["MockGoalNearXZ"]);
+  });
+
+  it("collect（捡拾） 应贴近掉落物到拾取碰撞范围内", async () => {
+    const collectBot = new FakeMineflayerBot();
+    collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    const goalRanges: number[] = [];
+    collectBot.entities.logDrop = {
+      id: 22,
+      name: "item",
+      displayName: "Item",
+      position: { x: 2, y: 64, z: 0 },
+      item: {
+        name: "oak_log",
+      },
+    };
+    collectBot.onGoto = (goal) => {
+      const range =
+        typeof (goal as { readonly range?: unknown } | undefined)?.range === "number"
+          ? (goal as { readonly range: number }).range
+          : Number.POSITIVE_INFINITY;
+      goalRanges.push(range);
+
+      if (range <= 0.75) {
+        collectBot.inventoryItems.push({
+          name: "oak_log",
+          count: 1,
+        });
+        collectBot.entities.logDrop = undefined;
+      }
+    };
+
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-collect-pickup-collision-range",
+      }),
+      {
+        createBot: () => collectBot,
+      },
+    );
+    const connectPromise = transport.connect();
+
+    await Promise.resolve();
+    collectBot.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.collect({
+        center: { x: 0, y: 64, z: 0 },
+        radius: 8,
+        timeoutMs: 1000,
+      }),
+    ).resolves.toMatchObject({
+      collected: [{ name: "oak_log", count: 1 }],
+    });
+    expect(goalRanges).toEqual([0.75]);
   });
 
   it("collect（捡拾） 目标实体消失但背包数量未增加时必须显式失败", async () => {

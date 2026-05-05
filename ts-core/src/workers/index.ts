@@ -46,3 +46,4 @@ export * from "./embedding-client.js";
 export * from "./brain-llm.js";
 export * from "./brain-memory-safety.js";
 export * from "./task-history-sink.js";
+export * from "./task-result-reporter.js";

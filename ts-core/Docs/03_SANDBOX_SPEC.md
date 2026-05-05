@@ -1027,6 +1027,8 @@
     | `AbortError` | 中断信号到达 | 沙箱执行终止，emit task.interrupted |
     | `UnhandledError` | 沙箱代码未捕获的 JS 运行时异常 | emit task.failed |
 
+    sandbox TS（沙箱 TypeScript） 终态由 BotWorker（机器人工作线程） 统一进入 `TaskResultReporter`（任务结果汇报器）。成功、失败、中断都必须生成一次结构化 `result_summary`（结果摘要），再由模板同步到 game chat（游戏聊天） 与 realtime（实时推送）；不得让 sandbox（沙箱） 失败沉默，也不得用 LLM（大语言模型）二次总结执行结果。
+
     ### 12.2 错误信息的传递
 
     所有错误信息都记录在 event_log 和 JSONL 中。FacadeCallError 额外携带结构化的失败原因：

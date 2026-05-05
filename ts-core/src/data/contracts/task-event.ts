@@ -1,6 +1,7 @@
 import type { TaskFailedErrorSnapshot } from "../../core-ports/events.js";
 import type { ExecutionTaskKind } from "../../core-ports/foundation.js";
 import type { SnapshotPosition } from "../../core-ports/observation.js";
+import type { TaskResultSummary } from "../../core-ports/task-result.js";
 import type { ExecPriority, TaskHistoryStatus } from "../../core-ports/tasking.js";
 import { assertNonEmptyString } from "../../domain/invariants.js";
 
@@ -28,6 +29,7 @@ export type BrainTaskCardResult =
       readonly status: TaskHistoryStatus.Completed;
       readonly total_steps: number;
       readonly duration_ms: number;
+      readonly result_summary?: TaskResultSummary;
       readonly log_ref?: string;
     }>
   | Readonly<{
@@ -36,6 +38,7 @@ export type BrainTaskCardResult =
       readonly duration_ms: number;
       readonly error: TaskFailedErrorSnapshot;
       readonly last_step?: string;
+      readonly result_summary?: TaskResultSummary;
       readonly log_ref?: string;
     }>
   | Readonly<{
@@ -44,6 +47,7 @@ export type BrainTaskCardResult =
       readonly duration_ms: number;
       readonly reason: string;
       readonly interrupt_source: Readonly<Record<string, unknown>>;
+      readonly result_summary?: TaskResultSummary;
       readonly log_ref?: string;
     }>;
 

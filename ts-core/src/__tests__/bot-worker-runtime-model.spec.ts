@@ -147,6 +147,83 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
   });
 
+  it("应把 BotActor（机器人执行代理） 中断错误记录为 interrupted（已中断） 而不是 failed（已失败）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const actions: BotWorkerAction[] = [];
+    const runtime = createBotWorkerRuntime({
+      queue: {
+        name: "bot:bot-worker:exec",
+        connection: {},
+      },
+      dependencies: {
+        actor: {
+          async executeSkill() {
+            throw Object.assign(new Error("BotActor skill execution was interrupted"), {
+              name: "AbortError",
+              error_code: "task_interrupted",
+              interrupt_source: {
+                type: "control" as const,
+                command: "cancel" as const,
+              },
+              details: {
+                reason: "owner requested cancel",
+              },
+            });
+          },
+          async executeSandboxCode() {
+            throw new Error("sandbox should not run");
+          },
+        },
+        actionSink: async (action) => {
+          actions.push(action);
+        },
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+    const task = createBotWorkerTask({
+      bot_id: "bot-worker",
+      exec_job: createSkillCallJob({
+        message_id: "msg-worker-interrupted",
+        intent_epoch: 1,
+        snapshot_ts: 100,
+        priority: ExecPriority.Normal,
+        skill: SKILL_DIRECTORY.goTo,
+        params: { x: 10, y: 64, z: -5 },
+      }),
+    });
+
+    await runtime.start();
+    await processor?.({ data: task });
+
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.interrupted",
+      bot_id: "bot-worker",
+      message_id: "msg-worker-interrupted",
+      status: TaskHistoryStatus.Interrupted,
+      reason: "owner requested cancel",
+    });
+    expect(actions.find((action) => action.type === "enqueue_brain")).toMatchObject({
+      type: "enqueue_brain",
+      task: {
+        payload: {
+          status: TaskHistoryStatus.Interrupted,
+          task_card: {
+            result: {
+              status: TaskHistoryStatus.Interrupted,
+              reason: "owner requested cancel",
+            },
+          },
+        },
+      },
+    });
+  });
+
   it("应在 intent_epoch（意图纪元） 过期时丢弃任务且不调用 BotActor（机器人执行代理）", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     let executeCount = 0;

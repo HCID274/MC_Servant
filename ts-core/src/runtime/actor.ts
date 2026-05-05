@@ -176,6 +176,12 @@ export interface BotActorSandboxExecutionRecord {
   readonly total_steps: number;
 }
 
+interface BotActorCurrentExecutionState {
+  readonly message_id: string;
+  interrupted: boolean;
+  interrupt_signal?: InterruptSignal;
+}
+
 /** BotActor（机器人执行代理） 沙箱执行输出。 */
 export interface BotActorSandboxExecutionOutcome<TBotId extends string = string> {
   /** 沙箱执行结果。 */
@@ -230,7 +236,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   let externalAuth = input.externalAuth;
   let externalAuthPlan = input.externalAuthPlan;
   let currentTask: BotActorCurrentTaskProjection | null = null;
-  let currentExecution: { readonly message_id: string; interrupted: boolean } | null = null;
+  let currentExecution: BotActorCurrentExecutionState | null = null;
   let chatWriteInFlight: Promise<void> | null = null;
   let recentReflex: BotActorReflexExecutionSummary | null = null;
   const emittedEvents: RuntimeEventType[] = [];
@@ -509,7 +515,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         message_id: job.message_id,
         skill: job.skill,
       });
-      const execution = {
+      const execution: BotActorCurrentExecutionState = {
         message_id: job.message_id,
         interrupted: false,
       };
@@ -520,7 +526,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       try {
         const result = await executeActorSkillCallJob(job, skillExecution);
         if (execution.interrupted) {
-          throw new Error("BotActor skill execution was interrupted");
+          throw createBotActorInterruptedError(
+            "BotActor skill execution was interrupted",
+            execution.interrupt_signal,
+          );
         }
 
         const completedDecision = resolveTransition(status, {
@@ -627,7 +636,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         kind: "sandbox_code" as const,
         message_id: job.message_id,
       });
-      const execution = {
+      const execution: BotActorCurrentExecutionState = {
         message_id: job.message_id,
         interrupted: false,
       };
@@ -662,7 +671,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           facade: createActorSandboxFacade(job),
         });
         if (execution.interrupted) {
-          throw new Error("BotActor sandbox execution was interrupted");
+          throw createBotActorInterruptedError(
+            "BotActor sandbox execution was interrupted",
+            execution.interrupt_signal,
+          );
         }
 
         const completedDecision = resolveTransition(status, {
@@ -747,6 +759,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
 
       if (currentExecution !== null) {
         currentExecution.interrupted = true;
+        currentExecution.interrupt_signal = signal;
         input.transport.stopCurrentAction();
       }
 
@@ -1042,6 +1055,22 @@ function assertSandboxFacadeCallActive(control: SandboxFacadeCallControl | undef
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function createBotActorInterruptedError(message: string, signal?: InterruptSignal): Error {
+  return Object.assign(new Error(message), {
+    name: "AbortError",
+    error_code: "task_interrupted",
+    ...(signal === undefined
+      ? {}
+      : {
+          interrupt_source: signal.source,
+          details: Object.freeze({
+            interrupt_source: signal.source,
+            reason: signal.reason,
+          }),
+        }),
+  });
 }
 
 function createToolchainCapabilityError(

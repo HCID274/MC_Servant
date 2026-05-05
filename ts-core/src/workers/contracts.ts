@@ -19,6 +19,7 @@ import type {
 import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import type { SnapshotPosition } from "../core-ports/observation.js";
 import type { InterruptSignal } from "../core-ports/runtime.js";
+import type { TaskResultSummary } from "../core-ports/task-result.js";
 import {
   type ExecJob,
   type TaskDiscardReason,
@@ -587,6 +588,7 @@ export function createBotWorkerActions(
         status: TaskHistoryStatus.Completed;
         total_steps: number;
         duration_ms: number;
+        result_summary?: TaskResultSummary;
         sandbox_result?: {
           readonly log_ref?: string;
           readonly code_ref?: string;
@@ -600,6 +602,7 @@ export function createBotWorkerActions(
         duration_ms: number;
         error: TaskFailedErrorSnapshot;
         last_step?: string;
+        result_summary?: TaskResultSummary;
         sandbox_result?: {
           readonly log_ref?: string;
           readonly code_ref?: string;
@@ -619,6 +622,7 @@ export function createBotWorkerActions(
         duration_ms: number;
         interrupt_source: InterruptSignal["source"];
         reason: string;
+        result_summary?: TaskResultSummary;
         sandbox_result?: {
           readonly log_ref?: string;
           readonly code_ref?: string;
@@ -661,6 +665,9 @@ export function createBotWorkerActions(
               status: TaskHistoryStatus.Completed,
               total_steps: input.total_steps,
               duration_ms: input.duration_ms,
+              ...(input.result_summary === undefined
+                ? {}
+                : { result_summary: input.result_summary }),
             });
           case TaskHistoryStatus.Failed:
             if (input.error === undefined) {
@@ -674,6 +681,9 @@ export function createBotWorkerActions(
               duration_ms: input.duration_ms,
               error: input.error,
               ...(input.last_step ? { last_step: input.last_step } : {}),
+              ...(input.result_summary === undefined
+                ? {}
+                : { result_summary: input.result_summary }),
             });
           case TaskHistoryStatus.Interrupted:
             if (input.interrupt_source === undefined) {
@@ -690,6 +700,9 @@ export function createBotWorkerActions(
               duration_ms: input.duration_ms,
               interrupt_source: input.interrupt_source,
               reason: input.reason,
+              ...(input.result_summary === undefined
+                ? {}
+                : { result_summary: input.result_summary }),
             });
         }
       })();
@@ -801,6 +814,7 @@ function createBrainTaskCardResult(
         status: TaskHistoryStatus.Completed,
         total_steps: input.total_steps,
         duration_ms: input.duration_ms,
+        ...(input.result_summary === undefined ? {} : { result_summary: input.result_summary }),
         ...(input.sandbox_result?.log_ref === undefined
           ? {}
           : { log_ref: input.sandbox_result.log_ref }),
@@ -812,6 +826,7 @@ function createBrainTaskCardResult(
         duration_ms: input.duration_ms,
         error: input.error,
         ...(input.last_step === undefined ? {} : { last_step: input.last_step }),
+        ...(input.result_summary === undefined ? {} : { result_summary: input.result_summary }),
         ...(input.sandbox_result?.log_ref === undefined
           ? {}
           : { log_ref: input.sandbox_result.log_ref }),
@@ -823,6 +838,7 @@ function createBrainTaskCardResult(
         duration_ms: input.duration_ms,
         reason: input.reason,
         interrupt_source: input.interrupt_source as Readonly<Record<string, unknown>>,
+        ...(input.result_summary === undefined ? {} : { result_summary: input.result_summary }),
         ...(input.sandbox_result?.log_ref === undefined
           ? {}
           : { log_ref: input.sandbox_result.log_ref }),

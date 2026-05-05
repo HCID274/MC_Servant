@@ -470,6 +470,8 @@ Phase 1 的规则表是硬编码的。扩展路径：
 
 BotWorker 是 BullMQ Worker 的壳。它的唯一职责是从 `bot:{botId}:exec` 队列取 job，交给 BotActor 执行，然后汇报结果。BotWorker 本身不持有任何业务状态。
 
+任务终态汇报由 `TaskResultReporter`（任务结果汇报器） 完成：它只消费 BotWorker 产出的 `task.completed` / `task.failed` / `task.interrupted` 终态任务卡，按模板生成一次性自然语言结果，并同步写入 game chat（游戏聊天） 与 realtime（实时推送） `chat.reply`。BotActor 仍只负责执行与产出事件，不决定终态文案；汇报器按 `bot_id + message_id + status` 去重，避免重复刷屏。
+
 ```typescript
 // workers/bot-worker.ts
 const botWorker = new Worker(`bot:${botId}:exec`, async (job) => {
@@ -885,9 +887,9 @@ BotActor 在每个状态转换和关键操作点 emit 事件，写入 event_log�
 | `task.started` | IDLE → EXECUTING | `job_id`, `type`, `epoch` |
 | `task.discarded` | job epoch 过期 | `job_id`, `epoch`, `current_epoch` |
 | `step.progress` | 执行中每步完成 | `job_id`, `step_index`, `action`, `status` |
-| `task.completed` | 任务正常完成 | `job_id`, `total_steps`, `duration_ms` |
-| `task.failed` | 任务执行失败 | `job_id`, `error`, `last_step` |
-| `task.interrupted` | 任务被中断 | `job_id`, `interrupt_source`, `reason` |
+| `task.completed` | 任务正常完成 | `job_id`, `total_steps`, `duration_ms`, `result_summary` |
+| `task.failed` | 任务执行失败 | `job_id`, `error`, `last_step`, `result_summary` |
+| `task.interrupted` | 任务被中断 | `job_id`, `interrupt_source`, `reason`, `result_summary` |
 | `reflex.triggered` | observation 触发反射 | `rule_id`, `threat_level`, `entities` |
 | `reflex.done` | 反射动作完成 | `rule_id`, `action_type`, `duration_ms` |
 | `intent.epoch_changed` | epoch 递增 | `new_epoch`, `message_id` |

@@ -81,8 +81,12 @@ export interface RuntimeSandboxExecutionRequest {
 export interface RuntimeSandboxExecutionStepResult {
   /** 动作名。 */
   readonly action: string;
+  /** 动作参数；仅用于终态摘要，不参与执行决策。 */
+  readonly params?: Readonly<Record<string, unknown>>;
   /** 执行状态。 */
   readonly status: string;
+  /** 步骤返回值；仅用于终态摘要，不参与执行决策。 */
+  readonly result?: Readonly<Record<string, unknown>>;
   /** 步骤错误。 */
   readonly error?: RuntimeSandboxExecutionErrorSnapshot;
 }

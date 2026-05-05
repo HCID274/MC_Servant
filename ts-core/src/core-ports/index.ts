@@ -13,3 +13,4 @@ export * from "./runtime.js";
 export * from "./tasking.js";
 export * from "./events.js";
 export * from "./sandbox.js";
+export * from "./task-result.js";

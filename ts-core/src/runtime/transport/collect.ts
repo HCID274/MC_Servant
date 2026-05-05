@@ -23,6 +23,8 @@ const DEFAULT_COLLECT_TIMEOUT_MS = 10_000;
 const AUTO_COLLECT_SETTLE_MS = 250;
 const COLLECT_POLL_MS = 100;
 const INTERNAL_COLLECT_MIN_RADIUS = 1;
+const COLLECT_MAX_VERTICAL_DELTA_FROM_BOT = 3;
+const COLLECT_PICKUP_GOAL_RANGE = 0.75;
 
 /** collect（捡拾） 技能需要的 Mineflayer（Minecraft 协议客户端） 能力端口。 */
 export type MineflayerCollectPort = MineflayerMovementPort &
@@ -93,7 +95,6 @@ async function collectDrops(input: {
   const skipped: CollectSkillSkippedItem[] = [];
   let options = input.options;
   let sawTargetEntity = findCollectTargetEntities(input.bot, options).length > 0;
-  let confirmedInventoryIncrease = false;
 
   await moveToCollectCenterIfNeeded({
     bot: input.bot,
@@ -131,7 +132,10 @@ async function collectDrops(input: {
       const collectedSinceStart = createCollectedDiff(options.itemName, inventoryBefore, input.bot);
 
       if (sawTargetEntity && collectedSinceStart.length > 0) {
-        confirmedInventoryIncrease = true;
+        break;
+      }
+
+      if (sawTargetEntity && skipped.length > 0) {
         break;
       }
 
@@ -160,13 +164,11 @@ async function collectDrops(input: {
 
       if (outcome.status === "collected") {
         madeProgress = true;
-        confirmedInventoryIncrease = true;
         continue;
       }
 
       if (createCollectedDiff(input.options.itemName, beforeAttempt, input.bot).length > 0) {
         madeProgress = true;
-        confirmedInventoryIncrease = true;
         continue;
       }
 
@@ -174,13 +176,14 @@ async function collectDrops(input: {
     }
 
     if (!madeProgress) {
-      break;
+      await delay(COLLECT_POLL_MS);
     }
   }
 
   const collected = createCollectedDiff(options.itemName, inventoryBefore, input.bot);
+  const remainingTargets = findCollectTargetEntities(input.bot, options);
 
-  if (confirmedInventoryIncrease && collected.length > 0) {
+  if (sawTargetEntity && collected.length > 0 && remainingTargets.length === 0) {
     return createCollectResult(options, {
       bot: input.bot,
       collected,
@@ -190,7 +193,11 @@ async function collectDrops(input: {
   }
 
   if (skipped.length === 0) {
-    skipped.push(createSkippedItem("none", "not_found"));
+    if (remainingTargets.length > 0) {
+      skipped.push(...remainingTargets.map((target) => createSkippedItem(target.id, "timeout")));
+    } else {
+      skipped.push(createSkippedItem("none", "not_found"));
+    }
   }
 
   throw new Error(
@@ -293,7 +300,7 @@ async function goToPickupTarget(
   const GoalNearXZ = resolveGoalNearXZConstructor(pathfinderModule);
   if (GoalNearXZ !== undefined) {
     try {
-      await pathfinder.goto(new GoalNearXZ(position.x, position.z, 1.5));
+      await pathfinder.goto(new GoalNearXZ(position.x, position.z, COLLECT_PICKUP_GOAL_RANGE));
       return true;
     } catch {
       return false;
@@ -532,6 +539,7 @@ function findCollectTargetEntities(
       entity !== undefined &&
       entity.position !== undefined &&
       calculateDistanceSquared(entity.position, scanCenter) <= radiusSquared &&
+      Math.abs(entity.position.y - botPosition.y) <= COLLECT_MAX_VERTICAL_DELTA_FROM_BOT &&
       matchesCollectTargetEntity(entity, options.itemName, bot.registry),
   );
 

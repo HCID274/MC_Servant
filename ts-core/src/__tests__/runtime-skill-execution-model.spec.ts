@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ExecPriority, createSkillCallJob } from "../runtime/index.js";
 import {
@@ -454,12 +454,12 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
     ]);
     expect(collects).toEqual([
       {
-        center: { x: 2, y: 64.5, z: 0 },
+        center: { x: 2, y: 64, z: 0 },
         radius: 8,
         itemName: undefined,
       },
       {
-        center: { x: 5, y: 64.5, z: 0 },
+        center: { x: 5, y: 64, z: 0 },
         radius: 8,
         itemName: undefined,
       },
@@ -562,5 +562,90 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
     });
 
     await expect(cutTree({ count: 1 })).rejects.toThrow("forced collect failed");
+  });
+
+  it("cutTree（砍树） 默认应等待 1 秒再从最低原木位置 collect（捡拾）", async () => {
+    vi.useFakeTimers();
+    const inventory = new Map<string, number>();
+    const collects: Array<{ center: { x: number; y: number; z: number } | undefined }> = [];
+    const resourceService = createResourceService({
+      worldKeyPort: {
+        getCurrentWorldKey: () => "multiworld:resource",
+      },
+      refreshPort: {
+        async refreshAroundBot(resourceKey, radius) {
+          return {
+            resource_key: resourceKey,
+            radius,
+            status: "found",
+            world_key: "multiworld:resource",
+            snapshot_version: `cut-tree-lowest-collect-${radius}`,
+            scanned_at: 1_712_001_300,
+            origin: { x: 0, y: 64, z: 0 },
+            blocks: [
+              {
+                block_name: "cherry_log",
+                position: { x: 10, y: 104, z: 10 },
+                distance: 10,
+                resource_keys: [resourceKey],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+              {
+                block_name: "cherry_log",
+                position: { x: 10, y: 111, z: 10 },
+                distance: 11,
+                resource_keys: [resourceKey],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+            ],
+            diagnostics: [],
+          };
+        },
+      },
+    });
+    const cutTree = createCutTreeSkillExecutor({
+      resourceService,
+      digger: {
+        async digBlockAt() {
+          return undefined;
+        },
+      },
+      collector: {
+        async collect(params) {
+          collects.push({
+            center: params.center === undefined ? undefined : { ...params.center },
+          });
+          inventory.set("cherry_log", 2);
+
+          return createCollectSkillExecutionResult(params, {
+            collected: [{ name: "cherry_log", count: 2 }],
+            total_steps: 1,
+          });
+        },
+      },
+      inventory: {
+        readInventoryItems: () =>
+          [...inventory.entries()].map(([item_name, count]) => ({ item_name, count })),
+      },
+    });
+
+    try {
+      const promise = cutTree({ count: 1 });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(collects).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(promise).resolves.toMatchObject({
+        collected_count: 2,
+        completed: true,
+      });
+      expect(collects).toEqual([{ center: { x: 10, y: 104, z: 10 } }]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
