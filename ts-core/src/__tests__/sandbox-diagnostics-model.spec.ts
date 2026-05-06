@@ -327,6 +327,92 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(result.step_results).toEqual([]);
   });
 
+  it("应注入顶层 Semantic API（语义接口） 并桥接 owner（主人） 与 search（检索） 只读能力", async () => {
+    const botCalls: unknown[] = [];
+    const chatCalls: unknown[] = [];
+    const searchCalls: unknown[] = [];
+    const result = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: `
+          await reply('收到，我按语义 API 执行喵~');
+          try { owner.position.x = 99 } catch {}
+          try { owner = { position: { x: 99, y: 1, z: 1 } } } catch {}
+          if (owner.position.x !== 8) { throw new Error('owner mutated') }
+          const memory = await search('基地坐标', 2);
+          if (memory.hits[0].task_id !== 'task-base') { throw new Error('bad search') }
+          const pickaxe = await ensure('stone_pickaxe');
+          if (!pickaxe.ok) { await report('准备石镐失败喵~'); throw new Error('ensure failed') }
+          const mined = await mine('iron_ore', 1);
+          if (!mined.ok) { await report('挖铁失败喵~'); throw new Error('mine failed') }
+          await report('语义 API 执行完成喵~');
+        `,
+        messageId: "T-068-semantic-api",
+      }),
+      task: {
+        id: "T-068-semantic-api",
+        userMessage: "挖铁矿",
+        intent: "code",
+        owner: {
+          online: true,
+          position: { x: 8, y: 64, z: 2 },
+        },
+      },
+      facade: {
+        async executeBotSkill(skill, params) {
+          botCalls.push({ skill, params });
+
+          return { ok: true, data: { completed_count: 1, world_key: "minecraft:overworld" } };
+        },
+        async executeToolchainCapability(capability, params) {
+          botCalls.push({ capability, params });
+
+          return {
+            ok: true,
+            data: {
+              item_name: "stone_pickaxe",
+              completed_count: 1,
+              world_key: "minecraft:overworld",
+            },
+          };
+        },
+        async writeChat(method, params) {
+          chatCalls.push({ method, params });
+
+          return { delivered: true };
+        },
+        async searchMemory(input) {
+          searchCalls.push(input);
+
+          return {
+            hits: [
+              {
+                task_id: "task-base",
+                owner_text: "这里是基地",
+              },
+            ],
+          };
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Completed);
+    expect(chatCalls).toEqual([
+      { method: "say", params: { message: "收到，我按语义 API 执行喵~" } },
+      { method: "report", params: { message: "语义 API 执行完成喵~" } },
+    ]);
+    expect(searchCalls).toEqual([{ bot_id: "bot-027", query: "基地坐标", limit: 2 }]);
+    expect(botCalls).toEqual([
+      { capability: "ensureStonePickaxeEquipped", params: {} },
+      { skill: "mine", params: { blockName: "iron_ore", count: 1 } },
+    ]);
+    expect(result.step_results).toMatchObject([
+      { action: "say", status: "ok" },
+      { action: "ensureStonePickaxeEquipped", status: "ok" },
+      { action: "mine", status: "ok" },
+      { action: "report", status: "ok" },
+    ]);
+  });
+
   it("应让 code（沙箱代码） 调用 place（放置） 工作台工具链能力", async () => {
     const calls: unknown[] = [];
     const result = await executeCodeRequest({
@@ -670,15 +756,18 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(messages).toEqual([]);
   });
 
-  it("应把 cutTree（砍树） 显式拒绝为 FacadeCallError（门面调用错误）", async () => {
+  it("应让 cutTree（砍树） 语义调用桥接到底层技能", async () => {
+    const calls: unknown[] = [];
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
-        code: "await api.bot.cutTree({ count: 1 })",
+        code: "await cutTree(1)",
         messageId: "T-027-cut-tree",
       }),
       facade: {
-        async executeBotSkill() {
-          throw new Error("cutTree should be rejected before adapter");
+        async executeBotSkill(skill, params) {
+          calls.push({ skill, params });
+
+          return { ok: true, data: { completed_count: 1, world_key: "minecraft:overworld" } };
         },
         async writeChat() {
           throw new Error("chat should not run");
@@ -686,14 +775,11 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       },
     });
 
-    expect(result.status).toBe(TaskHistoryStatus.Failed);
-    expect(result.error.name).toBe("FacadeCallError");
+    expect(result.status).toBe(TaskHistoryStatus.Completed);
+    expect(calls).toEqual([{ skill: "cutTree", params: { count: 1 } }]);
     expect(result.step_results[0]).toMatchObject({
       action: "cutTree",
-      status: "err",
-      error: {
-        name: "FacadeCallError",
-      },
+      status: "ok",
     });
   });
 

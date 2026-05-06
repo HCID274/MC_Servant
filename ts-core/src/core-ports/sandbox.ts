@@ -22,6 +22,31 @@ export interface SandboxFacadeCallControl {
   readonly deadline_ms: number;
 }
 
+/** 注入 TS（TypeScript） 代码的只读 owner（主人）上下文。 */
+export interface SandboxOwnerContext {
+  /** 主人名称；不可用时为空。 */
+  readonly name?: string;
+  /** 主人是否在线；不可用时为空。 */
+  readonly online?: boolean;
+  /** 主人发话时或当前观测位置；必须来自 observation（观测） 或 ConversationWorker（对话工作线程） 透传。 */
+  readonly position?: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>;
+}
+
+/** TS（TypeScript） 代码内 search（检索） 的只读桥接输入。 */
+export interface SandboxSearchInput {
+  /** 目标 Bot（机器人） 标识。 */
+  readonly bot_id: string;
+  /** 检索文本。 */
+  readonly query: string;
+  /** 可选最大返回数。 */
+  readonly limit?: number;
+}
+
+/** TS（TypeScript） 代码内 search（检索） 的只读桥接器。 */
+export type SandboxSearchAdapter = (
+  input: SandboxSearchInput,
+) => Promise<Readonly<Record<string, unknown>>> | Readonly<Record<string, unknown>>;
+
 /** 沙箱 Facade API（门面接口） 写动作适配器。 */
 export interface SandboxFacadeExecutionAdapter {
   /** 通过 BotActor（机器人执行代理） 单写者执行技能动作。 */
@@ -40,6 +65,11 @@ export interface SandboxFacadeExecutionAdapter {
   writeChat(
     method: "say" | "report",
     params: Readonly<{ message: string }>,
+    control?: SandboxFacadeCallControl,
+  ): Promise<Readonly<Record<string, unknown>>>;
+  /** 通过 Brain search（大脑检索） 等只读通道执行 search（检索）。 */
+  searchMemory?(
+    input: SandboxSearchInput,
     control?: SandboxFacadeCallControl,
   ): Promise<Readonly<Record<string, unknown>>>;
 }
@@ -152,6 +182,7 @@ export interface RuntimeSandboxExecutionDependencies {
       readonly id: string;
       readonly userMessage: string;
       readonly intent: string;
+      readonly owner?: SandboxOwnerContext;
     };
   }): Promise<RuntimeSandboxExecutionResult>;
 }

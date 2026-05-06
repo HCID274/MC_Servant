@@ -9,6 +9,7 @@ import { Worker, type WorkerOptions } from "bullmq";
 
 import type { TaskFailedErrorSnapshot } from "../core-ports/events.js";
 import type { InterruptSignal } from "../core-ports/runtime.js";
+import type { SandboxSearchAdapter } from "../core-ports/sandbox.js";
 import {
   type CodeJob,
   type ExecJob,
@@ -119,6 +120,8 @@ export interface BotWorkerRuntimeDependencies {
   readonly now?: () => number;
   /** 生命周期动作汇点，后续可接入 event_log（事件日志） 或 realtime（实时推送）。 */
   readonly actionSink?: (action: BotWorkerAction) => Promise<unknown>;
+  /** TS（TypeScript） 语义 API（接口） search（检索） 只读桥。 */
+  readonly semanticSearch?: SandboxSearchAdapter;
   /** 可注入 BullMQ（任务队列） Worker 工厂。 */
   readonly createWorker?: CreateBotBullmqWorker;
 }
@@ -331,7 +334,20 @@ export function createBotWorkerRuntime(input: {
     let terminalFailureHandled = false;
 
     try {
-      const outcome = await input.dependencies.actor.executeCode(task.exec_job);
+      const outcome = await input.dependencies.actor.executeCode(task.exec_job, {
+        userMessage: task.owner_text,
+        ...(task.owner_position_at_message === undefined
+          ? {}
+          : {
+              owner: {
+                online: true,
+                position: task.owner_position_at_message,
+              },
+            }),
+        ...(input.dependencies.semanticSearch === undefined
+          ? {}
+          : { searchMemory: input.dependencies.semanticSearch }),
+      });
       const executionResult = outcome.result;
       const durationMs = Math.max(0, now() - startedAt);
 

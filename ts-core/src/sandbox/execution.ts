@@ -14,6 +14,7 @@ import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import type {
   SandboxFacadeCallControl,
   SandboxFacadeExecutionAdapter,
+  SandboxOwnerContext,
 } from "../core-ports/sandbox.js";
 import type {
   SkillName,
@@ -55,9 +56,19 @@ export interface SandboxExecutionTaskContext {
   readonly userMessage: string;
   /** 任务意图。 */
   readonly intent: string;
+  /** 只读主人上下文。 */
+  readonly owner?: SandboxOwnerContext;
 }
 
 type SandboxHostCallResult = Readonly<Record<string, unknown>>;
+
+type SandboxReadonlyHostCallResult =
+  | Readonly<Record<string, unknown>>
+  | readonly Readonly<Record<string, unknown>>[]
+  | string
+  | number
+  | boolean
+  | null;
 
 interface SandboxExecutionControlState {
   readonly abortController: AbortController;
@@ -612,11 +623,26 @@ export async function executeSandboxCodeRequest(input: {
         }),
       ),
     );
+    await context.global.set(
+      "__sandboxHostRead",
+      new ivm.Reference(async (method: string, args: readonly unknown[]) =>
+        handleSandboxHostRead({
+          method,
+          args,
+          request: input.request,
+          facade: input.facade,
+          controlState,
+          resourceLimits: input.request.resource_limits,
+          now,
+        }),
+      ),
+    );
 
     const taskContext = {
       id: input.task?.id ?? input.request.job_id,
       userMessage: input.task?.userMessage ?? "",
       intent: input.task?.intent ?? "code",
+      ...(input.task?.owner === undefined ? {} : { owner: input.task.owner }),
     };
 
     await context.eval(createSandboxBootstrapScript(taskContext), {
@@ -708,15 +734,120 @@ async function transpileSandboxCode(code: string): Promise<string> {
 
 function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string {
   const taskJson = JSON.stringify(task);
+  const ownerJson = JSON.stringify(task.owner ?? {});
 
   return `
     const __sandboxHostCallRef = __sandboxHostCall;
+    const __sandboxHostReadRef = __sandboxHostRead;
     delete globalThis.__sandboxHostCall;
+    delete globalThis.__sandboxHostRead;
     const __sandboxCall = (method, args) =>
       __sandboxHostCallRef.apply(undefined, [method, args], {
         arguments: { copy: true },
         result: { promise: true, copy: true }
       });
+    const __sandboxRead = (method, args) =>
+      __sandboxHostReadRef.apply(undefined, [method, args], {
+        arguments: { copy: true },
+        result: { promise: true, copy: true }
+      });
+    const __deepFreeze = (value) => {
+      if (value === null || typeof value !== "object") {
+        return value;
+      }
+      for (const key of Object.keys(value)) {
+        __deepFreeze(value[key]);
+      }
+      return Object.freeze(value);
+    };
+    const __owner = __deepFreeze(${ownerJson});
+    const reply = (message) => __sandboxCall("chat.say", [message]);
+    const report = (message) => __sandboxCall("chat.report", [message]);
+    const goTo = (...args) => __sandboxCall("bot.goTo", args);
+    const mine = (...args) => __sandboxCall("bot.mine", args);
+    const cutTree = (...args) => __sandboxCall("bot.cutTree", args);
+    const collect = (...args) => __sandboxCall("bot.collect", args);
+    const equip = (...args) => __sandboxCall("bot.equip", args);
+    const craft = (...args) => __sandboxCall("bot.craft", args);
+    const place = (...args) => __sandboxCall("bot.place", args);
+    const search = (...args) => __sandboxRead("memory.search", args);
+    const sleep = (ms) => __sandboxRead("system.sleep", [ms]);
+    const until = async (predicate, options = {}) => {
+      if (typeof predicate !== "function") {
+        throw new Error("until predicate must be a function");
+      }
+      const timeoutMs = Number(options.timeoutMs ?? 10000);
+      const intervalMs = Number(options.intervalMs ?? 250);
+      const startedAt = Date.now();
+      while (Date.now() - startedAt <= timeoutMs) {
+        if (await predicate()) {
+          return true;
+        }
+        await sleep(intervalMs);
+      }
+      return false;
+    };
+    const __ensureMethodByTarget = (target) => {
+      const key = String(target).trim();
+      if (key === "logs" || key === "log" || key === "wood" || key === "oak_log") {
+        return "bot.ensureLogs";
+      }
+      if (key === "crafting_table" || key === "table") {
+        return "bot.ensureCraftingTablePlaced";
+      }
+      if (key === "wooden_pickaxe") {
+        return "bot.ensureWoodenPickaxeEquipped";
+      }
+      if (key === "cobblestone" || key === "stone") {
+        return "bot.ensureCobblestone";
+      }
+      if (key === "stone_pickaxe") {
+        return "bot.ensureStonePickaxeEquipped";
+      }
+      throw new Error("Unsupported ensure target: " + key);
+    };
+    const ensure = (target, ...args) => {
+      if (typeof target === "function") {
+        return until(target, args[0] ?? {});
+      }
+      return __sandboxCall(__ensureMethodByTarget(target), args);
+    };
+    ensure.logs = (count) => __sandboxCall("bot.ensureLogs", [count]);
+    ensure.craftingTable = () => __sandboxCall("bot.ensureCraftingTablePlaced", []);
+    ensure.woodenPickaxe = () => __sandboxCall("bot.ensureWoodenPickaxeEquipped", []);
+    ensure.cobblestone = (count) => __sandboxCall("bot.ensureCobblestone", [count]);
+    ensure.stonePickaxe = () => __sandboxCall("bot.ensureStonePickaxeEquipped", []);
+    const runGoal = async (_goal, fn) => {
+      if (typeof _goal === "function") {
+        return await _goal();
+      }
+      if (typeof fn === "function") {
+        return await fn();
+      }
+      return undefined;
+    };
+    Object.assign(globalThis, {
+      reply,
+      runGoal,
+      ensure,
+      until,
+      mine,
+      cutTree,
+      craft,
+      place,
+      equip,
+      collect,
+      goTo,
+      report,
+      search,
+      sleep
+    });
+    Object.defineProperty(globalThis, "owner", {
+      value: __owner,
+      writable: false,
+      configurable: false,
+      enumerable: true
+    });
     globalThis.api = Object.freeze({
       bot: Object.freeze({
         goTo: (...args) => __sandboxCall("bot.goTo", args),
@@ -737,6 +868,7 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
         say: (...args) => __sandboxCall("chat.say", args),
         report: (...args) => __sandboxCall("chat.report", args)
       }),
+      owner: __owner,
       task: Object.freeze(${taskJson})
     });
   `;
@@ -867,6 +999,55 @@ async function handleSandboxHostCall(input: {
   }
 }
 
+async function handleSandboxHostRead(input: {
+  method: string;
+  args: readonly unknown[];
+  request: SandboxExecutionRequest;
+  facade: SandboxFacadeExecutionAdapter;
+  controlState: SandboxExecutionControlState;
+  resourceLimits: SandboxExecutionResourceLimits;
+  now: () => number;
+}): Promise<SandboxReadonlyHostCallResult> {
+  assertSandboxFacadeCallAllowed(input.controlState, input.resourceLimits, input.now());
+
+  const control = createSandboxFacadeCallControl(input.controlState);
+  if (input.method === "memory.search") {
+    if (typeof input.facade.searchMemory !== "function") {
+      throw new Error("search is not configured in current sandbox");
+    }
+
+    const params = normalizeSandboxSearchParams(input.args);
+    return trackSandboxFacadeCall(
+      input.controlState,
+      Promise.resolve(
+        input.facade.searchMemory(
+          {
+            bot_id: input.request.bot_id,
+            query: params.query,
+            ...(params.limit === undefined ? {} : { limit: params.limit }),
+          },
+          control,
+        ),
+      ),
+    );
+  }
+
+  if (input.method === "system.sleep") {
+    const ms = normalizeSandboxSleepMs(input.args[0], input.resourceLimits.max_sleep_ms);
+    await trackSandboxFacadeCall(
+      input.controlState,
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+      }),
+    );
+    assertSandboxFacadeCallAllowed(input.controlState, input.resourceLimits, input.now());
+
+    return Object.freeze({ slept_ms: ms });
+  }
+
+  throw new Error(`Unsupported readonly Facade method: ${input.method}`);
+}
+
 function toSandboxStepActionName(method: string): SandboxStepActionName {
   const action =
     method.startsWith("bot.") || method.startsWith("chat.")
@@ -976,6 +1157,10 @@ function normalizeSandboxCallParams(
   }
 
   if (action === "cutTree") {
+    if (typeof first === "number") {
+      return { count: first } as SandboxStepParamsByAction["cutTree"];
+    }
+
     return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["cutTree"];
   }
 
@@ -986,16 +1171,62 @@ function normalizeSandboxCallParams(
   return { message: first };
 }
 
+function normalizeSandboxSearchParams(args: readonly unknown[]): {
+  readonly query: string;
+  readonly limit?: number;
+} {
+  const first = args[0];
+  if (typeof first === "string") {
+    const query = first.trim();
+    if (query.length === 0) {
+      throw new Error("search query must be non-empty");
+    }
+
+    return Object.freeze({
+      query,
+      ...(args[1] === undefined ? {} : { limit: normalizeSandboxSearchLimit(args[1]) }),
+    });
+  }
+
+  if (isRecord(first) && typeof first.query === "string") {
+    const query = first.query.trim();
+    if (query.length === 0) {
+      throw new Error("search query must be non-empty");
+    }
+
+    return Object.freeze({
+      query,
+      ...(first.limit === undefined ? {} : { limit: normalizeSandboxSearchLimit(first.limit) }),
+    });
+  }
+
+  throw new Error("search requires a query string");
+}
+
+function normalizeSandboxSearchLimit(value: unknown): number {
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit <= 0 || limit > 10) {
+    throw new Error("search limit must be an integer between 1 and 10");
+  }
+
+  return limit;
+}
+
+function normalizeSandboxSleepMs(value: unknown, maxSleepMs: number): number {
+  const ms = Number(value);
+  if (!Number.isInteger(ms) || ms < 0) {
+    throw new Error("sleep ms must be a non-negative integer");
+  }
+
+  return Math.min(ms, maxSleepMs);
+}
+
 async function executeSandboxBotFacadeCall(
   facade: SandboxFacadeExecutionAdapter,
   action: Exclude<SandboxStepActionName, "say" | "report">,
   params: SandboxStepResult["params"],
   control: SandboxFacadeCallControl,
 ): Promise<Readonly<Record<string, unknown>>> {
-  if (action === "cutTree") {
-    throw new Error("cutTree is not executable in the current runtime sandbox");
-  }
-
   if (isToolchainSandboxAction(action)) {
     if (typeof facade.executeToolchainCapability !== "function") {
       throw new Error(`Toolchain capability ${action} is not configured in current sandbox`);

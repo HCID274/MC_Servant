@@ -259,7 +259,6 @@ export interface MineflayerPluginPort {
   /** mineflayer-pathfinder（Mineflayer 寻路插件） 注入后的最小 API（应用程序接口）。 */
   readonly pathfinder?: MineflayerPathfinderApi;
 }
-
 /** Mineflayer（Minecraft 协议客户端） 挖掘能力端口。 */
 export interface MineflayerMiningPort {
   /** 查找附近方块。 */

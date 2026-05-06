@@ -758,6 +758,21 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
       dependencies: {
         ...(input.dependencies?.botWorker ?? {}),
         actor: createdRuntime.actor,
+        ...(input.dependencies?.botWorker?.semanticSearch !== undefined
+          ? { semanticSearch: input.dependencies.botWorker.semanticSearch }
+          : onlineBrainSearchTool === undefined
+            ? {}
+            : {
+                semanticSearch: async ({ bot_id, query, limit }) => {
+                  const result = await onlineBrainSearchTool({
+                    bot_id,
+                    query,
+                    ...(limit === undefined ? {} : { top_k: limit }),
+                  });
+
+                  return Object.freeze({ hits: result.hits });
+                },
+              }),
         currentIntentEpoch:
           input.dependencies?.botWorker?.currentIntentEpoch ??
           (() => intentEpochStore.read(input.bootstrap.bot_id)),

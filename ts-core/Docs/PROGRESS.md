@@ -51,6 +51,14 @@
 - 关键决策: 选择真正把执行层任务类型收敛为 `ExecutionTaskKind.Code`（代码任务类型）,而不是保留"外部 code（代码）、内部 sandbox_code（沙箱代码）"的过渡命名;底层 skill（技能）执行能力保留为 TS（TypeScript）代码内 `api.bot.*`（机器人应用接口）能力复用,旧字段只留在 Plan（规划）拒绝清单和负向测试中
 - 架构冲突: 无
 
+## T-068B | 2026-05-06 | Semantic API（语义接口）注入与 cutTree（砍树）执行桥接返修
+
+- 涉及模块: sandbox（沙箱） execution（执行器）/contracts（契约）,core-ports/sandbox（沙箱端口）,runtime（运行时） BotActor（机器人执行代理）/transport（传输层） digBlockAt（按坐标挖掘）,BotWorker（机器人工作线程）,app entrypoint（应用入口）,conversation/llm（对话大语言模型） plan prompt（规划提示词）/parser（解析器）/skill plan table（技能规划表）,相关回归测试
+- A 拆解依据: 用户要求让 Plan（规划）生成的 TS（TypeScript）代码直接调用 `reply/runGoal/ensure/until/mine/cutTree/craft/place/equip/collect/goTo/report/search/owner` 等 Semantic API（语义接口）,由执行器映射到底层 Facade API（门面接口） 与 BotActor（机器人执行代理） 单写者入口;边界限定 sandbox（沙箱）执行器、Facade API（门面接口）适配层、BotActor（机器人执行代理）调用入口、ConversationWorker（对话工作线程）任务投递、search（检索）桥接、owner（主人）只读注入与测试,不得暴露 Mineflayer（Minecraft 客户端库）对象或手写 `world_key`（世界键）。后续用户明确 T-069（任务编号）承接通用 `ensure(action, condition)`（确保语义）依赖解析器,T-070（任务编号）承接 `reply -> runGoal -> ensure/until -> report`（任务生命周期）严格闭环
+- C 审查结论: 通过。Plan prompt（规划提示词） 已从 `api.bot.*`（底层机器人接口）教学改为顶层 Semantic API（语义接口）教学,真实 LLM（大语言模型）验证 "砍 12 个木头"、"挖 5 个石头"、"挖铁矿" 均返回 `{code, diagnostics}` 且 `hasApiBot:false`、`hasSemantic:true`;sandbox（沙箱）注入顶层函数、owner（主人） deep freeze（深冻结）只读上下文与 search（检索）只读桥;BotActor（机器人执行代理）仍是唯一写入口。cutTree（砍树）实服返修后,`digBlockAt`（按坐标挖掘）删除按出发高度分流,统一高成本靠近目标两格内并禁用 `allow1by1towers`（一格塔）,用户已在 MC（Minecraft）实服确认 `[svs]砍5个木头` 成功。`git diff --check`（差异空白检查）通过,`pnpm typecheck`（类型检查）通过,定向 Vitest（测试框架）3 个文件 112 个 test（测试）通过,`bash scripts/pre_review.sh`（评审前预检脚本）全绿,34 个 test file（测试文件）/399 passed（通过）/8 skipped（跳过）
+- 关键决策: 选择"顶层 Semantic API（语义接口）映射到既有 Facade API（门面接口）"而不是新增物理动作实现;保留 sandbox（沙箱）内部 `api.*`（旧接口）别名只作历史代码兼容,不再向 Plan prompt（规划提示词）暴露。砍树路径选择"统一高成本靠近 + 禁止一格塔",不再按 Bot（机器人）出发高度判断是否垫高,因为出发高度不能代表树根挖掘策略
+- 架构冲突: 当前 `ensure(target)`（目标式确保）/轻量 `runGoal`（目标运行）/自由文本 `report`（汇报）为 T-068B 过渡形态;用户已明确由 T-069（通用 ensure 依赖解析器）与 T-070（任务生命周期闭环）收敛到文档中的严格 `ensure(action, condition)` 与 `runGoal/until/report` 语义,本任务不按最终形态打回
+
 ## T-070 | 2026-05-06 | SkillResultSummary（技能结果摘要）世界键全链路补齐
 
 - 涉及模块: core-ports/skills（技能端口契约）,runtime/transport（运行时传输层） goTo/collect/equip（移动/捡拾/装备）适配器,TaskResultSummary（任务结果摘要）,TaskResultReporter（任务结果汇报器）消费测试,sandbox（沙箱）摘要解析测试,相关 runtime（运行时）回归测试

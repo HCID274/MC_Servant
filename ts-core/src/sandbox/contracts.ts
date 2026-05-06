@@ -139,6 +139,23 @@ export const SANDBOX_TASK_VALUE_NAMES = ["id", "userMessage", "intent"] as const
 /** `task`（任务） 分区字段名联合类型。 */
 export type SandboxTaskValueName = (typeof SANDBOX_TASK_VALUE_NAMES)[number];
 
+/** 顶层 Semantic API（语义接口） 可直接调用的动作清单。 */
+export const SANDBOX_SEMANTIC_ACTION_NAMES = [
+  "reply",
+  "report",
+  "goTo",
+  "mine",
+  "cutTree",
+  "collect",
+  "equip",
+  "craft",
+  "place",
+  "ensure",
+] as const;
+
+/** 顶层 Semantic API（语义接口） 动作名联合类型。 */
+export type SandboxSemanticActionName = (typeof SANDBOX_SEMANTIC_ACTION_NAMES)[number];
+
 /** 沙箱执行期间允许被记录为步骤的动作清单。 */
 export const SANDBOX_STEP_ACTION_NAMES = [
   ...SANDBOX_BOT_METHOD_NAMES,

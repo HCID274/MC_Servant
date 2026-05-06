@@ -7,6 +7,8 @@ vi.mock("mineflayer-pathfinder", () => ({
   Movements: class MockMovements {
     canDig = false;
     digCost = 1;
+    placeCost = 1;
+    allow1by1towers = true;
   },
   goals: {
     GoalBlock: class MockGoalBlock {
@@ -2520,6 +2522,142 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       { x: 9, y: 64, z: 0 },
     ]);
     expect(createdBots[0]?.receivedMovements).toHaveLength(1);
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("digBlockAt（按坐标挖掘） 对手边目标应不寻路直接挖掘", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-dig-block-near-level-direct",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          bot.resourceBlocks.push({
+            name: "oak_log",
+            type: 7,
+            position: { x: 1, y: 66, z: 0 },
+            diggable: true,
+          });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await transport.digBlockAt({ x: 1, y: 66, z: 0 });
+
+    expect(createdBots[0]?.receivedMovements).toEqual([]);
+    expect(createdBots[0]?.gotoCalls).toEqual([]);
+    expect(createdBots[0]?.digPositions[0]?.bot).toEqual({ x: 0, y: 64, z: 0 });
+    expect(createdBots[0]?.resourceBlocks).toEqual([]);
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("digBlockAt（按坐标挖掘） 对远处目标应高成本靠近到树根两格内", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-dig-block-near-level-approach",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          bot.resourceBlocks.push({
+            name: "oak_log",
+            type: 7,
+            position: { x: 8, y: 66, z: 0 },
+            diggable: true,
+          });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await transport.digBlockAt({ x: 8, y: 66, z: 0 });
+
+    expect(createdBots[0]?.receivedMovements).toHaveLength(1);
+    expect(createdBots[0]?.receivedMovements[0]).toMatchObject({
+      canDig: true,
+      digCost: 100,
+      placeCost: 100,
+      allow1by1towers: false,
+    });
+    expect(createdBots[0]?.gotoCalls[0]).toMatchObject({
+      x: 8,
+      y: 66,
+      z: 0,
+      range: 2,
+    });
+    expect(createdBots[0]?.digPositions[0]?.bot).toEqual({ x: 8, y: 66, z: 0 });
+    expect(createdBots[0]?.resourceBlocks).toEqual([]);
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("digBlockAt（按坐标挖掘） 不得因出发高度高于树根而启用一格塔", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-dig-block-downhill-tree",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 70, z: 0 };
+          bot.resourceBlocks.push({
+            name: "oak_log",
+            type: 7,
+            position: { x: 8, y: 64, z: 0 },
+            diggable: true,
+          });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await transport.digBlockAt({ x: 8, y: 64, z: 0 });
+
+    expect(createdBots[0]?.receivedMovements).toHaveLength(1);
+    expect(createdBots[0]?.receivedMovements[0]).toMatchObject({
+      canDig: true,
+      digCost: 100,
+      placeCost: 100,
+      allow1by1towers: false,
+    });
+    expect(createdBots[0]?.gotoCalls[0]).toMatchObject({
+      x: 8,
+      y: 64,
+      z: 0,
+      range: 2,
+    });
+    expect(createdBots[0]?.digPositions[0]?.bot).toEqual({ x: 8, y: 64, z: 0 });
+    expect(createdBots[0]?.resourceBlocks).toEqual([]);
 
     await transport.disconnect("test shutdown");
   });

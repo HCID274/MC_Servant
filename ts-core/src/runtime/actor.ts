@@ -4,6 +4,9 @@ import type {
   RuntimeSandboxExecutionResult,
   SandboxFacadeCallControl,
   SandboxFacadeExecutionAdapter,
+  SandboxOwnerContext,
+  SandboxSearchAdapter,
+  SandboxSearchInput,
 } from "../core-ports/sandbox.js";
 import {
   SKILL_DIRECTORY,
@@ -182,6 +185,16 @@ export interface BotActorCodeExecutionOutcome<TBotId extends string = string> {
   readonly snapshot: BotActorRuntimeSnapshot<TBotId>;
 }
 
+/** BotActor（机器人执行代理） 注入 TS（TypeScript） 语义 API（接口） 的只读上下文。 */
+export interface BotActorCodeExecutionContext {
+  /** 用户原始消息。 */
+  readonly userMessage?: string;
+  /** owner（主人） 只读上下文。 */
+  readonly owner?: SandboxOwnerContext;
+  /** search（检索） 只读桥。 */
+  readonly searchMemory?: SandboxSearchAdapter;
+}
+
 /** BotActor（机器人执行代理） 最小运行时句柄。 */
 export interface BotActorRuntime<TBotId extends string = string> {
   /** 目标 Bot 标识。 */
@@ -191,7 +204,10 @@ export interface BotActorRuntime<TBotId extends string = string> {
   /** 通过 BotActor（机器人执行代理） 单写者入口向游戏聊天广播回复。 */
   broadcastReply(input: BotActorBroadcastReplyInput): Promise<BotActorRuntimeSnapshot<TBotId>>;
   /** 通过 BotActor（机器人执行代理） 单写者入口执行代码任务。 */
-  executeCode(job: CodeJob): Promise<BotActorCodeExecutionOutcome<TBotId>>;
+  executeCode(
+    job: CodeJob,
+    context?: BotActorCodeExecutionContext,
+  ): Promise<BotActorCodeExecutionOutcome<TBotId>>;
   /** 向 BotActor（机器人执行代理） 投递运行时中断信号。 */
   interrupt(signal: InterruptSignal): Promise<BotActorRuntimeSnapshot<TBotId>>;
   /** 将 BotActor（机器人执行代理） 切换到 SHUTDOWN（关闭） 状态。 */
@@ -269,7 +285,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       recent_events: Object.freeze([...recentEvents]),
     });
 
-  const createActorSandboxFacade = (job: CodeJob): SandboxFacadeExecutionAdapter =>
+  const createActorSandboxFacade = (
+    job: CodeJob,
+    context: BotActorCodeExecutionContext | undefined,
+  ): SandboxFacadeExecutionAdapter =>
     Object.freeze({
       async executeBotSkill<TName extends SkillName>(
         skill: TName,
@@ -421,6 +440,17 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           method,
         });
       },
+      ...(context?.searchMemory === undefined
+        ? {}
+        : {
+            async searchMemory(
+              searchInput: SandboxSearchInput,
+              control?: SandboxFacadeCallControl,
+            ) {
+              assertSandboxFacadeCallActive(control);
+              return context.searchMemory?.(searchInput) ?? Object.freeze({ hits: [] });
+            },
+          }),
     });
 
   return Object.freeze({
@@ -471,7 +501,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
 
       return createSnapshot();
     },
-    async executeCode(job: CodeJob): Promise<BotActorCodeExecutionOutcome<TBotId>> {
+    async executeCode(
+      job: CodeJob,
+      context?: BotActorCodeExecutionContext,
+    ): Promise<BotActorCodeExecutionOutcome<TBotId>> {
       const transportSnapshot = input.transport.getSnapshot();
       const readyGate = createRuntimeReadyGate({
         status,
@@ -533,10 +566,14 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           request,
           task: {
             id: job.message_id,
-            userMessage: job.code,
+            userMessage: context?.userMessage ?? job.code,
             intent: "code",
+            owner: createSandboxOwnerContext({
+              ...(context?.owner === undefined ? {} : { explicitOwner: context.owner }),
+              transport: input.transport,
+            }),
           },
-          facade: createActorSandboxFacade(job),
+          facade: createActorSandboxFacade(job, context),
         });
         if (execution.interrupted) {
           throw createBotActorInterruptedError(
@@ -1034,6 +1071,28 @@ function safelyReadObservation(
   } catch {
     return null;
   }
+}
+
+function createSandboxOwnerContext(input: {
+  readonly explicitOwner?: SandboxOwnerContext;
+  readonly transport: MineflayerRuntimeTransport<string>;
+}): SandboxOwnerContext {
+  const observationOwner = safelyReadObservation(input.transport)?.owner;
+  const owner = input.explicitOwner ?? observationOwner;
+
+  return Object.freeze({
+    ...(owner?.name === undefined ? {} : { name: owner.name }),
+    ...(owner?.online === undefined ? {} : { online: owner.online }),
+    ...(owner?.position === undefined
+      ? {}
+      : {
+          position: Object.freeze({
+            x: owner.position.x,
+            y: owner.position.y,
+            z: owner.position.z,
+          }),
+        }),
+  });
 }
 
 function createTargetProgress(input: {

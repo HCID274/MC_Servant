@@ -340,7 +340,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
                 {
                   message: {
                     content:
-                      '{"code":"await api.chat.say(\\"我去基地附近看看喵~\\"); await api.bot.goTo(120,64,-300); await api.chat.report(\\"已到基地附近喵~\\");"}',
+                      '{"code":"await reply(\\"我去基地附近看看喵~\\"); await goTo(120,64,-300); await report(\\"已到基地附近喵~\\");"}',
                   },
                 },
               ],
@@ -375,7 +375,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     });
 
     expect(result).toMatchObject({
-      code: expect.stringContaining("api.bot.goTo(120,64,-300)"),
+      code: expect.stringContaining("goTo(120,64,-300)"),
     });
     expect(searchCalls).toEqual([{ bot_id: "bot-cw", query: "基地坐标" }]);
     expect(capturedBodies[0]).toMatchObject({ tool_choice: "auto" });
@@ -616,7 +616,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
                 {
                   message: {
                     content:
-                      '{"code":"await api.chat.say(\\"收到，我这就过去喵~\\"); await api.bot.goTo(10,64,-5); await api.chat.report(\\"已到达目标位置喵~\\");"}',
+                      '{"code":"await reply(\\"收到，我这就过去喵~\\"); await goTo(10,64,-5); await report(\\"已到达目标位置喵~\\");"}',
                   },
                 },
               ],
@@ -641,7 +641,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     });
 
     expect(result).toMatchObject({
-      code: expect.stringContaining("api.bot.goTo(10,64,-5)"),
+      code: expect.stringContaining("goTo(10,64,-5)"),
     });
     expect(result.diagnostics).toMatchObject({
       stage: "plan",
@@ -669,8 +669,9 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(requestBody.messages?.[1]?.content).toContain(
       "记忆摘要：历史：主人上次要求抵达坐标后先回报状态。",
     );
-    expect(requestBody.messages?.[0]?.content).toContain("JSON 对象只能包含 code 字段");
-    expect(requestBody.messages?.[0]?.content).toContain("你不直接执行世界动作");
+    expect(requestBody.messages?.[0]?.content).toContain("只允许一个字段");
+    expect(requestBody.messages?.[0]?.content).toContain("输出契约 1/3");
+    expect(requestBody.messages?.[0]?.content).not.toContain("你不直接执行世界动作");
   });
 
   it("代码规划 prompt（提示词） 不应再把“三个坐标”写成通用失败条件", () => {
@@ -680,7 +681,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
     });
 
-    expect(messages[0]?.content).toContain("JSON 对象只能包含 code 字段");
+    expect(messages[0]?.content).toContain("只允许一个字段");
     expect(messages[0]?.content).toContain("把这个东西捡起来");
     expect(messages[0]?.content).toContain("不要因为缺 itemName 放弃");
     expect(messages[0]?.content).toContain("禁止把 item、unknown 或 Item 当作 itemName");
@@ -949,7 +950,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     );
   });
 
-  it("代码规划 prompt（提示词） 应由策略表生成底层动作段并暴露工具链能力", () => {
+  it("代码规划 prompt（提示词） 应由策略表生成语义动作段并暴露工具链能力", () => {
     const messages = createConversationPlanMessages({
       message_id: "msg-plan-template",
       message: "把地上的东西捡起来",
@@ -967,26 +968,31 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).toContain(skillSection);
     expect(messages[0]?.content).toContain("默认以环境快照 [主人] 坐标作为 collect.params.center");
     expect(messages[0]?.content).toContain("执行层会在 32 未命中时自动扩到 64 搜索");
-    expect(messages[0]?.content).toContain('await api.bot.place("crafting_table")');
-    expect(messages[0]?.content).toContain("api.bot.craft(itemName, count)");
-    expect(messages[0]?.content).toContain("必须读取环境快照 [主人] 位置");
-    expect(messages[0]?.content).toContain("每个 ToolchainResult（工具链结果） 必须检查 ok");
-    expect(messages[0]?.content).toContain("code 最后必须调用 api.chat.report()");
-    expect(messages[0]?.content).toContain("[上一轮失败] Failure Capsule（失败胶囊）");
-    expect(messages[0]?.content).toContain("禁止原样重复“避免重复”里的动作");
-    expect(messages[0]?.content).toContain("实现阻塞");
-    expect(messages[0]?.content).toContain("api.bot.cutTree(12)");
-    expect(messages[0]?.content).toContain('api.bot.mine(\\"stone\\", 5)');
-    expect(messages[0]?.content).toContain("ensureStonePickaxeEquipped()");
-    expect(messages[0]?.content).toContain('api.bot.mine(\\"iron_ore\\", 1)');
-    expect(messages[0]?.content).toContain("demoMineIron()");
+    expect(messages[0]?.content).toContain('place("crafting_table")');
+    expect(messages[0]?.content).toContain("craft(itemName,count)");
+    expect(messages[0]?.content).toContain("优先读取 owner.position");
+    expect(messages[0]?.content).toContain("返回 ToolchainResult（工具链结果） 时，必须检查 ok");
+    expect(messages[0]?.content).toContain("code 的最后一个任务终态必须 report(...)");
+    expect(messages[0]?.content).toContain("不要说“根据历史记录”");
+    expect(messages[0]?.content).toContain("明确动作不要 search");
+    expect(messages[0]?.content).toContain("cutTree(5)");
+    expect(messages[0]?.content).toContain('mine(\\"stone\\", 5)');
+    expect(messages[0]?.content).toContain('ensure(\\"stone_pickaxe\\")');
+    expect(messages[0]?.content).toContain('mine(\\"iron_ore\\", 1)');
+    expect(messages[0]?.content).toContain("demoMineIron");
     expect(messages[0]?.content).toContain('craft("planks", count)');
-    expect(messages[0]?.content).toContain("JSON 对象只能包含 code 字段");
+    expect(messages[0]?.content).toContain("输出契约 1/3");
+    expect(messages[0]?.content).toContain("输出契约 2/3");
+    expect(messages[0]?.content).toContain("输出契约 3/3");
+    expect(messages[0]?.content?.match(/只输出/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
     expect(messages[0]?.content).not.toContain("<skill_name>");
     expect(messages[0]?.content).not.toContain("<param_name>");
     expect(messages[0]?.content).not.toContain('"itemName":"cobblestone"');
-    expect(messages[0]?.content).toContain("这里的装备就是拿到主手");
+    expect(messages[0]?.content).toContain('equip(itemName, "hand")');
     expect(messages[0]?.content).toContain("不能输出中文物品名");
+    expect(messages[0]?.content).toContain("禁止 api.bot");
+    expect(messages[0]?.content).not.toContain("# 你是什么");
+    expect(messages[0]?.content).not.toContain("# 你不是什么");
   });
 
   it("应让 mine（挖掘） / collect（捡拾） / cutTree（砍树） / equip（装备） 都进入在线代码规划结果", async () => {
@@ -1172,7 +1178,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         snapshot_context: "online_runtime: executable skills: mine, cutTree, equip",
       }),
     ).rejects.toMatchObject({
-      message: "planner code must call api.chat.report",
+      message: "planner code must call report",
     });
 
     await expect(

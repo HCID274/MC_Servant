@@ -106,8 +106,8 @@ function validatePlanCode(code: string): void {
     throw new ConversationLlmPlanError("planner code must not call demoMineIron");
   }
 
-  if (!code.includes("api.chat.report")) {
-    throw new ConversationLlmPlanError("planner code must call api.chat.report");
+  if (!/\breport\s*\(/.test(code) && !code.includes("api.chat.report")) {
+    throw new ConversationLlmPlanError("planner code must call report");
   }
 }
 
