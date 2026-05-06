@@ -6,11 +6,11 @@ import {
   TaskHistoryStatus,
   createBotWorkerActions,
   createBotWorkerTask,
+  createCodeJob,
   createConversationReply,
   createConversationRouteDecision,
   createConversationWorkerActions,
   createMessageTriage,
-  createSandboxCodeJob,
   createTaskLifecycleEventLogEntry,
 } from "../index.js";
 
@@ -37,7 +37,7 @@ describe("runtime（运行时） 生命周期事件与 worker（工作线程） 
         mode: "llm",
         reply: "我先过去看一下",
       }),
-      exec_job: createSandboxCodeJob({
+      exec_job: createCodeJob({
         message_id: "msg-accepted",
         intent_epoch: 21,
         snapshot_ts: 1_712_950_000,
@@ -60,7 +60,7 @@ describe("runtime（运行时） 生命周期事件与 worker（工作线程） 
   it("应让 BotWorker（机器人工作线程） 的 discarded（已丢弃） 与 terminal（终态） 走不同后续链路", () => {
     const task = createBotWorkerTask({
       bot_id: "bot-012",
-      exec_job: createSandboxCodeJob({
+      exec_job: createCodeJob({
         message_id: "msg-terminal",
         intent_epoch: 22,
         snapshot_ts: 1_712_950_001,
@@ -115,7 +115,7 @@ describe("runtime（运行时） 生命周期事件与 worker（工作线程） 
   });
 
   it("应能从根导出直接创建任务生命周期 event_log（事件日志） 条目", () => {
-    const job = createSandboxCodeJob({
+    const job = createCodeJob({
       message_id: "msg-root-export",
       intent_epoch: 23,
       snapshot_ts: 1_712_950_002,
@@ -155,7 +155,7 @@ describe("runtime（运行时） 生命周期事件与 worker（工作线程） 
   it("应拒绝构造缺少 interrupt_source（中断来源） 或 reason（中断原因） 的 interrupted（中断） 终态动作", () => {
     const task = createBotWorkerTask({
       bot_id: "bot-012",
-      exec_job: createSandboxCodeJob({
+      exec_job: createCodeJob({
         message_id: "msg-interrupted-invalid",
         intent_epoch: 24,
         snapshot_ts: 1_712_950_003,

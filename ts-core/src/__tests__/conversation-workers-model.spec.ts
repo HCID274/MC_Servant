@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  type ConversationCodePlanDraft,
   type ConversationPlanningTriage,
   ConversationPriority,
-  type ConversationSandboxCodePlanDraft,
-  type ConversationSkillCallPlanDraft,
   ExecPriority,
   ExecutionTaskKind,
   TaskHistoryStatus,
@@ -12,6 +11,7 @@ import {
   createBotWorkerTask,
   createBrainWorkerActions,
   createCancelTemplateReply,
+  createCodePlanDraft,
   createConversationCompositeTriage,
   createConversationReply,
   createConversationRouteDecision,
@@ -21,22 +21,15 @@ import {
   createExecQueueName,
   createMessageQueueName,
   createMessageTriage,
-  createSandboxCodePlanDraft,
-  createSkillCallPlanDraft,
   createTaskEventDraft,
   createWorkerQueueCatalog,
   ensureReplyEndsWithMeow,
   shouldSearchConversationMemory,
 } from "../index.js";
 
-// @ts-expect-error `follow`（跟随） 尚未进入 Phase 1（第一阶段） 技能目录。
-const invalidSkillName: ConversationSkillCallPlanDraft["skill"] = "follow";
-void invalidSkillName;
-
-// @ts-expect-error `sandbox_code`（沙箱代码） 规划产物的类型固定不可改成 `skill_call`（技能调用）。
-const invalidSandboxPlanType: ConversationSandboxCodePlanDraft["type"] =
-  ExecutionTaskKind.SkillCall;
-void invalidSandboxPlanType;
+// @ts-expect-error Plan（规划） 输出草案只允许 code（代码） 字段。
+const invalidPlanShape: ConversationCodePlanDraft = { skill: "cutTree" };
+void invalidPlanShape;
 
 // @ts-expect-error 规划上下文只接受 `task`（任务） 意图。
 const invalidPlanningIntent: ConversationPlanningTriage["intent"] = "cancel";
@@ -103,39 +96,22 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     ).toThrow(/chat must be an empty object/);
   });
 
-  it("应让 skill_call（技能调用） / sandbox_code（沙箱代码） 双路径严格对齐现有执行契约", () => {
-    const skillPlan = createSkillCallPlanDraft({
-      reply: "我这就去砍树",
-      skill: "cutTree",
-      params: { count: 3 },
+  it("应让 Plan（规划） 唯一 code（代码）形态对齐执行契约", () => {
+    const codePlan = createCodePlanDraft({
+      code: "await api.chat.say('收到'); await api.bot.cutTree(3); await api.chat.report('完成');",
     });
-    const sandboxPlan = createSandboxCodePlanDraft({
-      reply: "我先去看一眼再决定",
-      code: "await api.chat.say('收到');",
-    });
-    const skillJob = createExecJobFromPlan({
-      plan: skillPlan,
-      message_id: "msg-skill",
-      intent_epoch: 7,
-      snapshot_ts: 100,
-      priority: ExecPriority.Urgent,
-    });
-    const sandboxJob = createExecJobFromPlan({
-      plan: sandboxPlan,
+    const codeJob = createExecJobFromPlan({
+      plan: codePlan,
       message_id: "msg-code",
       intent_epoch: 8,
       snapshot_ts: 101,
       priority: ExecPriority.Normal,
     });
 
-    expect(skillPlan.skill).toBe("cutTree");
-    expect(skillJob.type).toBe(ExecutionTaskKind.SkillCall);
-    if (skillJob.type !== ExecutionTaskKind.SkillCall) {
-      throw new Error("expected skill_call job");
-    }
-    expect(skillJob.skill).toBe("cutTree");
-    expect(sandboxPlan.type).toBe(ExecutionTaskKind.SandboxCode);
-    expect(sandboxJob.type).toBe(ExecutionTaskKind.SandboxCode);
+    expect(codePlan).toEqual({
+      code: "await api.chat.say('收到'); await api.bot.cutTree(3); await api.chat.report('完成');",
+    });
+    expect(codeJob.type).toBe(ExecutionTaskKind.Code);
   });
 
   it("应将抢占式 task（任务） 映射为 interrupt_then_enqueue（中断后入队）", () => {
@@ -178,10 +154,8 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
         reply: "我改成先砍两棵树",
       }),
       exec_job: createExecJobFromPlan({
-        plan: createSkillCallPlanDraft({
-          reply: "我改成先砍两棵树",
-          skill: "cutTree",
-          params: { count: 2 },
+        plan: createCodePlanDraft({
+          code: "await api.chat.say('我改成先砍两棵树喵~'); await api.bot.cutTree(2); await api.chat.report('完成喵~');",
         }),
         message_id: "msg-modify",
         intent_epoch: 10,
@@ -298,10 +272,8 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     const botTask = createBotWorkerTask({
       bot_id: "bot-008",
       exec_job: createExecJobFromPlan({
-        plan: createSkillCallPlanDraft({
-          reply: "我去装备一下",
-          skill: "equip",
-          params: { itemName: "stone_pickaxe", destination: "hand" },
+        plan: createCodePlanDraft({
+          code: "await api.chat.say('我去装备一下喵~'); await api.bot.equip('stone_pickaxe', 'hand'); await api.chat.report('完成喵~');",
         }),
         message_id: "msg-exec",
         intent_epoch: 13,
@@ -350,6 +322,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     expect(botActions.map((action) => action.type)).toEqual([
       "emit_task_lifecycle",
       "enqueue_brain",
+      "persist_sandbox_experience",
     ]);
     expect(lifecycleAction.lifecycle.status).toBe(TaskHistoryStatus.Completed);
     expect(brainActions[0]?.type).toBe("persist_task_event");
@@ -359,10 +332,8 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     const botTask = createBotWorkerTask({
       bot_id: "bot-008",
       exec_job: createExecJobFromPlan({
-        plan: createSkillCallPlanDraft({
-          reply: "我去砍树",
-          skill: "cutTree",
-          params: { count: 1 },
+        plan: createCodePlanDraft({
+          code: "await api.chat.say('我去砍树喵~'); await api.bot.cutTree(1); await api.chat.report('完成喵~');",
         }),
         message_id: "msg-discarded",
         intent_epoch: 14,
@@ -404,10 +375,8 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     const botTask = createBotWorkerTask({
       bot_id: "bot-008",
       exec_job: createExecJobFromPlan({
-        plan: createSkillCallPlanDraft({
-          reply: "我去挖矿",
-          skill: "mine",
-          params: { blockName: "coal_ore", count: 1 },
+        plan: createCodePlanDraft({
+          code: "await api.chat.say('我去挖矿喵~'); await api.bot.mine('coal_ore', 1); await api.chat.report('完成喵~');",
         }),
         message_id: "msg-failed-missing-error",
         intent_epoch: 16,

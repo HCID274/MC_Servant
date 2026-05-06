@@ -9,7 +9,7 @@ import {
   createAppProcessRuntime,
   createAppSmokeAssembly,
 } from "../app/index.js";
-import { ExecPriority, createSandboxCodeJob } from "../core-ports/tasking.js";
+import { ExecPriority, createCodeJob } from "../core-ports/tasking.js";
 import type { MineflayerBotHandle } from "../runtime/transport.js";
 
 class FakeAppMineflayerBot extends EventEmitter implements MineflayerBotHandle {
@@ -285,8 +285,8 @@ describe("app（应用装配） 骨架", () => {
         },
       },
     });
-    const outcome = await runtime.actor.executeSandboxCode(
-      createSandboxCodeJob({
+    const outcome = await runtime.actor.executeCode(
+      createCodeJob({
         message_id: "ensure-logs-existing",
         intent_epoch: 1,
         snapshot_ts: Date.parse("2026-05-05T00:00:00.000Z"),

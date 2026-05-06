@@ -7,7 +7,6 @@
 
 import { ConversationPriority, ExecutionTaskKind } from "./foundation.js";
 import type { InterruptSource } from "./runtime.js";
-import { type SkillCall, type SkillCallInput, type SkillName, createSkillCall } from "./skills.js";
 
 /** 执行队列可接受的优先级枚举。 */
 export enum ExecPriority {
@@ -57,57 +56,24 @@ export function isTaskTerminalStatus(status: TaskHistoryStatus): status is TaskT
   return TASK_TERMINAL_STATUSES.includes(status as TaskTerminalStatus);
 }
 
-/** 执行任务公共字段。 */
-export interface ExecJobBase {
-  /** 执行任务类型。 */
-  type: ExecutionTaskKind;
+/** 代码执行任务结构。 */
+export interface CodeJob {
+  /** 固定为 code（代码）。 */
+  readonly type: ExecutionTaskKind.Code;
   /** 原始用户消息标识。 */
-  message_id: string;
+  readonly message_id: string;
   /** 意图纪元。 */
-  intent_epoch: number;
+  readonly intent_epoch: number;
   /** 规划时快照时间戳。 */
-  snapshot_ts: number;
+  readonly snapshot_ts: number;
   /** 执行队列优先级。 */
-  priority: ExecPriority;
+  readonly priority: ExecPriority;
+  /** 待执行 TS（TypeScript）代码。 */
+  readonly code: string;
 }
 
-/** skill_call（技能调用） 执行任务结构。 */
-export interface SkillCallJobFor<TName extends SkillName> extends ExecJobBase {
-  /** 固定为 skill_call。 */
-  type: ExecutionTaskKind.SkillCall;
-  /** 与技能目录对齐的 skill_call（技能调用） 结构。 */
-  readonly skillCall: SkillCall<TName>;
-  /** 技能名。 */
-  readonly skill: TName;
-  /** 技能参数。 */
-  readonly params: SkillCall<TName>["params"];
-}
-
-/** BotActor（机器人执行代理） 可消费的 `skill_call`（技能调用） 执行任务联合。 */
-export type SkillCallJob = {
-  [TName in SkillName]: SkillCallJobFor<TName>;
-}[SkillName];
-
-/** 创建 `skill_call`（技能调用） 执行任务时允许的输入联合。 */
-export type SkillCallJobInput = {
-  [TName in SkillName]: {
-    message_id: string;
-    intent_epoch: number;
-    snapshot_ts: number;
-    priority: ExecPriority;
-  } & SkillCall<TName>;
-}[SkillName];
-
-/** sandbox_code（沙箱代码） 执行任务结构。 */
-export interface SandboxCodeJob extends ExecJobBase {
-  /** 固定为 sandbox_code。 */
-  type: ExecutionTaskKind.SandboxCode;
-  /** 沙箱代码。 */
-  code: string;
-}
-
-/** BotActor（机器人执行代理） 可消费的执行任务联合。 */
-export type ExecJob = SkillCallJob | SandboxCodeJob;
+/** BotActor（机器人执行代理） 可消费的唯一执行任务。 */
+export type ExecJob = CodeJob;
 
 /** 任务被中断后的最小记录结构。 */
 export interface InterruptedTaskRecord {
@@ -133,37 +99,16 @@ export function toExecPriority(priority: ConversationPriority): ExecPriority | n
   }
 }
 
-/** 创建技能调用执行任务。 */
-export function createSkillCallJob<TInput extends SkillCallJobInput>(
-  input: TInput,
-): Extract<SkillCallJob, { skill: TInput["skill"] }> {
-  const skillCall = createSkillCall({
-    skill: input.skill,
-    params: input.params,
-  } as Extract<SkillCallInput, { skill: TInput["skill"] }>);
-
-  return Object.freeze({
-    type: ExecutionTaskKind.SkillCall,
-    message_id: input.message_id,
-    intent_epoch: input.intent_epoch,
-    snapshot_ts: input.snapshot_ts,
-    priority: input.priority,
-    skillCall,
-    skill: skillCall.skill,
-    params: skillCall.params,
-  }) as unknown as Extract<SkillCallJob, { skill: TInput["skill"] }>;
-}
-
-/** 创建沙箱代码执行任务。 */
-export function createSandboxCodeJob(input: {
+/** 创建代码执行任务。 */
+export function createCodeJob(input: {
   message_id: string;
   intent_epoch: number;
   snapshot_ts: number;
   priority: ExecPriority;
   code: string;
-}): SandboxCodeJob {
+}): CodeJob {
   return Object.freeze({
-    type: ExecutionTaskKind.SandboxCode,
+    type: ExecutionTaskKind.Code,
     message_id: input.message_id,
     intent_epoch: input.intent_epoch,
     snapshot_ts: input.snapshot_ts,

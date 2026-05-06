@@ -10,7 +10,7 @@ import {
   createConversationPlanMessages,
   createConversationTriageMessages,
 } from "./messages.js";
-import { parseConversationCompositeTriage, parseConversationSkillPlan } from "./parsers.js";
+import { parseConversationCodePlan, parseConversationCompositeTriage } from "./parsers.js";
 import { executeStage } from "./stage.js";
 import type {
   ConversationLlmChatInput,
@@ -94,7 +94,7 @@ export function createConversationLlmClient(
         diagnostics: result.diagnostics,
       });
     },
-    async generateSkillPlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult> {
+    async generateCodePlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult> {
       const promptBuildStartedAt = monotonicNow();
       const messages = createConversationPlanMessages(input);
       const promptBuildMs = elapsedMs(monotonicNow, promptBuildStartedAt);
@@ -110,7 +110,7 @@ export function createConversationLlmClient(
         messages,
         ...(input.queue_wait_ms === undefined ? {} : { queue_wait_ms: input.queue_wait_ms }),
         prompt_build_ms: promptBuildMs,
-        parse: parseConversationSkillPlan,
+        parse: parseConversationCodePlan,
         ...(input.search_tool === undefined ? {} : { searchTool: input.search_tool }),
         ...(input.bot_id === undefined ? {} : { searchToolBotId: input.bot_id }),
         onFailure: ({ error, diagnostics, errorSnapshot }) => {

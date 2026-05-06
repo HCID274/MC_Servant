@@ -610,7 +610,7 @@ describe("BrainWorker（大脑工作线程） 真实运行时", () => {
       {
         bot_id: "bot-brain",
         content:
-          "主人要求“去危险区域”，Bot 执行技能 collect失败，原因 path not found。 后续应保留该结果供下轮对话引用。",
+          "主人要求“去危险区域”，Bot 执行代码失败，原因 path not found。 后续应保留该结果供下轮对话引用。",
         updated_at: "2026-04-26T01:00:00.000Z",
       },
     ]);
@@ -1210,7 +1210,7 @@ function createTaskCard(input: {
     priority: ExecPriority.Normal,
     owner_text: ownerText,
     execution: {
-      type: ExecutionTaskKind.SkillCall,
+      type: ExecutionTaskKind.Code,
       skill: "collect",
       params: {
         itemName: "shield",

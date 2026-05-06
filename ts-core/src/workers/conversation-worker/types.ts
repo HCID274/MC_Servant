@@ -14,7 +14,6 @@ import type { ConversationRecentContextStore } from "../../conversation/recent-c
 import type { MessageTriage } from "../../core-ports/foundation.js";
 import type { EnvironmentSnapshot } from "../../core-ports/observation.js";
 import type { BotActorStateProjection } from "../../core-ports/runtime.js";
-import type { SkillName } from "../../core-ports/skills.js";
 import type { ExecPriority, TaskHistoryStatus } from "../../core-ports/tasking.js";
 import type { ConversationBrainContext } from "../../data/contracts/index.js";
 import type { RedisClientLike } from "../../db/index.js";
@@ -94,10 +93,8 @@ export type ConversationWorkerRuntimeEvent =
       readonly bot_id: string;
       /** 原始消息标识。 */
       readonly message_id: string;
-      /** 技能名。 */
-      readonly skill?: SkillName;
-      /** 非 skill_call（技能调用） 的执行类型。 */
-      readonly exec_type?: "sandbox_code";
+      /** 执行类型。 */
+      readonly exec_type: "code";
       /** 执行队列优先级。 */
       readonly priority: ExecPriority;
     }

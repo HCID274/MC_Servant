@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createCodeJobForSkill } from "./test-code-job.js";
 
 import {
   createConversationCompositeTriage,
@@ -13,8 +14,7 @@ import {
   BotStatus,
   ExecPriority,
   createBotActorStateProjection,
-  createSandboxCodeJob,
-  createSkillCallJob,
+  createCodeJob,
   createTaskResultSummary,
 } from "../core-ports/index.js";
 import type { EnvironmentSnapshot, InventorySummary } from "../core-ports/observation.js";
@@ -132,7 +132,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     const sink = createConversationBotWorkerActionSink({ recentContextStore: store });
     const task = createBotWorkerTask({
       bot_id: "bot-cw",
-      exec_job: createSandboxCodeJob({
+      exec_job: createCodeJob({
         message_id: "msg-sandbox-failed",
         intent_epoch: 1,
         snapshot_ts: 100,
@@ -198,9 +198,8 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             ready: false,
             world_ready: true,
             current_task: {
-              kind: "skill_call",
+              kind: "code",
               message_id: "msg-mine",
-              skill: "mine",
             },
           });
         },
@@ -252,7 +251,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     ]);
     expect(projectionCalls).toBe(1);
     expect(injectedStateContexts).toEqual([
-      "当前状态：executing；ready：否；世界交互：已就绪；正在执行技能：mine（消息 msg-mine）",
+      "当前状态：executing；ready：否；世界交互：已就绪；正在执行代码（消息 msg-mine）",
     ]);
     expect(replyLogs).toEqual([
       expect.objectContaining({
@@ -264,7 +263,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
         reply: "我听到啦喵~",
         contexts: {
           state_context:
-            "当前状态：executing；ready：否；世界交互：已就绪；正在执行技能：mine（消息 msg-mine）",
+            "当前状态：executing；ready：否；世界交互：已就绪；正在执行代码（消息 msg-mine）",
         },
         llm_diagnostics: expect.objectContaining({
           stage: "chat",
@@ -290,18 +289,17 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
   });
 
-  it("应由执行终态摘要把 skill_call（技能调用） 失败胶囊写入最近上下文", async () => {
+  it("应由执行终态摘要把 code（技能调用） 失败胶囊写入最近上下文", async () => {
     const store = createConversationRecentContextStore({ now: () => 10 });
     const sink = createConversationBotWorkerActionSink({ recentContextStore: store });
     const task = createBotWorkerTask({
       bot_id: "bot-cw",
       owner_text: "挖 5 个石头",
-      exec_job: createSkillCallJob({
+      exec_job: createCodeJobForSkill({
         message_id: "msg-skill-failed-capsule",
         intent_epoch: 1,
         snapshot_ts: 100,
         priority: ExecPriority.Normal,
-        skill: "mine",
         params: { blockName: "stone", count: 5 },
       }),
     });
@@ -347,13 +345,13 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
   });
 
-  it("应由执行终态摘要把 sandbox_code（沙箱代码） 失败胶囊写入最近上下文", async () => {
+  it("应由执行终态摘要把 code（沙箱代码） 失败胶囊写入最近上下文", async () => {
     const store = createConversationRecentContextStore({ now: () => 10 });
     const sink = createConversationBotWorkerActionSink({ recentContextStore: store });
     const task = createBotWorkerTask({
       bot_id: "bot-cw",
       owner_text: "去挖铁",
-      exec_job: createSandboxCodeJob({
+      exec_job: createCodeJob({
         message_id: "msg-sandbox-failed-capsule",
         intent_epoch: 1,
         snapshot_ts: 100,
@@ -516,9 +514,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           recentContexts.push(input.recent_context);
 
           return {
-            type: "sandbox_code",
-            reply: "我换深层铁矿试试",
-            code: 'const deep = await api.bot.mine("deepslate_iron_ore", 1); if (!deep.ok) { await api.chat.report(`挖铁失败: ${deep.error.code}喵~`); throw new Error(deep.error.code); } await api.chat.report("挖铁完成喵~");',
+            code: 'await api.chat.say("我换深层铁矿试试喵~"); const deep = await api.bot.mine("deepslate_iron_ore", 1); if (!deep.ok) { await api.chat.report(`挖铁失败: ${deep.error.code}喵~`); throw new Error(deep.error.code); } await api.chat.report("挖铁完成喵~");',
           };
         },
         enqueueExecTaskSink: async ({ task }) => {
@@ -597,10 +593,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           recentContexts.push(input.recent_context);
 
           return {
-            type: "skill_call",
-            reply: "我去砍木头",
-            skill: "cutTree",
-            params: { count: 5 },
+            code: 'await api.chat.say("我去砍木头喵~"); await api.bot.cutTree(5); await api.chat.report("砍木头完成喵~");',
           };
         },
         enqueueExecTaskSink: async ({ task }) => {
@@ -692,7 +685,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     expect(replies[0]).toContain("已停止");
   });
 
-  it("continuation（继续任务） 不得原样重复 retry_guard（重复保护） 中的 skill_call（技能调用）", async () => {
+  it("continuation（继续任务） 不得原样重复 retry_guard（重复保护） 中的 code（技能调用）", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const replies: string[] = [];
     const enqueuedExecTasks: unknown[] = [];
@@ -729,10 +722,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           }),
         environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
         planner: () => ({
-          type: "skill_call",
-          reply: "我继续挖石头",
-          skill: "mine",
-          params: { blockName: "stone", count: 5 },
+          code: 'await api.chat.say("我继续挖石头喵~"); await api.bot.mine("stone", 5); await api.chat.report("挖石头完成喵~");',
         }),
         enqueueExecTaskSink: async ({ task }) => {
           enqueuedExecTasks.push(task);
@@ -917,10 +907,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           expect(input.brain_context).not.toContain("x=88");
 
           return {
-            type: "skill_call",
-            reply: "我去秘密基地",
-            skill: "goTo",
-            params: { x: -24.8, y: 105, z: -15.6 },
+            code: 'await api.chat.say("我去秘密基地喵~"); await api.bot.goTo(-24.8,105,-15.6); await api.chat.report("已到达秘密基地喵~");',
           };
         },
         enqueueBrainFactSink: async ({ task }) => {
@@ -998,7 +985,8 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
         owner_text: "去秘密基地",
         owner_position_at_message: { x: 88, y: 70, z: 99 },
         exec_job: expect.objectContaining({
-          params: { x: -24.8, y: 105, z: -15.6 },
+          type: "code",
+          code: expect.stringContaining("api.bot.goTo(-24.8,105,-15.6)"),
         }),
       }),
     ]);
@@ -1122,10 +1110,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           }),
         environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
         planner: () => ({
-          type: "skill_call",
-          reply: "我去日月川",
-          skill: "goTo",
-          params: { x: 10, y: 64, z: 20 },
+          code: 'await api.chat.say("我去日月川喵~"); await api.bot.goTo(10,64,20); await api.chat.report("已到达日月川喵~");',
         }),
         enqueueExecTaskSink: async ({ task }) => {
           enqueuedExecTasks.push(task);
@@ -1155,8 +1140,8 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       expect.objectContaining({
         exec_job: expect.objectContaining({
           message_id: "msg-plan-fact-fail",
-          skill: "goTo",
-          params: { x: 10, y: 64, z: 20 },
+          type: "code",
+          code: expect.stringContaining("api.bot.goTo(10,64,20)"),
         }),
       }),
     ]);
@@ -1164,7 +1149,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       type: "task.accepted",
       bot_id: "bot-cw",
       message_id: "msg-plan-fact-fail",
-      skill: "goTo",
+      exec_type: "code",
       priority: "normal",
     });
     expect(runtime.getEvents()).toContainEqual({
@@ -1284,10 +1269,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           }),
         environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
         planner: () => ({
-          type: "skill_call",
-          reply: "我去日月川",
-          skill: "goTo",
-          params: { x: 10, y: 64, z: 20 },
+          code: 'await api.chat.say("我去日月川喵~"); await api.bot.goTo(10,64,20); await api.chat.report("已到日月川喵~");',
         }),
         enqueueExecTaskSink: async ({ task }) => {
           enqueuedExecTasks.push(task);
@@ -1323,8 +1305,8 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       expect.objectContaining({
         exec_job: expect.objectContaining({
           message_id: "msg-plan-fact-diagnostic-fail",
-          skill: "goTo",
-          params: { x: 10, y: 64, z: 20 },
+          type: "code",
+          code: expect.stringContaining("api.bot.goTo(10,64,20)"),
         }),
       }),
     ]);
@@ -1332,7 +1314,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       type: "task.accepted",
       bot_id: "bot-cw",
       message_id: "msg-plan-fact-diagnostic-fail",
-      skill: "goTo",
+      exec_type: "code",
       priority: "normal",
     });
     expect(runtime.getEvents()).toContainEqual({
@@ -1461,14 +1443,24 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       },
       dependencies: {
         actor: {
-          async executeSkill(job) {
+          async executeCode(job) {
             return {
-              result: createGoToSkillExecutionResult(job.params),
+              result: {
+                status: TaskHistoryStatus.Completed,
+                job_id: job.message_id,
+                bot_id: "bot-cw",
+                intent_epoch: job.intent_epoch,
+                log_ref: "sandbox/2026-05-04/msg-sandbox.jsonl",
+                phase_logs: [],
+                step_results: [],
+                summary: {
+                  terminal_status: TaskHistoryStatus.Completed,
+                  total_steps: 1,
+                  duration_ms: 42,
+                },
+              },
               snapshot: {} as never,
             };
-          },
-          async executeSandboxCode() {
-            throw new Error("sandbox should not run");
           },
         },
         now: (() => {
@@ -1529,10 +1521,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           expect(input.brain_context).toContain("日月川坐标：x=10, y=64, z=20");
 
           return {
-            type: "skill_call",
-            reply: "我去日月川",
-            skill: "goTo",
-            params: { x: 10, y: 64, z: 20 },
+            code: 'await api.chat.say("我去日月川喵~"); await api.bot.goTo(10,64,20); await api.chat.report("已到日月川喵~");',
           };
         },
         enqueueBrainFactSink: async ({ task }) => {
@@ -1757,10 +1746,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           }
 
           return {
-            type: "skill_call",
-            reply: "收到，我去执行",
-            skill: "goTo",
-            params: { x: 1, y: 64, z: -3 },
+            code: 'await api.chat.say("收到，我去执行喵~"); await api.bot.goTo(1,64,-3); await api.chat.report("已执行喵~");',
           };
         },
         interruptRuntimeSink: async () => undefined,
@@ -2171,10 +2157,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             reason: "llm_task_goto",
           }),
         planner: async () => ({
-          type: "skill_call",
-          reply: "收到，我这就去目标坐标",
-          skill: "goTo",
-          params: { x: 10, y: 64, z: -5 },
+          code: 'await api.chat.say("收到，我这就去目标坐标喵~"); await api.bot.goTo(10,64,-5); await api.chat.report("已到目标坐标喵~");',
         }),
         actorStateProjectionProvider: () => {
           throw new Error("plan route must not call actor state projection provider");
@@ -2202,12 +2185,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       }),
     });
 
-    expect(replies).toEqual([
-      {
-        message_id: "msg-goto",
-        content: "收到，我这就去目标坐标喵~",
-      },
-    ]);
+    expect(replies).toEqual([]);
     expect(enqueuedTasks).toHaveLength(1);
     expect(enqueuedTasks[0]).toMatchObject({
       priority: 1,
@@ -2220,8 +2198,8 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           intent_epoch: 4,
           snapshot_ts: 103,
           priority: "urgent",
-          skill: "goTo",
-          params: { x: 10, y: 64, z: -5 },
+          type: "code",
+          code: expect.stringContaining("api.bot.goTo(10,64,-5)"),
         },
       },
     });
@@ -2229,7 +2207,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       type: "task.accepted",
       bot_id: "bot-cw",
       message_id: "msg-goto",
-      skill: "goTo",
+      exec_type: "code",
       priority: "urgent",
     });
   });
@@ -2278,10 +2256,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           resourceContexts.push(input.resource_context);
 
           return {
-            type: "skill_call",
-            reply: "收到，我去目标坐标",
-            skill: "goTo",
-            params: { x: 1, y: 64, z: -3 },
+            code: 'await api.chat.say("收到，我去目标坐标喵~"); await api.bot.goTo(1,64,-3); await api.chat.report("已到目标坐标喵~");',
           };
         },
         broadcastReplySink: async () => undefined,
@@ -2314,7 +2289,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       type: "task.accepted",
       bot_id: "bot-cw",
       message_id: "msg-plan-memory-fallback",
-      skill: "goTo",
+      exec_type: "code",
       priority: "normal",
     });
   });
@@ -2366,10 +2341,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           calls.push("planner");
 
           return {
-            type: "skill_call",
-            reply: "收到，我这就去目标坐标",
-            skill: "goTo",
-            params: { x: 1, y: 64, z: -3 },
+            code: 'await api.chat.say("收到，我这就去目标坐标喵~"); await api.bot.goTo(1,64,-3); await api.chat.report("已到目标坐标喵~");',
           };
         },
         enqueueExecTaskSink: async ({ task, priority }) => {
@@ -2407,8 +2379,8 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
         exec_job: {
           message_id: "msg-composite",
           priority: "urgent",
-          skill: "goTo",
-          params: { x: 1, y: 64, z: -3 },
+          type: "code",
+          code: expect.stringContaining("api.bot.goTo(1,64,-3)"),
         },
       },
     });
@@ -2454,9 +2426,8 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             ready: false,
             world_ready: true,
             current_task: {
-              kind: "skill_call",
+              kind: "code",
               message_id: "msg-goto",
-              skill: "goTo",
             },
           }),
         replyGenerator: (input) => {
@@ -2483,7 +2454,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
 
     expect(stateContexts).toEqual([
-      "当前状态：executing；ready：否；世界交互：已就绪；正在执行技能：goTo（消息 msg-goto）",
+      "当前状态：executing；ready：否；世界交互：已就绪；正在执行代码（消息 msg-goto）",
     ]);
   });
 
@@ -2574,10 +2545,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             reason: "llm_task_mine",
           }),
         planner: async () => ({
-          type: "skill_call",
-          reply: "收到，我去挖石头",
-          skill: "mine",
-          params: { blockName: "stone", count: 2 },
+          code: 'await api.chat.say("收到，我去挖石头喵~"); await api.bot.mine("stone", 2); await api.chat.report("挖石头完成喵~");',
         }),
         broadcastReplySink: async (reply) => {
           replies.push(reply);
@@ -2602,7 +2570,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       }),
     });
 
-    expect(replies).toEqual([{ message_id: "msg-mine", content: "收到，我去挖石头喵~" }]);
+    expect(replies).toEqual([]);
     expect(enqueuedTasks).toHaveLength(1);
     expect(enqueuedTasks[0]).toMatchObject({
       priority: 5,
@@ -2615,8 +2583,8 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           intent_epoch: 6,
           snapshot_ts: 105,
           priority: "normal",
-          skill: "mine",
-          params: { blockName: "stone", count: 2 },
+          type: "code",
+          code: expect.stringContaining('api.bot.mine("stone", 2)'),
         },
       },
     });
@@ -2624,7 +2592,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       type: "task.accepted",
       bot_id: "bot-cw",
       message_id: "msg-mine",
-      skill: "mine",
+      exec_type: "code",
       priority: "normal",
     });
   });

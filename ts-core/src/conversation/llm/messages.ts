@@ -85,7 +85,7 @@ export function createConversationTriageMessages(
   ]);
 }
 
-/** 组装最小单技能 `skill_call`（技能调用） 规划消息列表。 */
+/** 组装 Stage 2-Plan（第二阶段规划） 的 TS（TypeScript）代码规划消息列表。 */
 export function createConversationPlanMessages(
   input: ConversationLlmPlanInput,
 ): readonly ConversationLlmMessage[] {

@@ -46,8 +46,8 @@ export interface SandboxFacadeExecutionAdapter {
 
 /** BotActor（机器人执行代理） 侧需要的沙箱执行请求最小结构。 */
 export interface RuntimeSandboxExecutionRequest {
-  /** 固定为 `sandbox_code`（沙箱代码）。 */
-  readonly type: ExecutionTaskKind.SandboxCode;
+  /** 固定为 code（代码）。 */
+  readonly type: ExecutionTaskKind.Code;
   /** 任务标识。 */
   readonly job_id: string;
   /** Bot（机器人） 标识。 */
@@ -144,7 +144,7 @@ export interface RuntimeSandboxExecutionDependencies {
     code: string;
     log_ref: string;
   }): RuntimeSandboxExecutionRequest;
-  /** 执行 sandbox_code（沙箱代码） 请求。 */
+  /** 执行 code（代码） 请求。 */
   executeRequest(input: {
     request: RuntimeSandboxExecutionRequest;
     facade: SandboxFacadeExecutionAdapter;

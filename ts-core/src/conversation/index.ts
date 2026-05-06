@@ -17,8 +17,7 @@ export const conversationModuleBoundary = {
     "createMessageTriage",
     "createConversationRouteDecision",
     "createConversationPlanningContext",
-    "createSkillCallPlanDraft",
-    "createSandboxCodePlanDraft",
+    "createCodePlanDraft",
     "createConversationReply",
   ],
 } satisfies ModuleBoundary;

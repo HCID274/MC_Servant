@@ -80,7 +80,7 @@ CREATE TABLE "mc_servant"."task_history" (
 	"interrupt_source" jsonb,
 	"message_id" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "task_history_type_check" CHECK ("type" IN ('skill_call', 'sandbox_code')),
+	CONSTRAINT "task_history_type_check" CHECK ("type" IN ('code')),
 	CONSTRAINT "task_history_status_check" CHECK ("status" IN ('accepted', 'started', 'completed', 'failed', 'interrupted', 'discarded'))
 );
 --> statement-breakpoint

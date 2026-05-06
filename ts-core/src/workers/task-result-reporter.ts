@@ -6,7 +6,6 @@
  */
 
 import type { TaskFailedErrorSnapshot } from "../core-ports/events.js";
-import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import type { TaskResultSummary } from "../core-ports/task-result.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
 import type { BrainTaskCard, BrainTaskCardResult } from "../data/contracts.js";
@@ -79,13 +78,7 @@ function formatCompletedReport(taskCard: BrainTaskCard): string {
     return `${completedText}，耗时 ${duration}，${world}喵~`;
   }
 
-  if (taskCard.execution.type === ExecutionTaskKind.SandboxCode) {
-    const operation = summary?.skill_name ?? summary?.operation ?? "sandbox_code";
-    const target = summary?.target === undefined ? "" : ` ${summary.target}`;
-    return `任务完成：sandbox TS（沙箱 TypeScript）已执行 ${operation}${target}，共 ${taskCard.result.total_steps} 步，耗时 ${duration}，${world}喵~`;
-  }
-
-  const operation = summary?.operation ?? taskCard.execution.skill;
+  const operation = summary?.skill_name ?? summary?.operation ?? "code";
   const target = summary?.target === undefined ? "" : ` ${summary.target}`;
   return `任务完成：${operation}${target} 已完成，耗时 ${duration}，${world}喵~`;
 }
@@ -127,9 +120,7 @@ function readOperation(taskCard: BrainTaskCard): string {
     return summary.operation;
   }
 
-  return taskCard.execution.type === ExecutionTaskKind.SkillCall
-    ? taskCard.execution.skill
-    : "sandbox_code";
+  return "code";
 }
 
 function formatCompletedSummary(summary: TaskResultSummary | undefined): string | null {

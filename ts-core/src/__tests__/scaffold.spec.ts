@@ -61,7 +61,7 @@ describe("TS Core 工程骨架", () => {
 
   it("应保留基础状态枚举与任务类型枚举", () => {
     expect(BotStatus.IDLE).toBe("idle");
-    expect(ExecutionTaskKind.SkillCall).toBe("skill_call");
+    expect(ExecutionTaskKind.Code).toBe("code");
     expect(MessageSource.Web).toBe("web");
     expect(toExecPriority(ConversationPriority.Interrupt)).toBeNull();
     expect(() => assertNonEmptyString("bot-root", "botId")).not.toThrow();
@@ -74,7 +74,7 @@ describe("TS Core 工程骨架", () => {
     expect(runtimeScaffold.defaultStatus).toBe(BotStatus.INITIALIZING);
     expect(runtimeScaffold.externalAuth.status).toBe("not_required");
     expect(runtimeScaffold.readyGate.status).toBe("blocked");
-    expect(runtimeScaffold.supportedTaskKinds).toContain(ExecutionTaskKind.SkillCall);
+    expect(runtimeScaffold.supportedTaskKinds).toContain(ExecutionTaskKind.Code);
     expect(runtimeScaffold.supportedTaskKinds).not.toContain("conversation");
     expect(runtimeScaffold.interruptTemplate.source.type).toBe("system");
     expect(RUNTIME_EVENT_TYPES).toContain("task.started");

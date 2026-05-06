@@ -1,5 +1,4 @@
 import { renderConversationBrainContext } from "../../../conversation/brain-context.js";
-import { createConversationReply } from "../../../conversation/chat.js";
 import type {
   ConversationPlanDraft,
   ConversationRouteDecision,
@@ -9,9 +8,7 @@ import {
   ConversationLlmPlanError,
   isConversationLlmSkillNotEnabledError,
 } from "../../../conversation/llm/errors.js";
-import { isOnlinePlanSkillName } from "../../../conversation/llm/skill-plan-table.js";
 import { createExecJobFromPlan } from "../../../conversation/planning.js";
-import { ExecutionTaskKind } from "../../../core-ports/foundation.js";
 import { type FailureCapsule, classifyFailureCode } from "../../../core-ports/task-result.js";
 import { type ExecJob, TaskHistoryStatus } from "../../../core-ports/tasking.js";
 import { type ConversationWorkerTask, createBotWorkerTask } from "../../contracts.js";
@@ -167,20 +164,6 @@ export async function handlePlanExecRoute(input: {
     return;
   }
 
-  if (execJob.type === ExecutionTaskKind.SkillCall && !isOnlinePlanSkillName(execJob.skill)) {
-    await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply, {
-      ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
-      ...(brainContext === undefined ? {} : { brain_context: brainContext }),
-      ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
-      ...(recentContext === undefined ? {} : { recent_context: recentContext }),
-      ...(inventoryChangeContext === undefined
-        ? {}
-        : { inventory_change_context: inventoryChangeContext }),
-      ...(plan.diagnostics === undefined ? {} : { llm_diagnostics: plan.diagnostics }),
-    });
-    return;
-  }
-
   if (input.route.requires_interrupt) {
     if (input.dependencies.interruptRuntimeSink === undefined) {
       throw new Error("planning route requires interruptRuntimeSink");
@@ -199,54 +182,15 @@ export async function handlePlanExecRoute(input: {
   }
 
   if (input.suppressPlanReply !== true) {
-    const reply = createConversationReply({ mode: "llm", reply: plan.reply });
-    await input.dependencies.broadcastReplySink({
-      message_id: input.task.message.message_id,
-      content: reply.reply,
-    });
-    await appendConversationReplyLog({
-      task: input.task,
-      route: input.route,
-      dependencies: input.dependencies,
-      reply_mode: reply.mode,
-      reply: reply.reply,
-      contexts: {
-        ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
-        ...(brainContext === undefined ? {} : { brain_context: brainContext }),
-        ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
-        ...(recentContext === undefined ? {} : { recent_context: recentContext }),
-        ...(inventoryChangeContext === undefined
-          ? {}
-          : { inventory_change_context: inventoryChangeContext }),
-      },
-      ...(plan.diagnostics === undefined ? {} : { llm_diagnostics: plan.diagnostics }),
-    });
-    input.events.push(
-      Object.freeze({
-        type: "chat.reply",
-        bot_id: input.task.bot_id,
-        message_id: input.task.message.message_id,
-        content: reply.reply,
-      }),
-    );
-  }
-
-  if (input.suppressPlanReply !== true) {
     input.dependencies.recentContextStore?.appendOwnerMessage({
       message_id: input.task.message.message_id,
       text: input.task.message.content,
     });
-    input.dependencies.recentContextStore?.appendBotReply({
-      message_id: input.task.message.message_id,
-      text: plan.reply,
-    });
   }
-  if (execJob.type === ExecutionTaskKind.SandboxCode) {
-    input.dependencies.recentContextStore?.appendSandboxCode({
-      message_id: input.task.message.message_id,
-      code: execJob.code,
-    });
-  }
+  input.dependencies.recentContextStore?.appendSandboxCode({
+    message_id: input.task.message.message_id,
+    code: execJob.code,
+  });
 
   const botTask = createBotWorkerTask({
     bot_id: input.task.bot_id,
@@ -265,8 +209,7 @@ export async function handlePlanExecRoute(input: {
       type: "task.accepted",
       bot_id: input.task.bot_id,
       message_id: input.task.message.message_id,
-      ...(execJob.type === ExecutionTaskKind.SkillCall ? { skill: execJob.skill } : {}),
-      ...(execJob.type === ExecutionTaskKind.SandboxCode ? { exec_type: execJob.type } : {}),
+      exec_type: execJob.type,
       priority: execJob.priority,
     }),
   );
@@ -275,7 +218,6 @@ export async function handlePlanExecRoute(input: {
     dependencies: input.dependencies,
     events: input.events,
     route_kind: "plan_exec",
-    bot_reply: plan.reply,
     ...(ownerPositionAtMessage === undefined
       ? {}
       : { owner_position_at_message: ownerPositionAtMessage }),
@@ -439,36 +381,12 @@ function detectRepeatedFailurePlan(input: {
     return null;
   }
 
-  switch (input.exec_job.type) {
-    case ExecutionTaskKind.SkillCall:
-      return createSkillJobSignature(input.exec_job) === retrySignature
-        ? input.failure_capsule
-        : null;
-    case ExecutionTaskKind.SandboxCode:
-      return input.exec_job.code.includes(retrySignature) ? input.failure_capsule : null;
-  }
+  return input.exec_job.code.includes(retrySignature) ? input.failure_capsule : null;
 }
 
 function readRetrySignature(retryGuard: string): string | null {
   const prefix = "不要原样重复 ";
   return retryGuard.startsWith(prefix) ? retryGuard.slice(prefix.length).trim() : null;
-}
-
-function createSkillJobSignature(
-  job: Extract<ExecJob, { readonly type: ExecutionTaskKind.SkillCall }>,
-): string {
-  switch (job.skill) {
-    case "mine":
-      return `mine("${job.params.blockName}", ${job.params.count})`;
-    case "cutTree":
-      return `cutTree(${job.params.count})`;
-    case "collect":
-      return `collect("${job.params.itemName ?? "all_items"}")`;
-    case "equip":
-      return `equip("${job.params.itemName}")`;
-    case "goTo":
-      return `goTo("${job.params.x},${job.params.y},${job.params.z}", 1)`;
-  }
 }
 
 /** 记录规划失败并广播模板回复。 */

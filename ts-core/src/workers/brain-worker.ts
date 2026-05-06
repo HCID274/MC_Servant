@@ -1073,8 +1073,7 @@ function createRollingSummaryLine(
       : taskCard.result.status === "failed"
         ? "失败"
         : "中断";
-  const executionText =
-    taskCard.execution.type === "skill_call" ? `技能 ${taskCard.execution.skill}` : "沙盒代码";
+  const executionText = "代码";
   const detailText =
     taskCard.result.status === "failed"
       ? `，原因 ${taskCard.result.error.message}`

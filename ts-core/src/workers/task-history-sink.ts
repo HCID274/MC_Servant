@@ -1,5 +1,4 @@
 import type { TaskFailedErrorSnapshot } from "../core-ports/events.js";
-import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
 import {
   type PersistedInterruptSource,
@@ -8,11 +7,7 @@ import {
   createPersistedTaskHistoryTerminalPatch,
 } from "../data/index.js";
 import type { PostgresTaskHistoryStore } from "../db/index.js";
-import {
-  createSandboxCodeRef,
-  createSandboxLogRef,
-  createTaskLogRef,
-} from "../diagnostics/index.js";
+import { createSandboxCodeRef, createSandboxLogRef } from "../diagnostics/index.js";
 import type { BotWorkerAction, BotWorkerTask } from "./contracts.js";
 
 /** 将执行任务 accepted（已接受）状态写入 task_history（任务历史）。 */
@@ -28,18 +23,13 @@ export async function persistAcceptedTaskHistory(input: {
 
   const createdAt = input.now();
   const date = createdAt.toISOString().slice(0, 10);
-  const isSandbox = input.task.exec_job.type === ExecutionTaskKind.SandboxCode;
 
   await input.taskHistoryStore.insertAccepted(
     createPersistedTaskHistoryAcceptedRecord({
       bot_id: input.bot_id,
       job: input.task.exec_job,
-      log_ref: isSandbox
-        ? createSandboxLogRef({ date, job_id: input.task.exec_job.message_id })
-        : createTaskLogRef({ date, job_id: input.task.exec_job.message_id }),
-      ...(isSandbox
-        ? { code_ref: createSandboxCodeRef({ date, job_id: input.task.exec_job.message_id }) }
-        : {}),
+      log_ref: createSandboxLogRef({ date, job_id: input.task.exec_job.message_id }),
+      code_ref: createSandboxCodeRef({ date, job_id: input.task.exec_job.message_id }),
       created_at: createdAt.toISOString(),
     }),
   );

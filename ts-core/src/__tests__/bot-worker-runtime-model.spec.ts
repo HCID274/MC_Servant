@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { createCodeJobForSkill } from "./test-code-job.js";
 
-import {
-  ExecPriority,
-  TaskHistoryStatus,
-  createSandboxCodeJob,
-  createSkillCallJob,
-} from "../index.js";
+import { ExecPriority, TaskHistoryStatus, createCodeJob } from "../index.js";
 import {
   SKILL_DIRECTORY,
   createCollectSkillExecutionResult,
@@ -20,6 +16,34 @@ import {
   createBotWorkerTask,
 } from "../workers/contracts.js";
 
+function createCompletedCodeResult(input: {
+  readonly message_id: string;
+  readonly action?: string;
+  readonly result?: Readonly<Record<string, unknown>>;
+}): {
+  readonly status: TaskHistoryStatus.Completed;
+  readonly summary: { readonly total_steps: number };
+  readonly step_results: readonly [
+    {
+      readonly action: string;
+      readonly status: "ok";
+      readonly result: Readonly<Record<string, unknown>>;
+    },
+  ];
+} {
+  return Object.freeze({
+    status: TaskHistoryStatus.Completed,
+    summary: { total_steps: 1 },
+    step_results: Object.freeze([
+      Object.freeze({
+        action: input.action ?? "code",
+        status: "ok" as const,
+        result: input.result ?? { ok: true },
+      }),
+    ]),
+  });
+}
+
 describe("BotWorker（机器人工作线程） 真实运行时", () => {
   it("应串行消费执行任务并通过 BotActor（机器人执行代理） 执行 goTo（前往坐标）", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
@@ -32,16 +56,13 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
       },
       dependencies: {
         actor: {
-          async executeSkill(job) {
+          async executeCode(job) {
             executedMessages.push(job.message_id);
 
             return {
-              result: createGoToSkillExecutionResult(job.params),
+              result: createCompletedCodeResult({ message_id: job.message_id, action: "goTo" }),
               snapshot: {} as never,
             };
-          },
-          async executeSandboxCode() {
-            throw new Error("sandbox should not run");
           },
         },
         now: (() => {
@@ -63,7 +84,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
     const task = createBotWorkerTask({
       bot_id: "bot-worker",
-      exec_job: createSkillCallJob({
+      exec_job: createCodeJobForSkill({
         message_id: "msg-worker-goto",
         intent_epoch: 1,
         snapshot_ts: 100,
@@ -77,7 +98,12 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     await processor?.({ data: task });
 
     expect(executedMessages).toEqual(["msg-worker-goto"]);
-    expect(actions).toEqual(["emit_task_lifecycle", "emit_task_lifecycle", "enqueue_brain"]);
+    expect(actions).toEqual([
+      "emit_task_lifecycle",
+      "emit_task_lifecycle",
+      "enqueue_brain",
+      "persist_sandbox_experience",
+    ]);
     expect(runtime.getEvents()).toEqual([
       {
         type: "task.started",
@@ -104,11 +130,8 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
       },
       dependencies: {
         actor: {
-          async executeSkill() {
+          async executeCode() {
             throw new Error("path not found");
-          },
-          async executeSandboxCode() {
-            throw new Error("sandbox should not run");
           },
         },
         createWorker: ({ processor: capturedProcessor }) => {
@@ -122,7 +145,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
     const task = createBotWorkerTask({
       bot_id: "bot-worker",
-      exec_job: createSkillCallJob({
+      exec_job: createCodeJobForSkill({
         message_id: "msg-worker-failed",
         intent_epoch: 1,
         snapshot_ts: 100,
@@ -157,7 +180,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
       },
       dependencies: {
         actor: {
-          async executeSkill() {
+          async executeCode() {
             throw Object.assign(new Error("BotActor skill execution was interrupted"), {
               name: "AbortError",
               error_code: "task_interrupted",
@@ -169,9 +192,6 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
                 reason: "owner requested cancel",
               },
             });
-          },
-          async executeSandboxCode() {
-            throw new Error("sandbox should not run");
           },
         },
         actionSink: async (action) => {
@@ -188,7 +208,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
     const task = createBotWorkerTask({
       bot_id: "bot-worker",
-      exec_job: createSkillCallJob({
+      exec_job: createCodeJobForSkill({
         message_id: "msg-worker-interrupted",
         intent_epoch: 1,
         snapshot_ts: 100,
@@ -234,16 +254,13 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
       },
       dependencies: {
         actor: {
-          async executeSkill(job) {
+          async executeCode(job) {
             executeCount += 1;
 
             return {
-              result: createGoToSkillExecutionResult(job.params),
+              result: createCompletedCodeResult({ message_id: job.message_id, action: "goTo" }),
               snapshot: {} as never,
             };
-          },
-          async executeSandboxCode() {
-            throw new Error("sandbox should not run");
           },
         },
         currentIntentEpoch: () => 2,
@@ -258,7 +275,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
     const task = createBotWorkerTask({
       bot_id: "bot-worker",
-      exec_job: createSkillCallJob({
+      exec_job: createCodeJobForSkill({
         message_id: "msg-worker-stale",
         intent_epoch: 1,
         snapshot_ts: 100,
@@ -293,16 +310,13 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
       },
       dependencies: {
         actor: {
-          async executeSkill(job) {
-            executedSkills.push(job.skill);
+          async executeCode(job) {
+            executedSkills.push("code");
 
             return {
-              result: createEquipSkillExecutionResult(job.params),
+              result: createCompletedCodeResult({ message_id: job.message_id, action: "equip" }),
               snapshot: {} as never,
             };
-          },
-          async executeSandboxCode() {
-            throw new Error("sandbox should not run");
           },
         },
         createWorker: ({ processor: capturedProcessor }) => {
@@ -316,7 +330,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
     const task = createBotWorkerTask({
       bot_id: "bot-worker",
-      exec_job: createSkillCallJob({
+      exec_job: createCodeJobForSkill({
         message_id: "msg-worker-equip",
         intent_epoch: 1,
         snapshot_ts: 110,
@@ -329,7 +343,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     await runtime.start();
     await expect(processor?.({ data: task })).resolves.toBeUndefined();
 
-    expect(executedSkills).toEqual(["equip"]);
+    expect(executedSkills).toEqual(["code"]);
     expect(runtime.getEvents()).toEqual([
       {
         type: "task.started",
@@ -357,25 +371,24 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
       },
       dependencies: {
         actor: {
-          async executeSkill(job) {
-            executedSkills.push(job.skill);
-
-            if (job.skill !== SKILL_DIRECTORY.mine) {
-              throw new Error("expected mine skill");
-            }
+          async executeCode(job) {
+            executedSkills.push("code");
 
             return {
-              result: createMineSkillExecutionResult(job.params, {
-                collected_item_name: "cobblestone",
-                collected_count: 5,
-                mined_count: 5,
-                total_steps: 5,
+              result: createCompletedCodeResult({
+                message_id: job.message_id,
+                action: "mine",
+                result: {
+                  ok: true,
+                  data: {
+                    item_name: "cobblestone",
+                    completed_count: 5,
+                    world_key: "multiworld:resource",
+                  },
+                },
               }),
               snapshot: {} as never,
             };
-          },
-          async executeSandboxCode() {
-            throw new Error("sandbox should not run");
           },
         },
         createWorker: ({ processor: capturedProcessor }) => {
@@ -389,7 +402,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
     const task = createBotWorkerTask({
       bot_id: "bot-worker",
-      exec_job: createSkillCallJob({
+      exec_job: createCodeJobForSkill({
         message_id: "msg-worker-mine",
         intent_epoch: 1,
         snapshot_ts: 112,
@@ -402,13 +415,13 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     await runtime.start();
     await processor?.({ data: task });
 
-    expect(executedSkills).toEqual(["mine"]);
+    expect(executedSkills).toEqual(["code"]);
     expect(runtime.getEvents()).toContainEqual({
       type: "task.completed",
       bot_id: "bot-worker",
       message_id: "msg-worker-mine",
       status: TaskHistoryStatus.Completed,
-      total_steps: 5,
+      total_steps: 1,
     });
   });
 
@@ -422,24 +435,24 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
       },
       dependencies: {
         actor: {
-          async executeSkill(job) {
-            executedSkills.push(job.skill);
-
-            if (job.skill !== SKILL_DIRECTORY.collect) {
-              throw new Error("expected collect skill");
-            }
+          async executeCode(job) {
+            executedSkills.push("code");
 
             return {
-              result: createCollectSkillExecutionResult(job.params, {
-                center: { x: 0, y: 64, z: 0 },
-                collected: [{ name: "cobblestone", count: 1 }],
-                total_steps: 1,
+              result: createCompletedCodeResult({
+                message_id: job.message_id,
+                action: "collect",
+                result: {
+                  ok: true,
+                  data: {
+                    item_name: "cobblestone",
+                    completed_count: 1,
+                    world_key: "multiworld:resource",
+                  },
+                },
               }),
               snapshot: {} as never,
             };
-          },
-          async executeSandboxCode() {
-            throw new Error("sandbox should not run");
           },
         },
         createWorker: ({ processor: capturedProcessor }) => {
@@ -453,7 +466,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
     const task = createBotWorkerTask({
       bot_id: "bot-worker",
-      exec_job: createSkillCallJob({
+      exec_job: createCodeJobForSkill({
         message_id: "msg-worker-collect",
         intent_epoch: 1,
         snapshot_ts: 111,
@@ -466,7 +479,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     await runtime.start();
     await processor?.({ data: task });
 
-    expect(executedSkills).toEqual(["collect"]);
+    expect(executedSkills).toEqual(["code"]);
     expect(runtime.getEvents()).toContainEqual({
       type: "task.completed",
       bot_id: "bot-worker",
@@ -476,7 +489,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
   });
 
-  it("应把 sandbox_code（沙箱代码） 任务交给 BotActor（机器人执行代理） 执行", async () => {
+  it("应把 code（沙箱代码） 任务交给 BotActor（机器人执行代理） 执行", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const executedMessages: string[] = [];
     const actions: BotWorkerAction[] = [];
@@ -487,10 +500,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
       },
       dependencies: {
         actor: {
-          async executeSkill() {
-            throw new Error("skill should not run");
-          },
-          async executeSandboxCode(job) {
+          async executeCode(job) {
             executedMessages.push(job.message_id);
 
             return {
@@ -533,7 +543,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
     const task = createBotWorkerTask({
       bot_id: "bot-worker",
-      exec_job: createSandboxCodeJob({
+      exec_job: createCodeJob({
         message_id: "msg-worker-sandbox",
         intent_epoch: 1,
         snapshot_ts: 120,
@@ -578,10 +588,10 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
   });
 
-  it("应只为 sandbox_code（沙箱代码） 真实终态生成 sandbox experience（沙箱经验）动作", () => {
+  it("应只为 code（沙箱代码） 真实终态生成 sandbox experience（沙箱经验）动作", () => {
     const sandboxTask = createBotWorkerTask({
       bot_id: "bot-worker",
-      exec_job: createSandboxCodeJob({
+      exec_job: createCodeJob({
         message_id: "msg-worker-sandbox-exp",
         intent_epoch: 3,
         snapshot_ts: 130,
@@ -591,7 +601,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
     const skillTask = createBotWorkerTask({
       bot_id: "bot-worker",
-      exec_job: createSkillCallJob({
+      exec_job: createCodeJobForSkill({
         message_id: "msg-worker-skill-exp",
         intent_epoch: 3,
         snapshot_ts: 130,
@@ -681,11 +691,9 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
           owner_text: "msg-worker-sandbox-exp",
           task_card: {
             execution: {
-              type: "sandbox_code",
-              code_ref: "sandbox/2026-04-26/msg-worker-sandbox-exp.code.ts",
+              type: "code",
             },
           },
-          log_ref: "sandbox/2026-04-26/msg-worker-sandbox-exp.jsonl",
         },
       },
     });
@@ -714,6 +722,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     expect(skillTerminalActions.map((action) => action.type)).toEqual([
       "emit_task_lifecycle",
       "enqueue_brain",
+      "persist_sandbox_experience",
     ]);
     expect(startedActions.map((action) => action.type)).toEqual(["emit_task_lifecycle"]);
     expect(discardedActions.map((action) => action.type)).toEqual(["emit_task_lifecycle"]);

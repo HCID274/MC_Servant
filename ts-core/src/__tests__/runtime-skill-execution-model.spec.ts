@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ExecPriority, createSkillCallJob } from "../runtime/index.js";
 import {
   SKILL_DIRECTORY,
   createCollectSkillExecutionResult,
@@ -9,24 +8,20 @@ import {
   createGoToSkillExecutionResult,
   createMineSkillExecutionResult,
   createMineSkillExecutor,
-  executeSkillCallJob,
+  executeSkillInvocation,
 } from "../skills/index.js";
 import { createResourceService } from "../world-model/index.js";
 
 describe("runtime skill execution（运行时技能执行） 模型", () => {
   it("应通过可注入 movement adapter（移动适配器） 执行 goTo（前往坐标）", async () => {
     const targets: Array<{ x: number; y: number; z: number }> = [];
-    const job = createSkillCallJob({
-      message_id: "msg-skill-goto",
-      intent_epoch: 1,
-      snapshot_ts: 100,
-      priority: ExecPriority.Normal,
+    const invocation = {
       skill: SKILL_DIRECTORY.goTo,
       params: { x: 10, y: 64, z: -5 },
-    });
+    } as const;
 
-    const result = await executeSkillCallJob({
-      job,
+    const result = await executeSkillInvocation({
+      invocation,
       dependencies: {
         goToMovement: {
           async goTo(params) {
@@ -60,18 +55,14 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
   });
 
   it("应透出 movement adapter（移动适配器） 的失败，不允许静默成功", async () => {
-    const job = createSkillCallJob({
-      message_id: "msg-skill-goto-failed",
-      intent_epoch: 1,
-      snapshot_ts: 100,
-      priority: ExecPriority.Normal,
+    const invocation = {
       skill: SKILL_DIRECTORY.goTo,
       params: { x: 10, y: 64, z: -5 },
-    });
+    } as const;
 
     await expect(
-      executeSkillCallJob({
-        job,
+      executeSkillInvocation({
+        invocation,
         dependencies: {
           goToMovement: {
             async goTo() {
@@ -95,30 +86,18 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
   it("应通过可注入 adapter（适配器） 执行 mine（挖掘） / collect（捡拾） / equip（装备）", async () => {
     const calls: string[] = [];
 
-    const mineJob = createSkillCallJob({
-      message_id: "msg-skill-mine",
-      intent_epoch: 1,
-      snapshot_ts: 100,
-      priority: ExecPriority.Normal,
+    const mineInvocation = {
       skill: SKILL_DIRECTORY.mine,
       params: { blockName: "stone", count: 2 },
-    });
-    const collectJob = createSkillCallJob({
-      message_id: "msg-skill-collect",
-      intent_epoch: 1,
-      snapshot_ts: 100,
-      priority: ExecPriority.Normal,
+    } as const;
+    const collectInvocation = {
       skill: SKILL_DIRECTORY.collect,
       params: { itemName: "cobblestone", radius: 32 },
-    });
-    const equipJob = createSkillCallJob({
-      message_id: "msg-skill-equip",
-      intent_epoch: 1,
-      snapshot_ts: 100,
-      priority: ExecPriority.Normal,
+    } as const;
+    const equipInvocation = {
       skill: SKILL_DIRECTORY.equip,
       params: { itemName: "stone_pickaxe", destination: "hand" },
-    });
+    } as const;
 
     const dependencies = {
       goToMovement: {
@@ -140,19 +119,25 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
       },
     };
 
-    await expect(executeSkillCallJob({ job: mineJob, dependencies })).resolves.toMatchObject({
+    await expect(
+      executeSkillInvocation({ invocation: mineInvocation, dependencies }),
+    ).resolves.toMatchObject({
       skill: "mine",
       block_name: "stone",
       mined_count: 2,
       total_steps: 2,
     });
-    await expect(executeSkillCallJob({ job: collectJob, dependencies })).resolves.toMatchObject({
+    await expect(
+      executeSkillInvocation({ invocation: collectInvocation, dependencies }),
+    ).resolves.toMatchObject({
       skill: "collect",
       item_name: "cobblestone",
       radius: 32,
       total_steps: 1,
     });
-    await expect(executeSkillCallJob({ job: equipJob, dependencies })).resolves.toMatchObject({
+    await expect(
+      executeSkillInvocation({ invocation: equipInvocation, dependencies }),
+    ).resolves.toMatchObject({
       skill: "equip",
       item_name: "stone_pickaxe",
       destination: "hand",
@@ -411,17 +396,13 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
           [...inventory.entries()].map(([item_name, count]) => ({ item_name, count })),
       },
     });
-    const job = createSkillCallJob({
-      message_id: "msg-skill-cut-tree",
-      intent_epoch: 1,
-      snapshot_ts: 100,
-      priority: ExecPriority.Normal,
+    const invocation = {
       skill: SKILL_DIRECTORY.cutTree,
       params: { count: 3 },
-    });
+    } as const;
 
-    const result = await executeSkillCallJob({
-      job,
+    const result = await executeSkillInvocation({
+      invocation,
       dependencies: {
         goToMovement: {
           async goTo(params) {

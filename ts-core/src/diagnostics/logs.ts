@@ -211,7 +211,7 @@ function createSandboxExperienceSummary(input: {
   code_ref?: string;
   error?: SandboxExperienceErrorSummary;
 }): string {
-  const base = `sandbox_code ${input.status}: steps=${input.total_steps}, ms=${input.duration_ms}`;
+  const base = `code ${input.status}: steps=${input.total_steps}, ms=${input.duration_ms}`;
   const refs = [input.log_ref, input.code_ref].filter(
     (value): value is string => value !== undefined,
   );

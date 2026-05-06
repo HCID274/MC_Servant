@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createCodeJobForSkill } from "./test-code-job.js";
 
 import {
   BotStatus,
@@ -15,14 +16,13 @@ import {
   ThreatLevel,
   ThreatRuleId,
   canTransition,
+  createCodeJob,
   createExternalAuthExecutionPlan,
   createExternalAuthPublicState,
   createExternalAuthSecretBinding,
   createExternalAuthState,
   createRuntimeReadyGate,
   createRuntimeScaffold,
-  createSandboxCodeJob,
-  createSkillCallJob,
   createTaskAcceptedLifecycleEvent,
   createTaskDiscardedLifecycleEvent,
   createTaskLifecycleEventLogEntry,
@@ -51,7 +51,7 @@ describe("runtime 执行态模型", () => {
   } as const;
 
   it("应能创建与文档一致的执行任务联合", () => {
-    const skillCallJob = createSkillCallJob({
+    const codeJob = createCodeJobForSkill({
       message_id: "msg-1",
       intent_epoch: 7,
       snapshot_ts: 1_712_930_000,
@@ -59,7 +59,7 @@ describe("runtime 执行态模型", () => {
       skill: "cutTree",
       params: { count: 5 },
     });
-    const sandboxCodeJob = createSandboxCodeJob({
+    const sandboxCodeJob = createCodeJob({
       message_id: "msg-2",
       intent_epoch: 8,
       snapshot_ts: 1_712_930_001,
@@ -67,9 +67,9 @@ describe("runtime 执行态模型", () => {
       code: "await api.chat.say('ok')",
     });
 
-    expect(skillCallJob.type).toBe(ExecutionTaskKind.SkillCall);
-    expect(skillCallJob.priority).toBe(ExecPriority.Urgent);
-    expect(sandboxCodeJob.type).toBe(ExecutionTaskKind.SandboxCode);
+    expect(codeJob.type).toBe(ExecutionTaskKind.Code);
+    expect(codeJob.priority).toBe(ExecPriority.Urgent);
+    expect(sandboxCodeJob.type).toBe(ExecutionTaskKind.Code);
     expect(toExecPriority(ConversationPriority.Background)).toBe(ExecPriority.Background);
   });
 
@@ -272,7 +272,7 @@ describe("runtime 执行态模型", () => {
   });
 
   it("应创建统一的 accepted / discarded / terminal 生命周期事件", () => {
-    const job = createSandboxCodeJob({
+    const job = createCodeJob({
       message_id: "msg-life-1",
       intent_epoch: 12,
       snapshot_ts: 1_712_930_123,

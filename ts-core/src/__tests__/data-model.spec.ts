@@ -70,7 +70,7 @@ describe("data 持久化契约", () => {
       TaskHistoryStatus.Interrupted,
       TaskHistoryStatus.Discarded,
     ]);
-    expect(ExecutionTaskKind.SkillCall).toBe("skill_call");
+    expect(ExecutionTaskKind.Code).toBe("code");
     expect(BOT_MEMORY_KIND_VALUES).toEqual(["USER", "MEMORY", "SKILL"]);
     expect(MEMORY_CANDIDATE_STATUS_VALUES).toEqual([
       "pending",

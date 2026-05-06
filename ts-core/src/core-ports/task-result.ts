@@ -81,7 +81,7 @@ export interface SkillFailureSummary {
 
 /** 技能结果统一摘要。 */
 export interface SkillResultSummary {
-  /** 技能名、sandbox（沙箱）能力名或 sandbox_code（沙箱代码）。 */
+  /** 代码任务内的操作名或 code（代码）。 */
   readonly skill_name: string;
   /** 执行终态。 */
   readonly status: "completed" | "failed" | "interrupted";

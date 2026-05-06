@@ -7,8 +7,7 @@
 
 import type { ExecutionTaskEnvelope } from "./foundation.js";
 import type { ReflexInterruptSource, SnapshotPosition } from "./observation.js";
-import type { SkillName } from "./skills.js";
-import type { SkillExecutionResult } from "./skills.js";
+import type { SkillExecutionResult, SkillName } from "./skills.js";
 import type { FailureCapsule } from "./task-result.js";
 
 /** ResourceService（世界感知资源服务） 允许的只读刷新半径阶梯。 */
@@ -126,21 +125,12 @@ export interface RuntimeTaskEnvelope extends ExecutionTaskEnvelope {
 }
 
 /** BotActor（机器人执行代理） 当前任务只读投影。 */
-export type BotActorCurrentTaskProjection =
-  | {
-      /** 当前任务类型。 */
-      readonly kind: "skill_call";
-      /** 原始消息标识。 */
-      readonly message_id: string;
-      /** 正在执行的技能名。 */
-      readonly skill: SkillName;
-    }
-  | {
-      /** 当前任务类型。 */
-      readonly kind: "sandbox_code";
-      /** 原始消息标识。 */
-      readonly message_id: string;
-    };
+export interface BotActorCurrentTaskProjection {
+  /** 当前任务类型。 */
+  readonly kind: "code";
+  /** 原始消息标识。 */
+  readonly message_id: string;
+}
 
 /** BotActor（机器人执行代理） 最近技能执行只读投影。 */
 export interface BotActorRecentSkillProjection {
@@ -319,12 +309,8 @@ export function createBotActorStateProjectionSummary(input: {
 }): string {
   const base = `当前状态：${input.status}；ready：${input.ready ? "是" : "否"}；世界交互：${input.world_ready ? "已就绪" : "未就绪"}`;
 
-  if (input.current_task?.kind === "skill_call") {
-    return `${base}；正在执行技能：${input.current_task.skill}（消息 ${input.current_task.message_id}）`;
-  }
-
-  if (input.current_task?.kind === "sandbox_code") {
-    return `${base}；正在执行沙箱代码（消息 ${input.current_task.message_id}）`;
+  if (input.current_task?.kind === "code") {
+    return `${base}；正在执行代码（消息 ${input.current_task.message_id}）`;
   }
 
   if (input.recent_skill !== null) {
@@ -346,16 +332,8 @@ function cloneBotActorCurrentTaskProjection(
     return null;
   }
 
-  if (task.kind === "skill_call") {
-    return Object.freeze({
-      kind: "skill_call" as const,
-      message_id: task.message_id,
-      skill: task.skill,
-    });
-  }
-
   return Object.freeze({
-    kind: "sandbox_code" as const,
+    kind: "code" as const,
     message_id: task.message_id,
   });
 }

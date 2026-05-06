@@ -43,7 +43,7 @@ import {
 } from "./contracts.js";
 import type { RuntimeEventType } from "./events.js";
 import { resolveTransition } from "./state-machine.js";
-import type { SandboxCodeJob, SkillCallJob } from "./tasking.js";
+import type { CodeJob } from "./tasking.js";
 import type { MineflayerRuntimeTransport, MineflayerTransportSnapshot } from "./transport.js";
 
 /** BotActor（机器人执行代理） 只需要持有观测缓存引用，不直接依赖 observation（观测） 实现。 */
@@ -77,7 +77,7 @@ export interface BotActorRuntimeSnapshot<TBotId extends string = string> {
   /** 本轮由 BotActor（机器人执行代理） 单写者完成的技能执行记录。 */
   readonly skill_executions: readonly BotActorSkillExecutionRecord[];
   /** 本轮由 BotActor（机器人执行代理） 单写者完成的沙箱执行记录。 */
-  readonly sandbox_executions: readonly BotActorSandboxExecutionRecord[];
+  readonly code_executions: readonly BotActorCodeExecutionRecord[];
   /** BotActor（机器人执行代理） 单写 recent_events（最近事件） 执行结果投影。 */
   readonly recent_events: readonly BotActorRecentEventProjection[];
 }
@@ -155,19 +155,11 @@ export interface BotActorSkillExecutionRecord {
   /** 原始消息标识。 */
   readonly message_id: string;
   /** 已执行技能名。 */
-  readonly skill: SkillCallJob["skill"];
-}
-
-/** BotActor（机器人执行代理） 技能执行输出。 */
-export interface BotActorSkillExecutionOutcome<TBotId extends string = string> {
-  /** 技能执行结果。 */
-  readonly result: SkillExecutionResult;
-  /** 执行后的运行时快照。 */
-  readonly snapshot: BotActorRuntimeSnapshot<TBotId>;
+  readonly skill: SkillName;
 }
 
 /** BotActor（机器人执行代理） 沙箱执行记录。 */
-export interface BotActorSandboxExecutionRecord {
+export interface BotActorCodeExecutionRecord {
   /** 原始消息标识。 */
   readonly message_id: string;
   /** 沙箱执行终态。 */
@@ -183,7 +175,7 @@ interface BotActorCurrentExecutionState {
 }
 
 /** BotActor（机器人执行代理） 沙箱执行输出。 */
-export interface BotActorSandboxExecutionOutcome<TBotId extends string = string> {
+export interface BotActorCodeExecutionOutcome<TBotId extends string = string> {
   /** 沙箱执行结果。 */
   readonly result: RuntimeSandboxExecutionResult;
   /** 执行后的运行时快照。 */
@@ -198,10 +190,8 @@ export interface BotActorRuntime<TBotId extends string = string> {
   start(): Promise<BotActorRuntimeSnapshot<TBotId>>;
   /** 通过 BotActor（机器人执行代理） 单写者入口向游戏聊天广播回复。 */
   broadcastReply(input: BotActorBroadcastReplyInput): Promise<BotActorRuntimeSnapshot<TBotId>>;
-  /** 通过 BotActor（机器人执行代理） 单写者入口执行技能调用任务。 */
-  executeSkill(job: SkillCallJob): Promise<BotActorSkillExecutionOutcome<TBotId>>;
-  /** 通过 BotActor（机器人执行代理） 单写者入口执行沙箱代码任务。 */
-  executeSandboxCode(job: SandboxCodeJob): Promise<BotActorSandboxExecutionOutcome<TBotId>>;
+  /** 通过 BotActor（机器人执行代理） 单写者入口执行代码任务。 */
+  executeCode(job: CodeJob): Promise<BotActorCodeExecutionOutcome<TBotId>>;
   /** 向 BotActor（机器人执行代理） 投递运行时中断信号。 */
   interrupt(signal: InterruptSignal): Promise<BotActorRuntimeSnapshot<TBotId>>;
   /** 将 BotActor（机器人执行代理） 切换到 SHUTDOWN（关闭） 状态。 */
@@ -242,7 +232,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   const emittedEvents: RuntimeEventType[] = [];
   const chatWrites: BotActorChatWriteRecord[] = [];
   const skillExecutions: BotActorSkillExecutionRecord[] = [];
-  const sandboxExecutions: BotActorSandboxExecutionRecord[] = [];
+  const codeExecutions: BotActorCodeExecutionRecord[] = [];
   const recentEvents: BotActorRecentEventProjection[] = [];
   const skillExecution = input.skillExecution ?? {
     goToMovement: input.transport,
@@ -275,11 +265,11 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       emitted_events: Object.freeze([...emittedEvents]),
       chat_writes: Object.freeze([...chatWrites]),
       skill_executions: Object.freeze([...skillExecutions]),
-      sandbox_executions: Object.freeze([...sandboxExecutions]),
+      code_executions: Object.freeze([...codeExecutions]),
       recent_events: Object.freeze([...recentEvents]),
     });
 
-  const createActorSandboxFacade = (job: SandboxCodeJob): SandboxFacadeExecutionAdapter =>
+  const createActorSandboxFacade = (job: CodeJob): SandboxFacadeExecutionAdapter =>
     Object.freeze({
       async executeBotSkill<TName extends SkillName>(
         skill: TName,
@@ -481,7 +471,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
 
       return createSnapshot();
     },
-    async executeSkill(job: SkillCallJob): Promise<BotActorSkillExecutionOutcome<TBotId>> {
+    async executeCode(job: CodeJob): Promise<BotActorCodeExecutionOutcome<TBotId>> {
       const transportSnapshot = input.transport.getSnapshot();
       const readyGate = createRuntimeReadyGate({
         status,
@@ -489,15 +479,15 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       });
 
       if (!readyGate.ready) {
-        throw new Error("BotActor is not ready for executeSkill");
+        throw new Error("BotActor is not ready for executeCode");
       }
 
       if (currentExecution !== null) {
-        throw new Error("BotActor is not ready for executeSkill");
+        throw new Error("BotActor is not ready for executeCode");
       }
 
       if (!transportSnapshot.world_ready) {
-        throw new Error("BotActor world interaction is not ready for executeSkill");
+        throw new Error("BotActor world interaction is not ready for executeCode");
       }
 
       const startDecision = resolveTransition(status, {
@@ -507,133 +497,11 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       });
 
       if (!startDecision.accepted) {
-        throw new Error(`BotActor cannot execute skill while ${status}`);
+        throw new Error(`BotActor cannot execute code while ${status}`);
       }
 
       currentTask = Object.freeze({
-        kind: "skill_call" as const,
-        message_id: job.message_id,
-        skill: job.skill,
-      });
-      const execution: BotActorCurrentExecutionState = {
-        message_id: job.message_id,
-        interrupted: false,
-      };
-      currentExecution = execution;
-      status = startDecision.to;
-      emittedEvents.push(...startDecision.emittedEvents);
-
-      try {
-        const result = await executeActorSkillCallJob(job, skillExecution);
-        if (execution.interrupted) {
-          throw createBotActorInterruptedError(
-            "BotActor skill execution was interrupted",
-            execution.interrupt_signal,
-          );
-        }
-
-        const completedDecision = resolveTransition(status, {
-          type: "task_completed",
-        });
-
-        if (completedDecision.accepted) {
-          status = completedDecision.to;
-          emittedEvents.push(...completedDecision.emittedEvents);
-        }
-
-        skillExecutions.push(
-          Object.freeze({
-            message_id: job.message_id,
-            skill: job.skill,
-          }),
-        );
-        appendRecentEvent({
-          message_id: job.message_id,
-          line: recentEventFormatter.formatSkill({
-            skill: job.skill,
-            status: "completed",
-            result,
-          }),
-        });
-        currentTask = null;
-
-        return Object.freeze({
-          result,
-          snapshot: createSnapshot(),
-        });
-      } catch (error) {
-        if (execution.interrupted) {
-          appendRecentEvent({
-            message_id: job.message_id,
-            line: recentEventFormatter.formatSkill({
-              skill: job.skill,
-              status: "interrupted",
-              message: getErrorMessage(error),
-            }),
-          });
-          throw error;
-        }
-
-        const failedDecision = resolveTransition(status, {
-          type: "task_failed",
-        });
-
-        if (failedDecision.accepted) {
-          status = failedDecision.to;
-          emittedEvents.push(...failedDecision.emittedEvents);
-        }
-
-        appendRecentEvent({
-          message_id: job.message_id,
-          line: recentEventFormatter.formatSkill({
-            skill: job.skill,
-            status: "failed",
-            message: getErrorMessage(error),
-          }),
-        });
-        throw error;
-      } finally {
-        if (currentExecution === execution) {
-          currentExecution = null;
-        }
-        if (!execution.interrupted) {
-          currentTask = null;
-        }
-      }
-    },
-    async executeSandboxCode(
-      job: SandboxCodeJob,
-    ): Promise<BotActorSandboxExecutionOutcome<TBotId>> {
-      const transportSnapshot = input.transport.getSnapshot();
-      const readyGate = createRuntimeReadyGate({
-        status,
-        externalAuth,
-      });
-
-      if (!readyGate.ready) {
-        throw new Error("BotActor is not ready for executeSandboxCode");
-      }
-
-      if (currentExecution !== null) {
-        throw new Error("BotActor is not ready for executeSandboxCode");
-      }
-
-      if (!transportSnapshot.world_ready) {
-        throw new Error("BotActor world interaction is not ready for executeSandboxCode");
-      }
-
-      const startDecision = resolveTransition(status, {
-        type: "exec_job_pulled",
-        epoch_fresh: true,
-        snapshot_fresh: true,
-      });
-
-      if (!startDecision.accepted) {
-        throw new Error(`BotActor cannot execute sandbox code while ${status}`);
-      }
-
-      currentTask = Object.freeze({
-        kind: "sandbox_code" as const,
+        kind: "code" as const,
         message_id: job.message_id,
       });
       const execution: BotActorCurrentExecutionState = {
@@ -646,7 +514,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
 
       try {
         if (input.sandboxExecution === undefined) {
-          throw new Error("BotActor sandbox execution dependency is not configured");
+          throw new Error("BotActor code execution dependency is not configured");
         }
 
         const request = input.sandboxExecution.createRequest({
@@ -661,24 +529,24 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           }),
         });
 
-        const sandboxResult = await input.sandboxExecution.executeRequest({
+        const codeResult = await input.sandboxExecution.executeRequest({
           request,
           task: {
             id: job.message_id,
             userMessage: job.code,
-            intent: "sandbox_code",
+            intent: "code",
           },
           facade: createActorSandboxFacade(job),
         });
         if (execution.interrupted) {
           throw createBotActorInterruptedError(
-            "BotActor sandbox execution was interrupted",
+            "BotActor code execution was interrupted",
             execution.interrupt_signal,
           );
         }
 
         const completedDecision = resolveTransition(status, {
-          type: sandboxResult.status === "completed" ? "task_completed" : "task_failed",
+          type: codeResult.status === "completed" ? "task_completed" : "task_failed",
         });
 
         if (completedDecision.accepted) {
@@ -686,24 +554,24 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           emittedEvents.push(...completedDecision.emittedEvents);
         }
 
-        sandboxExecutions.push(
+        codeExecutions.push(
           Object.freeze({
             message_id: job.message_id,
-            status: sandboxResult.status,
-            total_steps: sandboxResult.summary.total_steps,
+            status: codeResult.status,
+            total_steps: codeResult.summary.total_steps,
           }),
         );
         appendRecentEvent({
           message_id: job.message_id,
           line: recentEventFormatter.formatSandbox({
-            status: sandboxResult.status,
-            result: sandboxResult,
+            status: codeResult.status,
+            result: codeResult,
           }),
         });
         currentTask = null;
 
         return Object.freeze({
-          result: sandboxResult,
+          result: codeResult,
           snapshot: createSnapshot(),
         });
       } catch (error) {
@@ -1001,7 +869,7 @@ async function runReflexActionWithTimeout(
  * 创建聊天广播专用准入结果。
  *
  * 聊天回复允许在任务执行中穿过 BotActor（机器人执行代理） 单写者入口写回游戏，
- * 但不能复用 executeSkill（执行技能） 的忙碌门控，否则“执行中问状态”的回复无法送达。
+ * 但不能复用代码执行的忙碌门控，否则“执行中问状态”的回复无法送达。
  */
 function createBroadcastReplyGate(input: {
   readonly status: BotStatus;
@@ -1345,27 +1213,4 @@ function normalizeRecentEventMessage(message: string | undefined): string {
 
 function formatNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
-}
-
-/** 通过注入的技能执行依赖分发 skill_call（技能调用），避免 runtime（运行时） 依赖 skills（技能） 实现模块。 */
-async function executeActorSkillCallJob(
-  job: SkillCallJob,
-  dependencies: SkillExecutionDependencies,
-): Promise<SkillExecutionResult> {
-  switch (job.skill) {
-    case SKILL_DIRECTORY.goTo:
-      return dependencies.goToMovement.goTo(job.params);
-    case SKILL_DIRECTORY.collect:
-      return dependencies.collect(job.params);
-    case SKILL_DIRECTORY.cutTree:
-      if (dependencies.cutTree === undefined) {
-        throw new Error("Skill cutTree execution dependency is not configured");
-      }
-
-      return dependencies.cutTree(job.params);
-    case SKILL_DIRECTORY.mine:
-      return dependencies.mine(job.params);
-    case SKILL_DIRECTORY.equip:
-      return dependencies.equip(job.params);
-  }
 }

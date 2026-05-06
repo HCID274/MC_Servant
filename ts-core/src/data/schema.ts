@@ -27,7 +27,6 @@ import {
 
 import type { TaskFailedErrorSnapshot, TaskStatusEventPayload } from "../core-ports/events.js";
 import type { MessageTriage } from "../core-ports/foundation.js";
-import type { SkillCallJob } from "../core-ports/tasking.js";
 import {
   BOT_MEMORY_KIND_VALUES,
   type BotConfigOverlay,
@@ -307,7 +306,7 @@ export const eventLogTable = mcServantSchema.table(
 /**
  * 任务历史表。
  *
- * 记录每一个任务（技能调用或沙箱代码）的详细生命周期，包括状态切换、日志引用（logRef）和耗时统计。
+ * 记录每一个代码任务的详细生命周期，包括状态切换、日志引用（logRef）和耗时统计。
  */
 export const taskHistoryTable = mcServantSchema.table(
   "task_history",
@@ -320,7 +319,7 @@ export const taskHistoryTable = mcServantSchema.table(
     intentEpoch: integer("intent_epoch").notNull(),
     status: text("status").$type<(typeof TASK_HISTORY_STATUS_VALUES)[number]>().notNull(),
     skill: text("skill"),
-    params: jsonb("params").$type<SkillCallJob["params"]>(),
+    params: jsonb("params").$type<Readonly<Record<string, unknown>>>(),
     codeRef: text("code_ref"),
     logRef: text("log_ref"),
     snapshotTs: bigint("snapshot_ts", { mode: "number" }).notNull(),

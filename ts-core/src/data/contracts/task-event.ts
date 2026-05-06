@@ -12,16 +12,10 @@ export type TaskEventStatus =
   | TaskHistoryStatus.Interrupted;
 
 /** task_card（任务卡） 中的执行任务摘要。 */
-export type BrainTaskCardExecution =
-  | Readonly<{
-      readonly type: ExecutionTaskKind.SkillCall;
-      readonly skill: string;
-      readonly params: Readonly<Record<string, unknown>>;
-    }>
-  | Readonly<{
-      readonly type: ExecutionTaskKind.SandboxCode;
-      readonly code_ref?: string;
-    }>;
+export type BrainTaskCardExecution = Readonly<{
+  readonly type: ExecutionTaskKind.Code;
+  readonly code_ref?: string;
+}>;
 
 /** task_card（任务卡） 中的终态结果摘要。 */
 export type BrainTaskCardResult =

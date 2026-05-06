@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createCodeJobForSkill } from "./test-code-job.js";
 
 import { EventEmitter } from "node:events";
 import Fastify from "fastify";
@@ -25,7 +26,6 @@ import type { AppRuntimeCoreResources } from "../app/index.js";
 import {
   ConversationLlmPlanError,
   createConversationCompositeTriage,
-  createSkillCallPlanDraft,
 } from "../conversation/index.js";
 import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import {
@@ -35,12 +35,7 @@ import {
   createGoToSkillExecutionResult,
   createMineSkillExecutionResult,
 } from "../core-ports/skills.js";
-import {
-  ExecPriority,
-  TaskHistoryStatus,
-  createSandboxCodeJob,
-  createSkillCallJob,
-} from "../core-ports/tasking.js";
+import { ExecPriority, TaskHistoryStatus, createCodeJob } from "../core-ports/tasking.js";
 import { createBrainTaskCard } from "../data/index.js";
 import { ConversationPriority } from "../domain/contracts.js";
 import { SERVER_BRIDGE_PROTOCOL_VERSION } from "../interfaces/index.js";
@@ -229,7 +224,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
   it("应把 worker（工作线程） 输出动作转换为只读 replay（补拉）事件", () => {
     const task = createBotWorkerTask({
       bot_id: "bot-realtime-action",
-      exec_job: createSandboxCodeJob({
+      exec_job: createCodeJob({
         message_id: "msg-realtime-action",
         intent_epoch: 1,
         snapshot_ts: 100,
@@ -333,12 +328,12 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       task: createBotWorkerTask({
         bot_id: "bot-realtime-action",
         exec_job: {
-          type: ExecutionTaskKind.SkillCall,
+          type: ExecutionTaskKind.Code,
           message_id: "msg-mine-failed-reply",
           intent_epoch: 3,
           snapshot_ts: 1777906762364,
           priority: ExecPriority.Normal,
-          skillCall: {
+          codeInvocation: {
             skill: "mine",
             params: { blockName: "stone", count: 5 },
           },
@@ -355,18 +350,18 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         name: "Error",
         message: "not_equipped:stone:requires_wooden_or_stone_pickaxe",
       },
-      last_step: "executeSkill",
+      last_step: "executeCode",
     });
     const completedAction = createBotWorkerActions({
       task: createBotWorkerTask({
         bot_id: "bot-realtime-action",
         exec_job: {
-          type: ExecutionTaskKind.SkillCall,
+          type: ExecutionTaskKind.Code,
           message_id: "msg-cut-tree-completed-reply",
           intent_epoch: 4,
           snapshot_ts: 1777906762364,
           priority: ExecPriority.Normal,
-          skillCall: {
+          codeInvocation: {
             skill: "cutTree",
             params: { count: 12 },
           },
@@ -380,7 +375,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       total_steps: 2,
       duration_ms: 3100,
       result_summary: {
-        task_type: ExecutionTaskKind.SkillCall,
+        task_type: ExecutionTaskKind.Code,
         operation: "cutTree",
         target: "oak_log",
         requested_count: 12,
@@ -397,8 +392,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(failureReply).toMatchObject({
       message_id: "msg-mine-failed-reply:task_result",
     });
-    expect(failureReply?.content).toContain("任务失败：mine 失败码 not_equipped");
-    expect(failureReply?.content).toContain("阶段 executeSkill");
+    expect(failureReply?.content).toContain("任务失败：code 失败码 not_equipped");
+    expect(failureReply?.content).toContain("阶段 executeCode");
     expect(failureReply?.content).toContain("可恢复");
     expect(completedReply?.content).toContain("任务完成：砍到 oak_log x12");
     expect(completedReply?.content).toContain("已捡拾掉落物");
@@ -408,7 +403,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
   it("应汇报 sandbox TS（沙箱 TypeScript） 报错与中断终态", () => {
     const task = createBotWorkerTask({
       bot_id: "bot-realtime-action",
-      exec_job: createSandboxCodeJob({
+      exec_job: createCodeJob({
         message_id: "msg-sandbox-result",
         intent_epoch: 5,
         snapshot_ts: 1777906762364,
@@ -435,7 +430,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       },
       last_step: "mine",
       result_summary: {
-        task_type: ExecutionTaskKind.SandboxCode,
+        task_type: ExecutionTaskKind.Code,
         operation: "mine",
         target: "iron_ore",
         requested_count: 1,
@@ -455,7 +450,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       },
       reason: "owner requested cancel",
       result_summary: {
-        task_type: ExecutionTaskKind.SandboxCode,
+        task_type: ExecutionTaskKind.Code,
         operation: "mine",
         target: "iron_ore",
         requested_count: 1,
@@ -477,7 +472,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
   });
 
   it("应在 sandbox TS（沙箱 TypeScript） 前置成功后准确汇报后续失败操作", () => {
-    const sandboxJob = createSandboxCodeJob({
+    const sandboxJob = createCodeJob({
       message_id: "msg-sandbox-step-failure",
       intent_epoch: 6,
       snapshot_ts: 1777906762364,
@@ -571,7 +566,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
   it("应为 Phase 1（第一阶段） 技能生成统一 SkillResultSummary（技能结果摘要）", () => {
     const summaries = [
       createTaskResultSummaryFromSkillResult(
-        createSkillCallJob({
+        createCodeJobForSkill({
           message_id: "msg-summary-go",
           intent_epoch: 1,
           snapshot_ts: 1777906762364,
@@ -583,7 +578,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         { durationMs: 10 },
       ),
       createTaskResultSummaryFromSkillResult(
-        createSkillCallJob({
+        createCodeJobForSkill({
           message_id: "msg-summary-mine",
           intent_epoch: 1,
           snapshot_ts: 1777906762364,
@@ -604,7 +599,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         { durationMs: 20 },
       ),
       createTaskResultSummaryFromSkillResult(
-        createSkillCallJob({
+        createCodeJobForSkill({
           message_id: "msg-summary-collect",
           intent_epoch: 1,
           snapshot_ts: 1777906762364,
@@ -622,7 +617,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         { durationMs: 30 },
       ),
       createTaskResultSummaryFromSkillResult(
-        createSkillCallJob({
+        createCodeJobForSkill({
           message_id: "msg-summary-cut-tree",
           intent_epoch: 1,
           snapshot_ts: 1777906762364,
@@ -649,7 +644,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         { durationMs: 40 },
       ),
       createTaskResultSummaryFromSkillResult(
-        createSkillCallJob({
+        createCodeJobForSkill({
           message_id: "msg-summary-equip",
           intent_epoch: 1,
           snapshot_ts: 1777906762364,
@@ -696,7 +691,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
   it("goTo（移动）成功汇报应使用摘要中的真实世界键", () => {
     const task = createBotWorkerTask({
       bot_id: "bot-realtime-action",
-      exec_job: createSkillCallJob({
+      exec_job: createCodeJobForSkill({
         message_id: "msg-goto-world-report",
         intent_epoch: 1,
         snapshot_ts: 1777906762364,
@@ -730,7 +725,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
   });
 
   it("sandbox TS（沙箱 TypeScript） 成功摘要应保留 goTo / collect / equip 的世界键", () => {
-    const sandboxJob = createSandboxCodeJob({
+    const sandboxJob = createCodeJob({
       message_id: "msg-sandbox-skill-world",
       intent_epoch: 1,
       snapshot_ts: 1777906762364,
@@ -783,7 +778,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
   });
 
   it("应为 sandbox TS（沙箱 TypeScript） 工具链能力生成统一成功与失败摘要", () => {
-    const sandboxJob = createSandboxCodeJob({
+    const sandboxJob = createCodeJob({
       message_id: "msg-toolchain-summary",
       intent_epoch: 1,
       snapshot_ts: 1777906762364,
@@ -837,7 +832,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       ],
     } as unknown as Parameters<typeof createTaskResultSummaryFromSandboxResult>[1];
     const failureSummary = createTaskFailureResultSummary(
-      createSkillCallJob({
+      createCodeJobForSkill({
         message_id: "msg-failure-summary",
         intent_epoch: 1,
         snapshot_ts: 1777906762364,
@@ -895,8 +890,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
   });
 
-  it("应补全直接 skill_call（技能调用） 失败的 SkillResultSummary（技能结果摘要）", () => {
-    const mineJob = createSkillCallJob({
+  it("应补全直接 code（技能调用） 失败的 SkillResultSummary（技能结果摘要）", () => {
+    const mineJob = createCodeJobForSkill({
       message_id: "msg-direct-skill-failure-summary",
       intent_epoch: 1,
       snapshot_ts: 1777906762364,
@@ -915,36 +910,28 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     );
 
     expect(summary).toMatchObject({
-      skill_name: "mine",
-      operation: "mine",
+      skill_name: "code",
+      operation: "code",
       status: "failed",
-      target: "stone",
-      requested_count: 5,
       completed_count: 0,
       duration_ms: 33,
     });
     expect(summary.failure).toEqual({
       failure_code: "not_equipped",
-      failure_stage: "mine",
+      failure_stage: "code",
       message: "not_equipped:stone:main_hand_empty",
       recoverable: true,
       current_position: null,
       inventory_summary: null,
       equipment_summary: null,
-      target_progress: {
-        action: "mine",
-        target: "stone",
-        requested_count: 5,
-        completed_count: 0,
-        target_count: 5,
-      },
+      target_progress: null,
     });
     expect(summary.failure_capsule).toEqual({
-      goal: "mine stone x5",
-      failed_action: "mine",
+      goal: "code 目标 x1",
+      failed_action: "code",
       failure_code: "not_equipped",
-      progress: "stone 0/5",
-      retry_guard: '不要原样重复 mine("stone", 5)',
+      progress: "目标 0/1",
+      retry_guard: '不要原样重复 code("目标", 1)',
       hint: "先调用 equip 或 ensure 工具链准备所需工具",
     });
   });
@@ -1303,7 +1290,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           priority: ExecPriority.Normal,
           owner_text: "把这个东西捡起来",
           execution: {
-            type: ExecutionTaskKind.SkillCall,
+            type: ExecutionTaskKind.Code,
             skill: "collect",
             params: {},
           },
@@ -1723,7 +1710,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     await botProcessor?.({
       data: createBotWorkerTask({
         bot_id: "bot-worker-replay-online",
-        exec_job: createSandboxCodeJob({
+        exec_job: createCodeJob({
           message_id: "msg-stale-task",
           intent_epoch: 1,
           snapshot_ts: 100,
@@ -2589,7 +2576,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     await runtime.close();
   });
 
-  it("应在真实在线状态投影中保留 sandbox_code（沙箱代码） interrupted（已中断） 终态", () => {
+  it("应在真实在线状态投影中保留 code（沙箱代码） interrupted（已中断） 终态", () => {
     const externalAuth = createExternalAuthState({ status: "not_required" });
     const descriptor = createMineflayerTransportDescriptor({
       botId: "bot-sandbox-interrupted",
@@ -3137,7 +3124,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
                   });
             const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
             const assistantContent = userMessage.includes("主人的指令：")
-              ? '{"type":"skill_call","reply":"收到，我这就过去","skill":"goTo","params":{"x":10,"y":64,"z":-5}}'
+              ? '{"code":"await api.chat.say(\\"收到，我这就过去喵~\\"); await api.bot.goTo(10,64,-5); await api.chat.report(\\"已到达目标位置喵~\\");"}'
               : '{"action":{"intent":"task","priority":"urgent","reason":"主人给了明确坐标移动指令"}}';
 
             return new Response(
@@ -3284,8 +3271,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           exec_job: expect.objectContaining({
             message_id: "msg-online-plan",
             priority: "urgent",
-            skill: "goTo",
-            params: { x: 10, y: 64, z: -5 },
+            type: "code",
+            code: expect.stringContaining("api.bot.goTo(10,64,-5)"),
           }),
         }),
         options: {
@@ -3312,16 +3299,10 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       },
     ]);
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
-      type: "chat.reply",
-      bot_id: "bot-plan-online",
-      message_id: "msg-online-plan",
-      content: "收到，我这就过去喵~",
-    });
-    expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "task.accepted",
       bot_id: "bot-plan-online",
       message_id: "msg-online-plan",
-      skill: "goTo",
+      exec_type: "code",
       priority: "urgent",
     });
     expect(taskHistoryInserts).toEqual([
@@ -3329,9 +3310,9 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         id: "msg-online-plan",
         botId: "bot-plan-online",
         status: TaskHistoryStatus.Accepted,
-        skill: "goTo",
-        params: { x: 10, y: 64, z: -5 },
-        logRef: expect.stringMatching(/^tasks\/\d{4}-\d{2}-\d{2}\/msg-online-plan\.jsonl$/u),
+        type: "code",
+        codeRef: expect.stringMatching(/^sandbox\/\d{4}-\d{2}-\d{2}\/msg-online-plan\.code\.ts$/u),
+        logRef: expect.stringMatching(/^sandbox\/\d{4}-\d{2}-\d{2}\/msg-online-plan\.jsonl$/u),
       }),
     ]);
     const statusResponse = await runtime.services.http.server.inject({
@@ -3354,7 +3335,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     await runtime.close();
   });
 
-  it("应在真实在线入口允许 mine（挖掘）/collect（捡拾）/cutTree（砍树）/equip（装备） 技能", async () => {
+  it("应在真实在线入口把 mine（挖掘）/collect（捡拾）/cutTree（砍树）/equip（装备） 规划成代码任务", async () => {
     const llmRequests: Array<{ url: string; body: unknown }> = [];
     const queueAdds: Array<{ name: string; jobName: string; data: unknown; options: unknown }> = [];
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
@@ -3393,19 +3374,19 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             if (userMessage.includes("主人的指令：")) {
               if (currentInstruction.includes("挖两块石头")) {
                 assistantContent =
-                  '{"type":"skill_call","reply":"收到，我去挖石头","skill":"mine","params":{"blockName":"stone","count":2}}';
+                  '{"code":"await api.chat.say(\\"收到，我去挖石头喵~\\"); const result = await api.bot.mine(\\"stone\\", 2); if (!result.ok) { await api.chat.report(`挖石头失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"挖石头完成喵~\\");"}';
               } else if (currentInstruction.includes("把地上的圆石捡起来")) {
                 assistantContent =
-                  '{"type":"skill_call","reply":"收到，我去捡圆石","skill":"collect","params":{"itemName":"cobblestone","radius":32}}';
+                  '{"code":"await api.chat.say(\\"收到，我去捡圆石喵~\\"); const result = await api.bot.collect(\\"cobblestone\\", 32); if (!result.ok) { await api.chat.report(`捡拾失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"捡拾完成喵~\\");"}';
               } else if (currentInstruction.includes("把石镐拿在手上")) {
                 assistantContent =
-                  '{"type":"skill_call","reply":"收到，我先把石镐拿在手上","skill":"equip","params":{"itemName":"stone_pickaxe","destination":"hand"}}';
+                  '{"code":"await api.chat.say(\\"收到，我先把石镐拿在手上喵~\\"); const result = await api.bot.equip(\\"stone_pickaxe\\", \\"hand\\"); if (!result.ok) { await api.chat.report(`装备失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"装备完成喵~\\");"}';
               } else if (currentInstruction.includes("砍 12 块木头")) {
                 assistantContent =
-                  '{"type":"skill_call","reply":"收到，我去砍 12 块木头","skill":"cutTree","params":{"count":12}}';
+                  '{"code":"await api.chat.say(\\"收到，我去砍 12 块木头喵~\\"); const result = await api.bot.cutTree(12); if (!result.ok) { await api.chat.report(`砍树失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"砍树完成喵~\\");"}';
               } else {
                 assistantContent =
-                  '{"type":"cannot_plan","reason":"skill_not_enabled","code":"skill_not_enabled"}';
+                  '{"code":"await api.chat.say(\\"暂时无法规划喵~\\"); await api.chat.report(\\"暂时无法规划这个任务喵~\\");"}';
               }
             }
 
@@ -3555,8 +3536,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           exec_job: expect.objectContaining({
             message_id: "msg-online-mine",
             priority: "normal",
-            skill: "mine",
-            params: { blockName: "stone", count: 2 },
+            type: "code",
+            code: expect.stringContaining('api.bot.mine("stone", 2)'),
           }),
         }),
         options: {
@@ -3590,8 +3571,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           exec_job: expect.objectContaining({
             message_id: "msg-online-collect",
             priority: "normal",
-            skill: "collect",
-            params: { itemName: "cobblestone", radius: 32 },
+            type: "code",
+            code: expect.stringContaining('api.bot.collect("cobblestone", 32)'),
           }),
         }),
         options: {
@@ -3625,8 +3606,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           exec_job: expect.objectContaining({
             message_id: "msg-online-equip",
             priority: "normal",
-            skill: "equip",
-            params: { itemName: "stone_pickaxe", destination: "hand" },
+            type: "code",
+            code: expect.stringContaining('api.bot.equip("stone_pickaxe", "hand")'),
           }),
         }),
         options: {
@@ -3660,8 +3641,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           exec_job: expect.objectContaining({
             message_id: "msg-online-cut-tree",
             priority: "normal",
-            skill: "cutTree",
-            params: { count: 12 },
+            type: "code",
+            code: expect.stringContaining("api.bot.cutTree(12)"),
           }),
         }),
         options: {
@@ -3691,28 +3672,28 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       type: "task.accepted",
       bot_id: "bot-skill-online",
       message_id: "msg-online-mine",
-      skill: "mine",
+      exec_type: "code",
       priority: "normal",
     });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "task.accepted",
       bot_id: "bot-skill-online",
       message_id: "msg-online-collect",
-      skill: "collect",
+      exec_type: "code",
       priority: "normal",
     });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "task.accepted",
       bot_id: "bot-skill-online",
       message_id: "msg-online-equip",
-      skill: "equip",
+      exec_type: "code",
       priority: "normal",
     });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({
       type: "task.accepted",
       bot_id: "bot-skill-online",
       message_id: "msg-online-cut-tree",
-      skill: "cutTree",
+      exec_type: "code",
       priority: "normal",
     });
 
@@ -3748,7 +3729,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             const assistantContent =
               llmRequests.length === 1
                 ? '{"cancel":{"reason":"主人要求替换当前移动目标","priority":"interrupt"},"action":{"intent":"task","priority":"urgent","reason":"主人要求去新坐标"}}'
-                : '{"type":"skill_call","reply":"收到，我改去新的目标坐标","skill":"goTo","params":{"x":10,"y":64,"z":-5}}';
+                : '{"code":"await api.chat.say(\\"收到，我改去新的目标坐标喵~\\"); await api.bot.goTo(10,64,-5); await api.chat.report(\\"已到达新的目标坐标喵~\\");"}';
 
             return new Response(
               JSON.stringify({
@@ -3858,8 +3839,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         bot_id: "bot-replace-online",
         exec_job: {
           message_id: "msg-online-replace",
-          skill: "goTo",
-          params: { x: 10, y: 64, z: -5 },
+          type: "code",
+          code: expect.stringContaining("api.bot.goTo(10,64,-5)"),
           priority: "urgent",
         },
       },
@@ -3895,7 +3876,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       type: "task.accepted",
       bot_id: "bot-replace-online",
       message_id: "msg-online-replace",
-      skill: "goTo",
+      exec_type: "code",
       priority: "urgent",
     });
     expect(runtime.conversation_worker.getEvents()).toContainEqual({

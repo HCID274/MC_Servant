@@ -589,7 +589,7 @@ export function createBotWorkerActions(
         total_steps: number;
         duration_ms: number;
         result_summary?: TaskResultSummary;
-        sandbox_result?: {
+        code_result?: {
           readonly log_ref?: string;
           readonly code_ref?: string;
         };
@@ -603,7 +603,7 @@ export function createBotWorkerActions(
         error: TaskFailedErrorSnapshot;
         last_step?: string;
         result_summary?: TaskResultSummary;
-        sandbox_result?: {
+        code_result?: {
           readonly log_ref?: string;
           readonly code_ref?: string;
           readonly error?: {
@@ -623,7 +623,7 @@ export function createBotWorkerActions(
         interrupt_source: InterruptSignal["source"];
         reason: string;
         result_summary?: TaskResultSummary;
-        sandbox_result?: {
+        code_result?: {
           readonly log_ref?: string;
           readonly code_ref?: string;
           readonly error?: {
@@ -717,19 +717,12 @@ export function createBotWorkerActions(
           : { owner_position_at_message: input.task.owner_position_at_message }),
         priority: input.task.exec_job.priority,
         owner_text: input.task.owner_text,
-        execution:
-          input.task.exec_job.type === ExecutionTaskKind.SkillCall
-            ? {
-                type: ExecutionTaskKind.SkillCall,
-                skill: input.task.exec_job.skill,
-                params: input.task.exec_job.params as Readonly<Record<string, unknown>>,
-              }
-            : {
-                type: ExecutionTaskKind.SandboxCode,
-                ...(input.sandbox_result?.code_ref === undefined
-                  ? {}
-                  : { code_ref: input.sandbox_result.code_ref }),
-              },
+        execution: {
+          type: ExecutionTaskKind.Code,
+          ...(input.code_result?.code_ref === undefined
+            ? {}
+            : { code_ref: input.code_result.code_ref }),
+        },
         result: createBrainTaskCardResult(input),
       });
       const actions: BotWorkerAction[] = [
@@ -747,46 +740,44 @@ export function createBotWorkerActions(
             status: input.status,
             owner_text: input.task.owner_text,
             task_card: taskCard,
-            ...(input.sandbox_result?.log_ref === undefined
+            ...(input.code_result?.log_ref === undefined
               ? {}
-              : { log_ref: input.sandbox_result.log_ref }),
+              : { log_ref: input.code_result.log_ref }),
           }),
         }),
       ];
 
-      if (input.task.exec_job.type === "sandbox_code") {
-        actions.push(
-          Object.freeze({
-            type: "persist_sandbox_experience",
-            experience: createSandboxExperienceDraft({
-              bot_id: input.task.bot_id,
-              message_id: input.task.exec_job.message_id,
-              intent_epoch: input.task.exec_job.intent_epoch,
-              status: input.status,
-              total_steps: input.total_steps,
-              duration_ms: input.duration_ms,
-              ...(input.sandbox_result?.log_ref === undefined
-                ? {}
-                : { log_ref: input.sandbox_result.log_ref }),
-              ...(input.sandbox_result?.code_ref === undefined
-                ? {}
-                : { code_ref: input.sandbox_result.code_ref }),
-              code: input.task.exec_job.code,
-              ...("error" in input
-                ? { error: input.sandbox_result?.error ?? input.error }
-                : input.status === TaskHistoryStatus.Interrupted
-                  ? {
-                      error: input.sandbox_result?.error ?? {
-                        name: "AbortError",
-                        message: input.reason,
-                        recoverable: false,
-                      },
-                    }
-                  : {}),
-            }),
+      actions.push(
+        Object.freeze({
+          type: "persist_sandbox_experience",
+          experience: createSandboxExperienceDraft({
+            bot_id: input.task.bot_id,
+            message_id: input.task.exec_job.message_id,
+            intent_epoch: input.task.exec_job.intent_epoch,
+            status: input.status,
+            total_steps: input.total_steps,
+            duration_ms: input.duration_ms,
+            ...(input.code_result?.log_ref === undefined
+              ? {}
+              : { log_ref: input.code_result.log_ref }),
+            ...(input.code_result?.code_ref === undefined
+              ? {}
+              : { code_ref: input.code_result.code_ref }),
+            code: input.task.exec_job.code,
+            ...("error" in input
+              ? { error: input.code_result?.error ?? input.error }
+              : input.status === TaskHistoryStatus.Interrupted
+                ? {
+                    error: input.code_result?.error ?? {
+                      name: "AbortError",
+                      message: input.reason,
+                      recoverable: false,
+                    },
+                  }
+                : {}),
           }),
-        );
-      }
+        }),
+      );
 
       return Object.freeze(actions);
     }
@@ -815,9 +806,7 @@ function createBrainTaskCardResult(
         total_steps: input.total_steps,
         duration_ms: input.duration_ms,
         ...(input.result_summary === undefined ? {} : { result_summary: input.result_summary }),
-        ...(input.sandbox_result?.log_ref === undefined
-          ? {}
-          : { log_ref: input.sandbox_result.log_ref }),
+        ...(input.code_result?.log_ref === undefined ? {} : { log_ref: input.code_result.log_ref }),
       });
     case TaskHistoryStatus.Failed:
       return Object.freeze({
@@ -827,9 +816,7 @@ function createBrainTaskCardResult(
         error: input.error,
         ...(input.last_step === undefined ? {} : { last_step: input.last_step }),
         ...(input.result_summary === undefined ? {} : { result_summary: input.result_summary }),
-        ...(input.sandbox_result?.log_ref === undefined
-          ? {}
-          : { log_ref: input.sandbox_result.log_ref }),
+        ...(input.code_result?.log_ref === undefined ? {} : { log_ref: input.code_result.log_ref }),
       });
     case TaskHistoryStatus.Interrupted:
       return Object.freeze({
@@ -839,9 +826,7 @@ function createBrainTaskCardResult(
         reason: input.reason,
         interrupt_source: input.interrupt_source as Readonly<Record<string, unknown>>,
         ...(input.result_summary === undefined ? {} : { result_summary: input.result_summary }),
-        ...(input.sandbox_result?.log_ref === undefined
-          ? {}
-          : { log_ref: input.sandbox_result.log_ref }),
+        ...(input.code_result?.log_ref === undefined ? {} : { log_ref: input.code_result.log_ref }),
       });
   }
 }

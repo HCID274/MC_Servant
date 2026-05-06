@@ -222,14 +222,14 @@ Phase 1 不对 type 做 PG enum 约束——用 TEXT，避免加新事件类型�
 CREATE TABLE mc_servant.task_history (
   id              TEXT PRIMARY KEY,              -- 同 BullMQ jobId = message_id
   bot_id          TEXT NOT NULL REFERENCES mc_servant.bots(id),
-  type            TEXT NOT NULL CHECK (type IN ('skill_call', 'sandbox_code')),
+  type            TEXT NOT NULL CHECK (type IN ('code')),
   intent_epoch    INTEGER NOT NULL,
   status          TEXT NOT NULL CHECK (status IN (
                     'accepted', 'started', 'completed', 'failed', 'interrupted', 'discarded'
                   )),
-  skill           TEXT,                          -- skill_call 时有值
-  params          JSONB,                         -- skill_call 时有值
-  code_ref        TEXT,                          -- sandbox_code 时有值，指向 .code.ts 文件
+  skill           TEXT,                          -- legacy read only；新写入为空
+  params          JSONB,                         -- legacy read only；新写入为空
+  code_ref        TEXT,                          -- code 时有值，指向 .code.ts 文件
   log_ref         TEXT,                          -- 指向 JSONL 日志文件
   snapshot_ts     BIGINT NOT NULL,               -- 规划时的快照时间戳
   started_at      TIMESTAMPTZ,
@@ -504,7 +504,7 @@ logs/
 每行一个 JSON 对象，字段尽量精简：
 
 ```jsonl
-{"t":1712930000,"e":"task.started","job":"T-abc123","type":"sandbox_code","epoch":7}
+{"t":1712930000,"e":"task.started","job":"T-abc123","type":"code","epoch":7}
 {"t":1712930001,"e":"step","i":0,"act":"goTo","p":{"x":100,"y":64,"z":200},"s":"ok","ms":5200}
 {"t":1712930006,"e":"step","i":1,"act":"mine","p":{"target":"oak_log","count":5},"s":"ok","r":{"collected":5},"ms":16000}
 {"t":1712930022,"e":"step","i":2,"act":"say","p":{"msg":"木头砍好了喵~"},"s":"ok","ms":50}

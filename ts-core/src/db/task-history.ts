@@ -55,14 +55,7 @@ export function createPostgresTaskHistoryStore(input: {
           type: record.type,
           intentEpoch: record.intent_epoch,
           status: record.status,
-          ...(record.type === "skill_call"
-            ? {
-                skill: record.skill,
-                params: record.params,
-              }
-            : {
-                codeRef: record.code_ref,
-              }),
+          codeRef: record.code_ref,
           logRef: record.log_ref,
           snapshotTs: record.snapshot_ts,
           messageId: record.message_id,

@@ -58,10 +58,7 @@ export const PERSISTED_EVENT_TYPES = [...RUNTIME_EVENT_TYPES] as const;
 export type PersistedEventType = RuntimeEventType;
 
 /** task_history 表允许的任务类型清单。 */
-export const TASK_HISTORY_TASK_TYPES = [
-  ExecutionTaskKind.SkillCall,
-  ExecutionTaskKind.SandboxCode,
-] as const;
+export const TASK_HISTORY_TASK_TYPES = [ExecutionTaskKind.Code] as const;
 
 /** task_history 表任务类型联合。 */
 export type PersistedTaskType = ExecJob["type"];

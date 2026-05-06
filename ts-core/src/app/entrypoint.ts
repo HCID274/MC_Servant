@@ -1077,7 +1077,11 @@ export function createOnlineConversationActorStateProjectionProvider<TBotId exte
   return () => {
     const snapshot = actor.getSnapshot();
     const recentSkill = snapshot.skill_executions.at(-1) ?? null;
-    const recentSandbox = snapshot.sandbox_executions.at(-1) ?? null;
+    const legacySnapshot = snapshot as typeof snapshot & {
+      readonly sandbox_executions?: typeof snapshot.code_executions;
+    };
+    const recentSandbox =
+      (snapshot.code_executions ?? legacySnapshot.sandbox_executions ?? []).at(-1) ?? null;
 
     return createBotActorStateProjection({
       status: snapshot.status,
@@ -1151,9 +1155,7 @@ function createOnlineConversationReplyGenerator(
 }
 
 /**
- * 为真实在线入口创建最小单技能 `skill_call`（技能调用） 规划器。
- *
- * 当前阶段只允许规划到 goTo（前往坐标） 或 collect（捡拾） 单个 `skill_call`（技能调用）。
+ * 为真实在线入口创建 TS（TypeScript）代码规划器。
  */
 function createOnlineConversationPlanner(
   llm: ConversationLlmClient | undefined,
@@ -1163,7 +1165,7 @@ function createOnlineConversationPlanner(
   }
 
   return async ({ task, route, memory_context, brain_context, snapshot_context, search_tool }) =>
-    llm.generateSkillPlan({
+    llm.generateCodePlan({
       bot_id: task.bot_id,
       message_id: task.message.message_id,
       message: task.message.content,

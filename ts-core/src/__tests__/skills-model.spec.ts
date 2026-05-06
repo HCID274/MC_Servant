@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createCodeJobForSkill } from "./test-code-job.js";
 
 import {
   CRAFT_SERVICE_ALLOWED_TARGETS,
@@ -9,7 +10,7 @@ import {
   PHASE1_SKILL_NAMES,
   PLACEMENT_SERVICE_ALLOWED_BLOCKS,
   SKILL_DIRECTORY,
-  type SkillCallJobInput,
+  type SkillCallInput,
   type SkillName,
   type SkillParamsByName,
   TOOLCHAIN_CAPABILITY_NAMES,
@@ -21,7 +22,6 @@ import {
   createPhase1SkillRegistry,
   createPlacementService,
   createSkillCall,
-  createSkillCallJob,
   createSkillRegistry,
   createToolchainEnsureExecutor,
   getSkillDefinition,
@@ -55,16 +55,12 @@ void validToolchainCapabilityName;
 const invalidToolchainCapabilityName: ToolchainCapabilityName = "demoMineIron";
 void invalidToolchainCapabilityName;
 
-const invalidSkillCallJob: SkillCallJobInput = {
-  message_id: "type-mismatch",
-  intent_epoch: 1,
-  snapshot_ts: 1,
-  priority: ExecPriority.Normal,
+const invalidSkillCallInput: SkillCallInput = {
   skill: SKILL_DIRECTORY.goTo,
   // @ts-expect-error `goTo`（前往坐标） 与 `count`（数量） 参数形态不对齐。
   params: { count: 2 },
 };
-void invalidSkillCallJob;
+void invalidSkillCallInput;
 
 describe("skills 模块契约", () => {
   it("应暴露五个 Phase 1 技能目录与参数校验器", () => {
@@ -554,15 +550,15 @@ describe("skills 模块契约", () => {
     expect(cutTreeCalls).toBe(0);
   });
 
-  it("应让 skill_call 构造与运行时任务共享同一套强类型目录", () => {
-    const skillCall = createSkillCall({
+  it("应让 code 构造与运行时任务共享同一套强类型目录", () => {
+    const codeInvocation = createSkillCall({
       skill: SKILL_DIRECTORY.collect,
       params: {
         itemName: "oak_log",
         radius: 32,
       },
     });
-    const skillCallJob = createSkillCallJob({
+    const codeJob = createCodeJobForSkill({
       message_id: "msg-skill-call",
       intent_epoch: 3,
       snapshot_ts: 1_712_930_100,
@@ -571,16 +567,13 @@ describe("skills 模块契约", () => {
       params: { count: 2 },
     });
 
-    expect(skillCall.skill).toBe("collect");
-    expect(skillCall.params.radius).toBe(32);
-    expect(Object.isFrozen(skillCall)).toBe(true);
-    expect(Object.isFrozen(skillCall.params)).toBe(true);
-    expect(skillCallJob.type).toBe(ExecutionTaskKind.SkillCall);
-    expect(skillCallJob.skillCall.skill).toBe("cutTree");
-    expect(skillCallJob.skill).toBe(skillCallJob.skillCall.skill);
-    expect(skillCallJob.params).toEqual({ count: 2 });
-    expect(Object.isFrozen(skillCallJob.skillCall)).toBe(true);
-    expect(Object.isFrozen(skillCallJob.skillCall.params)).toBe(true);
+    expect(codeInvocation.skill).toBe("collect");
+    expect(codeInvocation.params.radius).toBe(32);
+    expect(Object.isFrozen(codeInvocation)).toBe(true);
+    expect(Object.isFrozen(codeInvocation.params)).toBe(true);
+    expect(codeJob.type).toBe(ExecutionTaskKind.Code);
+    expect(codeJob.code).toContain("api.bot.cutTree(2)");
+    expect(Object.isFrozen(codeJob)).toBe(true);
   });
 });
 

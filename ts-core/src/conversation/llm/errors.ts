@@ -63,7 +63,7 @@ export class ConversationLlmPlanError extends Error {
 
 /** LLM（大语言模型） 规划命中了尚未启用技能的门禁错误。 */
 export class ConversationLlmSkillNotEnabledError extends ConversationLlmPlanError {
-  /** 被门禁拒绝的技能名；cannot_plan（无法规划） 场景可能没有明确技能名。 */
+  /** 被门禁拒绝的技能名；仅用于兼容外部 planner（规划器） 主动抛错场景。 */
   readonly skill?: string;
 
   /**

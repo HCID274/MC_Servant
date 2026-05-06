@@ -341,8 +341,8 @@ export interface SandboxExecutionResourceLimits {
 
 /** 沙箱执行请求结构。 */
 export interface SandboxExecutionRequest {
-  /** 固定为 `sandbox_code`（沙箱代码）。 */
-  readonly type: ExecutionTaskKind.SandboxCode;
+  /** 固定为 code（代码）。 */
+  readonly type: ExecutionTaskKind.Code;
   /** 任务标识。 */
   readonly job_id: string;
   /** Bot 标识。 */

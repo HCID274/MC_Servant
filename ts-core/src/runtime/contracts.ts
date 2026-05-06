@@ -614,7 +614,7 @@ export function createRuntimeScaffold(
       status: BotStatus.INITIALIZING,
       externalAuth,
     }),
-    supportedTaskKinds: [ExecutionTaskKind.SkillCall, ExecutionTaskKind.SandboxCode],
+    supportedTaskKinds: [ExecutionTaskKind.Code],
     interruptTemplate: {
       source: {
         type: "system",

@@ -49,34 +49,17 @@ export interface PersistedTaskHistoryAcceptedRecordBase {
   readonly created_at: string;
 }
 
-/** `skill_call`（技能调用） 的 task_history accepted（已接受） 记录。 */
-export interface PersistedSkillCallTaskHistoryAcceptedRecord
+/** code（代码） 的 task_history accepted（已接受） 记录。 */
+export interface PersistedCodeTaskHistoryAcceptedRecord
   extends PersistedTaskHistoryAcceptedRecordBase {
-  /** 固定为 `skill_call`。 */
-  readonly type: ExecutionTaskKind.SkillCall;
-  /** 技能名。 */
-  readonly skill: string;
-  /** 技能参数。 */
-  readonly params: ExecJob extends infer TJob
-    ? TJob extends { readonly type: ExecutionTaskKind.SkillCall; readonly params: infer TParams }
-      ? Readonly<TParams>
-      : never
-    : never;
-}
-
-/** `sandbox_code`（沙箱代码） 的 task_history accepted（已接受） 记录。 */
-export interface PersistedSandboxCodeTaskHistoryAcceptedRecord
-  extends PersistedTaskHistoryAcceptedRecordBase {
-  /** 固定为 `sandbox_code`。 */
-  readonly type: ExecutionTaskKind.SandboxCode;
+  /** 固定为 code（代码）。 */
+  readonly type: ExecutionTaskKind.Code;
   /** 原始代码引用。 */
   readonly code_ref: string;
 }
 
 /** task_history（任务历史） accepted（已接受） 快照联合。 */
-export type PersistedTaskHistoryAcceptedRecord =
-  | PersistedSkillCallTaskHistoryAcceptedRecord
-  | PersistedSandboxCodeTaskHistoryAcceptedRecord;
+export type PersistedTaskHistoryAcceptedRecord = PersistedCodeTaskHistoryAcceptedRecord;
 
 /** task_history（任务历史） started（已开始） 更新结构。 */
 export interface PersistedTaskHistoryStartedPatch {
@@ -447,8 +430,8 @@ function compareTaskMemorySearchResults(
  * 创建任务历史已接受（Accepted）记录。
  *
  * 1. 初始快照工厂（Initial Snapshot Factory）：在任务被接受时，创建其初始持久化快照并进行严格的分层校验.
- * 2. 存储隔离：校验 log_ref 的频道一致性，确保 sandbox 与普通任务的日志存储在物理上隔离.
- * 3. 类型分发：针对 SandboxCode 和 SkillCall 强制执行不同的字段约束.
+ * 2. 存储隔离：校验 log_ref 的频道一致性，确保代码任务日志引用可追踪.
+ * 3. 类型收敛：在线任务仅允许 code（代码） 契约.
  *
  * @param input 包含 bot_id, job, log_ref, code_ref 和 created_at 的输入
  * @returns 初始化的任务历史记录
@@ -463,44 +446,22 @@ export function createPersistedTaskHistoryAcceptedRecord(input: {
   assertPersistedIdentifier(input.bot_id, "bot_id");
   assertPersistedTimestamp(input.created_at, "created_at");
 
-  if (input.job.type === ExecutionTaskKind.SandboxCode) {
-    assertTaskHistoryLogRef(input.log_ref, "sandbox");
+  assertTaskHistoryLogRef(input.log_ref, "sandbox");
 
-    if (input.code_ref === undefined) {
-      throw new Error("sandbox_code task history requires code_ref");
-    }
-
-    assertSandboxCodeRef(input.code_ref);
-
-    return Object.freeze({
-      id: input.job.message_id,
-      bot_id: input.bot_id,
-      type: ExecutionTaskKind.SandboxCode,
-      intent_epoch: input.job.intent_epoch,
-      status: TaskHistoryStatus.Accepted,
-      log_ref: input.log_ref,
-      code_ref: input.code_ref,
-      snapshot_ts: input.job.snapshot_ts,
-      message_id: input.job.message_id,
-      created_at: input.created_at,
-    });
+  if (input.code_ref === undefined) {
+    throw new Error("code task history requires code_ref");
   }
 
-  if (input.code_ref !== undefined) {
-    throw new Error("skill_call task history must not include code_ref");
-  }
-
-  assertTaskHistoryLogRef(input.log_ref, "tasks");
+  assertSandboxCodeRef(input.code_ref);
 
   return Object.freeze({
     id: input.job.message_id,
     bot_id: input.bot_id,
-    type: ExecutionTaskKind.SkillCall,
+    type: ExecutionTaskKind.Code,
     intent_epoch: input.job.intent_epoch,
     status: TaskHistoryStatus.Accepted,
-    skill: input.job.skill,
-    params: clonePersistedValue(input.job.params),
     log_ref: input.log_ref,
+    code_ref: input.code_ref,
     snapshot_ts: input.job.snapshot_ts,
     message_id: input.job.message_id,
     created_at: input.created_at,

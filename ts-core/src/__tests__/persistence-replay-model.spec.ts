@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { createCodeJobForSkill } from "./test-code-job.js";
 
 import {
   BotStatus,
   ExecPriority,
   MessageSource,
   TaskHistoryStatus,
+  createCodeJob,
   createPersistedTaskHistoryAcceptedRecord,
   createPersistedTaskHistoryStartedPatch,
   createPersistedTaskHistoryTerminalPatch,
@@ -12,12 +14,9 @@ import {
   createPersistedTaskProgressEventLogRecord,
   createReplayRequest,
   createReplayResponse,
-  createSandboxCodeJob,
   createSandboxCodeRef,
   createSandboxLogRef,
-  createSkillCallJob,
   createTaskLifecycleEventLogEntry,
-  createTaskLogRef,
   createTaskPersistencePlan,
   createTaskStartedLifecycleEvent,
   createTaskTerminalLifecycleEvent,
@@ -27,7 +26,7 @@ import {
 
 describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
   it("应对齐 accepted / started / progress / terminal 的持久化字段语义", () => {
-    const job = createSandboxCodeJob({
+    const job = createCodeJob({
       message_id: "task-015",
       intent_epoch: 9,
       snapshot_ts: 1_712_990_000,
@@ -110,7 +109,7 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
 
     expect(acceptedRecord.status).toBe(TaskHistoryStatus.Accepted);
     expect(acceptedRecord.log_ref).toBe("sandbox/2026-04-14/task-015.jsonl");
-    expect(acceptedRecord.type).toBe("sandbox_code");
+    expect(acceptedRecord.type).toBe("code");
     expect(startedEvent.type).toBe("task.started");
     expect(startedEvent.payload.job_id).toBe("task-015");
     expect(progressEvent.type).toBe("step.progress");
@@ -125,7 +124,7 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
       ),
     ).toBe(true);
 
-    const skillJob = createSkillCallJob({
+    const skillJob = createCodeJobForSkill({
       message_id: "task-skill",
       intent_epoch: 10,
       snapshot_ts: 1_712_990_010,
@@ -142,13 +141,17 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
       createPersistedTaskHistoryAcceptedRecord({
         bot_id: "bot-015",
         job: skillJob,
-        log_ref: createTaskLogRef({
+        log_ref: createSandboxLogRef({
+          date: "2026-04-14",
+          job_id: "task-skill",
+        }),
+        code_ref: createSandboxCodeRef({
           date: "2026-04-14",
           job_id: "task-skill",
         }),
         created_at: "2026-04-14T09:01:00.000Z",
       }).log_ref,
-    ).toBe("tasks/2026-04-14/task-skill.jsonl");
+    ).toBe("sandbox/2026-04-14/task-skill.jsonl");
 
     expect(() =>
       createPersistedTaskHistoryAcceptedRecord({
@@ -160,7 +163,7 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
         }),
         created_at: "2026-04-14T09:01:00.000Z",
       }),
-    ).toThrow(/tasks\/\*\.jsonl/);
+    ).toThrow("code task history requires code_ref");
   });
 
   it("应锁死 failed / interrupted 的任务历史字段完整性", () => {
@@ -190,14 +193,14 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
   });
 
   it("应表达阶段化写入顺序与未闭合任务检测模型", () => {
-    const job = createSandboxCodeJob({
+    const job = createCodeJob({
       message_id: "task-open",
       intent_epoch: 10,
       snapshot_ts: 1_712_990_100,
       priority: ExecPriority.Urgent,
       code: "await api.chat.say('open');",
     });
-    const otherJob = createSandboxCodeJob({
+    const otherJob = createCodeJob({
       message_id: "task-closed",
       intent_epoch: 11,
       snapshot_ts: 1_712_990_101,
@@ -253,7 +256,7 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
     expect(detection.open_tasks).toEqual([
       {
         job_id: "task-open",
-        type: "sandbox_code",
+        type: "code",
         message_id: "task-open",
         epoch: 10,
         started_seq: 201,
@@ -283,7 +286,7 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
         createTaskLifecycleEventLogEntry({
           eventId: "evt-303",
           lifecycle: createTaskTerminalLifecycleEvent({
-            job: createSandboxCodeJob({
+            job: createCodeJob({
               message_id: "task-z",
               intent_epoch: 12,
               snapshot_ts: 1_712_990_300,
@@ -301,7 +304,7 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
         createTaskLifecycleEventLogEntry({
           eventId: "evt-299",
           lifecycle: createTaskStartedLifecycleEvent(
-            createSandboxCodeJob({
+            createCodeJob({
               message_id: "task-old",
               intent_epoch: 11,
               snapshot_ts: 1_712_990_299,

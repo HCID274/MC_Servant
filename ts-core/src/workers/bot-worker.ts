@@ -8,24 +8,13 @@
 import { Worker, type WorkerOptions } from "bullmq";
 
 import type { TaskFailedErrorSnapshot } from "../core-ports/events.js";
-import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import type { InterruptSignal } from "../core-ports/runtime.js";
 import {
-  SKILL_DIRECTORY,
-  isCollectSkillParams,
-  isCutTreeSkillParams,
-  isEquipSkillParams,
-  isGoToSkillParams,
-  isMineSkillParams,
-} from "../core-ports/skills.js";
-import {
+  type CodeJob,
   type ExecJob,
   ExecPriority,
-  type SandboxCodeJob,
-  type SkillCallJob,
   TaskHistoryStatus,
-  createSandboxCodeJob,
-  createSkillCallJob,
+  createCodeJob,
 } from "../core-ports/tasking.js";
 import type { RedisClientLike } from "../db/index.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
@@ -40,8 +29,7 @@ import {
 import type { ExecQueueName } from "./queues.js";
 import {
   createTaskFailureResultSummary,
-  createTaskResultSummaryFromSandboxResult,
-  createTaskResultSummaryFromSkillResult,
+  createTaskResultSummaryFromCodeResult,
 } from "./task-result-summary.js";
 
 /** BotWorker（机器人工作线程） 处理过程事件。 */
@@ -124,7 +112,7 @@ export type CreateBotBullmqWorker = (input: {
 /** BotWorker（机器人工作线程） 依赖注入集合。 */
 export interface BotWorkerRuntimeDependencies {
   /** BotActor（机器人执行代理） 单写者入口。 */
-  readonly actor: Pick<BotActorRuntime, "executeSkill" | "executeSandboxCode">;
+  readonly actor: Pick<BotActorRuntime, "executeCode">;
   /** 当前意图纪元，用于丢弃过期任务。 */
   readonly currentIntentEpoch?: () => number | Promise<number>;
   /** 当前时钟，单位毫秒。 */
@@ -189,93 +177,15 @@ function cloneBotWorkerTask(data: unknown): BotWorkerTask {
 /** 克隆底层执行任务。 */
 
 function cloneExecJob(job: ExecJob): ExecJob {
-  switch (job.type) {
-    case ExecutionTaskKind.SkillCall:
-      return cloneSkillCallJob(job);
-    case ExecutionTaskKind.SandboxCode:
-      return cloneSandboxCodeJob(job);
-  }
+  return cloneCodeJob(job);
 }
-/** 克隆技能调用任务及其参数。 */
+/** 克隆代码执行任务。 */
 
-function cloneSkillCallJob(job: SkillCallJob): SkillCallJob {
-  assertCommonExecJob(job);
-
-  switch (job.skill) {
-    case SKILL_DIRECTORY.goTo:
-      if (!isGoToSkillParams(job.params)) {
-        throw new Error("goTo skill_call params are invalid");
-      }
-
-      return createSkillCallJob({
-        message_id: job.message_id,
-        intent_epoch: job.intent_epoch,
-        snapshot_ts: job.snapshot_ts,
-        priority: job.priority,
-        skill: SKILL_DIRECTORY.goTo,
-        params: job.params,
-      });
-    case SKILL_DIRECTORY.mine:
-      if (!isMineSkillParams(job.params)) {
-        throw new Error("mine skill_call params are invalid");
-      }
-
-      return createSkillCallJob({
-        message_id: job.message_id,
-        intent_epoch: job.intent_epoch,
-        snapshot_ts: job.snapshot_ts,
-        priority: job.priority,
-        skill: SKILL_DIRECTORY.mine,
-        params: job.params,
-      });
-    case SKILL_DIRECTORY.cutTree:
-      if (!isCutTreeSkillParams(job.params)) {
-        throw new Error("cutTree skill_call params are invalid");
-      }
-
-      return createSkillCallJob({
-        message_id: job.message_id,
-        intent_epoch: job.intent_epoch,
-        snapshot_ts: job.snapshot_ts,
-        priority: job.priority,
-        skill: SKILL_DIRECTORY.cutTree,
-        params: job.params,
-      });
-    case SKILL_DIRECTORY.collect:
-      if (!isCollectSkillParams(job.params)) {
-        throw new Error("collect skill_call params are invalid");
-      }
-
-      return createSkillCallJob({
-        message_id: job.message_id,
-        intent_epoch: job.intent_epoch,
-        snapshot_ts: job.snapshot_ts,
-        priority: job.priority,
-        skill: SKILL_DIRECTORY.collect,
-        params: job.params,
-      });
-    case SKILL_DIRECTORY.equip:
-      if (!isEquipSkillParams(job.params)) {
-        throw new Error("equip skill_call params are invalid");
-      }
-
-      return createSkillCallJob({
-        message_id: job.message_id,
-        intent_epoch: job.intent_epoch,
-        snapshot_ts: job.snapshot_ts,
-        priority: job.priority,
-        skill: SKILL_DIRECTORY.equip,
-        params: job.params,
-      });
-  }
-}
-/** 克隆沙箱代码执行任务。 */
-
-function cloneSandboxCodeJob(job: SandboxCodeJob): SandboxCodeJob {
+function cloneCodeJob(job: CodeJob): CodeJob {
   assertCommonExecJob(job);
   assertNonEmptyString(job.code, "code");
 
-  return createSandboxCodeJob({
+  return createCodeJob({
     message_id: job.message_id,
     intent_epoch: job.intent_epoch,
     snapshot_ts: job.snapshot_ts,
@@ -421,36 +331,7 @@ export function createBotWorkerRuntime(input: {
     let terminalFailureHandled = false;
 
     try {
-      if (task.exec_job.type === ExecutionTaskKind.SkillCall) {
-        const outcome = await input.dependencies.actor.executeSkill(task.exec_job);
-        const executionResult = outcome.result;
-        const durationMs = Math.max(0, now() - startedAt);
-
-        await emitActions(
-          createBotWorkerActions({
-            task,
-            phase: "terminal",
-            status: TaskHistoryStatus.Completed,
-            total_steps: executionResult.total_steps,
-            duration_ms: durationMs,
-            result_summary: createTaskResultSummaryFromSkillResult(task.exec_job, executionResult, {
-              durationMs,
-            }),
-          }),
-        );
-        events.push(
-          Object.freeze({
-            type: "task.completed" as const,
-            bot_id: task.bot_id,
-            message_id: task.exec_job.message_id,
-            status: TaskHistoryStatus.Completed,
-            total_steps: executionResult.total_steps,
-          }),
-        );
-        return;
-      }
-
-      const outcome = await input.dependencies.actor.executeSandboxCode(task.exec_job);
+      const outcome = await input.dependencies.actor.executeCode(task.exec_job);
       const executionResult = outcome.result;
       const durationMs = Math.max(0, now() - startedAt);
 
@@ -475,13 +356,11 @@ export function createBotWorkerRuntime(input: {
             total_steps: executionResult.summary.total_steps,
             duration_ms: durationMs,
             error: errorSnapshot,
-            last_step: executionResult.step_results.at(-1)?.action ?? "executeSandboxCode",
-            result_summary: createTaskResultSummaryFromSandboxResult(
-              task.exec_job,
-              executionResult,
-              { durationMs },
-            ),
-            sandbox_result: Object.freeze({
+            last_step: executionResult.step_results.at(-1)?.action ?? "executeCode",
+            result_summary: createTaskResultSummaryFromCodeResult(task.exec_job, executionResult, {
+              durationMs,
+            }),
+            code_result: Object.freeze({
               ...getSandboxResultRefs(executionResult),
               error: executionResult.error,
             }),
@@ -516,12 +395,10 @@ export function createBotWorkerRuntime(input: {
               cause: "stalled",
             },
             reason,
-            result_summary: createTaskResultSummaryFromSandboxResult(
-              task.exec_job,
-              executionResult,
-              { durationMs },
-            ),
-            sandbox_result: Object.freeze({
+            result_summary: createTaskResultSummaryFromCodeResult(task.exec_job, executionResult, {
+              durationMs,
+            }),
+            code_result: Object.freeze({
               ...getSandboxResultRefs(executionResult),
               error: executionResult.error,
             }),
@@ -546,10 +423,10 @@ export function createBotWorkerRuntime(input: {
           status: TaskHistoryStatus.Completed,
           total_steps: executionResult.summary.total_steps,
           duration_ms: durationMs,
-          result_summary: createTaskResultSummaryFromSandboxResult(task.exec_job, executionResult, {
+          result_summary: createTaskResultSummaryFromCodeResult(task.exec_job, executionResult, {
             durationMs,
           }),
-          sandbox_result: getSandboxResultRefs(executionResult),
+          code_result: getSandboxResultRefs(executionResult),
         }),
       );
       events.push(
@@ -617,10 +494,7 @@ export function createBotWorkerRuntime(input: {
           result_summary: createTaskFailureResultSummary(task.exec_job, errorSnapshot, {
             durationMs,
           }),
-          last_step:
-            task.exec_job.type === ExecutionTaskKind.SkillCall
-              ? "executeSkill"
-              : "executeSandboxCode",
+          last_step: "executeCode",
         }),
       );
       events.push(

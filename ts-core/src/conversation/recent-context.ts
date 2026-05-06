@@ -9,7 +9,7 @@ const SANDBOX_CODE_CHAR_LIMIT = 8000;
 type ConversationRecentContextEventKind =
   | "owner_message"
   | "bot_reply"
-  | "sandbox_code"
+  | "code"
   | "sandbox_error"
   | "failure_capsule"
   | "execution_result";
@@ -38,7 +38,7 @@ export interface ConversationRecentContextStore {
   appendOwnerMessage(input: ConversationRecentContextTextInput): void;
   /** 记录 Bot（机器人） 最终回复原文。 */
   appendBotReply(input: ConversationRecentContextTextInput): void;
-  /** 记录 sandbox（沙盒） TS（TypeScript） 原文。 */
+  /** 记录 code（代码） TS（TypeScript） 原文。 */
   appendSandboxCode(input: ConversationRecentContextCodeInput): void;
   /** 记录 sandbox（沙盒） error.message（错误消息） 单行。 */
   appendSandboxError(input: ConversationRecentContextTextInput): void;
@@ -137,7 +137,7 @@ export function createConversationRecentContextStore(
       assertNonEmptyString(input.message_id, "message_id");
       assertNonEmptyString(input.code, "code");
       append({
-        kind: "sandbox_code",
+        kind: "code",
         message_id: input.message_id,
         aggregate_key: createMessageAggregateKey(input.message_id),
         code: input.code,
@@ -193,7 +193,7 @@ export function createConversationRecentContextStore(
   return Object.freeze(store);
 
   function appendTextEvent(
-    kind: Exclude<ConversationRecentContextEventKind, "sandbox_code" | "execution_result">,
+    kind: Exclude<ConversationRecentContextEventKind, "code" | "execution_result">,
     input: ConversationRecentContextTextInput,
     readNow: () => number,
   ): void {
@@ -329,7 +329,7 @@ function renderEvent(
       return [`主人：${event.line ?? ""}`];
     case "bot_reply":
       return [`Bot：${event.line ?? ""}`];
-    case "sandbox_code":
+    case "code":
       return renderSandboxCode(event.code ?? "", aggregateKey);
     case "sandbox_error":
       return [`报错：${event.line ?? ""}`];

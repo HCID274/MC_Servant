@@ -304,7 +304,7 @@ export function createSandboxExecutionRequest(input: {
   });
 
   return Object.freeze({
-    type: ExecutionTaskKind.SandboxCode,
+    type: ExecutionTaskKind.Code,
     job_id: input.job_id,
     bot_id: input.bot_id,
     intent_epoch: input.intent_epoch,
@@ -502,7 +502,7 @@ export function checkSandboxSourceStaticPolicy(code: string): StaticCheckError |
 }
 
 /**
- * 在 isolated-vm（隔离虚拟机） 内执行 sandbox_code（沙箱代码）。
+ * 在 isolated-vm（隔离虚拟机） 内执行 code（代码）。
  *
  * @param input 沙箱请求、Facade 适配器与只读任务上下文
  * @returns 标准化沙箱执行结果
@@ -616,7 +616,7 @@ export async function executeSandboxCodeRequest(input: {
     const taskContext = {
       id: input.task?.id ?? input.request.job_id,
       userMessage: input.task?.userMessage ?? "",
-      intent: input.task?.intent ?? "sandbox_code",
+      intent: input.task?.intent ?? "code",
     };
 
     await context.eval(createSandboxBootstrapScript(taskContext), {
@@ -691,6 +691,8 @@ export async function executeSandboxCodeRequest(input: {
     isolate?.dispose();
   }
 }
+
+export const executeCodeRequest = executeSandboxCodeRequest;
 
 async function transpileSandboxCode(code: string): Promise<string> {
   const wrappedCode = `(async () => {\n${code}\n})()`;

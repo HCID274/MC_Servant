@@ -6,23 +6,14 @@
  * 3. 跨层对接：负责将对话层的规划产物（PlanDraft）转换为执行层可直接消费的任务对象（ExecJob）。
  */
 
-import { ExecutionTaskKind } from "../core-ports/foundation.js";
-import type { SkillCallInput } from "../core-ports/skills.js";
-import type {
-  ExecJob,
-  ExecPriority,
-  SkillCallJob,
-  SkillCallJobInput,
-} from "../core-ports/tasking.js";
-import { createSandboxCodeJob, createSkillCallJob } from "../core-ports/tasking.js";
+import type { ExecJob, ExecPriority } from "../core-ports/tasking.js";
+import { createCodeJob } from "../core-ports/tasking.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
-import { ensureReplyEndsWithMeow } from "./chat.js";
 import type {
+  ConversationCodePlanDraft,
   ConversationPlanDraft,
   ConversationPlanningContext,
   ConversationPlanningTriage,
-  ConversationSandboxCodePlanDraft,
-  ConversationSkillCallPlanDraft,
 } from "./contracts.js";
 
 /**
@@ -48,50 +39,21 @@ export function createConversationPlanningContext(
 }
 
 /**
- * 创建技能调用路径的规划产物。
- *
- * 技能草案工厂（Skill Draft Factory）：将 LLM 生成的回复和技能参数封装为标准化的 SkillCallDraft。
- *
- * 模式对齐：确保回复文本已完成性格化处理（ensureReplyEndsWithMeow），且技能参数符合技能目录的契约要求。
- *
- * @param input 包含回复、技能名和参数的输入
- * @returns 技能调用规划草案
- */
-export function createSkillCallPlanDraft<TInput extends SkillCallInput>(input: {
-  reply: string;
-  skill: TInput["skill"];
-  params: TInput["params"];
-}): Extract<ConversationSkillCallPlanDraft, { skill: TInput["skill"] }> {
-  assertNonEmptyString(input.reply, "reply");
-
-  return cloneReadonlyValue({
-    type: ExecutionTaskKind.SkillCall,
-    reply: ensureReplyEndsWithMeow(input.reply),
-    skill: input.skill,
-    params: input.params,
-  }) as Extract<ConversationSkillCallPlanDraft, { skill: TInput["skill"] }>;
-}
-
-/**
  * 创建沙箱代码执行路径的规划产物。
  *
- * 代码草案工厂（Code Draft Factory）：将 LLM 生成的回复和待执行源码封装为标准化的 SandboxCodeDraft。
+ * 代码草案工厂（Code Draft Factory）：将 LLM（大语言模型） 生成的待执行源码封装为标准化的 CodeDraft。
  *
- * 安全封装：将原始代码片段包装为符合执行契约的草案对象，并应用性格化回复。
+ * 安全封装：将原始代码片段包装为符合执行契约的草案对象。
  *
- * @param input 包含回复和代码的输入
- * @returns 沙箱代码规划草案
+ * @param input 包含代码的输入
+ * @returns 代码规划草案
  */
-export function createSandboxCodePlanDraft(input: {
-  reply: string;
+export function createCodePlanDraft(input: {
   code: string;
-}): ConversationSandboxCodePlanDraft {
-  assertNonEmptyString(input.reply, "reply");
+}): ConversationCodePlanDraft {
   assertNonEmptyString(input.code, "code");
 
   return cloneReadonlyValue({
-    type: ExecutionTaskKind.SandboxCode,
-    reply: ensureReplyEndsWithMeow(input.reply),
     code: input.code,
   });
 }
@@ -115,18 +77,7 @@ export function createExecJobFromPlan(input: {
 }): ExecJob {
   assertNonEmptyString(input.message_id, "message_id");
 
-  if (input.plan.type === ExecutionTaskKind.SkillCall) {
-    return createSkillCallJob({
-      message_id: input.message_id,
-      intent_epoch: input.intent_epoch,
-      snapshot_ts: input.snapshot_ts,
-      priority: input.priority,
-      skill: input.plan.skill,
-      params: input.plan.params,
-    } as SkillCallJobInput) as SkillCallJob;
-  }
-
-  return createSandboxCodeJob({
+  return createCodeJob({
     message_id: input.message_id,
     intent_epoch: input.intent_epoch,
     snapshot_ts: input.snapshot_ts,

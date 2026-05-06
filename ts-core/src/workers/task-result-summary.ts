@@ -12,19 +12,23 @@ import {
   classifyFailureCode,
   createTaskResultSummary,
 } from "../core-ports/task-result.js";
-import type { ExecJob, SandboxCodeJob, SkillCallJob } from "../core-ports/tasking.js";
+import type { CodeJob, ExecJob } from "../core-ports/tasking.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
 
 /** 从 skill（技能） 执行结果创建任务结果摘要。 */
 export function createTaskResultSummaryFromSkillResult(
-  job: SkillCallJob,
-  result: SkillExecutionResult,
-  options: { readonly durationMs?: number } = {},
+  resultOrJob: SkillExecutionResult | unknown,
+  resultOrOptions: SkillExecutionResult | { readonly durationMs?: number } = {},
+  maybeOptions: { readonly durationMs?: number } = {},
 ): TaskResultSummary {
+  const result = isSkillExecutionResult(resultOrJob)
+    ? resultOrJob
+    : (resultOrOptions as SkillExecutionResult);
+  const options = isSkillExecutionResult(resultOrOptions) ? maybeOptions : resultOrOptions;
   switch (result.skill) {
     case "goTo":
       return createTaskResultSummary({
-        task_type: ExecutionTaskKind.SkillCall,
+        task_type: ExecutionTaskKind.Code,
         operation: result.skill,
         target: `${result.target.x},${result.target.y},${result.target.z}`,
         completed_count: 1,
@@ -36,12 +40,10 @@ export function createTaskResultSummaryFromSkillResult(
         result.collected_item_name,
         result.collected_count,
       );
-      const requestedCount = job.skill === "mine" ? job.params.count : undefined;
       return createTaskResultSummary({
-        task_type: ExecutionTaskKind.SkillCall,
+        task_type: ExecutionTaskKind.Code,
         operation: result.skill,
         target: result.block_name,
-        ...(requestedCount === undefined ? {} : { requested_count: requestedCount }),
         completed_count: result.collected_count,
         ...(inventoryDelta === undefined ? {} : { inventory_delta: inventoryDelta }),
         world_key: result.world_key,
@@ -56,7 +58,7 @@ export function createTaskResultSummaryFromSkillResult(
       )?.log_block_name;
       const inventoryDelta = createInventoryDelta(itemName ?? "logs", result.collected_count);
       return createTaskResultSummary({
-        task_type: ExecutionTaskKind.SkillCall,
+        task_type: ExecutionTaskKind.Code,
         operation: result.skill,
         target: itemName ?? result.clusters[0]?.log_block_name ?? "logs",
         requested_count: result.requested_count,
@@ -73,7 +75,7 @@ export function createTaskResultSummaryFromSkillResult(
     }
     case "collect":
       return createTaskResultSummary({
-        task_type: ExecutionTaskKind.SkillCall,
+        task_type: ExecutionTaskKind.Code,
         operation: result.skill,
         target: result.item_name ?? "all_items",
         completed_count: result.collected.reduce((sum, item) => sum + item.count, 0),
@@ -87,7 +89,7 @@ export function createTaskResultSummaryFromSkillResult(
       });
     case "equip":
       return createTaskResultSummary({
-        task_type: ExecutionTaskKind.SkillCall,
+        task_type: ExecutionTaskKind.Code,
         operation: result.skill,
         target: result.item_name,
         completed_count: 1,
@@ -101,9 +103,18 @@ export function createTaskResultSummaryFromSkillResult(
   }
 }
 
-/** 从 sandbox（沙箱） 执行结果创建任务结果摘要。 */
-export function createTaskResultSummaryFromSandboxResult(
-  job: SandboxCodeJob,
+function isSkillExecutionResult(value: unknown): value is SkillExecutionResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "skill" in value &&
+    typeof (value as { readonly skill?: unknown }).skill === "string"
+  );
+}
+
+/** 从 code（代码） 执行结果创建任务结果摘要。 */
+export function createTaskResultSummaryFromCodeResult(
+  job: CodeJob,
   result: RuntimeSandboxExecutionResult,
   options: { readonly durationMs?: number } = {},
 ): TaskResultSummary {
@@ -119,8 +130,8 @@ export function createTaskResultSummaryFromSandboxResult(
     const requestedCount = readRequestedCount(lastStep?.params);
     const inventoryDelta = createInventoryDelta(target ?? null, toolchainData.completed_count);
     return createTaskResultSummary({
-      task_type: ExecutionTaskKind.SandboxCode,
-      operation: lastStep?.action ?? "sandbox_code",
+      task_type: ExecutionTaskKind.Code,
+      operation: lastStep?.action ?? "code",
       ...(target === undefined ? {} : { target }),
       ...(requestedCount === undefined ? {} : { requested_count: requestedCount }),
       completed_count: toolchainData.completed_count,
@@ -141,15 +152,17 @@ export function createTaskResultSummaryFromSandboxResult(
 
   return createTaskResultSummary({
     task_type: job.type,
-    operation: lastStep?.action ?? "sandbox_code",
+    operation: lastStep?.action ?? "code",
     completed_count: result.status === TaskHistoryStatus.Completed ? result.summary.total_steps : 0,
     ...createDurationField(options),
     details: { total_steps: result.summary.total_steps },
   });
 }
 
+export const createTaskResultSummaryFromSandboxResult = createTaskResultSummaryFromCodeResult;
+
 function createSandboxTerminalResultSummary(
-  job: SandboxCodeJob,
+  job: CodeJob,
   result: RuntimeSandboxExecutionResult,
   options: { readonly durationMs?: number },
 ): TaskResultSummary {
@@ -163,7 +176,7 @@ function createSandboxTerminalResultSummary(
     readOptionalString(failedStep?.action) ??
     readOptionalString(errorRecord?.method) ??
     readOptionalString(details?.failure_stage) ??
-    "sandbox_code";
+    "code";
   const target =
     readOptionalString(failedParams?.itemName) ??
     readOptionalString(failedParams?.blockName) ??
@@ -185,7 +198,7 @@ function createSandboxTerminalResultSummary(
     message:
       readOptionalString(errorRecord?.message) ??
       readOptionalString(stepErrorRecord?.message) ??
-      "sandbox terminal failure",
+      "code terminal failure",
     recoverable:
       readBoolean(errorRecord?.recoverable) ?? readBoolean(stepErrorRecord?.recoverable) ?? null,
     details,
@@ -216,24 +229,17 @@ export function createTaskFailureResultSummary(
 ): TaskResultSummary {
   const details = createFailureDetailsForJob(job, error.details ?? {});
   const failureCode = error.error_code ?? readFailureCodeFromMessage(error.message);
-  const target = job.type === ExecutionTaskKind.SkillCall ? readSkillTarget(job) : undefined;
-  const requestedCount =
-    job.type === ExecutionTaskKind.SkillCall ? readSkillRequestedCount(job) : undefined;
   const worldKey = readOptionalString(details.world_key);
   return createTaskResultSummary({
     task_type: job.type,
-    operation: job.type === ExecutionTaskKind.SkillCall ? job.skill : "sandbox_code",
+    operation: "code",
     status: options.status ?? "failed",
-    ...(target === undefined ? {} : { target }),
-    ...(requestedCount === undefined ? {} : { requested_count: requestedCount }),
     completed_count: readTargetProgressCompletedCount(details) ?? 0,
     ...(worldKey === undefined ? {} : { world_key: worldKey }),
     ...createDurationField(options),
     failure: createFailureSummary({
       code: failureCode,
-      stage:
-        readOptionalString(details.failure_stage) ??
-        (job.type === ExecutionTaskKind.SkillCall ? job.skill : "sandbox_code"),
+      stage: readOptionalString(details.failure_stage) ?? "code",
       message: error.message,
       recoverable: readBoolean(details.recoverable) ?? inferRecoverable(failureCode),
       details,
@@ -246,34 +252,8 @@ function createFailureDetailsForJob(
   job: ExecJob,
   details: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
-  if (job.type !== ExecutionTaskKind.SkillCall) {
-    return details;
-  }
-
-  const targetProgress = createSkillTargetProgress(job, details);
-  return Object.freeze({
-    ...details,
-    failure_stage: readOptionalString(details.failure_stage) ?? job.skill,
-    target_progress: targetProgress,
-  });
-}
-
-function createSkillTargetProgress(
-  job: SkillCallJob,
-  details: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-  const existingProgress = asRecord(details.target_progress);
-  const requestedCount = readSkillRequestedCount(job);
-  const target = readSkillTarget(job);
-
-  return Object.freeze({
-    action: job.skill,
-    target: target ?? null,
-    requested_count: requestedCount ?? null,
-    completed_count: readNumber(existingProgress?.completed_count) ?? 0,
-    target_count: readNumber(existingProgress?.target_count) ?? requestedCount ?? null,
-    ...(existingProgress ?? {}),
-  });
+  void job;
+  return details;
 }
 
 function createInventoryDelta(
@@ -427,7 +407,7 @@ function readSandboxSkillResult(value: unknown): TaskResultSummary | null {
         completedCount ?? 0,
       );
       return createTaskResultSummary({
-        task_type: ExecutionTaskKind.SandboxCode,
+        task_type: ExecutionTaskKind.Code,
         operation: "mine",
         ...(target === undefined ? {} : { target }),
         ...(completedCount === undefined ? {} : { completed_count: completedCount }),
@@ -439,7 +419,7 @@ function readSandboxSkillResult(value: unknown): TaskResultSummary | null {
       const completedCount = readCollectedCount(value.collected);
       const worldKey = readOptionalString(value.world_key);
       return createTaskResultSummary({
-        task_type: ExecutionTaskKind.SandboxCode,
+        task_type: ExecutionTaskKind.Code,
         operation: "collect",
         target: readOptionalString(value.item_name) ?? "all_items",
         ...(completedCount === undefined ? {} : { completed_count: completedCount }),
@@ -450,7 +430,7 @@ function readSandboxSkillResult(value: unknown): TaskResultSummary | null {
       const target = readOptionalString(value.item_name);
       const worldKey = readOptionalString(value.world_key);
       return createTaskResultSummary({
-        task_type: ExecutionTaskKind.SandboxCode,
+        task_type: ExecutionTaskKind.Code,
         operation: "equip",
         ...(target === undefined ? {} : { target }),
         completed_count: 1,
@@ -460,7 +440,7 @@ function readSandboxSkillResult(value: unknown): TaskResultSummary | null {
     case "goTo": {
       const worldKey = readOptionalString(value.world_key);
       return createTaskResultSummary({
-        task_type: ExecutionTaskKind.SandboxCode,
+        task_type: ExecutionTaskKind.Code,
         operation: "goTo",
         completed_count: 1,
         ...(worldKey === undefined ? {} : { world_key: worldKey }),
@@ -468,31 +448,6 @@ function readSandboxSkillResult(value: unknown): TaskResultSummary | null {
     }
     default:
       return null;
-  }
-}
-
-function readSkillTarget(job: SkillCallJob): string | undefined {
-  switch (job.skill) {
-    case "goTo":
-      return `${job.params.x},${job.params.y},${job.params.z}`;
-    case "mine":
-      return job.params.blockName;
-    case "collect":
-      return job.params.itemName;
-    case "equip":
-      return job.params.itemName;
-    case "cutTree":
-      return "logs";
-  }
-}
-
-function readSkillRequestedCount(job: SkillCallJob): number | undefined {
-  switch (job.skill) {
-    case "mine":
-    case "cutTree":
-      return job.params.count;
-    default:
-      return undefined;
   }
 }
 

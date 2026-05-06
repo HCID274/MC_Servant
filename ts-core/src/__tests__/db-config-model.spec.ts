@@ -209,7 +209,7 @@ describe("db 与配置契约", () => {
       state: BotStatus.EXECUTING,
       current_task: {
         job_id: "msg-007",
-        type: ExecutionTaskKind.SandboxCode,
+        type: ExecutionTaskKind.Code,
         intent: "mine oak_log",
         started_at: 1_712_930_000,
       },
@@ -217,13 +217,13 @@ describe("db 与配置契约", () => {
     });
 
     expect(stateCache.cache_type).toBe("bot_state");
-    expect(stateCache.current_task?.type).toBe(ExecutionTaskKind.SandboxCode);
+    expect(stateCache.current_task?.type).toBe(ExecutionTaskKind.Code);
     expect(() =>
       createBotStateCache({
         state: BotStatus.IDLE,
         current_task: {
           job_id: "",
-          type: ExecutionTaskKind.SkillCall,
+          type: ExecutionTaskKind.Code,
           intent: "say hi",
           started_at: 1,
         },

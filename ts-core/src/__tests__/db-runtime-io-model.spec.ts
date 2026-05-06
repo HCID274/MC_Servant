@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createCodeJobForSkill } from "./test-code-job.js";
 
 import {
   ExecPriority,
@@ -19,7 +20,8 @@ import {
   createPostgresTaskHistoryStore,
   createRedisConnectionDescriptor,
   createRedisRuntimeResource,
-  createSkillCallJob,
+  createSandboxCodeRef,
+  createSandboxLogRef,
   createTaskEventDraft,
   runDrizzleMigrations,
 } from "../index.js";
@@ -127,7 +129,7 @@ describe("db 与 app 的真实 I/O 工厂边界", () => {
           priority: ExecPriority.Normal,
           owner_text: "去捡盾牌",
           execution: {
-            type: ExecutionTaskKind.SkillCall,
+            type: ExecutionTaskKind.Code,
             skill: "collect",
             params: {
               itemName: "shield",
@@ -179,7 +181,7 @@ describe("db 与 app 的真实 I/O 工厂边界", () => {
         }),
       },
     });
-    const job = createSkillCallJob({
+    const job = createCodeJobForSkill({
       message_id: "msg-history",
       intent_epoch: 3,
       snapshot_ts: 100,
@@ -192,7 +194,8 @@ describe("db 与 app 的真实 I/O 工厂边界", () => {
       createPersistedTaskHistoryAcceptedRecord({
         bot_id: "bot-db",
         job,
-        log_ref: "tasks/2026-05-04/msg-history.jsonl",
+        log_ref: createSandboxLogRef({ date: "2026-05-04", job_id: "msg-history" }),
+        code_ref: createSandboxCodeRef({ date: "2026-05-04", job_id: "msg-history" }),
         created_at: "2026-05-04T01:00:00.000Z",
       }),
     );
@@ -242,9 +245,9 @@ describe("db 与 app 的真实 I/O 工厂边界", () => {
         id: "msg-history",
         botId: "bot-db",
         status: TaskHistoryStatus.Accepted,
-        skill: "goTo",
-        params: { x: 10, y: 64, z: 20 },
-        logRef: "tasks/2026-05-04/msg-history.jsonl",
+        type: ExecutionTaskKind.Code,
+        codeRef: "sandbox/2026-05-04/msg-history.code.ts",
+        logRef: "sandbox/2026-05-04/msg-history.jsonl",
       }),
     ]);
     expect(updates).toEqual([

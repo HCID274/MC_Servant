@@ -22,12 +22,12 @@ import {
   TaskHistoryStatus,
   type TaskLifecycleEvent,
   createAsyncDiagnosticSink,
+  createCodeJob,
   createDiagnosticsCatalog,
   createLlmDiagnosticSummary,
   createLlmLogLine,
   createLlmLogRef,
   createLocalConversationReplyLogSink,
-  createSandboxCodeJob,
   createSandboxCodeRef,
   createSandboxError,
   createSandboxExecutionFailure,
@@ -47,7 +47,7 @@ import {
   createTaskStartedLifecycleEvent,
   createTaskTerminalLifecycleEvent,
   describeFacadeNamespace,
-  executeSandboxCodeRequest,
+  executeCodeRequest,
   updateSandboxFacadeHotNamespaceQueue,
 } from "../index.js";
 
@@ -66,8 +66,8 @@ void invalidGoToParams;
 const invalidGoToBinding: typeof SANDBOX_BOT_SKILL_BINDINGS.goTo = "mine";
 void invalidGoToBinding;
 
-// @ts-expect-error `SandboxExecutionRequest.type` 固定为 `sandbox_code`（沙箱代码）。
-const invalidSandboxRequestType: SandboxExecutionRequest["type"] = ExecutionTaskKind.SkillCall;
+// @ts-expect-error `SandboxExecutionRequest.type` 固定为 `code`（沙箱代码）。
+const invalidSandboxRequestType: SandboxExecutionRequest["type"] = ExecutionTaskKind.Code;
 void invalidSandboxRequestType;
 
 // @ts-expect-error `AbortError`（中断错误） 固定不可恢复。
@@ -275,7 +275,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
 
   it("应在 isolated-vm（隔离虚拟机） 内执行 chat.say（聊天输出） 并记录步骤", async () => {
     const messages: string[] = [];
-    const result = await executeSandboxCodeRequest({
+    const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "await api.chat.say('hello sandbox')",
       }),
@@ -303,7 +303,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
   });
 
   it("应让只读 task（任务） 查询不产出步骤记录", async () => {
-    const result = await executeSandboxCodeRequest({
+    const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "if (api.task.id !== 'task-readonly') { throw new Error('bad task id') }\nif (typeof __sandboxHostCall !== 'undefined') { throw new Error('host leaked') }",
         messageId: "task-readonly",
@@ -311,7 +311,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       task: {
         id: "task-readonly",
         userMessage: "读任务上下文",
-        intent: "sandbox_code",
+        intent: "code",
       },
       facade: {
         async executeBotSkill() {
@@ -327,9 +327,9 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(result.step_results).toEqual([]);
   });
 
-  it("应让 sandbox_code（沙箱代码） 调用 place（放置） 工作台工具链能力", async () => {
+  it("应让 code（沙箱代码） 调用 place（放置） 工作台工具链能力", async () => {
     const calls: unknown[] = [];
-    const result = await executeSandboxCodeRequest({
+    const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "await api.bot.place('crafting_table')",
         messageId: "T-056-place",
@@ -366,9 +366,9 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     ]);
   });
 
-  it("应让 sandbox_code（沙箱代码） 调用 placeCraftingTable（放置工作台） 快捷 API", async () => {
+  it("应让 code（沙箱代码） 调用 placeCraftingTable（放置工作台） 快捷 API", async () => {
     const calls: unknown[] = [];
-    const result = await executeSandboxCodeRequest({
+    const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "await api.bot.placeCraftingTable()",
         messageId: "T-061-place-table",
@@ -405,9 +405,9 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     ]);
   });
 
-  it("应让 sandbox_code（沙箱代码） 调用 craft（合成） 工具链能力", async () => {
+  it("应让 code（沙箱代码） 调用 craft（合成） 工具链能力", async () => {
     const calls: unknown[] = [];
-    const result = await executeSandboxCodeRequest({
+    const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "await api.bot.craft('wooden_pickaxe', 1)",
         messageId: "T-055-craft",
@@ -446,9 +446,9 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     ]);
   });
 
-  it("应让 sandbox_code（沙箱代码） 调用 ensure（确保） 工具链能力", async () => {
+  it("应让 code（沙箱代码） 调用 ensure（确保） 工具链能力", async () => {
     const calls: unknown[] = [];
-    const result = await executeSandboxCodeRequest({
+    const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "await api.bot.ensureStonePickaxeEquipped()",
         messageId: "T-060-ensure",
@@ -488,7 +488,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
   });
 
   it("应把 place（放置） 工具链结构化失败升级为沙箱失败", async () => {
-    const result = await executeSandboxCodeRequest({
+    const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "await api.bot.place('crafting_table')",
         messageId: "T-056-place-failed",
@@ -534,7 +534,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     ] as const;
 
     for (const forbiddenCase of forbiddenCases) {
-      const result = await executeSandboxCodeRequest({
+      const result = await executeCodeRequest({
         request: createRuntimeSandboxRequest({
           code: forbiddenCase.code,
           messageId: `forbidden-${forbiddenCase.violation}`,
@@ -568,14 +568,14 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         throw new Error("chat boom");
       },
     };
-    const transpileFailure = await executeSandboxCodeRequest({
+    const transpileFailure = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "const value: = 1",
         messageId: "T-027-transpile",
       }),
       facade,
     });
-    const timeoutFailure = await executeSandboxCodeRequest({
+    const timeoutFailure = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "while (true) {}",
         messageId: "T-027-timeout",
@@ -586,7 +586,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       }),
       facade,
     });
-    const facadeFailure = await executeSandboxCodeRequest({
+    const facadeFailure = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "await api.bot.goTo(1, 64, 1)",
         messageId: "T-027-facade",
@@ -605,7 +605,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
 
   it("应禁止沙箱代码吞掉 FacadeCallError（门面调用错误） 后伪装成功", async () => {
     const messages: string[] = [];
-    const result = await executeSandboxCodeRequest({
+    const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "try { await api.bot.goTo(1, 64, 1) } catch { await api.chat.say('handled') }",
         messageId: "T-027-facade-catch",
@@ -635,7 +635,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
   it("应在总超时后阻止 Facade（门面接口） 调用继续产生聊天副作用", async () => {
     const messages: string[] = [];
     const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-    const result = await executeSandboxCodeRequest({
+    const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "await api.chat.say('late side effect')",
         messageId: "T-027-timeout-side-effect",
@@ -671,7 +671,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
   });
 
   it("应把 cutTree（砍树） 显式拒绝为 FacadeCallError（门面调用错误）", async () => {
-    const result = await executeSandboxCodeRequest({
+    const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
         code: "await api.bot.cutTree({ count: 1 })",
         messageId: "T-027-cut-tree",
@@ -891,7 +891,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
   });
 
   it("应让 tasks（任务执行） 摘要与运行时 started / terminal（已开始 / 终态） 生命周期对齐", () => {
-    const job = createSandboxCodeJob({
+    const job = createCodeJob({
       message_id: "T-008",
       intent_epoch: 6,
       snapshot_ts: 1_712_940_000,
@@ -986,7 +986,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       },
     });
 
-    expect(request.type).toBe(ExecutionTaskKind.SandboxCode);
+    expect(request.type).toBe(ExecutionTaskKind.Code);
     expect(success.status).toBe(TaskHistoryStatus.Completed);
     expect(success.summary.terminal_status).toBe(TaskHistoryStatus.Completed);
     expect(Object.isFrozen(success.phase_logs)).toBe(true);

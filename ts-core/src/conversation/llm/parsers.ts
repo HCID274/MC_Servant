@@ -1,9 +1,8 @@
 import type { ConversationCompositeTriage } from "../contracts.js";
-import { createSandboxCodePlanDraft } from "../planning.js";
+import { createCodePlanDraft } from "../planning.js";
 import { createConversationCompositeTriageFromRecord } from "../triage.js";
-import { ConversationLlmPlanError, ConversationLlmSkillNotEnabledError } from "./errors.js";
+import { ConversationLlmPlanError } from "./errors.js";
 import type { OpenAiCompatibleChatCompletionResponse } from "./http.js";
-import { createConversationSkillPlanFromTable } from "./skill-plan-table.js";
 import type { ConversationLlmPlanResult, ConversationLlmToolCall } from "./types.js";
 
 /** 提取 OpenAI 兼容返回中的回复文本。 */
@@ -40,52 +39,24 @@ export function parseConversationCompositeTriage(content: string): ConversationC
   return createConversationCompositeTriageFromRecord(parseJsonRecord(content));
 }
 
-/** 解析最小单技能 `skill_call`（技能调用） 规划返回。 */
-export function parseConversationSkillPlan(content: string): ConversationLlmPlanResult {
-  const record = parseJsonRecord(content);
+/** 解析 Stage 2-Plan（第二阶段规划） 的唯一 TS（TypeScript）代码输出。 */
+export function parseConversationCodePlan(content: string): ConversationLlmPlanResult {
+  const record = parseStrictJsonRecord(content);
+  const keys = Object.keys(record);
+  const forbiddenKey = keys.find((key) => PLAN_FORBIDDEN_KEYS.has(key));
 
-  if (record.type === "cannot_plan") {
-    if (isSkillNotEnabledCannotPlan(record)) {
-      throw new ConversationLlmSkillNotEnabledError("skill is not enabled for online execution");
-    }
-
-    throw new ConversationLlmPlanError(
-      typeof record.reason === "string" && record.reason.trim().length > 0
-        ? record.reason
-        : "planner cannot determine a valid executable skill",
-    );
+  if (forbiddenKey !== undefined) {
+    throw new ConversationLlmPlanError(`planner output field ${forbiddenKey} is not allowed`);
   }
-
-  if (record.type === "sandbox_code") {
-    if (typeof record.reply !== "string" || record.reply.trim().length === 0) {
-      throw new ConversationLlmPlanError("planner reply must be a non-empty string");
-    }
-    if (typeof record.code !== "string" || record.code.trim().length === 0) {
-      throw new ConversationLlmPlanError("planner sandbox code must be a non-empty string");
-    }
-    validateSandboxPlanCode(record.code);
-
-    return createSandboxCodePlanDraft({
-      reply: record.reply,
-      code: record.code,
-    });
+  if (keys.length !== 1 || keys[0] !== "code") {
+    throw new ConversationLlmPlanError("planner output must be a JSON object with only code field");
   }
-
-  if (record.type !== "skill_call") {
-    throw new ConversationLlmPlanError(
-      "planner must return type=skill_call, type=sandbox_code, or type=cannot_plan",
-    );
+  if (typeof record.code !== "string" || record.code.trim().length === 0) {
+    throw new ConversationLlmPlanError("planner code must be a non-empty string");
   }
+  validatePlanCode(record.code);
 
-  if (typeof record.reply !== "string" || record.reply.trim().length === 0) {
-    throw new ConversationLlmPlanError("planner reply must be a non-empty string");
-  }
-
-  return createConversationSkillPlanFromTable({
-    reply: record.reply,
-    skill: record.skill,
-    params: record.params,
-  });
+  return createCodePlanDraft({ code: record.code });
 }
 
 /** 从 assistant（助手） 文本中提取 JSON（结构化数据） 对象。 */
@@ -94,6 +65,18 @@ export function parseJsonRecord(content: string): Record<string, unknown> {
   const fencedMatch = /^```(?:json)?\s*([\s\S]*?)\s*```$/u.exec(trimmed);
   const normalized = fencedMatch?.[1]?.trim() ?? extractBraceWrappedJson(trimmed) ?? trimmed;
   const parsed = JSON.parse(normalized) as unknown;
+
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("LLM response must be a JSON object");
+  }
+
+  return parsed as Record<string, unknown>;
+}
+
+/** 严格解析 JSON（结构化数据）对象：禁止 Markdown（标记文本）围栏和 JSON 外自然语言。 */
+export function parseStrictJsonRecord(content: string): Record<string, unknown> {
+  const trimmed = content.trim();
+  const parsed = JSON.parse(trimmed) as unknown;
 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("LLM response must be a JSON object");
@@ -115,24 +98,17 @@ export function extractBraceWrappedJson(content: string): string | undefined {
 }
 
 /**
- * sandbox_code（沙箱代码） 是多步任务闭环入口：解析层只做与规划契约直接相关的最低门禁，
+ * code（代码） 是任务闭环入口：解析层只做与规划契约直接相关的最低门禁，
  * 具体 TypeScript（类型脚本） 语义仍交给 sandbox（沙箱） 编译和执行层处理。
  */
-function validateSandboxPlanCode(code: string): void {
+function validatePlanCode(code: string): void {
   if (code.includes("demoMineIron")) {
-    throw new ConversationLlmPlanError("planner sandbox code must not call demoMineIron");
+    throw new ConversationLlmPlanError("planner code must not call demoMineIron");
   }
 
   if (!code.includes("api.chat.report")) {
-    throw new ConversationLlmPlanError("planner sandbox code must call api.chat.report");
+    throw new ConversationLlmPlanError("planner code must call api.chat.report");
   }
 }
 
-function isSkillNotEnabledCannotPlan(record: Record<string, unknown>): boolean {
-  return (
-    record.reason === "skill_not_enabled" ||
-    record.code === "skill_not_enabled" ||
-    record.reason === "技能未启用" ||
-    record.reason === "未通过单技能验收"
-  );
-}
+const PLAN_FORBIDDEN_KEYS = new Set(["type", "skill", "params", "skill_call", "sandbox_code"]);

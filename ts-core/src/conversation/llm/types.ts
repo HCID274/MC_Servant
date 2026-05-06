@@ -1,12 +1,10 @@
-import { SKILL_DIRECTORY } from "../../core-ports/skills.js";
 import type { BrainSearchInput, BrainSearchResult } from "../../data/contracts/index.js";
 import type { LlmCallMetrics, LlmJsonlLine, LlmLogStage } from "../../diagnostics/contracts.js";
 import type {
+  ConversationCodePlanDraft,
   ConversationCompositeTriage,
   ConversationHistoryTurn,
   ConversationReplyMode,
-  ConversationSandboxCodePlanDraft,
-  ConversationSkillCallPlanDraft,
 } from "../contracts.js";
 
 export interface ConversationLlmConfig {
@@ -167,20 +165,8 @@ export interface ConversationLlmChatResult {
   readonly diagnostics: ConversationLlmDiagnosticRecord;
 }
 
-/** 在线最小真实规划允许的技能集合。 */
-export const ONLINE_PLAN_SKILLS = Object.freeze([
-  SKILL_DIRECTORY.goTo,
-  SKILL_DIRECTORY.mine,
-  SKILL_DIRECTORY.cutTree,
-  SKILL_DIRECTORY.collect,
-  SKILL_DIRECTORY.equip,
-] as const);
-
-/** 最小技能规划成功结果。 */
-export type ConversationLlmPlanResult = (
-  | Extract<ConversationSkillCallPlanDraft, { skill: (typeof ONLINE_PLAN_SKILLS)[number] }>
-  | ConversationSandboxCodePlanDraft
-) & {
+/** TS（TypeScript）代码规划成功结果。 */
+export type ConversationLlmPlanResult = ConversationCodePlanDraft & {
   /** 可选诊断摘要；在线调用成功时用于 conversation（对话） 本地完整日志。 */
   readonly diagnostics?: ConversationLlmDiagnosticRecord;
 };
@@ -203,6 +189,6 @@ export interface ConversationLlmClient {
   generateCompositeTriage(input: ConversationLlmTriageInput): Promise<ConversationCompositeTriage>;
   /** 基于真实 OpenAI 兼容接口生成闲聊回复。 */
   generateChatReply(input: ConversationLlmChatInput): Promise<ConversationLlmChatResult>;
-  /** 基于真实 OpenAI 兼容接口生成最小单技能 `skill_call`（技能调用） 规划。 */
-  generateSkillPlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult>;
+  /** 基于真实 OpenAI 兼容接口生成 TS（TypeScript）代码规划。 */
+  generateCodePlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult>;
 }

@@ -20,8 +20,7 @@ export enum ConversationPriority {
 
 /** 执行任务类型枚举，用于描述 BotActor（机器人执行代理） 可消费的 ExecJob（执行任务）。 */
 export enum ExecutionTaskKind {
-  SkillCall = "skill_call",
-  SandboxCode = "sandbox_code",
+  Code = "code",
 }
 
 /** 消息来源枚举，用于统一描述外部输入通道。 */

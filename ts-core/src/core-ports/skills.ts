@@ -137,7 +137,7 @@ export interface SkillCall<TName extends SkillName = SkillName> {
   readonly params: Readonly<SkillParamsByName[TName]>;
 }
 
-/** 所有合法 `skill_call`（技能调用） 输入的判别联合。 */
+/** 所有合法技能调用输入的判别联合。 */
 export type SkillCallInput = {
   [TName in SkillName]: SkillCall<TName>;
 }[SkillName];

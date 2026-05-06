@@ -6,15 +6,14 @@
  * 3. 路由策略：定义 ConversationWorker 如何根据意图（Intent）和优先级（Priority）决定是直接回复、加入队列还是中断当前任务。
  */
 
-import {
-  type BotStatus,
-  type ConversationPriority,
-  type ExecPriority,
-  ExecutionTaskKind,
-  type MessageSource,
-  type MessageTriage,
+import type {
+  BotStatus,
+  ConversationPriority,
+  ExecPriority,
+  MessageSource,
+  MessageTriage,
 } from "../core-ports/index.js";
-import type { SkillName, SkillParamsByName } from "../core-ports/skills.js";
+import type { SkillName } from "../core-ports/skills.js";
 
 /** 对话历史允许的角色清单。 */
 export const CONVERSATION_HISTORY_ROLES = ["owner", "bot"] as const;
@@ -51,14 +50,11 @@ export const CONVERSATION_PLANNING_INTENTS = ["task"] as const;
 /** 规划意图联合类型。 */
 export type ConversationPlanningIntent = (typeof CONVERSATION_PLANNING_INTENTS)[number];
 
-/** 规划产物类型清单。 */
-export const CONVERSATION_PLAN_TYPES = [
-  ExecutionTaskKind.SkillCall,
-  ExecutionTaskKind.SandboxCode,
-] as const;
+/** 规划产物类型清单：ConversationWorker（对话工作线程） 在线输出只允许代码型任务。 */
+export const CONVERSATION_PLAN_TYPES = ["code"] as const;
 
 /** 规划产物类型联合。 */
-export type ConversationPlanType = (typeof CONVERSATION_PLAN_TYPES)[number];
+export type ConversationPlanType = "code";
 
 /** 单条原始对话记录的最小结构。 */
 export interface ConversationHistoryTurn {
@@ -192,34 +188,14 @@ export interface ConversationTemplateReply {
 /** 对话回复结构联合。 */
 export type ConversationReply = ConversationLlmReply | ConversationTemplateReply;
 
-/** `skill_call`（技能调用） 路径的规划产物。 */
-export type ConversationSkillCallPlanDraft = {
-  readonly [TName in SkillName]: {
-    /** 固定为 `skill_call`（技能调用）。 */
-    readonly type: ExecutionTaskKind.SkillCall;
-    /** 给主人的开场回复。 */
-    readonly reply: string;
-    /** 与技能目录严格对齐的技能名。 */
-    readonly skill: TName;
-    /** 与技能名一一对齐的参数。 */
-    readonly params: Readonly<SkillParamsByName[TName]>;
-  };
-}[SkillName];
-
-/** `sandbox_code`（沙箱代码） 路径的规划产物。 */
-export interface ConversationSandboxCodePlanDraft {
-  /** 固定为 `sandbox_code`（沙箱代码）。 */
-  readonly type: ExecutionTaskKind.SandboxCode;
-  /** 给主人的开场回复。 */
-  readonly reply: string;
+/** TS（TypeScript）代码路径的规划产物。 */
+export interface ConversationCodePlanDraft {
   /** 待执行源码。 */
   readonly code: string;
 }
 
-/** Stage 2（第二阶段） 规划产物联合。 */
-export type ConversationPlanDraft =
-  | ConversationSkillCallPlanDraft
-  | ConversationSandboxCodePlanDraft;
+/** Stage 2（第二阶段） 规划产物。 */
+export type ConversationPlanDraft = ConversationCodePlanDraft;
 
 /** 闲聊回复路由结构。 */
 export interface ConversationChatRouteDecision {

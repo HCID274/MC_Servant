@@ -43,6 +43,14 @@
 
 (从这里开始,Reviewer C 通过任务后追加)
 
+## T-067 | 2026-05-06 | Plan（规划）输出契约收敛为唯一 code（代码）任务
+
+- 涉及模块: conversation/llm（对话大语言模型） plan prompt（规划提示词）/parser（解析器）/client（客户端）,ConversationWorker（对话工作线程）,ExecJob（执行任务）契约,runtime（运行时） BotActor（机器人执行代理）/scaffold（脚手架）,sandbox（沙箱）请求契约,data（数据层） task_history（任务历史）/task_card（任务卡）,diagnostics（诊断）摘要,相关回归测试
+- A 拆解依据: 用户要求把 Plan（规划）在线输出统一为 `{ "code": "..." }`,删除旧 `skill_call`（技能直调）/`sandbox_code`（沙箱代码）双路径,简单任务和复杂任务都进入同一套 TS（TypeScript）代码生命周期;边界限定 conversation/llm（对话大语言模型）、Plan parser（规划解析器）、ConversationWorker（对话工作线程）、ExecJob（执行任务）契约、runtime scaffold（运行时脚手架）、事件、recent context（最近上下文）、diagnostics（诊断）与测试,不删除底层 skill（技能）模块
+- C 审查结论: 曾打回 1 次 (首轮只把 Plan（规划）解析为 `code`（代码）,但内部 `ExecJob`（执行任务）仍保留 `SkillCallJob | SandboxCodeJob`（技能调用任务或沙箱代码任务）双类型语义);返修后通过。在线 Plan（规划）只解析 `{code}`（代码对象）,拒绝 `type`/`skill`/`params`/`skill_call`/`sandbox_code` 等旧字段;ConversationWorker（对话工作线程）投递 `type: "code"`（代码类型）,runtime（运行时）/task_history（任务历史）/task_card（任务卡）/event（事件）/summary（摘要）均写 code（代码）语义。`git diff --check`（差异空白检查） 通过,`pnpm typecheck`（类型检查） 通过,`pnpm test`（测试命令） 34 个 test file（测试文件）通过,395 个 test（测试）通过,8 个 skipped（跳过）,`bash scripts/pre_review.sh`（评审前预检脚本） 全绿;旧任务类型写入搜索无命中。B 已补真实 OpenAI compatible API（OpenAI 兼容接口） 验证,"砍 12 个木头"、"挖 5 个石头"、"挖铁矿" 均返回 `code`（代码）+ diagnostics（诊断）
+- 关键决策: 选择真正把执行层任务类型收敛为 `ExecutionTaskKind.Code`（代码任务类型）,而不是保留"外部 code（代码）、内部 sandbox_code（沙箱代码）"的过渡命名;底层 skill（技能）执行能力保留为 TS（TypeScript）代码内 `api.bot.*`（机器人应用接口）能力复用,旧字段只留在 Plan（规划）拒绝清单和负向测试中
+- 架构冲突: 无
+
 ## T-070 | 2026-05-06 | SkillResultSummary（技能结果摘要）世界键全链路补齐
 
 - 涉及模块: core-ports/skills（技能端口契约）,runtime/transport（运行时传输层） goTo/collect/equip（移动/捡拾/装备）适配器,TaskResultSummary（任务结果摘要）,TaskResultReporter（任务结果汇报器）消费测试,sandbox（沙箱）摘要解析测试,相关 runtime（运行时）回归测试
