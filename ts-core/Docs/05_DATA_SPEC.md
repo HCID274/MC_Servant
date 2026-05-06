@@ -556,7 +556,7 @@ logs/
 {"t":1712930001,"meta":{"input_tokens":120,"output_tokens":35,"ms":800,"ok":true,"metrics":{"queue_wait_ms":12,"prompt_build_ms":4,"request_total_ms":760,"response_parse_ms":2,"tool_round_count":0,"tool_round_ms":[],"diagnostics_write_ms":null,"input_tokens":120,"output_tokens":35,"tokens_per_second":46,"ttft_ms":null,"ttft_unavailable":"non_streaming"}}}
 ```
 
-每次调用按 `{stage}-{message_id}.jsonl` 命名。一个用户消息如果触发了 Triage + Plan 两次 LLM 调用，会产出两个文件。`stage` 允许 `triage` / `chat` / `plan` / `brain`；BrainWorker 的失败复盘、会话 takeaway、滚动摘要压缩与记忆 rubric 也必须落同一 llm 通道。当前不启用 stream（流式响应），所以 `ttft_ms` 必须为 `null`，不得用总耗时冒充首字延迟。
+每次调用按 `{stage}-{message_id}.jsonl` 命名。一个用户消息如果触发了 Triage + Plan 两次 LLM 调用，会产出两个文件。`stage` 允许 `triage` / `chat` / `plan` / `brain` / `report`；BrainWorker 的失败复盘、会话 takeaway、滚动摘要压缩与记忆 rubric 也必须落同一 llm 通道；`ReportLLM`（汇报大语言模型） 的终态润色必须落 `report` 阶段。当前不启用 stream（流式响应），所以 `ttft_ms` 必须为 `null`，不得用总耗时冒充首字延迟。
 
 在线入口的 llm JSONL 落盘走 bounded async sink（有界异步汇点）。主流程只 enqueue（投递）记录并同步更新最新 LLM 摘要；文件写入在后台串行执行，关闭进程时 `flush()`。状态接口可暴露 `diagnostic_sink: { queued, in_flight, dropped_count, error_count }`。队列满时优先保留失败诊断；写入失败只增加错误计数，不影响 Chat/Plan/BrainWorker 主流程。
 

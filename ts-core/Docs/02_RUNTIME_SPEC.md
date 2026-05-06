@@ -470,7 +470,17 @@ Phase 1 的规则表是硬编码的。扩展路径：
 
 BotWorker 是 BullMQ Worker 的壳。它的唯一职责是从 `bot:{botId}:exec` 队列取 job，交给 BotActor 执行，然后汇报结果。BotWorker 本身不持有任何业务状态。
 
-任务终态汇报由 `TaskResultReporter`（任务结果汇报器） 完成：它只消费 BotWorker 产出的 `task.completed` / `task.failed` / `task.interrupted` 终态任务卡，按模板生成一次性自然语言结果，并同步写入 game chat（游戏聊天） 与 realtime（实时推送） `chat.reply`。BotActor 仍只负责执行与产出事件，不决定终态文案；汇报器按 `bot_id + message_id + status` 去重，避免重复刷屏。
+任务终态汇报由 `TaskResultReporter`（任务结果汇报器） 完成：它只消费 BotWorker 产出的 `task.completed` / `task.failed` / `task.interrupted` 终态任务卡，先生成一份确定性事实模板，再在启用 `ReportLLM`（汇报大语言模型） 时把结构化事实交给受限 LLM（大语言模型） 润色成更自然的游戏聊天文本，最后同步写入 game chat（游戏聊天） 与 realtime（实时推送） `chat.reply`。BotActor 仍只负责执行与产出事件，不决定终态文案；汇报器按 `bot_id + message_id + status` 去重，避免重复刷屏。
+
+`ReportLLM`（汇报大语言模型） 不是新的决策层。它只能消费终态事实，不能读取或修改 Bot 状态，不能触发动作，不能改写任务状态、数量、物品、世界、耗时、失败码、可恢复性或中断原因。润色失败、超时、输出不合法或丢失关键事实时，必须回退到确定性事实模板。模板不是废弃路径，而是事实校验与 LLM（大语言模型）故障兜底。
+
+终态汇报链路必须满足：
+
+1. `result_summary`（结果摘要） 是事实真源，来自 BotWorker / sandbox（沙箱） / skill（技能） 的执行结果。
+2. `TaskResultReporter`（任务结果汇报器） 是唯一对外汇报 owner（所有者），负责去重、事实模板、可选润色、game chat（游戏聊天） 与 realtime（实时推送） 双端同步。
+3. `ReportLLM`（汇报大语言模型） 的 prompt（提示词） 只包含终态事实、确定性模板和语气要求，不包含可执行 API（应用程序接口） 或 Plan（规划） 上下文。
+4. `ReportLLM`（汇报大语言模型） 输出必须是短文本；实现层必须校验关键事实没有被删除或篡改。
+5. diagnostics（诊断） 必须记录 report 阶段的 LLM（大语言模型）延迟、首字延迟、输入事实摘要、输出摘要和回退原因。
 
 ```typescript
 // workers/bot-worker.ts

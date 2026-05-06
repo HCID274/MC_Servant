@@ -1078,7 +1078,7 @@
     | `AbortError` | 中断信号到达 | 沙箱执行终止，emit task.interrupted |
     | `UnhandledError` | 沙箱代码未捕获的 JS 运行时异常 | emit task.failed |
 
-    TS（TypeScript） 代码任务终态由 BotWorker（机器人工作线程） 统一进入 `TaskResultReporter`（任务结果汇报器）。成功、失败、中断都必须生成一次结构化 `result_summary`（结果摘要）。`report(task)`（汇报任务） 可以把结构化事实交给受限 report LLM（汇报大语言模型） 润色成更自然的游戏聊天文本,但 LLM（大语言模型） 只能改表达,不能改事实、数量、世界、耗时、失败码或完成状态；润色失败时必须回退到确定性模板。不得让代码任务失败沉默。
+    TS（TypeScript） 代码任务终态由 BotWorker（机器人工作线程） 统一进入 `TaskResultReporter`（任务结果汇报器）。成功、失败、中断都必须生成一次结构化 `result_summary`（结果摘要）。`report(task)`（汇报任务） 的职责是提交 `runGoal`（目标运行） 产生的结构化 GoalResult（目标结果），不是让沙箱代码直接拼最终聊天文案；真正对外发送的终态文本由 `TaskResultReporter`（任务结果汇报器） 基于 `result_summary`（结果摘要） 生成。启用 `ReportLLM`（汇报大语言模型） 时，它只能在终态事实基础上润色表达，不能改事实、数量、世界、耗时、失败码、中断原因或完成状态；润色失败时必须回退到确定性模板。不得让代码任务失败沉默。
 
     ### 12.2 错误信息的传递
 

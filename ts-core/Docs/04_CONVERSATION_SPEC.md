@@ -819,7 +819,7 @@ Failure Capsule（失败胶囊）事实 owner（所有者） 是执行终态侧�
 - skill 模块新增时，**必须**同处实现 `formatRecentEventLine`。缺失 formatter 应在测试或 review 阶段失败；运行时不得调用 LLM 兜底，也不得静默丢弃事件。
 - TS（TypeScript） 代码注入 **不做** 摘要、不调用 LLM 总结、不写规则猜代码含义；允许的偏离只有 §7.6.4 的超长截断,以及失败 continuation（继续任务） 时用 Failure Capsule（失败胶囊）替代上一轮失败的完整 TS（TypeScript） 代码。
 - 代码任务报错只取 `error.message`，不接 stack trace，不做 LLM 改写。
-- ConversationWorker 不得调用 LLM 总结执行结果或对话内容作为回退路径；`report(task)`（汇报任务） 的可选 report LLM（汇报大语言模型） 只能由执行终态摘要驱动,只改表达不改事实,失败时回退确定性模板。
+- ConversationWorker 不得调用 LLM 总结执行结果或对话内容作为回退路径；终态润色只能发生在执行侧 `TaskResultReporter`（任务结果汇报器） 内，由 `result_summary`（结果摘要） 和确定性事实模板驱动。`ReportLLM`（汇报大语言模型） 只改表达不改事实，失败时回退确定性模板。
 - BotActor 是 `recent_events` 的 single writer；ConversationWorker 是对话轮一侧的 single writer。**两侧不得交叉写**。
 - Failure Capsule（失败胶囊）只能由执行终态摘要确定性格式化产生；ConversationWorker 只合并渲染,不得补造 bot_position（机器人坐标）、inventory（背包） 或 resource_search_result（资源搜索结果） 等完整执行事实。
 - 当前用户输入不重复进 `[最近上下文]`；当前 prompt 之后才完成的事件下一轮再渲染。
@@ -1176,7 +1176,10 @@ msg:{botId} 队列取出 job（用户消息）
     │     - 多轮 tool calling 规则同 Stage 2-Chat
     │   → 解析输出
     │   → 推入 exec 队列
-    │   → done（任务完成后 BotWorker 推任务卡进 brain 队列,详见 §8）
+    │   → done（任务完成后 BotWorker 产出终态任务卡）
+    │   → TaskResultReporter 基于 result_summary 生成确定性事实模板
+    │   → 可选 ReportLLM 只润色表达；失败则回退模板
+    │   → 推任务卡进 brain 队列,详见 §8
 ```
 
 ---
@@ -1270,10 +1273,11 @@ ConversationWorker 只依赖此接口，不依赖具体 SDK。Phase 1 实现 Min
 | Triage | 0.1 | 分类要稳定，不需要创意 |
 | Chat | 0.7 | 闲聊要自然，需要变化 |
 | Plan | 0.2 | 结构化输出和代码都要稳定 |
+| Report | 0.4 | 只润色表达，既要自然，也不能飘离事实 |
 
 ### 16.3 LLM 性能指标
 
-每次 LLM 调用必须产出 `metrics` 摘要，覆盖 `triage`、`chat`、`plan` 与 BrainWorker 的 `brain` 调用。字段包括：
+每次 LLM 调用必须产出 `metrics` 摘要，覆盖 `triage`、`chat`、`plan`、`report` 与 BrainWorker 的 `brain` 调用。字段包括：
 
 - `queue_wait_ms`：消息进入队列到本阶段 LLM 调用开始前的等待时间。
 - `prompt_build_ms`：prompt/messages 构建耗时。
