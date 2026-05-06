@@ -51,6 +51,7 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
     expect(result).toEqual({
       skill: "goTo",
       target: { x: 10, y: 64, z: -5 },
+      world_key: null,
       reached: true,
       total_steps: 1,
     });

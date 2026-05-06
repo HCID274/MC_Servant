@@ -13,6 +13,7 @@ const EQUIP_TIMEOUT_MS = 5_000;
 export async function executeMineflayerEquip(input: {
   readonly bot: MineflayerInventoryPort;
   readonly params: Readonly<EquipSkillParams>;
+  readonly worldKey: string | null;
 }): Promise<EquipSkillExecutionResult> {
   if (input.bot.inventory === undefined || typeof input.bot.inventory.items !== "function") {
     throw createEquipFailure(
@@ -38,7 +39,7 @@ export async function executeMineflayerEquip(input: {
   ) {
     return createEquipSkillExecutionResult(
       { ...input.params, itemName: normalizedItemName },
-      { status: "already_equipped", total_steps: 0 },
+      { world_key: input.worldKey, status: "already_equipped", total_steps: 0 },
     );
   }
 
@@ -75,7 +76,10 @@ export async function executeMineflayerEquip(input: {
     );
   }
 
-  return createEquipSkillExecutionResult({ ...input.params, itemName: normalizedItemName });
+  return createEquipSkillExecutionResult(
+    { ...input.params, itemName: normalizedItemName },
+    { world_key: input.worldKey },
+  );
 }
 
 async function runEquipWithTimeout(

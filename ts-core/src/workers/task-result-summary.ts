@@ -28,6 +28,7 @@ export function createTaskResultSummaryFromSkillResult(
         operation: result.skill,
         target: `${result.target.x},${result.target.y},${result.target.z}`,
         completed_count: 1,
+        world_key: result.world_key,
         ...createDurationField(options),
       });
     case "mine": {
@@ -80,6 +81,7 @@ export function createTaskResultSummaryFromSkillResult(
           item_name: item.name,
           count: item.count,
         })),
+        world_key: result.world_key,
         ...createDurationField(options),
         details: { skipped_count: result.skipped.length },
       });
@@ -89,6 +91,7 @@ export function createTaskResultSummaryFromSkillResult(
         operation: result.skill,
         target: result.item_name,
         completed_count: 1,
+        world_key: result.world_key,
         ...createDurationField(options),
         details: {
           destination: result.destination,
@@ -434,28 +437,35 @@ function readSandboxSkillResult(value: unknown): TaskResultSummary | null {
     }
     case "collect": {
       const completedCount = readCollectedCount(value.collected);
+      const worldKey = readOptionalString(value.world_key);
       return createTaskResultSummary({
         task_type: ExecutionTaskKind.SandboxCode,
         operation: "collect",
         target: readOptionalString(value.item_name) ?? "all_items",
         ...(completedCount === undefined ? {} : { completed_count: completedCount }),
+        ...(worldKey === undefined ? {} : { world_key: worldKey }),
       });
     }
     case "equip": {
       const target = readOptionalString(value.item_name);
+      const worldKey = readOptionalString(value.world_key);
       return createTaskResultSummary({
         task_type: ExecutionTaskKind.SandboxCode,
         operation: "equip",
         ...(target === undefined ? {} : { target }),
         completed_count: 1,
+        ...(worldKey === undefined ? {} : { world_key: worldKey }),
       });
     }
-    case "goTo":
+    case "goTo": {
+      const worldKey = readOptionalString(value.world_key);
       return createTaskResultSummary({
         task_type: ExecutionTaskKind.SandboxCode,
         operation: "goTo",
         completed_count: 1,
+        ...(worldKey === undefined ? {} : { world_key: worldKey }),
       });
+    }
     default:
       return null;
   }

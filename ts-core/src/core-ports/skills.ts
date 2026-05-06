@@ -591,6 +591,8 @@ export interface GoToSkillExecutionResult {
   readonly skill: "goTo";
   /** 目标坐标。 */
   readonly target: Readonly<GoToSkillParams>;
+  /** 当前世界 / 维度键。 */
+  readonly world_key: string | null;
   /** 是否已由底层移动适配器确认完成。 */
   readonly reached: true;
   /** 当前最小执行器的步骤数。 */
@@ -623,6 +625,8 @@ export interface CollectSkillExecutionResult {
   readonly skill: "collect";
   /** 目标物品标准名称。 */
   readonly item_name: string | null;
+  /** 当前世界 / 维度键。 */
+  readonly world_key: string | null;
   /** 本次清扫中心点。 */
   readonly center: NonNullable<CollectSkillParams["center"]>;
   /** 使用的搜索半径。 */
@@ -702,6 +706,8 @@ export interface EquipSkillExecutionResult {
   readonly skill: "equip";
   /** 已装备的物品标准名称。 */
   readonly item_name: string;
+  /** 当前世界 / 维度键。 */
+  readonly world_key: string | null;
   /** 实际装备槽位。 */
   readonly destination: NonNullable<EquipSkillParams["destination"]> | "hand";
   /** 装备结果状态。 */
@@ -805,6 +811,9 @@ export interface SkillExecutionDependencies
 /** 创建冻结的 goTo（前往坐标） 技能执行结果。 */
 export function createGoToSkillExecutionResult(
   params: Readonly<GoToSkillParams>,
+  outcome: {
+    readonly world_key?: string | null;
+  } = {},
 ): GoToSkillExecutionResult {
   return Object.freeze({
     skill: "goTo" as const,
@@ -813,6 +822,7 @@ export function createGoToSkillExecutionResult(
       y: params.y,
       z: params.z,
     }),
+    world_key: outcome.world_key ?? null,
     reached: true as const,
     total_steps: 1 as const,
   });
@@ -846,6 +856,7 @@ export function createMineSkillExecutionResult(
 export function createCollectSkillExecutionResult(
   params: Readonly<CollectSkillParams>,
   outcome: {
+    readonly world_key?: string | null;
     readonly center?: NonNullable<CollectSkillParams["center"]>;
     readonly collected?: readonly CollectSkillCollectedItem[];
     readonly skipped?: readonly CollectSkillSkippedItem[];
@@ -855,6 +866,7 @@ export function createCollectSkillExecutionResult(
   return Object.freeze({
     skill: "collect" as const,
     item_name: params.itemName ?? null,
+    world_key: outcome.world_key ?? null,
     center: Object.freeze({
       x: outcome.center?.x ?? params.center?.x ?? 0,
       y: outcome.center?.y ?? params.center?.y ?? 0,
@@ -928,6 +940,7 @@ export function createCutTreeSkillExecutionResult(
 export function createEquipSkillExecutionResult(
   params: Readonly<EquipSkillParams>,
   outcome: {
+    readonly world_key?: string | null;
     readonly status?: EquipSkillExecutionResult["status"];
     readonly total_steps?: EquipSkillExecutionResult["total_steps"];
   } = {},
@@ -935,6 +948,7 @@ export function createEquipSkillExecutionResult(
   return Object.freeze({
     skill: "equip" as const,
     item_name: params.itemName,
+    world_key: outcome.world_key ?? null,
     destination: params.destination ?? "hand",
     status: outcome.status ?? "equipped",
     total_steps: outcome.total_steps ?? 1,

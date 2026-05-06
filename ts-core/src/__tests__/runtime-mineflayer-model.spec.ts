@@ -754,10 +754,12 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       executeMineflayerEquip({
         bot,
         params: { itemName: "stone_pickaxe", destination: "hand" },
+        worldKey: "multiworld:resource",
       }),
     ).resolves.toEqual({
       skill: "equip",
       item_name: "stone_pickaxe",
+      world_key: "multiworld:resource",
       destination: "hand",
       status: "already_equipped",
       total_steps: 0,
@@ -773,10 +775,12 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       executeMineflayerEquip({
         bot,
         params: { itemName: "bread" },
+        worldKey: "multiworld:resource",
       }),
     ).resolves.toEqual({
       skill: "equip",
       item_name: "bread",
+      world_key: "multiworld:resource",
       destination: "hand",
       status: "equipped",
       total_steps: 1,
@@ -794,6 +798,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       executeMineflayerEquip({
         bot,
         params: { itemName: "stone_pickaxe", destination: "hand" },
+        worldKey: "multiworld:resource",
       }),
     ).rejects.toMatchObject({
       error_code: "missing_item",
@@ -819,6 +824,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       executeMineflayerEquip({
         bot,
         params: { itemName: "stone_pickaxe", destination: "hand" },
+        worldKey: "multiworld:resource",
       }),
     ).rejects.toMatchObject({
       error_code: "runtime_equip_failed",
@@ -2596,6 +2602,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     ).resolves.toMatchObject({
       skill: "collect",
       item_name: "cobblestone",
+      world_key: "multiworld:resource",
       radius: 32,
     });
     expect(collectBot.receivedMovements[0]).toMatchObject({
@@ -3015,6 +3022,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       }),
     ).resolves.toMatchObject({
       skill: "goTo",
+      world_key: "multiworld:resource",
       reached: true,
     });
     expect(goToBot.game).toMatchObject({

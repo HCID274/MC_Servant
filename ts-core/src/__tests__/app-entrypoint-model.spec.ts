@@ -579,7 +579,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           skill: "goTo",
           params: { x: 1, y: 2, z: 3 },
         }),
-        createGoToSkillExecutionResult({ x: 1, y: 2, z: 3 }),
+        createGoToSkillExecutionResult({ x: 1, y: 2, z: 3 }, { world_key: "multiworld:resource" }),
         { durationMs: 10 },
       ),
       createTaskResultSummaryFromSkillResult(
@@ -614,7 +614,10 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         }),
         createCollectSkillExecutionResult(
           { itemName: "oak_log" },
-          { collected: [{ name: "oak_log", count: 3 }] },
+          {
+            world_key: "multiworld:resource",
+            collected: [{ name: "oak_log", count: 3 }],
+          },
         ),
         { durationMs: 30 },
       ),
@@ -656,7 +659,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         }),
         createEquipSkillExecutionResult(
           { itemName: "stone_pickaxe" },
-          { status: "already_equipped", total_steps: 0 },
+          {
+            world_key: "multiworld:resource",
+            status: "already_equipped",
+            total_steps: 0,
+          },
         ),
         { durationMs: 50 },
       ),
@@ -676,7 +683,103 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     }
     expect(summaries[1]?.inventory_delta).toEqual([{ item_name: "cobblestone", count: 2 }]);
     expect(summaries[1]?.diagnostics).toEqual(["planner=stair_bfs"]);
+    expect(summaries.map((summary) => summary.world_key)).toEqual([
+      "multiworld:resource",
+      "minecraft:overworld",
+      "multiworld:resource",
+      "minecraft:overworld",
+      "multiworld:resource",
+    ]);
     expect(summaries[4]?.details).toMatchObject({ status: "already_equipped" });
+  });
+
+  it("goTo（移动）成功汇报应使用摘要中的真实世界键", () => {
+    const task = createBotWorkerTask({
+      bot_id: "bot-realtime-action",
+      exec_job: createSkillCallJob({
+        message_id: "msg-goto-world-report",
+        intent_epoch: 1,
+        snapshot_ts: 1777906762364,
+        priority: ExecPriority.Normal,
+        skill: "goTo",
+        params: { x: 16, y: 104, z: 10 },
+      }),
+      owner_text: "到我这来",
+    });
+    const actions = createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Completed,
+      total_steps: 1,
+      duration_ms: 800,
+      result_summary: createTaskResultSummaryFromSkillResult(
+        task.exec_job,
+        createGoToSkillExecutionResult(
+          { x: 16, y: 104, z: 10 },
+          { world_key: "multiworld:resource" },
+        ),
+        { durationMs: 800 },
+      ),
+    });
+
+    const reporter = createTaskResultReporter();
+    const reply = reporter.consume(actions[1]);
+
+    expect(reply?.content).toContain("世界 multiworld:resource");
+    expect(reply?.content).not.toContain("世界 unknown");
+  });
+
+  it("sandbox TS（沙箱 TypeScript） 成功摘要应保留 goTo / collect / equip 的世界键", () => {
+    const sandboxJob = createSandboxCodeJob({
+      message_id: "msg-sandbox-skill-world",
+      intent_epoch: 1,
+      snapshot_ts: 1777906762364,
+      priority: ExecPriority.Normal,
+      code: "await api.bot.goTo(1, 64, 1)",
+    });
+    const createResult = (action: string, result: Readonly<Record<string, unknown>>) =>
+      ({
+        status: TaskHistoryStatus.Completed,
+        summary: { total_steps: 1 },
+        step_results: [
+          {
+            action,
+            status: "ok",
+            params: {},
+            result,
+          },
+        ],
+      }) as unknown as Parameters<typeof createTaskResultSummaryFromSandboxResult>[1];
+
+    const goToSummary = createTaskResultSummaryFromSandboxResult(
+      sandboxJob,
+      createResult("goTo", {
+        skill: "goTo",
+        world_key: "multiworld:resource",
+        target: { x: 1, y: 64, z: 1 },
+      }),
+    );
+    const collectSummary = createTaskResultSummaryFromSandboxResult(
+      sandboxJob,
+      createResult("collect", {
+        skill: "collect",
+        item_name: "oak_log",
+        world_key: "multiworld:resource",
+        collected: [{ name: "oak_log", count: 2 }],
+      }),
+    );
+    const equipSummary = createTaskResultSummaryFromSandboxResult(
+      sandboxJob,
+      createResult("equip", {
+        skill: "equip",
+        item_name: "bread",
+        world_key: "multiworld:resource",
+      }),
+    );
+
+    expect(goToSummary.world_key).toBe("multiworld:resource");
+    expect(collectSummary.world_key).toBe("multiworld:resource");
+    expect(equipSummary.world_key).toBe("multiworld:resource");
   });
 
   it("应为 sandbox TS（沙箱 TypeScript） 工具链能力生成统一成功与失败摘要", () => {

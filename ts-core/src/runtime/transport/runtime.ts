@@ -177,7 +177,13 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
     async goTo(params: Readonly<GoToSkillParams>) {
       const currentBot = ensureWorldInteractionReady("goTo");
       const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
-      return executeMineflayerGoTo({ bot: currentBot, pathfinder, pathfinderModule, params });
+      return executeMineflayerGoTo({
+        bot: currentBot,
+        pathfinder,
+        pathfinderModule,
+        params,
+        worldKey: createMineflayerWorldKey(currentBot),
+      });
     },
     async mine(params: Readonly<MineSkillParams>) {
       const currentBot = ensureWorldInteractionReady("mine");
@@ -202,11 +208,21 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
     async collect(params: Readonly<CollectSkillParams>) {
       const currentBot = ensureWorldInteractionReady("collect");
       const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
-      return executeMineflayerCollect({ bot: currentBot, pathfinder, pathfinderModule, params });
+      return executeMineflayerCollect({
+        bot: currentBot,
+        pathfinder,
+        pathfinderModule,
+        params,
+        worldKey: createMineflayerWorldKey(currentBot),
+      });
     },
     async equip(params: Readonly<EquipSkillParams>) {
       const currentBot = ensureWorldInteractionReady("equip");
-      return executeMineflayerEquip({ bot: currentBot, params });
+      return executeMineflayerEquip({
+        bot: currentBot,
+        params,
+        worldKey: createMineflayerWorldKey(currentBot),
+      });
     },
     async craft(params: Readonly<CraftCapabilityParams>) {
       const currentBot = ensureWorldInteractionReady("craft");

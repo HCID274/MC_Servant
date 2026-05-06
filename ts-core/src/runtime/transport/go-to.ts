@@ -18,6 +18,7 @@ export async function executeMineflayerGoTo(input: {
   readonly pathfinder: MineflayerPathfinderApi;
   readonly pathfinderModule: MineflayerPathfinderModule;
   readonly params: Readonly<GoToSkillParams>;
+  readonly worldKey: string | null;
 }): Promise<GoToSkillExecutionResult> {
   const movements = new input.pathfinderModule.Movements(input.bot, input.bot.registry);
   const GoalBlock = resolveGoalBlockConstructor(input.pathfinderModule);
@@ -25,7 +26,7 @@ export async function executeMineflayerGoTo(input: {
   input.pathfinder.setMovements?.(movements);
   await input.pathfinder.goto(new GoalBlock(input.params.x, input.params.y, input.params.z));
 
-  return createGoToSkillExecutionResult(input.params);
+  return createGoToSkillExecutionResult(input.params, { world_key: input.worldKey });
 }
 
 /** 配置 goTo（前往坐标） 的 pathfinder（寻路器）移动代价。 */

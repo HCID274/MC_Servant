@@ -43,6 +43,14 @@
 
 (从这里开始,Reviewer C 通过任务后追加)
 
+## T-070 | 2026-05-06 | SkillResultSummary（技能结果摘要）世界键全链路补齐
+
+- 涉及模块: core-ports/skills（技能端口契约）,runtime/transport（运行时传输层） goTo/collect/equip（移动/捡拾/装备）适配器,TaskResultSummary（任务结果摘要）,TaskResultReporter（任务结果汇报器）消费测试,sandbox（沙箱）摘要解析测试,相关 runtime（运行时）回归测试
+- A 拆解依据: 用户要求补齐 goTo（移动）、collect（捡拾）、equip（装备） 等早期正式 skill（技能） 成功结果里的 `world_key`（世界键）,与 mine（挖掘）/cutTree（砍树） 保持统一摘要契约;边界限定 core-ports（核心端口）、runtime/transport（运行时传输层）、skills（技能）、BotWorker（机器人工作线程）、reporter（汇报器）、sandbox（沙箱） 与测试,不改 LLM（大语言模型） prompt（提示词）,不得在业务层或 reporter（汇报器） 拼接/猜测世界名
+- C 审查结论: 通过。改动沿"结果契约扩展 → runtime transport（运行时传输层）入口透传 → TaskResultSummary（任务结果摘要）消费"收口,未在 skill（技能）层、summary（摘要）层或 reporter（汇报器）层新增世界解析;`git diff --check`（差异空白检查） 通过,`bash scripts/pre_review.sh`（评审前预检脚本） 全绿,34 个 test file（测试文件）/403 个 test（测试）通过;B 已补 server-bridge（服务端桥接） smoke（冒烟）验证,"到我这来"完成汇报显示 `multiworld:resource`（资源世界键） 而非 `unknown`（未知）
+- 关键决策: 选择复用 runtime transport（运行时传输层）已有 `createMineflayerWorldKey`（Mineflayer 世界键创建器） 与 `getCurrentWorldKey`（获取当前世界键）语义,让 goTo/collect/equip（移动/捡拾/装备） 与 mine/craft/place（挖掘/合成/放置） 同源透传世界键;TaskResultReporter（任务结果汇报器） 只消费统一摘要并保留异常兜底,不承担修补或猜测职责,避免掩盖上游漏传
+- 架构冲突: 无
+
 ## T-069 | 2026-05-06 | Failure Capsule（失败胶囊）运行链路与失败后继续规划
 
 - 涉及模块: core-ports/task-result（任务结果端口）,conversation/recent-context（最近上下文）,conversation/llm plan prompt（规划提示词）,ConversationWorker（对话工作线程）,BotWorker action sink（机器人工作线程动作汇点）,TaskResultSummary（任务结果摘要）,相关回归测试

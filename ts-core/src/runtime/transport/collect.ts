@@ -57,6 +57,7 @@ export async function executeMineflayerCollect(input: {
   readonly pathfinder: MineflayerPathfinderApi;
   readonly pathfinderModule: MineflayerPathfinderModule;
   readonly params: Readonly<CollectSkillParams>;
+  readonly worldKey: string | null;
 }): Promise<CollectSkillExecutionResult> {
   const options = normalizeCollectDropsOptions(input.bot, input.params);
   const movements = new input.pathfinderModule.Movements(input.bot, input.bot.registry);
@@ -67,6 +68,7 @@ export async function executeMineflayerCollect(input: {
     bot: input.bot,
     pathfinder: input.pathfinder,
     pathfinderModule: input.pathfinderModule,
+    worldKey: input.worldKey,
     options,
   });
 }
@@ -87,6 +89,7 @@ async function collectDrops(input: {
   readonly bot: MineflayerCollectPort;
   readonly pathfinder: MineflayerPathfinderApi;
   readonly pathfinderModule: MineflayerPathfinderModule;
+  readonly worldKey: string | null;
   readonly options: CollectDropsOptions;
 }): Promise<CollectSkillExecutionResult> {
   const startedAt = Date.now();
@@ -118,6 +121,7 @@ async function collectDrops(input: {
   if (sawTargetEntity && autoCollected.length > 0 && settledTargets.length === 0) {
     return createCollectResult(options, {
       bot: input.bot,
+      worldKey: input.worldKey,
       collected: autoCollected,
       skipped,
       totalSteps,
@@ -186,6 +190,7 @@ async function collectDrops(input: {
   if (sawTargetEntity && collected.length > 0 && remainingTargets.length === 0) {
     return createCollectResult(options, {
       bot: input.bot,
+      worldKey: input.worldKey,
       collected,
       skipped,
       totalSteps,
@@ -698,6 +703,7 @@ function createCollectResult(
   options: CollectDropsOptions,
   outcome: {
     readonly bot: MineflayerCollectPort;
+    readonly worldKey: string | null;
     readonly collected: readonly CollectSkillCollectedItem[];
     readonly skipped: readonly CollectSkillSkippedItem[];
     readonly totalSteps: number;
@@ -712,6 +718,7 @@ function createCollectResult(
       timeoutMs: options.timeoutMs,
     },
     {
+      world_key: outcome.worldKey,
       center,
       collected: outcome.collected,
       skipped: outcome.skipped,
