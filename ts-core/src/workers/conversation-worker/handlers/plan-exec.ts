@@ -12,7 +12,8 @@ import {
 import { isOnlinePlanSkillName } from "../../../conversation/llm/skill-plan-table.js";
 import { createExecJobFromPlan } from "../../../conversation/planning.js";
 import { ExecutionTaskKind } from "../../../core-ports/foundation.js";
-import { TaskHistoryStatus } from "../../../core-ports/tasking.js";
+import { type FailureCapsule, classifyFailureCode } from "../../../core-ports/task-result.js";
+import { type ExecJob, TaskHistoryStatus } from "../../../core-ports/tasking.js";
 import { type ConversationWorkerTask, createBotWorkerTask } from "../../contracts.js";
 import { tryEnqueueConversationFactCandidate } from "../brain-facts.js";
 import {
@@ -49,10 +50,32 @@ export async function handlePlanExecRoute(input: {
   let resourceContext: string | undefined;
   let brainContext: string | undefined;
   let recentContext: string | undefined;
+  let continuationFailureCapsule: FailureCapsule | null = null;
   let inventoryChangeContext: string | undefined;
   let ownerPositionAtMessage = input.task.message.owner_position_at_message;
   try {
-    recentContext = await readRecentContext(input);
+    const recentContextInfo = await readRecentContextInfo(input);
+    const continuation = createContinuationDecision({
+      message: input.task.message.content,
+      failure_capsule: recentContextInfo.failure_capsule,
+    });
+    continuationFailureCapsule =
+      continuation.kind === "none" ? null : recentContextInfo.failure_capsule;
+    if (
+      continuation.kind === "implementation_blocker" &&
+      recentContextInfo.failure_capsule !== null
+    ) {
+      await pushPlanningFailure(
+        input,
+        "implementation_blocker",
+        `上次失败是实现阻塞：${recentContextInfo.failure_capsule.failure_code}，${recentContextInfo.failure_capsule.hint}，已停止喵~`,
+        {
+          failure_capsule: recentContextInfo.failure_capsule,
+        },
+      );
+      return;
+    }
+    recentContext = recentContextInfo.recent_context;
     memoryContext = await readMemoryContext(input);
     brainContext = await readBrainContext(input);
     resourceContext = await readResourceContext(input);
@@ -126,6 +149,23 @@ export async function handlePlanExecRoute(input: {
     snapshot_ts: input.task.message.snapshot_ts,
     priority: input.route.exec_priority,
   });
+
+  const repeatedFailure = detectRepeatedFailurePlan({
+    exec_job: execJob,
+    failure_capsule: continuationFailureCapsule,
+  });
+  if (repeatedFailure !== null) {
+    await pushPlanningFailure(
+      input,
+      "retry_guard_repeated",
+      `上次这个动作已经失败：${repeatedFailure.retry_guard}，我不会原样重复，已停止喵~`,
+      {
+        failure_capsule: repeatedFailure,
+        ...(plan.diagnostics === undefined ? {} : { llm_diagnostics: plan.diagnostics }),
+      },
+    );
+    return;
+  }
 
   if (execJob.type === ExecutionTaskKind.SkillCall && !isOnlinePlanSkillName(execJob.skill)) {
     await pushPlanningFailure(input, "skill_not_enabled", createSkillNotEnabledReply().reply, {
@@ -242,24 +282,37 @@ export async function handlePlanExecRoute(input: {
   });
 }
 
-async function readRecentContext(input: {
+async function readRecentContextInfo(input: {
   readonly task: ConversationWorkerTask;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
-}): Promise<string | undefined> {
+}): Promise<{
+  readonly recent_context?: string;
+  readonly failure_capsule: FailureCapsule | null;
+}> {
   try {
     const projection = await input.dependencies.actorStateProjectionProvider?.({
       task: input.task,
     });
-
-    return input.dependencies.recentContextStore?.render({
+    const failureCapsule = input.dependencies.recentContextStore?.getLatestFailureCapsule() ?? null;
+    const continuation = createContinuationDecision({
+      message: input.task.message.content,
+      failure_capsule: failureCapsule,
+    });
+    const recentContext = input.dependencies.recentContextStore?.render({
       ...(projection?.recent_events === undefined
         ? {}
         : { actorRecentEvents: projection.recent_events }),
       currentMessageId: input.task.message.message_id,
       roundLimit: 5,
+      latestFailureCapsuleOnly: continuation.kind !== "none",
+    });
+
+    return Object.freeze({
+      ...(recentContext === undefined ? {} : { recent_context: recentContext }),
+      failure_capsule: failureCapsule,
     });
   } catch {
-    return undefined;
+    return Object.freeze({ failure_capsule: null });
   }
 }
 
@@ -335,6 +388,89 @@ async function readMemoryContext(input: {
   }
 }
 
+function createContinuationDecision(input: {
+  readonly message: string;
+  readonly failure_capsule: FailureCapsule | null;
+}): { readonly kind: "none" | "recoverable" | "implementation_blocker" | "unknown" } {
+  if (input.failure_capsule === null || !isContinuationMessage(input.message)) {
+    return Object.freeze({ kind: "none" });
+  }
+
+  const failureClass = classifyFailureCode(input.failure_capsule.failure_code);
+  if (failureClass === "implementation_blocker") {
+    return Object.freeze({ kind: "implementation_blocker" });
+  }
+  if (failureClass === "recoverable") {
+    return Object.freeze({ kind: "recoverable" });
+  }
+
+  return Object.freeze({ kind: "unknown" });
+}
+
+function isContinuationMessage(message: string): boolean {
+  const normalized = message.toLowerCase().split(" ").join("").trim();
+  if (normalized.length === 0 || normalized.length > 40) {
+    return false;
+  }
+
+  return CONTINUATION_PHRASES.some((phrase) => normalized.includes(phrase));
+}
+
+const CONTINUATION_PHRASES = Object.freeze([
+  "继续",
+  "再试试",
+  "想办法",
+  "换个办法",
+  "你自己解决",
+  "继续做",
+  "为什么失败了继续做",
+] as const);
+
+function detectRepeatedFailurePlan(input: {
+  readonly exec_job: ExecJob;
+  readonly failure_capsule: FailureCapsule | null;
+}): FailureCapsule | null {
+  if (input.failure_capsule === null) {
+    return null;
+  }
+
+  const retrySignature = readRetrySignature(input.failure_capsule.retry_guard);
+  if (retrySignature === null) {
+    return null;
+  }
+
+  switch (input.exec_job.type) {
+    case ExecutionTaskKind.SkillCall:
+      return createSkillJobSignature(input.exec_job) === retrySignature
+        ? input.failure_capsule
+        : null;
+    case ExecutionTaskKind.SandboxCode:
+      return input.exec_job.code.includes(retrySignature) ? input.failure_capsule : null;
+  }
+}
+
+function readRetrySignature(retryGuard: string): string | null {
+  const prefix = "不要原样重复 ";
+  return retryGuard.startsWith(prefix) ? retryGuard.slice(prefix.length).trim() : null;
+}
+
+function createSkillJobSignature(
+  job: Extract<ExecJob, { readonly type: ExecutionTaskKind.SkillCall }>,
+): string {
+  switch (job.skill) {
+    case "mine":
+      return `mine("${job.params.blockName}", ${job.params.count})`;
+    case "cutTree":
+      return `cutTree(${job.params.count})`;
+    case "collect":
+      return `collect("${job.params.itemName ?? "all_items"}")`;
+    case "equip":
+      return `equip("${job.params.itemName}")`;
+    case "goTo":
+      return `goTo("${job.params.x},${job.params.y},${job.params.z}", 1)`;
+  }
+}
+
 /** 记录规划失败并广播模板回复。 */
 async function pushPlanningFailure(
   input: {
@@ -343,7 +479,12 @@ async function pushPlanningFailure(
     readonly dependencies: ConversationWorkerRuntimeDependencies;
     readonly events: ConversationWorkerRuntimeEvent[];
   },
-  reason: "planner_unavailable" | "planner_failed" | "skill_not_enabled",
+  reason:
+    | "planner_unavailable"
+    | "planner_failed"
+    | "skill_not_enabled"
+    | "implementation_blocker"
+    | "retry_guard_repeated",
   reply: string,
   contexts: {
     readonly memory_context?: string;
@@ -352,6 +493,7 @@ async function pushPlanningFailure(
     readonly recent_context?: string;
     readonly inventory_change_context?: string;
     readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;
+    readonly failure_capsule?: FailureCapsule;
   },
 ): Promise<void> {
   await input.dependencies.broadcastReplySink({

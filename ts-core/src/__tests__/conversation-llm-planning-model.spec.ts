@@ -982,6 +982,9 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).toContain("必须读取环境快照 [主人] 位置");
     expect(messages[0]?.content).toContain("每个 ToolchainResult（工具链结果） 必须检查 ok");
     expect(messages[0]?.content).toContain("sandbox_code 最后必须调用 api.chat.report()");
+    expect(messages[0]?.content).toContain("[上一轮失败] Failure Capsule（失败胶囊）");
+    expect(messages[0]?.content).toContain("禁止原样重复“避免重复”里的动作");
+    expect(messages[0]?.content).toContain("实现阻塞");
     expect(messages[0]?.content).toContain('"skill":"cutTree","params":{"count":12}');
     expect(messages[0]?.content).toContain(
       '"skill":"mine","params":{"blockName":"stone","count":5}',

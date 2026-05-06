@@ -9,6 +9,7 @@ import type { SkillExecutionResult } from "../core-ports/skills.js";
 import {
   type TaskResultInventoryDelta,
   type TaskResultSummary,
+  classifyFailureCode,
   createTaskResultSummary,
 } from "../core-ports/task-result.js";
 import type { ExecJob, SandboxCodeJob, SkillCallJob } from "../core-ports/tasking.js";
@@ -378,24 +379,11 @@ function inferRecoverable(code: string | undefined): boolean | null {
     return null;
   }
 
-  if (
-    code === "missing_materials" ||
-    code === "missing_item" ||
-    code === "missing_crafting_table" ||
-    code === "not_equipped" ||
-    code === "resource_not_found" ||
-    code === "unsafe_path"
-  ) {
+  if (classifyFailureCode(code) === "recoverable" || code === "missing_item") {
     return true;
   }
 
-  if (
-    code === "runtime_mine_failed" ||
-    code === "runtime_craft_failed" ||
-    code === "runtime_equip_failed" ||
-    code === "place_failed" ||
-    code === "cannot_place"
-  ) {
+  if (classifyFailureCode(code) === "implementation_blocker") {
     return false;
   }
 

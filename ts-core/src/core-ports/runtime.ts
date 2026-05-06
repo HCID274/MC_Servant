@@ -9,6 +9,7 @@ import type { ExecutionTaskEnvelope } from "./foundation.js";
 import type { ReflexInterruptSource, SnapshotPosition } from "./observation.js";
 import type { SkillName } from "./skills.js";
 import type { SkillExecutionResult } from "./skills.js";
+import type { FailureCapsule } from "./task-result.js";
 
 /** ResourceService（世界感知资源服务） 允许的只读刷新半径阶梯。 */
 export const RESOURCE_REFRESH_RADIUS_STEPS = Object.freeze([16, 32, 64] as const);
@@ -165,6 +166,8 @@ export interface BotActorRecentEventProjection {
   readonly message_id: string | null;
   /** 可直接进入 [最近上下文] 的确定性单行。 */
   readonly line: string;
+  /** 失败后继续规划使用的短 Failure Capsule（失败胶囊）。 */
+  readonly failure_capsule?: FailureCapsule;
   /** 真实事件时间戳。 */
   readonly timestamp: number;
 }
@@ -263,6 +266,18 @@ export function createBotActorStateProjection(input: {
       Object.freeze({
         message_id: event.message_id,
         line: event.line,
+        ...(event.failure_capsule === undefined
+          ? {}
+          : {
+              failure_capsule: Object.freeze({
+                goal: event.failure_capsule.goal,
+                failed_action: event.failure_capsule.failed_action,
+                failure_code: event.failure_capsule.failure_code,
+                progress: event.failure_capsule.progress,
+                retry_guard: event.failure_capsule.retry_guard,
+                hint: event.failure_capsule.hint,
+              }),
+            }),
         timestamp: event.timestamp,
       }),
     ),

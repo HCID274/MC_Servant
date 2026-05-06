@@ -836,6 +836,14 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         target_count: 5,
       },
     });
+    expect(summary.failure_capsule).toEqual({
+      goal: "mine stone x5",
+      failed_action: "mine",
+      failure_code: "not_equipped",
+      progress: "stone 0/5",
+      retry_guard: '不要原样重复 mine("stone", 5)',
+      hint: "先调用 equip 或 ensure 工具链准备所需工具",
+    });
   });
 
   it("应确保脚本、容器命令与根导出入口边界保持一致", () => {

@@ -43,6 +43,14 @@
 
 (从这里开始,Reviewer C 通过任务后追加)
 
+## T-069 | 2026-05-06 | Failure Capsule（失败胶囊）运行链路与失败后继续规划
+
+- 涉及模块: core-ports/task-result（任务结果端口）,conversation/recent-context（最近上下文）,conversation/llm plan prompt（规划提示词）,ConversationWorker（对话工作线程）,BotWorker action sink（机器人工作线程动作汇点）,TaskResultSummary（任务结果摘要）,相关回归测试
+- A 拆解依据: 用户要求把 T-068（Failure Capsule 文档契约）落到运行链路,让 skill_call（技能调用） 与 sandbox_code（沙箱代码） 失败后由执行终态生成短 Failure Capsule（失败胶囊）,完整详情保留 diagnostics（诊断）/ JSONL（结构化日志）,用户说 continuation（继续任务） 时让 Plan（规划）换策略且不得原样重复 retry_guard（重复保护）;边界限定 BotWorker/BotActor（机器人工作线程/机器人执行代理） recent_events（最近事件）投影、TaskResultSummary（任务结果摘要）、ConversationWorker（对话工作线程）、recent context（最近上下文）、Plan prompt（规划提示词） 与 diagnostics（诊断）,不新增 ContextGate LLM（上下文门控大语言模型）,不恢复 T-067（性能探针）
+- C 审查结论: 曾打回 1 次 (`latestFailureCapsuleOnly`（仅渲染失败胶囊） 被错误地按"存在 Failure Capsule（失败胶囊）"启用,会让失败后全新任务也丢失完整 sandbox TS（沙箱 TypeScript） recent context（最近上下文）);返修后通过。`git diff --check`（差异空白检查） 通过,`bash scripts/pre_review.sh`（评审前预检脚本） 全绿,34 个 test file（测试文件）/401 个 test（测试）通过;B 已补真实 OpenAI compatible API（OpenAI 兼容接口） 验证,上一轮 `mine("iron_ore",1)`（挖铁矿） 失败后"继续,想办法"会改试 `deepslate_iron_ore`（深层铁矿） 而非原样重复
+- 关键决策: 选择由 TaskResultSummary（任务结果摘要） 确定性生成 Failure Capsule（失败胶囊）,再经 recent context（最近上下文）渲染给 Plan（规划）,而不是让 ConversationWorker（对话工作线程）解析错误字符串或让 LLM（大语言模型）总结失败;实现阻塞失败直接模板汇报,可恢复失败才允许 LLM（大语言模型）升级为 sandbox_code（沙箱代码）换策略
+- 架构冲突: 无
+
 ## T-068 | 2026-05-05 | Failure Capsule（失败胶囊）文档契约对齐
 
 - 涉及模块: Docs/02_RUNTIME_SPEC.md（运行时规格）,Docs/03_SANDBOX_SPEC.md（沙箱规格）,Docs/04_CONVERSATION_SPEC.md（对话规格）,Docs/05_DATA_SPEC.md（数据规格）,Docs/06_AGENTIC_MINE_IRON_SPEC.md（智能挖铁规格）

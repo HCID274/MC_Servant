@@ -40,6 +40,25 @@ export interface SkillResultTargetProgress {
   readonly target_count?: number | null;
 }
 
+/** Failure Capsule（失败胶囊） 只允许进入 prompt（提示词） 的最小字段。 */
+export interface FailureCapsule {
+  /** 用户目标摘要。 */
+  readonly goal: string;
+  /** 失败动作。 */
+  readonly failed_action: string;
+  /** 结构化失败码。 */
+  readonly failure_code: string;
+  /** 目标进度。 */
+  readonly progress: string;
+  /** 不得原样重复的动作。 */
+  readonly retry_guard: string;
+  /** 一个可执行提示。 */
+  readonly hint: string;
+}
+
+/** 失败码恢复分类。 */
+export type FailureRecoveryClass = "recoverable" | "implementation_blocker" | "unknown";
+
 /** 技能失败统一摘要。 */
 export interface SkillFailureSummary {
   /** 结构化失败码。 */
@@ -82,6 +101,8 @@ export interface SkillResultSummary {
   readonly diagnostics?: readonly string[];
   /** 失败摘要；仅 failed/interrupted 终态携带。 */
   readonly failure?: SkillFailureSummary;
+  /** 失败后继续规划使用的短胶囊；完整细节仍只进 diagnostics（诊断）/ JSONL（结构化日志）。 */
+  readonly failure_capsule?: FailureCapsule;
   /** 执行补充诊断。 */
   readonly details?: Readonly<Record<string, unknown>>;
 }
@@ -106,12 +127,30 @@ export function createTaskResultSummary(
 ): TaskResultSummary {
   assertNonEmptyString(input.operation, "operation");
   const skillName = input.skill_name ?? input.operation;
+  const status = input.status ?? (input.failure === undefined ? "completed" : "failed");
+  const failure = input.failure === undefined ? undefined : freezeFailureSummary(input.failure);
+  const capsule =
+    input.failure_capsule ??
+    (status === "failed" && failure !== undefined
+      ? createFailureCapsuleFromSummaryFields({
+          skill_name: skillName,
+          operation: input.operation,
+          ...(input.target === undefined ? {} : { target: input.target }),
+          ...(input.requested_count === undefined
+            ? {}
+            : { requested_count: input.requested_count }),
+          ...(input.completed_count === undefined
+            ? {}
+            : { completed_count: input.completed_count }),
+          failure,
+        })
+      : undefined);
 
   return Object.freeze({
     task_type: input.task_type,
     skill_name: skillName,
     operation: input.operation,
-    status: input.status ?? (input.failure === undefined ? "completed" : "failed"),
+    status,
     ...(input.target === undefined ? {} : { target: input.target }),
     ...(input.requested_count === undefined ? {} : { requested_count: input.requested_count }),
     ...(input.completed_count === undefined ? {} : { completed_count: input.completed_count }),
@@ -132,8 +171,142 @@ export function createTaskResultSummary(
     ...(input.diagnostics === undefined
       ? {}
       : { diagnostics: Object.freeze([...input.diagnostics]) }),
-    ...(input.failure === undefined ? {} : { failure: freezeFailureSummary(input.failure) }),
+    ...(failure === undefined ? {} : { failure }),
+    ...(capsule === undefined ? {} : { failure_capsule: freezeFailureCapsule(capsule) }),
     ...(input.details === undefined ? {} : { details: Object.freeze({ ...input.details }) }),
+  });
+}
+
+/** 集中管理 Failure Capsule（失败胶囊） 使用的失败分类。 */
+export function classifyFailureCode(code: string | undefined): FailureRecoveryClass {
+  switch (code) {
+    case "missing_materials":
+    case "not_equipped":
+    case "resource_not_found":
+    case "missing_crafting_table":
+    case "crafting_table_unavailable":
+    case "inventory_full":
+    case "unsafe_path":
+    case "unreachable_target":
+    case "drop_not_obtained":
+      return "recoverable";
+    case "unsupported_capability":
+    case "runtime_adapter_error":
+    case "world_mismatch":
+    case "invalid_runtime_object":
+    case "protocol_error":
+    case "plugin_unavailable":
+      return "implementation_blocker";
+    default:
+      return "unknown";
+  }
+}
+
+function createFailureCapsuleFromSummaryFields(input: {
+  readonly skill_name: string;
+  readonly operation: string;
+  readonly target?: string;
+  readonly requested_count?: number;
+  readonly completed_count?: number;
+  readonly failure: SkillFailureSummary;
+}): FailureCapsule {
+  const progress = input.failure.target_progress;
+  const action = progress?.action ?? input.skill_name;
+  const target = progress?.target ?? input.target ?? "目标";
+  const requestedCount =
+    progress?.requested_count ?? progress?.target_count ?? input.requested_count ?? 1;
+  const completedCount = progress?.completed_count ?? input.completed_count ?? 0;
+  const failureCode = input.failure.failure_code;
+  const retrySignature = createRetrySignature({
+    action,
+    target,
+    requested_count: requestedCount,
+  });
+
+  return Object.freeze({
+    goal: `${action} ${target} x${requestedCount}`,
+    failed_action: input.failure.failure_stage || action,
+    failure_code: failureCode,
+    progress: `${target} ${completedCount}/${requestedCount}`,
+    retry_guard: `不要原样重复 ${retrySignature}`,
+    hint: createFailureCapsuleHint({
+      action,
+      target,
+      failure_code: failureCode,
+    }),
+  });
+}
+
+function createRetrySignature(input: {
+  readonly action: string;
+  readonly target: string;
+  readonly requested_count: number | null | undefined;
+}): string {
+  const count = input.requested_count ?? 1;
+  switch (input.action) {
+    case "mine":
+      return `mine("${input.target}", ${count})`;
+    case "craft":
+      return `craft("${input.target}", ${count})`;
+    case "equip":
+      return `equip("${input.target}")`;
+    case "cutTree":
+      return `cutTree(${count})`;
+    case "collect":
+      return `collect("${input.target}")`;
+    default:
+      return `${input.action}("${input.target}", ${count})`;
+  }
+}
+
+function createFailureCapsuleHint(input: {
+  readonly action: string;
+  readonly target: string;
+  readonly failure_code: string;
+}): string {
+  if (classifyFailureCode(input.failure_code) === "implementation_blocker") {
+    return "运行时能力异常，需要查看诊断日志";
+  }
+
+  switch (input.failure_code) {
+    case "resource_not_found":
+      return input.target === "iron_ore"
+        ? "可尝试 deepslate_iron_ore 或汇报附近无矿"
+        : "可换资源目标、换位置或汇报附近无资源";
+    case "missing_materials":
+      return input.action === "craft" ? "先补齐缺少材料再合成" : "先补齐缺少材料";
+    case "not_equipped":
+      return "先调用 equip 或 ensure 工具链准备所需工具";
+    case "missing_crafting_table":
+    case "crafting_table_unavailable":
+      return "先确保可用工作台";
+    case "inventory_full":
+      return "先整理背包或丢弃低价值物品";
+    case "unsafe_path":
+    case "unreachable_target":
+      return "换安全路线或选择其他目标";
+    case "drop_not_obtained":
+      return "检查掉落与捡拾结果后换目标重试";
+    default:
+      return "查看 diagnostics（诊断） 后决定是否换策略";
+  }
+}
+
+function freezeFailureCapsule(input: FailureCapsule): FailureCapsule {
+  assertNonEmptyString(input.goal, "failure_capsule.goal");
+  assertNonEmptyString(input.failed_action, "failure_capsule.failed_action");
+  assertNonEmptyString(input.failure_code, "failure_capsule.failure_code");
+  assertNonEmptyString(input.progress, "failure_capsule.progress");
+  assertNonEmptyString(input.retry_guard, "failure_capsule.retry_guard");
+  assertNonEmptyString(input.hint, "failure_capsule.hint");
+
+  return Object.freeze({
+    goal: input.goal,
+    failed_action: input.failed_action,
+    failure_code: input.failure_code,
+    progress: input.progress,
+    retry_guard: input.retry_guard,
+    hint: input.hint,
   });
 }
 

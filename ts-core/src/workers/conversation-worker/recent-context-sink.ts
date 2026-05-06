@@ -26,6 +26,8 @@ export function appendSandboxFinalizeToRecentContext(input: {
   readonly store: ConversationRecentContextStore;
   readonly action: BotWorkerAction;
 }): void {
+  appendTaskFailureCapsuleToRecentContext(input);
+
   if (input.action.type !== "persist_sandbox_experience") {
     return;
   }
@@ -45,5 +47,29 @@ export function appendSandboxFinalizeToRecentContext(input: {
   input.store.appendSandboxError({
     message_id: experience.message_id,
     text: experience.error.message,
+  });
+}
+
+/** 将执行终态侧生成的 Failure Capsule（失败胶囊） 写入最近上下文。 */
+function appendTaskFailureCapsuleToRecentContext(input: {
+  readonly store: ConversationRecentContextStore;
+  readonly action: BotWorkerAction;
+}): void {
+  if (input.action.type !== "enqueue_brain") {
+    return;
+  }
+  if ("kind" in input.action.task.payload) {
+    return;
+  }
+
+  const taskCard = input.action.task.payload.task_card;
+  const capsule = taskCard.result.result_summary?.failure_capsule;
+  if (capsule === undefined) {
+    return;
+  }
+
+  input.store.appendFailureCapsule({
+    message_id: taskCard.message_id,
+    capsule,
   });
 }

@@ -14,6 +14,8 @@ import {
   ExecPriority,
   createBotActorStateProjection,
   createSandboxCodeJob,
+  createSkillCallJob,
+  createTaskResultSummary,
 } from "../core-ports/index.js";
 import type { EnvironmentSnapshot, InventorySummary } from "../core-ports/observation.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
@@ -288,6 +290,120 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
   });
 
+  it("应由执行终态摘要把 skill_call（技能调用） 失败胶囊写入最近上下文", async () => {
+    const store = createConversationRecentContextStore({ now: () => 10 });
+    const sink = createConversationBotWorkerActionSink({ recentContextStore: store });
+    const task = createBotWorkerTask({
+      bot_id: "bot-cw",
+      owner_text: "挖 5 个石头",
+      exec_job: createSkillCallJob({
+        message_id: "msg-skill-failed-capsule",
+        intent_epoch: 1,
+        snapshot_ts: 100,
+        priority: ExecPriority.Normal,
+        skill: "mine",
+        params: { blockName: "stone", count: 5 },
+      }),
+    });
+
+    for (const action of createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Failed,
+      total_steps: 0,
+      duration_ms: 1,
+      error: {
+        name: "Error",
+        message: "not_equipped:stone",
+      },
+      result_summary: createTaskResultSummary({
+        task_type: task.exec_job.type,
+        operation: "mine",
+        target: "stone",
+        requested_count: 5,
+        completed_count: 0,
+        failure: {
+          failure_code: "not_equipped",
+          failure_stage: "mine",
+          message: "not_equipped:stone",
+          recoverable: true,
+          target_progress: {
+            action: "mine",
+            target: "stone",
+            requested_count: 5,
+            completed_count: 0,
+          },
+        },
+      }),
+    })) {
+      await sink(action);
+    }
+
+    expect(store.getLatestFailureCapsule()).toMatchObject({
+      goal: "mine stone x5",
+      failed_action: "mine",
+      failure_code: "not_equipped",
+      retry_guard: '不要原样重复 mine("stone", 5)',
+    });
+  });
+
+  it("应由执行终态摘要把 sandbox_code（沙箱代码） 失败胶囊写入最近上下文", async () => {
+    const store = createConversationRecentContextStore({ now: () => 10 });
+    const sink = createConversationBotWorkerActionSink({ recentContextStore: store });
+    const task = createBotWorkerTask({
+      bot_id: "bot-cw",
+      owner_text: "去挖铁",
+      exec_job: createSandboxCodeJob({
+        message_id: "msg-sandbox-failed-capsule",
+        intent_epoch: 1,
+        snapshot_ts: 100,
+        priority: ExecPriority.Normal,
+        code: 'await api.bot.mine("iron_ore", 1)',
+      }),
+    });
+
+    for (const action of createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Failed,
+      total_steps: 1,
+      duration_ms: 1,
+      error: {
+        name: "Error",
+        message: "resource_not_found:iron_ore",
+      },
+      result_summary: createTaskResultSummary({
+        task_type: task.exec_job.type,
+        operation: "mine",
+        target: "iron_ore",
+        requested_count: 1,
+        completed_count: 0,
+        failure: {
+          failure_code: "resource_not_found",
+          failure_stage: "mine",
+          message: "resource_not_found:iron_ore",
+          recoverable: true,
+          target_progress: {
+            action: "mine",
+            target: "iron_ore",
+            requested_count: 1,
+            completed_count: 0,
+          },
+        },
+      }),
+    })) {
+      await sink(action);
+    }
+
+    expect(store.render({ latestFailureCapsuleOnly: true })).toContain(
+      '避免重复：不要原样重复 mine("iron_ore", 1)',
+    );
+    expect(store.getLatestFailureCapsule()).toMatchObject({
+      failure_code: "resource_not_found",
+      hint: "可尝试 deepslate_iron_ore 或汇报附近无矿",
+    });
+  });
+
   it("应在下一轮 chat（闲聊） prompt（提示词）构建期注入合并后的最近上下文", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const recentContexts: Array<string | undefined> = [];
@@ -353,6 +469,296 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     expect(recentContexts[1]).toContain("Bot：第 1 次回复喵~");
     expect(recentContexts[1]).toContain("执行结果：collect 成功,捡到 shield x1");
     expect(recentContexts[1]).not.toContain("你刚刚捡到了什么");
+  });
+
+  it("失败后 continuation（继续任务） 应向 Plan（规划） 注入短 Failure Capsule（失败胶囊）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const recentContexts: Array<string | undefined> = [];
+    const enqueuedExecTasks: unknown[] = [];
+    const store = createConversationRecentContextStore({ now: () => 0 });
+    store.appendOwnerMessage({ message_id: "msg-prev-failed", text: "去挖铁" });
+    store.appendSandboxCode({
+      message_id: "msg-prev-failed",
+      code: 'await api.bot.mine("iron_ore", 1); await api.chat.report("done")',
+    });
+    store.appendFailureCapsule({
+      message_id: "msg-prev-failed",
+      capsule: {
+        goal: "挖 iron_ore x1",
+        failed_action: "mine",
+        failure_code: "resource_not_found",
+        progress: "raw_iron 0/1",
+        retry_guard: '不要原样重复 mine("iron_ore", 1)',
+        hint: "可尝试 deepslate_iron_ore 或汇报附近无矿",
+      },
+    });
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        recentContextStore: store,
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createCompositeTaskTriage({
+            priority: ConversationPriority.Normal,
+            reason: "continue_previous_failure",
+          }),
+        environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
+        planner: (input) => {
+          recentContexts.push(input.recent_context);
+
+          return {
+            type: "sandbox_code",
+            reply: "我换深层铁矿试试",
+            code: 'const deep = await api.bot.mine("deepslate_iron_ore", 1); if (!deep.ok) { await api.chat.report(`挖铁失败: ${deep.error.code}喵~`); throw new Error(deep.error.code); } await api.chat.report("挖铁完成喵~");',
+          };
+        },
+        enqueueExecTaskSink: async ({ task }) => {
+          enqueuedExecTasks.push(task);
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-continue",
+          content: "继续，想办法",
+          intent_epoch: 2,
+          snapshot_ts: 100,
+        },
+      }),
+    });
+
+    expect(recentContexts[0]).toContain("[上一轮失败]");
+    expect(recentContexts[0]).toContain('避免重复：不要原样重复 mine("iron_ore", 1)');
+    expect(recentContexts[0]).not.toContain("沙盒TS");
+    expect(enqueuedExecTasks).toHaveLength(1);
+  });
+
+  it("失败后全新任务不应启用 Failure Capsule only（仅失败胶囊） 渲染例外", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const recentContexts: Array<string | undefined> = [];
+    const enqueuedExecTasks: unknown[] = [];
+    const store = createConversationRecentContextStore({ now: () => 0 });
+    store.appendOwnerMessage({ message_id: "msg-prev-failed-new-task", text: "去挖铁" });
+    store.appendSandboxCode({
+      message_id: "msg-prev-failed-new-task",
+      code: 'await api.bot.mine("iron_ore", 1); await api.chat.report("done")',
+    });
+    store.appendSandboxError({
+      message_id: "msg-prev-failed-new-task",
+      text: "resource_not_found:iron_ore",
+    });
+    store.appendFailureCapsule({
+      message_id: "msg-prev-failed-new-task",
+      capsule: {
+        goal: "挖 iron_ore x1",
+        failed_action: "mine",
+        failure_code: "resource_not_found",
+        progress: "raw_iron 0/1",
+        retry_guard: '不要原样重复 mine("iron_ore", 1)',
+        hint: "可尝试 deepslate_iron_ore 或汇报附近无矿",
+      },
+    });
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        recentContextStore: store,
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createCompositeTaskTriage({
+            priority: ConversationPriority.Normal,
+            reason: "new_cut_tree_task",
+          }),
+        environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
+        planner: (input) => {
+          recentContexts.push(input.recent_context);
+
+          return {
+            type: "skill_call",
+            reply: "我去砍木头",
+            skill: "cutTree",
+            params: { count: 5 },
+          };
+        },
+        enqueueExecTaskSink: async ({ task }) => {
+          enqueuedExecTasks.push(task);
+        },
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-new-task-after-failure",
+          content: "砍 5 个木头",
+          intent_epoch: 2,
+          snapshot_ts: 100,
+        },
+      }),
+    });
+
+    expect(recentContexts[0]).toContain("主人：去挖铁");
+    expect(recentContexts[0]).toContain("沙盒TS：");
+    expect(recentContexts[0]).toContain('await api.bot.mine("iron_ore", 1)');
+    expect(recentContexts[0]).toContain("报错：resource_not_found:iron_ore");
+    expect(enqueuedExecTasks).toHaveLength(1);
+  });
+
+  it("实现阻塞失败后的 continuation（继续任务） 应直接汇报阻塞，不再进入 Plan（规划）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const replies: string[] = [];
+    const store = createConversationRecentContextStore({ now: () => 0 });
+    store.appendFailureCapsule({
+      message_id: "msg-runtime-blocked",
+      capsule: {
+        goal: "挖 iron_ore x1",
+        failed_action: "mine",
+        failure_code: "runtime_adapter_error",
+        progress: "raw_iron 0/1",
+        retry_guard: '不要原样重复 mine("iron_ore", 1)',
+        hint: "运行时适配异常，需要查看诊断日志",
+      },
+    });
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        recentContextStore: store,
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createCompositeTaskTriage({
+            priority: ConversationPriority.Normal,
+            reason: "continue_previous_failure",
+          }),
+        planner: () => {
+          throw new Error("planner must not run for implementation blocker");
+        },
+        broadcastReplySink: async ({ content }) => {
+          replies.push(content);
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-continue-blocked",
+          content: "继续",
+          intent_epoch: 2,
+          snapshot_ts: 100,
+        },
+      }),
+    });
+
+    expect(replies[0]).toContain("runtime_adapter_error");
+    expect(replies[0]).toContain("已停止");
+  });
+
+  it("continuation（继续任务） 不得原样重复 retry_guard（重复保护） 中的 skill_call（技能调用）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const replies: string[] = [];
+    const enqueuedExecTasks: unknown[] = [];
+    const store = createConversationRecentContextStore({ now: () => 0 });
+    store.appendFailureCapsule({
+      message_id: "msg-repeat-failed",
+      capsule: {
+        goal: "挖 stone x5",
+        failed_action: "mine",
+        failure_code: "not_equipped",
+        progress: "stone 0/5",
+        retry_guard: '不要原样重复 mine("stone", 5)',
+        hint: "先调用 equip 或 ensure 工具链准备所需工具",
+      },
+    });
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        recentContextStore: store,
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createCompositeTaskTriage({
+            priority: ConversationPriority.Normal,
+            reason: "continue_previous_failure",
+          }),
+        environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
+        planner: () => ({
+          type: "skill_call",
+          reply: "我继续挖石头",
+          skill: "mine",
+          params: { blockName: "stone", count: 5 },
+        }),
+        enqueueExecTaskSink: async ({ task }) => {
+          enqueuedExecTasks.push(task);
+        },
+        broadcastReplySink: async ({ content }) => {
+          replies.push(content);
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-repeat-continue",
+          content: "再试试",
+          intent_epoch: 2,
+          snapshot_ts: 100,
+        },
+      }),
+    });
+
+    expect(enqueuedExecTasks).toHaveLength(0);
+    expect(replies.at(-1)).toContain('不要原样重复 mine("stone", 5)');
   });
 
   it("prompt（提示词） 最近上下文窗口应限制为最近 5 轮原文", async () => {

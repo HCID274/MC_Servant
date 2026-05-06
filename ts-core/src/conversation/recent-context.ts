@@ -1,4 +1,5 @@
 import type { BotActorRecentEventProjection } from "../core-ports/runtime.js";
+import type { FailureCapsule } from "../core-ports/task-result.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
 
 const DEFAULT_RECENT_CONTEXT_ROUND_LIMIT = 10;
@@ -10,6 +11,7 @@ type ConversationRecentContextEventKind =
   | "bot_reply"
   | "sandbox_code"
   | "sandbox_error"
+  | "failure_capsule"
   | "execution_result";
 
 interface ConversationRecentContextEvent {
@@ -18,6 +20,7 @@ interface ConversationRecentContextEvent {
   readonly aggregate_key: string;
   readonly line?: string;
   readonly code?: string;
+  readonly failure_capsule?: FailureCapsule;
   readonly timestamp: number;
   readonly sequence: number;
 }
@@ -39,8 +42,12 @@ export interface ConversationRecentContextStore {
   appendSandboxCode(input: ConversationRecentContextCodeInput): void;
   /** 记录 sandbox（沙盒） error.message（错误消息） 单行。 */
   appendSandboxError(input: ConversationRecentContextTextInput): void;
+  /** 记录执行终态侧生成的 Failure Capsule（失败胶囊）。 */
+  appendFailureCapsule(input: ConversationRecentContextFailureCapsuleInput): void;
   /** 渲染已完成轮次，并在 prompt（提示词） 构建时合并 BotActor（机器人执行体） recent_events（最近事件）。 */
   render(input?: ConversationRecentContextRenderInput): string | undefined;
+  /** 读取最近一条 Failure Capsule（失败胶囊），供 continuation（继续任务） 判定。 */
+  getLatestFailureCapsule(): FailureCapsule | null;
   /** 暴露只读快照，供测试和诊断使用。 */
   getRounds(): readonly ConversationRecentContextRenderedRound[];
 }
@@ -59,11 +66,20 @@ export interface ConversationRecentContextCodeInput {
   readonly timestamp?: number;
 }
 
+/** Failure Capsule（失败胶囊） 最近上下文写入输入。 */
+export interface ConversationRecentContextFailureCapsuleInput {
+  readonly message_id: string;
+  readonly capsule: FailureCapsule;
+  readonly timestamp?: number;
+}
+
 /** 最近上下文渲染输入。 */
 export interface ConversationRecentContextRenderInput {
   readonly actorRecentEvents?: readonly BotActorRecentEventProjection[];
   readonly currentMessageId?: string;
   readonly roundLimit?: number;
+  /** continuation（继续任务） 时只把最近失败轮渲染为 Failure Capsule（失败胶囊）。 */
+  readonly latestFailureCapsuleOnly?: boolean;
 }
 
 /** 最近上下文 store（存储） 配置。 */
@@ -131,6 +147,16 @@ export function createConversationRecentContextStore(
     appendSandboxError(input: ConversationRecentContextTextInput): void {
       appendTextEvent("sandbox_error", input, now);
     },
+    appendFailureCapsule(input: ConversationRecentContextFailureCapsuleInput): void {
+      assertNonEmptyString(input.message_id, "message_id");
+      append({
+        kind: "failure_capsule",
+        message_id: input.message_id,
+        aggregate_key: createMessageAggregateKey(input.message_id),
+        failure_capsule: freezeFailureCapsule(input.capsule),
+        timestamp: input.timestamp ?? now(),
+      });
+    },
     render(input: ConversationRecentContextRenderInput = {}): string | undefined {
       const renderedRounds = renderConversationRecentContextRounds({
         rounds: [...rounds.values()],
@@ -139,6 +165,7 @@ export function createConversationRecentContextStore(
           ? {}
           : { currentMessageId: input.currentMessageId }),
         roundLimit: input.roundLimit ?? roundLimit,
+        latestFailureCapsuleOnly: input.latestFailureCapsuleOnly === true,
       });
 
       if (renderedRounds.length === 0) {
@@ -146,6 +173,9 @@ export function createConversationRecentContextStore(
       }
 
       return renderedRounds.map((round) => round.lines.join("\n")).join("\n\n");
+    },
+    getLatestFailureCapsule(): FailureCapsule | null {
+      return readLatestFailureCapsule([...rounds.values()]);
     },
     getRounds(): readonly ConversationRecentContextRenderedRound[] {
       return Object.freeze(
@@ -186,6 +216,7 @@ export function renderConversationRecentContextRounds(input: {
   readonly actorRecentEvents?: readonly BotActorRecentEventProjection[];
   readonly currentMessageId?: string;
   readonly roundLimit?: number;
+  readonly latestFailureCapsuleOnly?: boolean;
 }): readonly ConversationRecentContextRenderedRound[] {
   const currentAggregateKey =
     input.currentMessageId === undefined
@@ -212,10 +243,13 @@ export function renderConversationRecentContextRounds(input: {
     }
 
     const executionEvent: ConversationRecentContextEvent = Object.freeze({
-      kind: "execution_result",
+      kind: event.failure_capsule === undefined ? "execution_result" : "failure_capsule",
       message_id: event.message_id,
       aggregate_key: aggregateKey,
       line: normalizeSingleLine(event.line),
+      ...(event.failure_capsule === undefined
+        ? {}
+        : { failure_capsule: freezeFailureCapsule(event.failure_capsule) }),
       timestamp: event.timestamp,
       sequence: Number.MAX_SAFE_INTEGER,
     });
@@ -232,15 +266,25 @@ export function renderConversationRecentContextRounds(input: {
     );
   }
 
+  const limitedRounds = [...merged.values()]
+    .sort(compareRoundsOldToNew)
+    .slice(-(input.roundLimit ?? DEFAULT_RECENT_CONTEXT_ROUND_LIMIT));
+  const latestFailureAggregateKey =
+    input.latestFailureCapsuleOnly === true
+      ? readLatestFailureCapsuleRound(limitedRounds)?.aggregate_key
+      : undefined;
+
   return Object.freeze(
-    [...merged.values()]
-      .sort(compareRoundsOldToNew)
-      .slice(-(input.roundLimit ?? DEFAULT_RECENT_CONTEXT_ROUND_LIMIT))
+    limitedRounds
       .map((round) =>
         Object.freeze({
           aggregate_key: round.aggregate_key,
           message_id: round.message_id,
-          lines: Object.freeze(renderRoundEvents([...round.events], round.aggregate_key)),
+          lines: Object.freeze(
+            renderRoundEvents([...round.events], round.aggregate_key, {
+              capsuleOnly: round.aggregate_key === latestFailureAggregateKey,
+            }),
+          ),
         }),
       )
       .filter((round) => round.lines.length > 0),
@@ -264,7 +308,13 @@ function evictRounds(
 function renderRoundEvents(
   events: ConversationRecentContextEvent[],
   aggregateKey: string,
+  options: { readonly capsuleOnly?: boolean } = {},
 ): readonly string[] {
+  if (options.capsuleOnly === true) {
+    const capsule = readLatestFailureCapsuleFromEvents(events);
+    return capsule === null ? [] : renderFailureCapsule(capsule);
+  }
+
   return events
     .sort((left, right) => left.timestamp - right.timestamp || left.sequence - right.sequence)
     .flatMap((event) => renderEvent(event, aggregateKey));
@@ -283,9 +333,21 @@ function renderEvent(
       return renderSandboxCode(event.code ?? "", aggregateKey);
     case "sandbox_error":
       return [`报错：${event.line ?? ""}`];
+    case "failure_capsule":
+      return event.failure_capsule === undefined ? [] : renderFailureCapsule(event.failure_capsule);
     case "execution_result":
       return [`执行结果：${event.line ?? ""}`];
   }
+}
+
+function renderFailureCapsule(capsule: FailureCapsule): readonly string[] {
+  return Object.freeze([
+    "[上一轮失败]",
+    `目标：${capsule.goal}`,
+    `失败：${capsule.failure_code} at ${capsule.failed_action}；进度：${capsule.progress}`,
+    `避免重复：${capsule.retry_guard}`,
+    `建议：${capsule.hint}`,
+  ]);
 }
 
 function renderSandboxCode(code: string, aggregateKey: string): readonly string[] {
@@ -339,4 +401,45 @@ function normalizeCodeRef(aggregateKey: string): string {
 
 function normalizeSingleLine(value: string): string {
   return value.replaceAll(/\s+/gu, " ").trim();
+}
+
+function readLatestFailureCapsule(
+  rounds: readonly ConversationRecentContextRound[],
+): FailureCapsule | null {
+  const round = readLatestFailureCapsuleRound(rounds);
+  return round === null ? null : readLatestFailureCapsuleFromEvents([...round.events]);
+}
+
+function readLatestFailureCapsuleRound(
+  rounds: readonly ConversationRecentContextRound[],
+): ConversationRecentContextRound | null {
+  return (
+    [...rounds]
+      .filter((round) => readLatestFailureCapsuleFromEvents([...round.events]) !== null)
+      .sort(compareRoundsOldToNew)
+      .at(-1) ?? null
+  );
+}
+
+function readLatestFailureCapsuleFromEvents(
+  events: readonly ConversationRecentContextEvent[],
+): FailureCapsule | null {
+  const event =
+    [...events]
+      .filter((candidate) => candidate.failure_capsule !== undefined)
+      .sort((left, right) => left.timestamp - right.timestamp || left.sequence - right.sequence)
+      .at(-1) ?? null;
+
+  return event?.failure_capsule ?? null;
+}
+
+function freezeFailureCapsule(capsule: FailureCapsule): FailureCapsule {
+  return Object.freeze({
+    goal: capsule.goal,
+    failed_action: capsule.failed_action,
+    failure_code: capsule.failure_code,
+    progress: capsule.progress,
+    retry_guard: capsule.retry_guard,
+    hint: capsule.hint,
+  });
 }

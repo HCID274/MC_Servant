@@ -114,6 +114,52 @@ describe("conversation recent context（最近上下文）", () => {
     expect(rendered).not.toContain("await step200()");
   });
 
+  it("continuation（继续任务） 时应只渲染最近失败轮的 Failure Capsule（失败胶囊）", () => {
+    const store = createConversationRecentContextStore({ now: () => 0 });
+
+    store.appendOwnerMessage({ message_id: "msg-failed", text: "去挖铁", timestamp: 1 });
+    store.appendSandboxCode({
+      message_id: "msg-failed",
+      code: 'await api.bot.mine("iron_ore", 1); await api.chat.report("done")',
+      timestamp: 2,
+    });
+    store.appendSandboxError({
+      message_id: "msg-failed",
+      text: "resource_not_found:iron_ore",
+      timestamp: 3,
+    });
+    store.appendFailureCapsule({
+      message_id: "msg-failed",
+      capsule: {
+        goal: "挖 iron_ore x1",
+        failed_action: "mine",
+        failure_code: "resource_not_found",
+        progress: "raw_iron 0/1",
+        retry_guard: '不要原样重复 mine("iron_ore", 1)',
+        hint: "可尝试 deepslate_iron_ore 或汇报附近无矿",
+      },
+      timestamp: 4,
+    });
+
+    const rendered = store.render({ latestFailureCapsuleOnly: true });
+
+    expect(rendered).toBe(
+      [
+        "[上一轮失败]",
+        "目标：挖 iron_ore x1",
+        "失败：resource_not_found at mine；进度：raw_iron 0/1",
+        '避免重复：不要原样重复 mine("iron_ore", 1)',
+        "建议：可尝试 deepslate_iron_ore 或汇报附近无矿",
+      ].join("\n"),
+    );
+    expect(rendered).not.toContain("沙盒TS");
+    expect(rendered).not.toContain("resource_not_found:iron_ore");
+    expect(store.getLatestFailureCapsule()).toMatchObject({
+      failure_code: "resource_not_found",
+      failed_action: "mine",
+    });
+  });
+
   it("Chat / Plan / Modify 三路快照模板应消费同一 recent context（最近上下文）槽位", () => {
     const snapshot = createEnvironmentSnapshotFixture();
     const recentContext = "主人：去捡盾牌\n执行结果：collect 成功,捡到 shield x1";
