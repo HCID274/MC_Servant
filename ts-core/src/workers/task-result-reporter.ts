@@ -161,9 +161,9 @@ function formatEquipStatus(status: string | undefined): string {
 }
 
 function formatInventoryDelta(summary: TaskResultSummary): string {
-  const firstDelta = summary.inventory_delta?.find((delta) => delta.count > 0);
-  if (firstDelta !== undefined) {
-    return `${firstDelta.item_name} x${firstDelta.count}`;
+  const deltas = summary.inventory_delta?.filter((delta) => delta.count > 0) ?? [];
+  if (deltas.length > 0) {
+    return deltas.map((delta) => `${delta.item_name} x${delta.count}`).join("、");
   }
 
   const target = summary.target ?? "目标";

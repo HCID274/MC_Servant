@@ -112,6 +112,7 @@ export function createConversationLlmClient(
         prompt_build_ms: promptBuildMs,
         parse: parseConversationCodePlan,
         ...(input.search_tool === undefined ? {} : { searchTool: input.search_tool }),
+        ...(input.search_tool === undefined ? {} : { searchToolMaxCalls: 1 }),
         ...(input.bot_id === undefined ? {} : { searchToolBotId: input.bot_id }),
         onFailure: ({ error, diagnostics, errorSnapshot }) => {
           if (isConversationLlmSkillNotEnabledError(error)) {

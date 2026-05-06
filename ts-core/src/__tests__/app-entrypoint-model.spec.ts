@@ -398,6 +398,35 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(completedReply?.content).toContain("任务完成：砍到 oak_log x12");
     expect(completedReply?.content).toContain("已捡拾掉落物");
     expect(reporter.consume(completedAction[1])).toBeNull();
+
+    const multiCompletedAction = createBotWorkerActions({
+      task: createBotWorkerTask({
+        bot_id: "bot-realtime-action",
+        exec_job: createCodeJob({
+          message_id: "msg-multi-completed-reply",
+          intent_epoch: 5,
+          snapshot_ts: 1777906762364,
+          priority: ExecPriority.Normal,
+        }),
+        owner_text: "砍20个木头，然后去挖5个石头，最后回到我这",
+      }),
+      phase: "terminal",
+      status: TaskHistoryStatus.Completed,
+      total_steps: 4,
+      duration_ms: 4200,
+      result_summary: {
+        task_type: ExecutionTaskKind.Code,
+        operation: "砍木头、挖石头并返回主人身边",
+        completed_count: 25,
+        inventory_delta: [
+          { item_name: "oak_log", count: 20 },
+          { item_name: "cobblestone", count: 5 },
+        ],
+        world_key: "multiworld:resource",
+      },
+    });
+    const multiCompletedReply = reporter.consume(multiCompletedAction[1]);
+    expect(multiCompletedReply?.content).toContain("oak_log x20、cobblestone x5");
   });
 
   it("应汇报 sandbox TS（沙箱 TypeScript） 报错与中断终态", () => {
@@ -2906,13 +2935,17 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         .split("\n")
         .map((line) => JSON.parse(line) as unknown);
 
-      expect(logLines).toHaveLength(4);
+      expect(logLines).toHaveLength(5);
       expect(logLines[0]).toMatchObject({
         stage: "triage",
         model: "bl-auto",
         msg_id: "msg-online-parse-error",
       });
       expect(logLines[3]).toMatchObject({
+        role: "assistant",
+        content: '{"intent":"task","priority":"urgent","reason":"旧单层 triage 输出"}',
+      });
+      expect(logLines[4]).toMatchObject({
         meta: {
           ok: false,
         },
@@ -3126,7 +3159,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
                   });
             const userMessage = requestBody?.messages?.at(-1)?.content ?? "";
             const assistantContent = userMessage.includes("主人的指令：")
-              ? '{"code":"await api.chat.say(\\"收到，我这就过去喵~\\"); await api.bot.goTo(10,64,-5); await api.chat.report(\\"已到达目标位置喵~\\");"}'
+              ? '{"code":"await reply(\\"收到，我这就过去喵~\\"); const task = await runGoal(\\"去目标坐标\\", async () => { await goTo(10,64,-5); }); await report(task);"}'
               : '{"action":{"intent":"task","priority":"urgent","reason":"主人给了明确坐标移动指令"}}';
 
             return new Response(
@@ -3274,7 +3307,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             message_id: "msg-online-plan",
             priority: "urgent",
             type: "code",
-            code: expect.stringContaining("api.bot.goTo(10,64,-5)"),
+            code: expect.stringContaining("goTo(10,64,-5)"),
           }),
         }),
         options: {
@@ -3376,19 +3409,19 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             if (userMessage.includes("主人的指令：")) {
               if (currentInstruction.includes("挖两块石头")) {
                 assistantContent =
-                  '{"code":"await reply(\\"收到，我去挖石头喵~\\"); const result = await ensure(async () => mine(\\"stone\\", 2), until.gained(\\"cobblestone\\", 2)); if (result.ok === false) { await report(`挖石头失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await report(\\"挖石头完成喵~\\");"}';
+                  '{"code":"await reply(\\"收到，我去挖石头喵~\\"); const task = await runGoal(\\"挖石头\\", async () => { const result = await ensure(async () => mine(\\"stone\\", 2), until.gained(\\"cobblestone\\", 2)); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}';
               } else if (currentInstruction.includes("把地上的圆石捡起来")) {
                 assistantContent =
-                  '{"code":"await api.chat.say(\\"收到，我去捡圆石喵~\\"); const result = await api.bot.collect(\\"cobblestone\\", 32); if (!result.ok) { await api.chat.report(`捡拾失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"捡拾完成喵~\\");"}';
+                  '{"code":"await reply(\\"收到，我去捡圆石喵~\\"); const task = await runGoal(\\"捡圆石\\", async () => { const result = await collect(\\"cobblestone\\", 32); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}';
               } else if (currentInstruction.includes("把石镐拿在手上")) {
                 assistantContent =
-                  '{"code":"await api.chat.say(\\"收到，我先把石镐拿在手上喵~\\"); const result = await api.bot.equip(\\"stone_pickaxe\\", \\"hand\\"); if (!result.ok) { await api.chat.report(`装备失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"装备完成喵~\\");"}';
+                  '{"code":"await reply(\\"收到，我先把石镐拿在手上喵~\\"); const task = await runGoal(\\"装备石镐\\", async () => { const result = await equip(\\"stone_pickaxe\\", \\"hand\\"); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}';
               } else if (currentInstruction.includes("砍 12 块木头")) {
                 assistantContent =
-                  '{"code":"await api.chat.say(\\"收到，我去砍 12 块木头喵~\\"); const result = await api.bot.cutTree(12); if (!result.ok) { await api.chat.report(`砍树失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"砍树完成喵~\\");"}';
+                  '{"code":"await reply(\\"收到，我去砍 12 块木头喵~\\"); const task = await runGoal(\\"砍 12 块木头\\", async () => { const result = await cutTree(12); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}';
               } else {
                 assistantContent =
-                  '{"code":"await api.chat.say(\\"暂时无法规划喵~\\"); await api.chat.report(\\"暂时无法规划这个任务喵~\\");"}';
+                  '{"code":"await reply(\\"暂时无法规划喵~\\"); const task = await runGoal(\\"无法规划\\", async () => { throw new Error(\\"unsupported_capability\\"); }); await report(task);"}';
               }
             }
 
@@ -3574,7 +3607,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             message_id: "msg-online-collect",
             priority: "normal",
             type: "code",
-            code: expect.stringContaining('api.bot.collect("cobblestone", 32)'),
+            code: expect.stringContaining('collect("cobblestone", 32)'),
           }),
         }),
         options: {
@@ -3609,7 +3642,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             message_id: "msg-online-equip",
             priority: "normal",
             type: "code",
-            code: expect.stringContaining('api.bot.equip("stone_pickaxe", "hand")'),
+            code: expect.stringContaining('equip("stone_pickaxe", "hand")'),
           }),
         }),
         options: {
@@ -3644,7 +3677,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             message_id: "msg-online-cut-tree",
             priority: "normal",
             type: "code",
-            code: expect.stringContaining("api.bot.cutTree(12)"),
+            code: expect.stringContaining("cutTree(12)"),
           }),
         }),
         options: {
@@ -3731,7 +3764,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             const assistantContent =
               llmRequests.length === 1
                 ? '{"cancel":{"reason":"主人要求替换当前移动目标","priority":"interrupt"},"action":{"intent":"task","priority":"urgent","reason":"主人要求去新坐标"}}'
-                : '{"code":"await api.chat.say(\\"收到，我改去新的目标坐标喵~\\"); await api.bot.goTo(10,64,-5); await api.chat.report(\\"已到达新的目标坐标喵~\\");"}';
+                : '{"code":"await reply(\\"收到，我改去新的目标坐标喵~\\"); const task = await runGoal(\\"去新的目标坐标\\", async () => { await goTo(10,64,-5); }); await report(task);"}';
 
             return new Response(
               JSON.stringify({
@@ -3842,7 +3875,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         exec_job: {
           message_id: "msg-online-replace",
           type: "code",
-          code: expect.stringContaining("api.bot.goTo(10,64,-5)"),
+          code: expect.stringContaining("goTo(10,64,-5)"),
           priority: "urgent",
         },
       },

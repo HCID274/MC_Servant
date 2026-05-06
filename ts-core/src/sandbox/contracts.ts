@@ -169,8 +169,70 @@ export interface SandboxStepParamsByAction extends Pick<SkillParamsByName, Skill
   readonly report: {
     /** 汇报消息。 */
     readonly message: string;
+    /** 新生命周期路径提交的目标结果；只作为终态事实,不直接决定聊天文案。 */
+    readonly goal_result?: SandboxGoalResult;
   };
 }
+
+/** 沙箱内 until（完成条件） 描述。 */
+export type SandboxUntilCondition =
+  | Readonly<{ readonly kind: "gained"; readonly itemName: string; readonly count: number }>
+  | Readonly<{ readonly kind: "gainedTag"; readonly tagName: string; readonly count: number }>
+  | Readonly<{ readonly kind: "has"; readonly itemName: string; readonly count: number }>
+  | Readonly<{ readonly kind: "equipped"; readonly itemName: string }>
+  | Readonly<{ readonly kind: "placed"; readonly blockName: string }>;
+
+/** runGoal（目标运行） 成功摘要。 */
+export interface SandboxGoalSuccessSummary {
+  /** 目标动作或资源。 */
+  readonly target?: string;
+  /** 请求数量。 */
+  readonly requested_count?: number;
+  /** 已完成数量。 */
+  readonly completed_count?: number;
+  /** 关键背包增量。 */
+  readonly inventory_delta?: readonly {
+    readonly item_name: string;
+    readonly count: number;
+  }[];
+  /** 当前世界键；来自 runtime 上游结果。 */
+  readonly world_key?: string | null;
+  /** 目标内部各语义动作的事实摘要。 */
+  readonly action_results?: readonly Readonly<Record<string, unknown>>[];
+}
+
+/** runGoal（目标运行） 失败摘要。 */
+export interface SandboxGoalFailureSummary {
+  /** 结构化失败码。 */
+  readonly failure_code: string;
+  /** 失败阶段。 */
+  readonly failure_stage: string;
+  /** 失败消息。 */
+  readonly message: string;
+  /** 是否可恢复。 */
+  readonly recoverable: boolean | null;
+  /** 诊断详情。 */
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
+/** runGoal（目标运行） 结果。 */
+export type SandboxGoalResult =
+  | Readonly<{
+      readonly kind: "goal_result";
+      readonly ok: true;
+      readonly name: string;
+      readonly duration_ms: number;
+      readonly condition?: SandboxUntilCondition;
+      readonly summary: SandboxGoalSuccessSummary;
+    }>
+  | Readonly<{
+      readonly kind: "goal_result";
+      readonly ok: false;
+      readonly name: string;
+      readonly duration_ms: number;
+      readonly condition?: SandboxUntilCondition;
+      readonly failure: SandboxGoalFailureSummary;
+    }>;
 
 /** Facade API（门面接口） 成员的基础结构。 */
 export interface SandboxMemberContract<TName extends string = string> {

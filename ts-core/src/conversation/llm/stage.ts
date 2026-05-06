@@ -56,6 +56,8 @@ export interface ConversationLlmStageInput<TResult> extends ConversationLlmStage
   readonly searchTool?: ConversationLlmSearchTool;
   /** search() tool（工具） 所属 Bot（机器人） 标识。 */
   readonly searchToolBotId?: string;
+  /** search 工具最多执行次数；未指定时使用 Brain 默认上限。 */
+  readonly searchToolMaxCalls?: number;
 }
 
 /** LLM（大语言模型） 阶段失败上下文。 */
@@ -104,17 +106,38 @@ export async function executeStage<TResult>(
   let latestRequestTotalMs = 0;
   let latestResponseParseMs = 0;
   let latestToolRoundMs: readonly number[] = [];
+  let latestExtraLines: readonly ReturnType<typeof createLlmLogLine>[] = [];
 
   try {
     const toolExecution = await executeSearchToolLoop(input, monotonicNow);
-    const payload = toolExecution.payload;
+    let payload = toolExecution.payload;
     latestPayload = payload;
     latestRequestTotalMs = toolExecution.requestTotalMs;
     latestToolRoundMs = toolExecution.toolRoundMs;
+    latestExtraLines = toolExecution.extraLines;
     const parseStartedAt = monotonicNow();
     let value: TResult;
     try {
-      value = input.parse(extractAssistantReply(payload));
+      try {
+        value = input.parse(extractAssistantReply(payload));
+      } catch (error) {
+        if (!shouldRetryWithoutSearch(input, toolExecution, error)) {
+          throw error;
+        }
+
+        const retryExecution = await executeSearchToolLoop(
+          createStageInputWithoutSearch(input),
+          monotonicNow,
+        );
+        payload = retryExecution.payload;
+        latestPayload = payload;
+        latestRequestTotalMs += retryExecution.requestTotalMs;
+        latestExtraLines = Object.freeze([
+          ...toolExecution.extraLines,
+          ...retryExecution.extraLines,
+        ]);
+        value = input.parse(extractAssistantReply(payload));
+      }
     } finally {
       latestResponseParseMs = elapsedMs(monotonicNow, parseStartedAt);
     }
@@ -136,7 +159,7 @@ export async function executeStage<TResult>(
       metrics,
       lines: [
         ...invocationLines,
-        ...toolExecution.extraLines,
+        ...latestExtraLines,
         createLlmLogLine({
           t: createUnixSeconds(finishedAt),
           meta: {
@@ -178,6 +201,7 @@ export async function executeStage<TResult>(
       error_summary: errorSnapshot.message,
       lines: [
         ...invocationLines,
+        ...latestExtraLines,
         createLlmLogLine({
           t: createUnixSeconds(finishedAt),
           meta: {
@@ -235,8 +259,10 @@ async function executeSearchToolLoop<TResult>(
   const extraLines: ReturnType<typeof createLlmLogLine>[] = [];
   const toolRoundMs: number[] = [];
   let requestTotalMs = 0;
+  let executedSearchCalls = 0;
+  const maxSearchCalls = Math.max(0, input.searchToolMaxCalls ?? BRAIN_SEARCH_MAX_TOOL_ROUNDS);
 
-  for (let round = 0; round <= BRAIN_SEARCH_MAX_TOOL_ROUNDS; round += 1) {
+  for (let round = 0; round <= maxSearchCalls; round += 1) {
     const roundStartedAt = monotonicNow();
     const requestStartedAt = monotonicNow();
     const payload = await requestChatCompletionPayload({
@@ -244,14 +270,14 @@ async function executeSearchToolLoop<TResult>(
       config: input.config,
       messages,
       tools: [SEARCH_TOOL_DEFINITION],
-      tool_choice: round >= BRAIN_SEARCH_MAX_TOOL_ROUNDS ? "none" : "auto",
+      tool_choice: executedSearchCalls >= maxSearchCalls ? "none" : "auto",
     });
     requestTotalMs += elapsedMs(monotonicNow, requestStartedAt);
-    const toolCalls = extractAssistantToolCalls(payload).filter(
-      (toolCall) => toolCall.function.name === "search",
-    );
+    const toolCalls = extractAssistantToolCalls(payload)
+      .filter((toolCall) => toolCall.function.name === "search")
+      .slice(0, Math.max(0, maxSearchCalls - executedSearchCalls));
 
-    if (toolCalls.length === 0 || round >= BRAIN_SEARCH_MAX_TOOL_ROUNDS) {
+    if (toolCalls.length === 0 || executedSearchCalls >= maxSearchCalls) {
       extraLines.push(createAssistantTranscriptLine(payload, input.now()));
 
       return Object.freeze({
@@ -298,9 +324,39 @@ async function executeSearchToolLoop<TResult>(
       );
     }
     toolRoundMs.push(elapsedMs(monotonicNow, roundStartedAt));
+    executedSearchCalls += toolCalls.length;
   }
 
   throw new Error("search tool loop failed to produce final response");
+}
+
+function shouldRetryWithoutSearch<TResult>(
+  input: ConversationLlmStageInput<TResult>,
+  toolExecution: {
+    readonly toolRoundMs: readonly number[];
+  },
+  error: unknown,
+): boolean {
+  return (
+    input.stage === "plan" &&
+    input.searchTool !== undefined &&
+    toolExecution.toolRoundMs.length > 0 &&
+    error instanceof Error &&
+    error.message === "LLM response does not contain assistant text"
+  );
+}
+
+function createStageInputWithoutSearch<TResult>(
+  input: ConversationLlmStageInput<TResult>,
+): ConversationLlmStageInput<TResult> {
+  const {
+    searchTool: _searchTool,
+    searchToolBotId: _searchToolBotId,
+    searchToolMaxCalls: _searchToolMaxCalls,
+    ...rest
+  } = input;
+
+  return rest;
 }
 
 function createLlmCallMetrics(input: {

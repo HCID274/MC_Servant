@@ -7,7 +7,7 @@ import {
 import type { StairBFSBlockPos } from "../../domain/stair-bfs-planner.js";
 import { createMineBlockFactReader } from "./mine-block-facts.js";
 import type { PlannedMineAction } from "./mine-queue.js";
-import { planMineQueue } from "./mine-queue.js";
+import { planMineQueueWithDiagnostics } from "./mine-queue.js";
 import { prepareHandForMineDig } from "./mine-tool-policy.js";
 import type {
   MineflayerControlState,
@@ -54,15 +54,22 @@ export async function executeMineflayerMine(input: {
   input.pathfinder.stop?.();
   input.pathfinder.setGoal?.(null);
 
-  const queue = planMineQueue({
+  const plan = planMineQueueWithDiagnostics({
     bot: input.bot,
     facts,
     blockName,
     requiredTargetCount: input.params.count,
     ...(input.params.targets === undefined ? {} : { targets: input.params.targets }),
   });
+  const queue = plan.queue;
   if (queue === null || queue.targetDigCount < input.params.count) {
-    throw new Error(`unsafe_path:${blockName}:no_safe_route`);
+    throw createMineUnsafePathError({
+      blockName,
+      requestedCount: input.params.count,
+      targetDigCount: queue?.targetDigCount ?? 0,
+      diagnostics: plan.diagnostics,
+      position: input.bot.entity?.position,
+    });
   }
 
   for (const action of queue.actions) {
@@ -299,4 +306,37 @@ async function withMineActionTimeout<TValue>(
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function createMineUnsafePathError(input: {
+  readonly blockName: string;
+  readonly requestedCount: number;
+  readonly targetDigCount: number;
+  readonly diagnostics: readonly string[];
+  readonly position:
+    | Readonly<{
+        readonly x: number;
+        readonly y: number;
+        readonly z: number;
+      }>
+    | undefined;
+}): Error {
+  return Object.assign(new Error(`unsafe_path:${input.blockName}:no_safe_route`), {
+    error_code: "unsafe_path",
+    details: {
+      block_name: input.blockName,
+      requested_count: input.requestedCount,
+      planned_target_dig_count: input.targetDigCount,
+      ...(input.position === undefined
+        ? {}
+        : {
+            current_position: {
+              x: input.position.x,
+              y: input.position.y,
+              z: input.position.z,
+            },
+          }),
+      diagnostics: input.diagnostics,
+    },
+  });
 }

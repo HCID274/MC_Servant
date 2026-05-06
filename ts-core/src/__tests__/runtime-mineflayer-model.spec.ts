@@ -63,7 +63,7 @@ import type {
   MineflayerRecipeHandle,
 } from "../runtime/transport.js";
 import { createMineBlockFactReader } from "../runtime/transport/mine-block-facts.js";
-import { planMineQueue } from "../runtime/transport/mine-queue.js";
+import { planMineQueue, planMineQueueWithDiagnostics } from "../runtime/transport/mine-queue.js";
 
 class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-mc";
@@ -1728,6 +1728,106 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(queue?.actions.some((action) => action.pos.x > 32)).toBe(false);
   });
 
+  it("mine（挖掘） 起点在方块边界且 floored 列不可站立时应改用相邻可站立列继续规划", () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = { x: 0.02, y: 64, z: 0.5 };
+    bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
+    populateMiningBox(bot, {
+      minX: -4,
+      maxX: 4,
+      minY: 58,
+      maxY: 67,
+      minZ: -4,
+      maxZ: 4,
+      blockName: "stone",
+    });
+    setFakeBlock(bot, { x: -1, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: -1, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: -1, y: 66, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "dirt");
+
+    const queue = planMineQueue({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      blockName: "stone",
+      requiredTargetCount: 1,
+    });
+
+    expect(queue).not.toBeNull();
+    expect(queue?.targetDigCount).toBeGreaterThanOrEqual(1);
+    expect(queue?.actions[0]).toMatchObject({
+      kind: "move",
+      pos: { x: -1, y: 64, z: 0 },
+    });
+  });
+
+  it("mine（挖掘） 起点 Y 为小数且 floor 层不可站立时应尝试相邻高度", () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = { x: 0.5, y: 64.23, z: 0.5 };
+    bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
+    populateMiningBox(bot, {
+      minX: -4,
+      maxX: 4,
+      minY: 58,
+      maxY: 68,
+      minZ: -4,
+      maxZ: 4,
+      blockName: "stone",
+    });
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 67, z: 0 }, "air");
+
+    const queue = planMineQueue({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      blockName: "stone",
+      requiredTargetCount: 1,
+    });
+
+    expect(queue).not.toBeNull();
+    expect(queue?.targetDigCount).toBeGreaterThanOrEqual(1);
+    expect(queue?.actions[0]).toMatchObject({
+      kind: "move",
+      pos: { x: 0, y: 65, z: 0 },
+    });
+  });
+
+  it("mine（挖掘） 队列规划失败时应保留起点候选和 BFS 拒绝原因", () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = { x: 0, y: 70, z: 0 };
+    populateMiningBox(bot, {
+      minX: -1,
+      maxX: 2,
+      minY: 66,
+      maxY: 73,
+      minZ: -1,
+      maxZ: 1,
+      blockName: "dirt",
+    });
+    setFakeBlock(bot, { x: 0, y: 70, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 71, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 72, z: 0 }, "air");
+
+    const result = planMineQueueWithDiagnostics({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      blockName: "stone",
+      requiredTargetCount: 1,
+    });
+
+    expect(result.queue).toBeNull();
+    expect(
+      result.diagnostics.some((entry) => entry.startsWith("mine_queue_start_candidates:")),
+    ).toBe(true);
+    expect(result.diagnostics.some((entry) => entry.includes("mine_queue_plan_rejected:"))).toBe(
+      true,
+    );
+  });
+
   it("mine（挖掘） ore（矿石） 应只执行 ResourceService（资源服务） 传入候选，不调用 findBlocks（查找方块）重扫", async () => {
     const createdBots: FakeMineflayerBot[] = [];
     const transport = createMineflayerRuntimeTransport(
@@ -2744,7 +2844,10 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       radius: 32,
     });
     expect(collectBot.receivedMovements[0]).toMatchObject({
-      canDig: false,
+      canDig: true,
+      digCost: 20,
+      placeCost: 20,
+      allow1by1towers: false,
     });
   });
 
@@ -3170,7 +3273,9 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     });
     expect(goToBot.receivedMovements[0]).toMatchObject({
       canDig: true,
-      digCost: 10,
+      digCost: 20,
+      placeCost: 20,
+      allow1by1towers: false,
     });
   });
 

@@ -47,7 +47,7 @@ export function createMineSkillExecutor(input: {
         ...(oreTargets === undefined ? {} : { targets: oreTargets }),
       });
     } catch (error) {
-      throw new Error(`runtime_mine_failed:${formatUnknownError(error)}`);
+      throw createRuntimeMineFailureError(error, blockName, params.count);
     }
 
     diagnostics.push(...minedResult.diagnostics);
@@ -201,4 +201,29 @@ function normalizeMinecraftName(value: string): string {
 
 function formatUnknownError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function createRuntimeMineFailureError(error: unknown, blockName: string, count: number): Error {
+  return Object.assign(new Error(`runtime_mine_failed:${formatUnknownError(error)}`), {
+    error_code: "runtime_mine_failed",
+    details: {
+      ...readErrorDetails(error),
+      failure_stage: "mine",
+      block_name: blockName,
+      requested_count: count,
+    },
+  });
+}
+
+function readErrorDetails(error: unknown): Readonly<Record<string, unknown>> {
+  if (typeof error !== "object" || error === null) {
+    return {};
+  }
+
+  const details = (error as { readonly details?: unknown }).details;
+  if (typeof details !== "object" || details === null || Array.isArray(details)) {
+    return {};
+  }
+
+  return details as Readonly<Record<string, unknown>>;
 }

@@ -3,11 +3,15 @@ import type {
   StairBFSBlock,
   StairBFSBlockPos,
   StairBFSDirection,
+  StairBFSPlanFailure,
   StairBFSPlanSuccess,
   StairBFSRoute,
   StairBFSWorldScanner,
 } from "../../domain/stair-bfs-planner.js";
-import { createStairBFSPlanner } from "../../domain/stair-bfs-planner.js";
+import {
+  createDefaultStairBFSSafetyChecker,
+  createStairBFSPlanner,
+} from "../../domain/stair-bfs-planner.js";
 import type { MineBlockFactReader } from "./mine-block-facts.js";
 import type {
   MineflayerInventoryPort,
@@ -24,6 +28,7 @@ const ROUTE_STEP_COST = 10;
 const ROUTE_DIG_COST = 120;
 const ROUTE_TURN_COST = 6;
 const ROUTE_HEIGHT_CHANGE_COST = 4;
+const MINE_START_COLUMN_SEARCH_RADIUS = 1;
 
 export interface PlannedMineQueue {
   readonly phase: "no_fill" | "fill";
@@ -39,6 +44,11 @@ export interface PlannedMineAction {
   readonly countsTowardTarget?: boolean;
 }
 
+export interface MineQueuePlanResult {
+  readonly queue: PlannedMineQueue | null;
+  readonly diagnostics: readonly string[];
+}
+
 type MineQueueBot = MineflayerMovementPort & MineflayerMiningPort & MineflayerInventoryPort;
 
 /** 构建 mine（挖掘） 队列；ore（矿石）目标由 ResourceService（资源服务）传入，不在 runtime（运行时）重扫。 */
@@ -49,12 +59,32 @@ export function planMineQueue(input: {
   readonly requiredTargetCount: number;
   readonly targets?: readonly MineSkillTargetCandidate[];
 }): PlannedMineQueue | null {
-  const targets = input.targets;
-  if (targets !== undefined) {
-    return planTargetedMineQueue({ ...input, targets });
-  }
+  return planMineQueueWithDiagnostics(input).queue;
+}
 
-  return planOrdinaryMineQueue(input);
+export function planMineQueueWithDiagnostics(input: {
+  readonly bot: MineQueueBot;
+  readonly facts: MineBlockFactReader;
+  readonly blockName: string;
+  readonly requiredTargetCount: number;
+  readonly targets?: readonly MineSkillTargetCandidate[];
+}): MineQueuePlanResult {
+  const diagnostics: string[] = [];
+  const startCandidates = listMineQueueStartFootCandidates(input);
+  pushPlanDiagnostic(
+    diagnostics,
+    `mine_queue_start_candidates:${startCandidates.map(positionKey).join("|")}`,
+  );
+  const targets = input.targets;
+  const queue =
+    targets === undefined
+      ? planOrdinaryMineQueue({ ...input, startCandidates, diagnostics })
+      : planTargetedMineQueue({ ...input, targets, startCandidates, diagnostics });
+
+  return Object.freeze({
+    queue,
+    diagnostics: Object.freeze(diagnostics),
+  });
 }
 
 export function readBotFootPosition(bot: MineQueueBot): StairBFSBlockPos {
@@ -72,8 +102,39 @@ function planTargetedMineQueue(input: {
   readonly blockName: string;
   readonly requiredTargetCount: number;
   readonly targets: readonly MineSkillTargetCandidate[];
+  readonly startCandidates: readonly StairBFSBlockPos[];
+  readonly diagnostics: string[];
 }): PlannedMineQueue | null {
-  const origin = readBotFootPosition(input.bot);
+  let bestPartial: PlannedMineQueue | null = null;
+  for (const origin of input.startCandidates) {
+    const queue = planTargetedMineQueueFromOrigin(input, origin, input.diagnostics);
+    if (queue === null) {
+      pushPlanDiagnostic(
+        input.diagnostics,
+        `mine_queue_target_origin_failed:${positionKey(origin)}`,
+      );
+      continue;
+    }
+    if (queue.targetDigCount >= input.requiredTargetCount) {
+      return queue;
+    }
+    bestPartial = bestPartial ?? queue;
+  }
+
+  return bestPartial;
+}
+
+function planTargetedMineQueueFromOrigin(
+  input: {
+    readonly bot: MineQueueBot;
+    readonly facts: MineBlockFactReader;
+    readonly blockName: string;
+    readonly requiredTargetCount: number;
+    readonly targets: readonly MineSkillTargetCandidate[];
+  },
+  origin: StairBFSBlockPos,
+  diagnostics: string[],
+): PlannedMineQueue | null {
   const targets = input.targets
     .filter((target) => input.facts.normalizeName(target.block_name) === input.blockName)
     .filter((target) => {
@@ -95,6 +156,7 @@ function planTargetedMineQueue(input: {
       startFoot: current,
       target: freezePos(target.position),
       plannedAir,
+      diagnostics,
     });
     if (plan === null) {
       continue;
@@ -132,8 +194,30 @@ function planOrdinaryMineQueue(input: {
   readonly facts: MineBlockFactReader;
   readonly blockName: string;
   readonly requiredTargetCount: number;
+  readonly startCandidates: readonly StairBFSBlockPos[];
+  readonly diagnostics: string[];
 }): PlannedMineQueue | null {
-  const origin = readBotFootPosition(input.bot);
+  for (const origin of input.startCandidates) {
+    const queue = planOrdinaryMineQueueFromOrigin(input, origin, input.diagnostics);
+    if (queue !== null) {
+      return queue;
+    }
+    pushPlanDiagnostic(input.diagnostics, `mine_queue_origin_failed:${positionKey(origin)}`);
+  }
+
+  return null;
+}
+
+function planOrdinaryMineQueueFromOrigin(
+  input: {
+    readonly bot: MineQueueBot;
+    readonly facts: MineBlockFactReader;
+    readonly blockName: string;
+    readonly requiredTargetCount: number;
+  },
+  origin: StairBFSBlockPos,
+  diagnostics: string[],
+): PlannedMineQueue | null {
   const plannedAir = new Set<string>();
   const actions: PlannedMineAction[] = [];
   let current = origin;
@@ -154,6 +238,7 @@ function planOrdinaryMineQueue(input: {
       startDirections: currentDir === null ? STAIR_EXPLORATION_DIRECTIONS : [currentDir],
       plannedAir,
       rejectExistingTunnelRoute: !allowExistingTunnelWalk,
+      diagnostics,
     });
     if (segment === null) {
       break;
@@ -221,6 +306,7 @@ function findNextExplorationSegment(input: {
   readonly startDirections: readonly StairBFSDirection[];
   readonly plannedAir: ReadonlySet<string>;
   readonly rejectExistingTunnelRoute: boolean;
+  readonly diagnostics?: string[];
 }): StairBFSPlanSuccess | null {
   const plans = input.startDirections.flatMap((direction) => {
     const plan = createStairBFSPlanner().plan({
@@ -246,6 +332,7 @@ function findNextExplorationSegment(input: {
     });
 
     if (!plan.ok) {
+      pushPlanFailureDiagnostic(input.diagnostics, input.startFoot, direction, plan);
       return [];
     }
     if (input.rejectExistingTunnelRoute && usesExistingTunnelRoute(plan.route)) {
@@ -358,6 +445,7 @@ function planRouteToTargetStandingPosition(input: {
   readonly startFoot: StairBFSBlockPos;
   readonly target: StairBFSBlockPos;
   readonly plannedAir: Set<string>;
+  readonly diagnostics: string[];
 }): {
   readonly route: StairBFSPlanSuccess;
   readonly standingPos: StairBFSBlockPos;
@@ -411,6 +499,12 @@ function planRouteToTargetStandingPosition(input: {
       maxFillBlocks: 0,
     });
     if (!route.ok) {
+      pushPlanFailureDiagnostic(
+        input.diagnostics,
+        input.startFoot,
+        chooseDirectionToward(input.startFoot, standingPos),
+        route,
+      );
       continue;
     }
 
@@ -507,6 +601,91 @@ function createMineflayerStairScanner(
       });
     },
   });
+}
+
+function listMineQueueStartFootCandidates(input: {
+  readonly bot: MineQueueBot;
+  readonly facts: MineBlockFactReader;
+  readonly blockName: string;
+}): readonly StairBFSBlockPos[] {
+  const base = readBotFootPosition(input.bot);
+  const position = input.bot.entity?.position;
+  if (position === undefined) {
+    return Object.freeze([base]);
+  }
+
+  const scanner = createMineflayerStairScanner(input.bot, input.facts, input.blockName);
+  const checker = createDefaultStairBFSSafetyChecker();
+  const candidates = listNearbyStartFootCandidates(position, base).filter((candidate) =>
+    STAIR_EXPLORATION_DIRECTIONS.some((direction) => {
+      const validation = checker.isValidStep({
+        scanner,
+        current: {
+          pos: candidate,
+          dir: direction,
+          mode: "down",
+          usedFill: 0,
+        },
+        next: candidate,
+        nextDir: direction,
+        heightDelta: 0,
+        allowFill: false,
+        maxFillBlocks: 0,
+      });
+      return validation.ok && validation.dig.length === 0 && validation.fill.length === 0;
+    }),
+  );
+
+  return candidates.length > 0 ? Object.freeze(candidates) : Object.freeze([base]);
+}
+
+function listNearbyStartFootCandidates(
+  position: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>,
+  base: Readonly<StairBFSBlockPos>,
+): readonly StairBFSBlockPos[] {
+  const candidates: StairBFSBlockPos[] = [];
+  const seen = new Set<string>();
+  const minY = Math.floor(position.y) - 1;
+  const maxY = Math.ceil(position.y) + 1;
+  for (let y = minY; y <= maxY; y += 1) {
+    for (
+      let dx = -MINE_START_COLUMN_SEARCH_RADIUS;
+      dx <= MINE_START_COLUMN_SEARCH_RADIUS;
+      dx += 1
+    ) {
+      for (
+        let dz = -MINE_START_COLUMN_SEARCH_RADIUS;
+        dz <= MINE_START_COLUMN_SEARCH_RADIUS;
+        dz += 1
+      ) {
+        const candidate = freezePos({ x: base.x + dx, y, z: base.z + dz });
+        const key = positionKey(candidate);
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        candidates.push(candidate);
+      }
+    }
+  }
+
+  return Object.freeze(
+    candidates.sort((left, right) => {
+      const distanceDelta =
+        distanceToFootCenter(position, left) - distanceToFootCenter(position, right);
+      if (distanceDelta !== 0) {
+        return distanceDelta;
+      }
+      return samePos(left, base) ? -1 : samePos(right, base) ? 1 : 0;
+    }),
+  );
+}
+
+function distanceToFootCenter(
+  position: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>,
+  foot: Readonly<StairBFSBlockPos>,
+): number {
+  return Math.hypot(position.x - (foot.x + 0.5), position.y - foot.y, position.z - (foot.z + 0.5));
 }
 
 function chooseDirectionToward(
@@ -618,6 +797,52 @@ function sortDigPositionsForExecution(
   positions: readonly StairBFSBlockPos[],
 ): readonly StairBFSBlockPos[] {
   return Object.freeze([...positions].sort((left, right) => right.y - left.y));
+}
+
+function pushPlanFailureDiagnostic(
+  diagnostics: string[] | undefined,
+  origin: Readonly<StairBFSBlockPos>,
+  direction: StairBFSDirection,
+  failure: StairBFSPlanFailure,
+): void {
+  pushPlanDiagnostic(
+    diagnostics,
+    [
+      `mine_queue_plan_rejected:${positionKey(origin)}`,
+      `dir=${direction}`,
+      `reason=${failure.reason}`,
+      `expanded=${failure.diagnostics.exploredStates}`,
+      `rejects=${summarizeRejectedSteps(failure.diagnostics.rejectedSteps)}`,
+    ].join(";"),
+  );
+}
+
+function pushPlanDiagnostic(diagnostics: string[] | undefined, text: string): void {
+  if (diagnostics === undefined || diagnostics.length >= 80) {
+    return;
+  }
+  diagnostics.push(text);
+}
+
+function summarizeRejectedSteps(
+  rejectedSteps: readonly {
+    readonly reason: string;
+  }[],
+): string {
+  if (rejectedSteps.length === 0) {
+    return "none";
+  }
+
+  const counts = new Map<string, number>();
+  for (const step of rejectedSteps) {
+    counts.set(step.reason, (counts.get(step.reason) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 4)
+    .map(([reason, count]) => `${reason}:${count}`)
+    .join(",");
 }
 
 function positionKey(pos: Readonly<StairBFSBlockPos>): string {

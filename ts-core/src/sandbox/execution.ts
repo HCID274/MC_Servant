@@ -38,6 +38,7 @@ import {
   type SandboxExecutionResourceLimits,
   type SandboxExecutionResult,
   type SandboxExecutionSuccess,
+  type SandboxGoalResult,
   type SandboxStepActionName,
   type SandboxStepParamsByAction,
   type SandboxStepResult,
@@ -767,26 +768,198 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
     };
     const __owner = __deepFreeze(${ownerJson});
     let __ensureDepth = 0;
+    let __lastActionResult = null;
+    let __lastEnsureCondition = null;
+    const __goalFrames = [];
     const __semanticCall = (method, args) =>
-      __ensureDepth > 0 ? __sandboxTryCall(method, args) : __sandboxCall(method, args);
+      (__ensureDepth > 0 ? __sandboxTryCall(method, args) : __sandboxCall(method, args)).then((result) => {
+        __lastActionResult = result;
+        const frame = __goalFrames[__goalFrames.length - 1];
+        if (frame) {
+          frame.results.push(result);
+        }
+        return result;
+      });
     const __isFailedResult = (value) =>
       value !== null && typeof value === "object" && value.ok === false && value.error;
+    const __isGoalResult = (value) =>
+      value !== null && typeof value === "object" && value.kind === "goal_result";
     const __normalizeEnsureCondition = (condition) => {
       if (condition === null || typeof condition !== "object") {
-        throw new Error("ensure condition must be until.gained(...)");
+        throw new Error("ensure condition must be an until.* condition");
       }
-      if (condition.kind !== "gained") {
+      if (!["gained", "gainedTag", "has", "equipped", "placed"].includes(condition.kind)) {
         throw new Error("unsupported ensure condition: " + String(condition.kind));
       }
-      const itemName = String(condition.itemName ?? condition.item_name ?? "").trim();
-      const count = Number(condition.count);
-      if (itemName.length === 0 || !Number.isInteger(count) || count <= 0) {
-        throw new Error("invalid until.gained condition");
+      if (condition.kind === "gained" || condition.kind === "has") {
+        const itemName = String(condition.itemName ?? condition.item_name ?? "").trim();
+        const count = Number(condition.count);
+        if (itemName.length === 0 || !Number.isInteger(count) || count <= 0) {
+          throw new Error("invalid until." + condition.kind + " condition");
+        }
+        return { kind: condition.kind, itemName, count };
       }
-      return { kind: "gained", itemName, count };
+      if (condition.kind === "gainedTag") {
+        const tagName = String(condition.tagName ?? condition.tag_name ?? "").trim();
+        const count = Number(condition.count);
+        if (tagName.length === 0 || !Number.isInteger(count) || count <= 0) {
+          throw new Error("invalid until.gainedTag condition");
+        }
+        return { kind: "gainedTag", tagName, count };
+      }
+      if (condition.kind === "equipped") {
+        const itemName = String(condition.itemName ?? condition.item_name ?? "").trim();
+        if (itemName.length === 0) {
+          throw new Error("invalid until.equipped condition");
+        }
+        return { kind: "equipped", itemName };
+      }
+      const blockName = String(condition.blockName ?? condition.block_name ?? "").trim();
+      if (blockName.length === 0) {
+        throw new Error("invalid until.placed condition");
+      }
+      return { kind: "placed", blockName };
+    };
+    const __readResultData = (value) => {
+      if (value !== null && typeof value === "object" && value.ok === true && value.data) {
+        return value.data;
+      }
+      if (value !== null && typeof value === "object" && value.ok === true && value.result) {
+        return __readResultData(value.result);
+      }
+      return value;
+    };
+    const __readCompletedCount = (data, condition) => {
+      if (data !== null && typeof data === "object") {
+        if (typeof data.completed_count === "number") return data.completed_count;
+        if (typeof data.collected_count === "number") return data.collected_count;
+        if (Array.isArray(data.collected)) {
+          return data.collected.reduce((sum, item) => sum + (typeof item?.count === "number" ? item.count : 0), 0);
+        }
+        if (data.skill === "equip" || data.skill === "goTo") return 1;
+      }
+      if (condition?.kind === "equipped" || condition?.kind === "placed") return 1;
+      return 0;
+    };
+    const __readTarget = (data, condition) => {
+      if (condition?.kind === "gained" || condition?.kind === "has" || condition?.kind === "equipped") return condition.itemName;
+      if (condition?.kind === "gainedTag") return condition.tagName;
+      if (condition?.kind === "placed") return condition.blockName;
+      if (data !== null && typeof data === "object") {
+        return data.item_name ?? data.block_name ?? data.collected_item_name ?? data.log_block_name;
+      }
+      return undefined;
+    };
+    const __readRequestedCount = (condition, completedCount) => {
+      if (condition && typeof condition.count === "number") return condition.count;
+      return completedCount > 0 ? completedCount : undefined;
+    };
+    const __readWorldKey = (data) => {
+      if (data !== null && typeof data === "object" && "world_key" in data) {
+        return data.world_key ?? null;
+      }
+      return undefined;
+    };
+    const __createInventoryDelta = (target, count, condition) => {
+      if (typeof target !== "string" || count <= 0) return undefined;
+      if (condition?.kind === "equipped" || condition?.kind === "placed") return undefined;
+      return [{ item_name: target, count }];
+    };
+    const __mergeInventoryDelta = (deltas) => {
+      const counts = new Map();
+      for (const delta of deltas.flat()) {
+        if (!delta || typeof delta.item_name !== "string" || typeof delta.count !== "number" || delta.count <= 0) continue;
+        counts.set(delta.item_name, (counts.get(delta.item_name) ?? 0) + delta.count);
+      }
+      const merged = Array.from(counts.entries()).map(([item_name, count]) => ({ item_name, count }));
+      return merged.length > 0 ? merged : undefined;
+    };
+    const __readActionSummary = (result, condition) => {
+      const data = __readResultData(result);
+      const completedCount = __readCompletedCount(data, condition);
+      let target = __readTarget(data, condition);
+      let inventoryDelta = __createInventoryDelta(target, completedCount, condition);
+      if (data !== null && typeof data === "object") {
+        if (data.skill === "cutTree") {
+          target = data.clusters?.find?.((cluster) => cluster?.collected_count > 0)?.log_block_name ?? data.clusters?.[0]?.log_block_name ?? data.log_block_name ?? "logs";
+          inventoryDelta = __createInventoryDelta(target, Number(data.collected_count ?? 0), undefined);
+        } else if (data.skill === "mine") {
+          target = data.collected_item_name ?? data.block_name ?? target;
+          inventoryDelta = __createInventoryDelta(target, Number(data.collected_count ?? completedCount), undefined);
+        } else if (data.skill === "collect" && Array.isArray(data.collected)) {
+          inventoryDelta = data.collected
+            .filter((item) => typeof item?.name === "string" && typeof item?.count === "number" && item.count > 0)
+            .map((item) => ({ item_name: item.name, count: item.count }));
+        } else if (data.skill === "equip" || data.skill === "goTo" || data.skill === "place") {
+          inventoryDelta = undefined;
+        }
+      }
+      return {
+        ...(typeof target === "string" ? { target } : {}),
+        completed_count: completedCount,
+        ...(inventoryDelta ? { inventory_delta: inventoryDelta } : {}),
+        ...(__readWorldKey(data) !== undefined ? { world_key: __readWorldKey(data) } : {})
+      };
+    };
+    const __createGoalSuccess = (name, startedAt, result, condition, frame) => {
+      const data = __readResultData(result);
+      const actionSummaries = (frame?.results ?? []).map((entry) => __readActionSummary(entry, undefined));
+      const successfulActionCount = actionSummaries.filter((entry) =>
+        (entry.inventory_delta?.length ?? 0) > 0 || (entry.completed_count ?? 0) > 0 || "target" in entry
+      ).length;
+      const effectiveCondition = successfulActionCount > 1 ? undefined : condition;
+      const mergedInventoryDelta = __mergeInventoryDelta(actionSummaries.flatMap((entry) => entry.inventory_delta ?? []));
+      const completedCount = mergedInventoryDelta
+        ? mergedInventoryDelta.reduce((sum, delta) => sum + delta.count, 0)
+        : __readCompletedCount(data, effectiveCondition);
+      const target = __readTarget(data, effectiveCondition);
+      const requestedCount = __readRequestedCount(effectiveCondition, completedCount);
+      const inventoryDelta = mergedInventoryDelta ?? __createInventoryDelta(target, completedCount, effectiveCondition);
+      const worldKey = [...actionSummaries].reverse().find((entry) => "world_key" in entry)?.world_key ?? __readWorldKey(data);
+      return __deepFreeze({
+        kind: "goal_result",
+        ok: true,
+        name,
+        duration_ms: Math.max(0, Date.now() - startedAt),
+        ...(effectiveCondition ? { condition: effectiveCondition } : {}),
+        summary: {
+          ...(typeof target === "string" ? { target } : {}),
+          ...(typeof requestedCount === "number" ? { requested_count: requestedCount } : {}),
+          completed_count: completedCount,
+          ...(inventoryDelta ? { inventory_delta: inventoryDelta } : {}),
+          ...(worldKey !== undefined ? { world_key: worldKey } : {}),
+          ...(successfulActionCount > 1 ? { action_results: actionSummaries } : {})
+        }
+      });
+    };
+    const __createGoalFailure = (name, startedAt, failure, condition) => {
+      const details = failure?.details && typeof failure.details === "object" ? failure.details : {};
+      return __deepFreeze({
+        kind: "goal_result",
+        ok: false,
+        name,
+        duration_ms: Math.max(0, Date.now() - startedAt),
+        ...(condition ? { condition } : {}),
+        failure: {
+          failure_code: String(failure?.code ?? failure?.error_code ?? "facade_call_failed"),
+          failure_stage: String(details.failure_stage ?? failure?.action ?? "code"),
+          message: String(failure?.message ?? "code goal failed"),
+          recoverable: typeof failure?.recoverable === "boolean" ? failure.recoverable : null,
+          ...(Object.keys(details).length > 0 ? { details } : {})
+        }
+      });
     };
     const reply = (message) => __sandboxCall("chat.say", [message]);
-    const report = (message) => __sandboxCall("chat.report", [message]);
+    const report = async (task) => {
+      if (__isGoalResult(task)) {
+        await __sandboxCall("system.reportGoal", [task]);
+        if (task.ok === false) {
+          throw new Error(task.failure.failure_code);
+        }
+        return undefined;
+      }
+      return __sandboxCall("chat.report", [task]);
+    };
     const goTo = (...args) => __semanticCall("bot.goTo", args);
     const mine = (...args) => __semanticCall("bot.mine", args);
     const cutTree = (...args) => __semanticCall("bot.cutTree", args);
@@ -812,11 +985,16 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
       return false;
     };
     until.gained = (itemName, count) => Object.freeze({ kind: "gained", itemName, count });
+    until.gainedTag = (tagName, count) => Object.freeze({ kind: "gainedTag", tagName, count });
+    until.has = (itemName, count) => Object.freeze({ kind: "has", itemName, count });
+    until.equipped = (itemName) => Object.freeze({ kind: "equipped", itemName });
+    until.placed = (blockName) => Object.freeze({ kind: "placed", blockName });
     const ensure = async (action, condition) => {
       if (typeof action !== "function") {
         throw new Error("ensure first argument must be an async action function");
       }
       const normalizedCondition = __normalizeEnsureCondition(condition);
+      __lastEnsureCondition = normalizedCondition;
       let lastResult = null;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         __ensureDepth += 1;
@@ -828,18 +1006,20 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
         } finally {
           __ensureDepth -= 1;
         }
+        __lastActionResult = lastResult;
         if (!__isFailedResult(lastResult)) {
           return lastResult;
         }
-        const recovered = await __sandboxCall("bot.ensure", [{
+        const recovered = await __sandboxTryCall("bot.ensure", [{
           failure: lastResult.error,
           condition: normalizedCondition
         }]);
         if (__isFailedResult(recovered)) {
+          __lastActionResult = recovered;
           return recovered;
         }
       }
-      return {
+      lastResult = {
         ok: false,
         error: {
           code: "unsupported_capability",
@@ -848,15 +1028,38 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
           details: { last_result: lastResult, condition: normalizedCondition }
         }
       };
+      __lastActionResult = lastResult;
+      return lastResult;
     };
-    const runGoal = async (_goal, fn) => {
-      if (typeof _goal === "function") {
-        return await _goal();
+    const runGoal = async (goal, fn) => {
+      const startedAt = Date.now();
+      const name = typeof goal === "string" && goal.trim().length > 0 ? goal.trim() : "code";
+      const body = typeof goal === "function" ? goal : fn;
+      if (typeof body !== "function") {
+        return __createGoalSuccess(name, startedAt, __lastActionResult, __lastEnsureCondition);
       }
-      if (typeof fn === "function") {
-        return await fn();
+      const conditionBefore = __lastEnsureCondition;
+      __lastActionResult = null;
+      const frame = { results: [] };
+      __goalFrames.push(frame);
+      try {
+        const result = await body();
+        const finalResult = result === undefined ? __lastActionResult : result;
+        const condition = __lastEnsureCondition ?? conditionBefore;
+        if (__isFailedResult(finalResult)) {
+          return __createGoalFailure(name, startedAt, finalResult.error, condition);
+        }
+        return __createGoalSuccess(name, startedAt, finalResult, condition, frame);
+      } catch (error) {
+        const failure = __isFailedResult(__lastActionResult)
+          ? __lastActionResult.error
+          : error instanceof Error
+            ? { code: error.message || "facade_call_failed", message: error.message }
+            : { code: "facade_call_failed", message: String(error) };
+        return __createGoalFailure(name, startedAt, failure, __lastEnsureCondition ?? conditionBefore);
+      } finally {
+        __goalFrames.pop();
       }
-      return undefined;
     };
     Object.assign(globalThis, {
       reply,
@@ -914,6 +1117,9 @@ async function handleSandboxHostCall(input: {
 }): Promise<SandboxHostCallResult> {
   if (input.method === "system.tryFacadeCall") {
     return handleSandboxTryFacadeCall(input);
+  }
+  if (input.method === "system.reportGoal") {
+    return handleSandboxGoalReport(input);
   }
 
   const action = toSandboxStepActionName(input.method);
@@ -1028,6 +1234,64 @@ async function handleSandboxHostCall(input: {
 
     throw new Error(facadeError.message);
   }
+}
+
+async function handleSandboxGoalReport(input: {
+  method: string;
+  args: readonly unknown[];
+  facade: SandboxFacadeExecutionAdapter;
+  phaseLogs: SandboxJsonlLine[];
+  stepResults: SandboxStepResult[];
+  controlState: SandboxExecutionControlState;
+  resourceLimits: SandboxExecutionResourceLimits;
+  setLastFacadeError: (error: FacadeCallError) => void;
+  now: () => number;
+}): Promise<SandboxHostCallResult> {
+  void input.method;
+  void input.facade;
+  void input.setLastFacadeError;
+  assertSandboxFacadeCallAllowed(input.controlState, input.resourceLimits, input.now());
+
+  const goalResult = normalizeSandboxGoalResult(input.args[0]);
+  const params: SandboxStepParamsByAction["report"] = Object.freeze({
+    message: "",
+    goal_result: goalResult,
+  });
+  const result = Object.freeze({
+    reported: true,
+    goal_result: goalResult,
+  });
+
+  input.phaseLogs.push(
+    createSandboxLogLine({
+      t: input.now(),
+      phase: "facade_call",
+      m: "report",
+      p: params,
+    }),
+  );
+  input.stepResults.push(
+    createSandboxStepResult({
+      step_index: input.stepResults.length,
+      action: "report",
+      params,
+      status: "ok",
+      duration_ms: 0,
+      result,
+    }),
+  );
+  input.phaseLogs.push(
+    createSandboxLogLine({
+      t: input.now(),
+      phase: "facade_result",
+      m: "report",
+      s: "ok",
+      r: result,
+      ms: 0,
+    }),
+  );
+
+  return result;
 }
 
 async function handleSandboxTryFacadeCall(input: {
@@ -1289,6 +1553,41 @@ function normalizeSandboxCallParams(
   }
 
   return { message: first };
+}
+
+function normalizeSandboxGoalResult(value: unknown): SandboxGoalResult {
+  if (!isRecord(value) || value.kind !== "goal_result" || typeof value.ok !== "boolean") {
+    throw new Error("report(task) requires a GoalResult returned by runGoal");
+  }
+  if (typeof value.name !== "string" || value.name.trim().length === 0) {
+    throw new Error("GoalResult.name must be non-empty");
+  }
+  if (typeof value.duration_ms !== "number" || !Number.isFinite(value.duration_ms)) {
+    throw new Error("GoalResult.duration_ms must be finite");
+  }
+  if (value.ok === true) {
+    if (!isRecord(value.summary)) {
+      throw new Error("GoalResult.summary must be an object");
+    }
+
+    return cloneReadonlyValue(value) as SandboxGoalResult;
+  }
+  if (!isRecord(value.failure)) {
+    throw new Error("GoalResult.failure must be an object");
+  }
+  const failure = value.failure;
+  if (
+    typeof failure.failure_code !== "string" ||
+    failure.failure_code.trim().length === 0 ||
+    typeof failure.failure_stage !== "string" ||
+    failure.failure_stage.trim().length === 0 ||
+    typeof failure.message !== "string" ||
+    failure.message.trim().length === 0
+  ) {
+    throw new Error("GoalResult.failure must include code, stage and message");
+  }
+
+  return cloneReadonlyValue(value) as SandboxGoalResult;
 }
 
 function normalizeSandboxSearchParams(args: readonly unknown[]): {

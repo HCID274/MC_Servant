@@ -3,14 +3,13 @@ import {
   type GoToSkillParams,
   createGoToSkillExecutionResult,
 } from "../../core-ports/skills.js";
+import { TERRAIN_ACTION_COST, configureTerrainAwareMovements } from "./movement-policy.js";
 import { resolveGoalBlockConstructor } from "./pathfinder-goals.js";
 import type {
   MineflayerMovementPort,
   MineflayerPathfinderApi,
   MineflayerPathfinderModule,
 } from "./types.js";
-
-const DEFAULT_GO_TO_DIG_COST = 10;
 
 /** 执行 goTo（前往坐标） 技能的 Mineflayer（Minecraft 协议客户端） 适配器。 */
 export async function executeMineflayerGoTo(input: {
@@ -31,16 +30,9 @@ export async function executeMineflayerGoTo(input: {
 
 /** 配置 goTo（前往坐标） 的 pathfinder（寻路器）移动代价。 */
 export function configureGoToMovements(movements: unknown): void {
-  if (movements === null || typeof movements !== "object") {
-    return;
-  }
-
-  /*
-   * canDig（允许挖掘） 让寻路器在无可通行路线时才挖障碍；digCost（挖掘代价）
-   * 提高挖掘路线成本，使普通草地移动优先于破坏方块。
-   */
-  Object.assign(movements, {
+  configureTerrainAwareMovements(movements, {
     canDig: true,
-    digCost: DEFAULT_GO_TO_DIG_COST,
+    digCost: TERRAIN_ACTION_COST,
+    placeCost: TERRAIN_ACTION_COST,
   });
 }

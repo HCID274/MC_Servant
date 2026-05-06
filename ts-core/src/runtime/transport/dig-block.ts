@@ -1,4 +1,5 @@
 import { configureGoToMovements } from "./go-to.js";
+import { PRECISE_DIG_APPROACH_COST, configureTerrainAwareMovements } from "./movement-policy.js";
 import { resolveGoalNearConstructor } from "./pathfinder-goals.js";
 import type {
   MineflayerBlockHandle,
@@ -14,7 +15,6 @@ import { canReadMineflayerBlockAt, readMineflayerBlockAt } from "./world-reader.
 export type MineflayerDigBlockAtPort = MineflayerMovementPort & MineflayerMiningPort;
 
 const DIG_APPROACH_RANGE = 2;
-const HIGH_COST_DIG_OR_PLACE = 100;
 const DIRECT_DIG_FALLBACK_REACH = 4.5;
 
 /** 挖掘指定坐标的单个方块；调用方负责决定该坐标来自哪个资源簇。 */
@@ -69,19 +69,11 @@ async function approachDigTarget(input: {
 
 function configureDigApproachMovements(movements: unknown): void {
   configureGoToMovements(movements);
-  if (movements === null || typeof movements !== "object") {
-    return;
-  }
 
-  /*
-   * digBlockAt（按坐标挖掘） 的靠近阶段允许必要挖路 / 补坑，但这些路线成本必须
-   * 足够高；同时禁止 1x1 tower（一格塔），避免为了树根目标原地垫高。
-   */
-  Object.assign(movements, {
+  configureTerrainAwareMovements(movements, {
     canDig: true,
-    digCost: HIGH_COST_DIG_OR_PLACE,
-    placeCost: HIGH_COST_DIG_OR_PLACE,
-    allow1by1towers: false,
+    digCost: PRECISE_DIG_APPROACH_COST,
+    placeCost: PRECISE_DIG_APPROACH_COST,
   });
 }
 

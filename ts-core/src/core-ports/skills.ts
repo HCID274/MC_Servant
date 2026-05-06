@@ -317,14 +317,43 @@ export interface PlaceCapabilityParams {
 export type EmptyEnsureCapabilityParams = Readonly<Record<string, never>>;
 
 /** ensure（确保） 支持的完成条件。 */
-export type EnsureCondition = Readonly<{
-  /** 当前唯一条件：背包较任务起点获得指定物品。 */
-  readonly kind: "gained";
-  /** 目标物品标准名称。 */
-  readonly itemName: string;
-  /** 目标获得数量。 */
-  readonly count: number;
-}>;
+export type EnsureCondition =
+  | Readonly<{
+      /** 背包较任务起点获得指定物品。 */
+      readonly kind: "gained";
+      /** 目标物品标准名称。 */
+      readonly itemName: string;
+      /** 目标获得数量。 */
+      readonly count: number;
+    }>
+  | Readonly<{
+      /** 背包较任务起点获得指定物品标签。 */
+      readonly kind: "gainedTag";
+      /** 目标标签名称。 */
+      readonly tagName: string;
+      /** 目标获得数量。 */
+      readonly count: number;
+    }>
+  | Readonly<{
+      /** 背包当前持有指定物品。 */
+      readonly kind: "has";
+      /** 目标物品标准名称。 */
+      readonly itemName: string;
+      /** 目标持有数量。 */
+      readonly count: number;
+    }>
+  | Readonly<{
+      /** 当前已装备指定物品。 */
+      readonly kind: "equipped";
+      /** 目标物品标准名称。 */
+      readonly itemName: string;
+    }>
+  | Readonly<{
+      /** 当前已放置指定方块。 */
+      readonly kind: "placed";
+      /** 目标方块标准名称。 */
+      readonly blockName: string;
+    }>;
 
 /** ensure（确保） 从失败动作恢复所需的结构化失败快照。 */
 export interface EnsureActionFailureSnapshot {
@@ -560,13 +589,31 @@ export function isEmptyEnsureCapabilityParams(
 
 /** 校验 ensure（确保） 完成条件。 */
 export function isEnsureCondition(value: unknown): value is EnsureCondition {
-  return (
-    isRecord(value) &&
-    hasOnlyAllowedKeys(value, ["kind", "itemName", "count"]) &&
-    value.kind === "gained" &&
-    isNonEmptyString(value.itemName) &&
-    isPositiveInteger(value.count)
-  );
+  if (!isRecord(value) || !isNonEmptyString(value.kind)) {
+    return false;
+  }
+
+  switch (value.kind) {
+    case "gained":
+    case "has":
+      return (
+        hasOnlyAllowedKeys(value, ["kind", "itemName", "count"]) &&
+        isNonEmptyString(value.itemName) &&
+        isPositiveInteger(value.count)
+      );
+    case "gainedTag":
+      return (
+        hasOnlyAllowedKeys(value, ["kind", "tagName", "count"]) &&
+        isNonEmptyString(value.tagName) &&
+        isPositiveInteger(value.count)
+      );
+    case "equipped":
+      return hasOnlyAllowedKeys(value, ["kind", "itemName"]) && isNonEmptyString(value.itemName);
+    case "placed":
+      return hasOnlyAllowedKeys(value, ["kind", "blockName"]) && isNonEmptyString(value.blockName);
+    default:
+      return false;
+  }
 }
 
 /** 校验 ensure（确保） 动作失败快照。 */

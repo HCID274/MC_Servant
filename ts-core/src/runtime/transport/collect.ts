@@ -7,6 +7,7 @@ import {
   type CollectSkillSkippedItem,
   createCollectSkillExecutionResult,
 } from "../../core-ports/skills.js";
+import { TERRAIN_ACTION_COST, configureTerrainAwareMovements } from "./movement-policy.js";
 import { matchesMinecraftItemName, normalizeMinecraftName } from "./naming.js";
 import { resolveGoalNearConstructor, resolveGoalNearXZConstructor } from "./pathfinder-goals.js";
 import type {
@@ -73,14 +74,12 @@ export async function executeMineflayerCollect(input: {
   });
 }
 
-/** 配置 collect（捡拾） 移动策略：当前阶段不允许为了捡物品挖穿障碍。 */
+/** 配置 collect（捡拾） 移动策略：允许高成本地形处理，但禁止不稳定的一格塔垫高。 */
 function configureCollectMovements(movements: unknown): void {
-  if (movements === null || typeof movements !== "object") {
-    return;
-  }
-
-  Object.assign(movements, {
-    canDig: false,
+  configureTerrainAwareMovements(movements, {
+    canDig: true,
+    digCost: TERRAIN_ACTION_COST,
+    placeCost: TERRAIN_ACTION_COST,
   });
 }
 

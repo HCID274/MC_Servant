@@ -43,6 +43,14 @@
 
 (从这里开始,Reviewer C 通过任务后追加)
 
+## T-070B | 2026-05-06 | runGoal（目标运行）/until（完成条件）/report（汇报）任务生命周期闭环
+
+- 涉及模块: sandbox（沙箱） execution（执行器）/contracts（契约）,core-ports/skills（技能端口）,workers（工作线程） TaskResultSummary（任务结果摘要）/TaskResultReporter（任务结果汇报器）,conversation/llm（对话大语言模型） plan prompt（规划提示词）/parser（解析器）/stage（阶段执行器）/client（客户端）,runtime/transport（运行时传输层） movement policy（移动策略）/goTo（移动）/collect（捡拾）/dig-block（按坐标挖掘）/mine queue（挖掘队列）,相关回归测试
+- A 拆解依据: 用户要求建立 `reply -> runGoal -> ensure/until -> report`（开场回复到目标运行到确保/完成条件到终态汇报）生命周期,每个 TS（TypeScript）任务必须有开场回复、目标执行、真实完成条件、终态汇报和结构化结果摘要;边界限定 sandbox（沙箱）执行生命周期、BotWorker（机器人工作线程）任务终态、TaskResultReporter（任务结果汇报器）、SkillResultSummary（技能结果摘要）、GoalResult（目标结果）、until（完成条件）判断与 inventory（背包）事实,不得绕过 TaskResultReporter（任务结果汇报器）
+- C 审查结论: 曾多次实服打回后通过。首轮 T-070（任务编号） 已收敛到 `runGoal`（目标运行）/`report(task)`（任务汇报） 形态,但多任务把 `cutTree`（砍树）错误包进 `ensure`（确保） 后触发 `unsupported_capability`（不支持能力）;返修后 Plan prompt（规划提示词） 明确 `cutTree`（砍树） 直调并检查 `ok`（成功标志）,`mine stone`（挖石头） 仍走 `ensure(async () => mine(...), until.gained(...))`（确保挖掘直到获得）。后续实服暴露 mineflayer-pathfinder（Minecraft 寻路库） 一格塔垫高不稳定、Plan search（规划检索）多轮拖死、mine（挖掘）方块边界起点误判等问题;当前实现用统一 movement policy（移动策略） 禁用 `allow1by1towers`（一格塔） 并给 goTo/collect（移动/捡拾） 高成本挖填,Plan search（规划检索） 由 prompt（提示词）约束语义且代码层最多执行一次,search（检索） 空 assistant（助手文本） 时无工具重试, mine queue（挖掘队列） 从当前坐标附近和相邻高度筛选可站立起点并记录 diagnostics（诊断）。用户已实服确认多任务与边界站位挖石头通过;`git diff --check`（差异空白检查）通过,`pnpm typecheck`（类型检查）通过,定向 Vitest（测试框架）4 个文件 148 个 test（测试）通过,`bash scripts/pre_review.sh`（评审前预检脚本）全绿,34 个 test file（测试文件）/407 passed（通过）/8 skipped（跳过）;B 已补真实 OpenAI compatible API（OpenAI 兼容接口）验证,多动作指令生成 `reply`（回复）+`runGoal`（目标运行）+`cutTree`（砍树）+`ensure(mine stone)`（确保挖石头）+`goTo(owner.position)`（回主人位置）+`report(task)`（任务汇报）
+- 关键决策: 选择把终态事实写成 `GoalResult`（目标结果） 并由 TaskResultSummary/TaskResultReporter（任务结果摘要/任务结果汇报器）统一消费,而不是让沙箱代码直接拼最终聊天;选择禁止 mineflayer-pathfinder（Minecraft 寻路库） 不稳定的一格塔跳垫并提高挖填成本,而不是 patch（补丁修改） 第三方库源码;选择修 mine queue（挖掘队列） 起点离散化,而不是放宽 StairBFS（阶梯广度优先搜索） 安全规则
+- 架构冲突: 无
+
 ## T-069B | 2026-05-06 | 通用 ensure（确保）依赖解析器与事实端口收敛
 
 - 涉及模块: core-ports/skills（技能端口契约）,skills/toolchain-ensure（工具链确保解析器）,sandbox（沙箱） execution（执行器）/contracts（契约）/facade（门面）,runtime（运行时） BotActor（机器人执行代理）/transport（传输层） facts（事实端口）,app bootstrap（应用装配）,conversation/llm（对话大语言模型） plan prompt（规划提示词）/triage prompt（分诊提示词）,相关回归测试

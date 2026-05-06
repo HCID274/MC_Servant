@@ -106,8 +106,16 @@ function validatePlanCode(code: string): void {
     throw new ConversationLlmPlanError("planner code must not call demoMineIron");
   }
 
-  if (!/\breport\s*\(/.test(code) && !code.includes("api.chat.report")) {
-    throw new ConversationLlmPlanError("planner code must call report");
+  if (/\bapi\.(?:bot|chat)\b/.test(code)) {
+    throw new ConversationLlmPlanError("planner code must use semantic API, not api.bot/api.chat");
+  }
+
+  if (!/\brunGoal\s*\(/.test(code)) {
+    throw new ConversationLlmPlanError("planner code must call runGoal");
+  }
+
+  if (!/\breport\s*\(\s*[A-Za-z_$][\w$]*\s*\)/.test(code)) {
+    throw new ConversationLlmPlanError("planner code must call report(task)");
   }
 }
 
