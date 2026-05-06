@@ -92,12 +92,12 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
     expect(messages[0]?.content).toContain("分诊只做路由判断");
     expect(messages[0]?.content).toContain('纯闲聊只输出 chat 空对象，例如 {"chat":{}}。');
-    expect(messages[0]?.content).toContain("即使 Brain上下文或最近历史里出现过类似任务完成记录");
+    expect(messages[0]?.content).toContain("回来 / 过来 / 到我这来 / 回我身边 / 来我身边");
     expect(messages[0]?.content).not.toContain('"content":"我在喵~"');
     expect(messages[0]?.content).not.toContain("reply 只写自然短句");
   });
 
-  it("triage（分诊） 应通过 prompt（提示词） 指向重复明确动作指令不能被历史完成记录吞掉", async () => {
+  it("triage（分诊） 应通过 prompt（提示词） 指向回来类指令是 action", async () => {
     const capturedRequests: Array<{ body: unknown }> = [];
     const client = createConversationLlmClient(
       createConversationLlmConfig({
@@ -120,7 +120,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
                 {
                   message: {
                     content:
-                      '{"action":{"intent":"task","priority":"normal","reason":"主人重复给出明确砍树动作指令"}}',
+                      '{"action":{"intent":"task","priority":"normal","reason":"主人要求回来"}}',
                   },
                 },
               ],
@@ -138,20 +138,20 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
     await expect(
       client.generateCompositeTriage({
-        message_id: "msg-triage-repeat-cut-tree",
-        message: "给我砍5块木头",
+        message_id: "msg-triage-return",
+        message: "回来",
         bot_summary: "idle",
-        brain_context: "主人要求“给我砍5块木头”，Bot 执行技能 cutTree完成。",
+        brain_context: "主人刚才在附近等待 Bot 回来。",
       }),
     ).resolves.toEqual({
       action: {
         intent: "task",
         priority: "normal",
-        reason: "主人重复给出明确砍树动作指令",
+        reason: "主人要求回来",
       },
     });
     expect(JSON.stringify(capturedRequests[0]?.body)).toContain(
-      "即使 Brain上下文或最近历史里出现过类似任务完成记录",
+      "回来 / 过来 / 到我这来 / 回我身边 / 来我身边",
     );
   });
 
@@ -976,11 +976,15 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).toContain("不要说“根据历史记录”");
     expect(messages[0]?.content).toContain("明确动作不要 search");
     expect(messages[0]?.content).toContain("cutTree(5)");
-    expect(messages[0]?.content).toContain('mine(\\"stone\\", 5)');
-    expect(messages[0]?.content).toContain('ensure(\\"stone_pickaxe\\")');
+    expect(messages[0]?.content).toContain('ensure(async () => mine(\\"stone\\", 5)');
+    expect(messages[0]?.content).toContain('until.gained(\\"cobblestone\\", 5)');
+    expect(messages[0]?.content).toContain('ensure(async () => mine(\\"iron_ore\\", 1)');
     expect(messages[0]?.content).toContain('mine(\\"iron_ore\\", 1)');
     expect(messages[0]?.content).toContain("demoMineIron");
     expect(messages[0]?.content).toContain('craft("planks", count)');
+    expect(messages[0]?.content).toContain("不要手写木板、木棍、工作台、木镐、装备链路");
+    expect(messages[0]?.content).toContain("挖 stone / 石头 / 圆石必须用 ensure");
+    expect(messages[0]?.content).not.toContain('挖 stone / 石头 / 圆石 => mine("stone", count)');
     expect(messages[0]?.content).toContain("输出契约 1/3");
     expect(messages[0]?.content).toContain("输出契约 2/3");
     expect(messages[0]?.content).toContain("输出契约 3/3");
@@ -997,14 +1001,14 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
   it("应让 mine（挖掘） / collect（捡拾） / cutTree（砍树） / equip（装备） 都进入在线代码规划结果", async () => {
     const responses = [
-      '{"code":"await api.chat.say(\\"收到，我去挖石头喵~\\"); const result = await api.bot.mine(\\"stone\\", 2); if (!result.ok) { await api.chat.report(`挖石头失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"挖石头完成喵~\\");"}',
+      '{"code":"await reply(\\"收到，我去挖石头喵~\\"); const result = await ensure(async () => mine(\\"stone\\", 2), until.gained(\\"cobblestone\\", 2)); if (result.ok === false) { await report(`挖石头失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await report(\\"挖石头完成喵~\\");"}',
       '{"code":"await api.chat.say(\\"收到，我去捡圆石喵~\\"); const result = await api.bot.collect(\\"cobblestone\\", 32); if (!result.ok) { await api.chat.report(`捡拾失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"捡拾完成喵~\\");"}',
       '{"code":"await api.chat.say(\\"收到，我去捡附近掉落物喵~\\"); const result = await api.bot.collect(); if (!result.ok) { await api.chat.report(`捡拾失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"捡拾完成喵~\\");"}',
       '{"code":"await api.chat.say(\\"收到，我去捡附近掉落物喵~\\"); await api.bot.goTo(1,64,2); const result = await api.bot.collect(undefined, 32); if (!result.ok) { await api.chat.report(`捡拾失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"捡拾完成喵~\\");"}',
       '{"code":"await api.chat.say(\\"收到，我去砍 12 块木头喵~\\"); const result = await api.bot.cutTree(12); if (!result.ok) { await api.chat.report(`砍树失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"砍树完成喵~\\");"}',
       '{"code":"await api.chat.say(\\"收到，我来放一个工作台喵~\\"); const placed = await api.bot.place(\\"crafting_table\\"); if (!placed.ok) { await api.chat.report(`放置工作台失败: ${placed.error.code}喵~`); throw new Error(placed.error.code); } await api.chat.report(\\"工作台已放好喵~\\");"}',
       '{"code":"await api.chat.say(\\"收到，我来你这里放工作台喵~\\"); await api.bot.goTo(8,64,2); const placed = await api.bot.place(\\"crafting_table\\", {x:8,y:64,z:2}); if (!placed.ok) { await api.chat.report(`放置工作台失败: ${placed.error.code}喵~`); throw new Error(placed.error.code); } await api.chat.report(\\"工作台已放好喵~\\");"}',
-      '{"code":"await api.chat.say(\\"收到，我先做木镐再挖石头喵~\\"); const pickaxe = await api.bot.ensureWoodenPickaxeEquipped(); if (!pickaxe.ok) { await api.chat.report(`做木镐失败: ${pickaxe.error.code}喵~`); throw new Error(pickaxe.error.code); } const mined = await api.bot.mine(\\"stone\\", 5); if (!mined.ok) { await api.chat.report(`挖石头失败: ${mined.error.code}喵~`); throw new Error(mined.error.code); } await api.chat.report(\\"挖石头完成喵~\\");"}',
+      '{"code":"await reply(\\"收到，我去挖石头喵~\\"); const mined = await ensure(async () => mine(\\"stone\\", 5), until.gained(\\"cobblestone\\", 5)); if (mined.ok === false) { await report(`挖石头失败: ${mined.error.code}喵~`); throw new Error(mined.error.code); } await report(\\"挖石头完成喵~\\");"}',
       '{"code":"await api.chat.say(\\"收到，我先把石镐拿在手上喵~\\"); const result = await api.bot.equip(\\"stone_pickaxe\\", \\"hand\\"); if (!result.ok) { await api.chat.report(`装备失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"装备完成喵~\\");"}',
       '{"code":"await api.chat.say(\\"收到，我把面包装备到主手喵~\\"); const result = await api.bot.equip(\\"bread\\", \\"hand\\"); if (!result.ok) { await api.chat.report(`装备失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"装备完成喵~\\");"}',
     ];
@@ -1046,7 +1050,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
       }),
     ).resolves.toMatchObject({
-      code: expect.stringContaining('api.bot.mine("stone", 2)'),
+      code: expect.stringContaining('ensure(async () => mine("stone", 2)'),
     });
     await expect(
       client.generateCodePlan({
@@ -1106,16 +1110,17 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     ).resolves.toMatchObject({
       code: expect.stringContaining("api.bot.goTo(8,64,2)"),
     });
-    await expect(
-      client.generateCodePlan({
-        message_id: "msg-plan-craft-pickaxe-then-mine",
-        message: "找工作台做一个木镐,然后去挖石头",
-        snapshot_context:
-          "online_runtime: executable skills: goTo, collect, cutTree, equip, mine, place; sandbox toolchain: craft, place(crafting_table)\n[背包] oak_log x38",
-      }),
-    ).resolves.toMatchObject({
-      code: expect.stringContaining("ensureWoodenPickaxeEquipped"),
+    const stonePlan = await client.generateCodePlan({
+      message_id: "msg-plan-craft-pickaxe-then-mine",
+      message: "找工作台做一个木镐,然后去挖石头",
+      snapshot_context:
+        "online_runtime: executable skills: goTo, collect, cutTree, equip, mine, place; sandbox toolchain: craft, place(crafting_table)\n[背包] oak_log x38",
     });
+    expect(stonePlan.code).toContain('ensure(async () => mine("stone", 5)');
+    expect(stonePlan.code).toContain('until.gained("cobblestone", 5)');
+    expect(stonePlan.code).not.toContain('craft("planks"');
+    expect(stonePlan.code).not.toContain('craft("stick"');
+    expect(stonePlan.code).not.toContain('craft("wooden_pickaxe"');
     await expect(
       client.generateCodePlan({
         message_id: "msg-plan-equip",
@@ -1139,7 +1144,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
   it("应拒绝 code（代码） 缺少最终 report（汇报） 或调用隐藏 demo（演示）", async () => {
     const responses = [
-      '{"code":"await api.bot.ensureStonePickaxeEquipped()"}',
+      '{"code":"await ensure(async () => mine(\\"iron_ore\\",1), until.gained(\\"raw_iron\\",1))"}',
       '{"code":"await demoMineIron(); await api.chat.report(\\"完成喵~\\")"}',
     ];
     const client = createConversationLlmClient(

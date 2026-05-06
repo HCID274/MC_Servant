@@ -23,6 +23,9 @@ import type {
   GoToSkillParams,
   MineSkillParams,
   PlaceCapabilityParams,
+  ToolchainEnsureFacts,
+  ToolchainEnsureInventoryItem,
+  ToolchainMaterialSource,
 } from "../../core-ports/skills.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../../domain/invariants.js";
 import { attachMineflayerBlockWorldCompatibility } from "./block-world-compat.js";
@@ -243,6 +246,11 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
         params,
         worldKey: createMineflayerWorldKey(currentBot),
         cache: craftingTableCache,
+      });
+    },
+    createToolchainEnsureFacts(): ToolchainEnsureFacts {
+      return createMineflayerToolchainEnsureFacts({
+        getBot: getReadOnlyWorldReadyBot,
       });
     },
     stopCurrentAction(): void {
@@ -899,6 +907,224 @@ function countMineflayerInventoryItemsBySemanticRole(
       item.type !== undefined && matchingItemIds.has(item.type) ? sum + (item.count ?? 1) : sum,
     0,
   );
+}
+
+function createMineflayerToolchainEnsureFacts(source: {
+  readonly getBot: () => MineflayerBotHandle | null;
+}): ToolchainEnsureFacts {
+  return Object.freeze({
+    resolveRequiredEquipment(
+      input: Parameters<ToolchainEnsureFacts["resolveRequiredEquipment"]>[0],
+    ) {
+      const bot = source.getBot();
+      const blockName = readStringValue(input.failure.params.blockName);
+      if (bot === null || blockName === null) {
+        return null;
+      }
+
+      return resolveRequiredEquipmentFromRegistry(bot, blockName, input.inventory);
+    },
+    resolveMaterialSource(input: Parameters<ToolchainEnsureFacts["resolveMaterialSource"]>[0]) {
+      const bot = source.getBot();
+      return bot === null ? null : resolveMaterialSourceFromRegistry(bot.registry, input.itemName);
+    },
+    canCraft(input: Parameters<ToolchainEnsureFacts["canCraft"]>[0]) {
+      const bot = source.getBot();
+      return bot === null ? false : canCraftItemByName(bot, input.itemName);
+    },
+    resolveCraftingTableBlockName() {
+      const bot = source.getBot();
+      const registryRecord = asRecord(bot?.registry);
+      const blocksByName = asRecord(registryRecord?.blocksByName);
+      const table = asRecord(blocksByName?.crafting_table);
+      const name = readStringValue(table?.name);
+      return name ?? (table === undefined ? null : "crafting_table");
+    },
+  });
+}
+
+function resolveRequiredEquipmentFromRegistry(
+  bot: MineflayerBotHandle,
+  blockName: string,
+  inventory: readonly ToolchainEnsureInventoryItem[],
+): string | null {
+  const allowedToolIds = readRequiredHarvestToolIdsFromRegistry(bot.registry, blockName);
+  if (allowedToolIds.length === 0) {
+    return null;
+  }
+
+  const candidates = allowedToolIds.flatMap((itemId) => {
+    const itemName = readRegistryItemName(bot.registry, itemId);
+    return itemName === null ? [] : [itemName];
+  });
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const inventoryCounts = new Map(
+    inventory.map((item) => [normalizeEnsureName(item.item_name), item.count] as const),
+  );
+  const inventoryCandidate = candidates.find(
+    (itemName) => (inventoryCounts.get(normalizeEnsureName(itemName)) ?? 0) > 0,
+  );
+  if (inventoryCandidate !== undefined) {
+    return inventoryCandidate;
+  }
+
+  return candidates.find((itemName) => canCraftItemByName(bot, itemName)) ?? candidates[0] ?? null;
+}
+
+function resolveMaterialSourceFromRegistry(
+  registry: unknown,
+  itemName: string,
+): ToolchainMaterialSource | null {
+  const normalizedItemName = normalizeEnsureName(itemName);
+  const item = readRegistryItemFactByName(registry, normalizedItemName);
+  if (item === undefined) {
+    return null;
+  }
+
+  const candidates = readRegistryBlockFacts(registry)
+    .filter((block) => readRegistryBlockDropIds(block).includes(item.id))
+    .sort((left, right) => compareMaterialSourceBlocks(left, right, normalizedItemName));
+  const logCandidate = candidates.find((block) => isCutTreeLogLikeBlockFact(block));
+  if (logCandidate !== undefined) {
+    const blockName = readStringValue(logCandidate.name);
+    return Object.freeze({
+      action: "cutTree" as const,
+      itemName: normalizedItemName,
+      ...(blockName === null ? {} : { blockName: normalizeEnsureName(blockName) }),
+    });
+  }
+
+  const sourceBlock = candidates[0];
+  const sourceBlockName = readStringValue(sourceBlock?.name);
+  return sourceBlockName === null
+    ? null
+    : Object.freeze({
+        action: "mine" as const,
+        itemName: normalizedItemName,
+        blockName: normalizeEnsureName(sourceBlockName),
+      });
+}
+
+function compareMaterialSourceBlocks(
+  left: Readonly<Record<string, unknown>>,
+  right: Readonly<Record<string, unknown>>,
+  itemName: string,
+): number {
+  const leftName = normalizeEnsureName(readStringValue(left.name) ?? "");
+  const rightName = normalizeEnsureName(readStringValue(right.name) ?? "");
+  const leftSame = leftName === itemName ? 1 : 0;
+  const rightSame = rightName === itemName ? 1 : 0;
+  if (leftSame !== rightSame) {
+    return leftSame - rightSame;
+  }
+
+  const leftDiggable = readBoolean(left.diggable, false) ? 0 : 1;
+  const rightDiggable = readBoolean(right.diggable, false) ? 0 : 1;
+  if (leftDiggable !== rightDiggable) {
+    return leftDiggable - rightDiggable;
+  }
+
+  return (
+    readNumber(left.id, Number.MAX_SAFE_INTEGER) - readNumber(right.id, Number.MAX_SAFE_INTEGER)
+  );
+}
+
+function canCraftItemByName(bot: MineflayerBotHandle, itemName: string): boolean {
+  if (typeof bot.recipesAll !== "function" && typeof bot.recipesFor !== "function") {
+    return false;
+  }
+
+  return resolveCraftCandidateItemIds(bot.registry, itemName).some((itemId) => {
+    const allRecipes = bot.recipesAll?.(itemId, null, true) ?? [];
+    const readyRecipes = bot.recipesFor?.(itemId, null, 1, true) ?? [];
+    return allRecipes.length > 0 || readyRecipes.length > 0;
+  });
+}
+
+function resolveCraftCandidateItemIds(registry: unknown, itemName: string): readonly number[] {
+  const normalized = normalizeEnsureName(itemName);
+  const item = readRegistryItemFactByName(registry, normalized);
+  return item === undefined ? Object.freeze([]) : Object.freeze([item.id]);
+}
+
+function readRequiredHarvestToolIdsFromRegistry(
+  registry: unknown,
+  blockName: string,
+): readonly number[] {
+  const block = readRegistryBlockFactByName(registry, blockName);
+  const harvestTools = asRecord(block?.harvestTools);
+  if (harvestTools === undefined) {
+    return Object.freeze([]);
+  }
+
+  return Object.freeze(
+    Object.keys(harvestTools)
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value))
+      .sort((left, right) => left - right),
+  );
+}
+
+function readRegistryBlockFacts(registry: unknown): readonly Readonly<Record<string, unknown>>[] {
+  const registryRecord = asRecord(registry);
+  const blocksByName = asRecord(registryRecord?.blocksByName);
+  return blocksByName === undefined
+    ? Object.freeze([])
+    : Object.freeze(
+        Object.values(blocksByName).flatMap((value) => {
+          const record = asRecord(value);
+          return record === undefined ? [] : [record];
+        }),
+      );
+}
+
+function readRegistryBlockFactByName(
+  registry: unknown,
+  blockName: string,
+): Readonly<Record<string, unknown>> | undefined {
+  const registryRecord = asRecord(registry);
+  const blocksByName = asRecord(registryRecord?.blocksByName);
+  return asRecord(blocksByName?.[normalizeEnsureName(blockName)]);
+}
+
+function readRegistryItemFactByName(
+  registry: unknown,
+  itemName: string,
+): Readonly<{ readonly id: number; readonly name?: string }> | undefined {
+  const registryRecord = asRecord(registry);
+  const itemsByName = asRecord(registryRecord?.itemsByName);
+  const item = asRecord(itemsByName?.[normalizeEnsureName(itemName)]);
+  const id = readNumber(item?.id, Number.NaN);
+  return Number.isInteger(id)
+    ? ({
+        ...item,
+        id,
+        ...(readStringValue(item?.name) === null ? {} : { name: readStringValue(item?.name) }),
+      } as Readonly<{ readonly id: number; readonly name?: string }>)
+    : undefined;
+}
+
+function readRegistryItemName(registry: unknown, itemId: number): string | null {
+  const registryRecord = asRecord(registry);
+  const items = asRecord(registryRecord?.items);
+  const item = asRecord(items?.[String(itemId)] ?? items?.[itemId]);
+  const name = readStringValue(item?.name);
+  return name === null ? null : normalizeEnsureName(name);
+}
+
+function normalizeEnsureName(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^minecraft:/u, "")
+    .replace(/[\s-]+/gu, "_");
+}
+
+function readStringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function createInventoryItemIdsForSemanticRole(

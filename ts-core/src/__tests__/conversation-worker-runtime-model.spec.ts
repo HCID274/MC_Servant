@@ -722,6 +722,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           }),
         environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
         planner: () => ({
+          // legacy（旧兼容） negative fixture（反例夹具）：用于确认 retry_guard 不会放行旧裸调用。
           code: 'await api.chat.say("我继续挖石头喵~"); await api.bot.mine("stone", 5); await api.chat.report("挖石头完成喵~");',
         }),
         enqueueExecTaskSink: async ({ task }) => {
@@ -2522,7 +2523,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
   });
 
-  it("应接受 planner（规划器） 产出的 mine（挖掘） 技能并入执行队列", async () => {
+  it("应接受 planner（规划器） 产出的 ensure（确保） 挖石头代码并入执行队列", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const replies: Array<{ message_id: string; content: string }> = [];
     const enqueuedTasks: unknown[] = [];
@@ -2545,7 +2546,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
             reason: "llm_task_mine",
           }),
         planner: async () => ({
-          code: 'await api.chat.say("收到，我去挖石头喵~"); await api.bot.mine("stone", 2); await api.chat.report("挖石头完成喵~");',
+          code: 'await reply("收到，我去挖石头喵~"); const result = await ensure(async () => mine("stone", 2), until.gained("cobblestone", 2)); if (result.ok === false) { await report(`挖石头失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await report("挖石头完成喵~");',
         }),
         broadcastReplySink: async (reply) => {
           replies.push(reply);
@@ -2584,7 +2585,7 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
           snapshot_ts: 105,
           priority: "normal",
           type: "code",
-          code: expect.stringContaining('api.bot.mine("stone", 2)'),
+          code: expect.stringContaining('ensure(async () => mine("stone", 2)'),
         },
       },
     });

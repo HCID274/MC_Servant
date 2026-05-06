@@ -746,6 +746,11 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
         arguments: { copy: true },
         result: { promise: true, copy: true }
       });
+    const __sandboxTryCall = (method, args) =>
+      __sandboxHostCallRef.apply(undefined, ["system.tryFacadeCall", [method, args]], {
+        arguments: { copy: true },
+        result: { promise: true, copy: true }
+      });
     const __sandboxRead = (method, args) =>
       __sandboxHostReadRef.apply(undefined, [method, args], {
         arguments: { copy: true },
@@ -761,15 +766,34 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
       return Object.freeze(value);
     };
     const __owner = __deepFreeze(${ownerJson});
+    let __ensureDepth = 0;
+    const __semanticCall = (method, args) =>
+      __ensureDepth > 0 ? __sandboxTryCall(method, args) : __sandboxCall(method, args);
+    const __isFailedResult = (value) =>
+      value !== null && typeof value === "object" && value.ok === false && value.error;
+    const __normalizeEnsureCondition = (condition) => {
+      if (condition === null || typeof condition !== "object") {
+        throw new Error("ensure condition must be until.gained(...)");
+      }
+      if (condition.kind !== "gained") {
+        throw new Error("unsupported ensure condition: " + String(condition.kind));
+      }
+      const itemName = String(condition.itemName ?? condition.item_name ?? "").trim();
+      const count = Number(condition.count);
+      if (itemName.length === 0 || !Number.isInteger(count) || count <= 0) {
+        throw new Error("invalid until.gained condition");
+      }
+      return { kind: "gained", itemName, count };
+    };
     const reply = (message) => __sandboxCall("chat.say", [message]);
     const report = (message) => __sandboxCall("chat.report", [message]);
-    const goTo = (...args) => __sandboxCall("bot.goTo", args);
-    const mine = (...args) => __sandboxCall("bot.mine", args);
-    const cutTree = (...args) => __sandboxCall("bot.cutTree", args);
-    const collect = (...args) => __sandboxCall("bot.collect", args);
-    const equip = (...args) => __sandboxCall("bot.equip", args);
-    const craft = (...args) => __sandboxCall("bot.craft", args);
-    const place = (...args) => __sandboxCall("bot.place", args);
+    const goTo = (...args) => __semanticCall("bot.goTo", args);
+    const mine = (...args) => __semanticCall("bot.mine", args);
+    const cutTree = (...args) => __semanticCall("bot.cutTree", args);
+    const collect = (...args) => __semanticCall("bot.collect", args);
+    const equip = (...args) => __semanticCall("bot.equip", args);
+    const craft = (...args) => __semanticCall("bot.craft", args);
+    const place = (...args) => __semanticCall("bot.place", args);
     const search = (...args) => __sandboxRead("memory.search", args);
     const sleep = (ms) => __sandboxRead("system.sleep", [ms]);
     const until = async (predicate, options = {}) => {
@@ -787,36 +811,44 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
       }
       return false;
     };
-    const __ensureMethodByTarget = (target) => {
-      const key = String(target).trim();
-      if (key === "logs" || key === "log" || key === "wood" || key === "oak_log") {
-        return "bot.ensureLogs";
+    until.gained = (itemName, count) => Object.freeze({ kind: "gained", itemName, count });
+    const ensure = async (action, condition) => {
+      if (typeof action !== "function") {
+        throw new Error("ensure first argument must be an async action function");
       }
-      if (key === "crafting_table" || key === "table") {
-        return "bot.ensureCraftingTablePlaced";
+      const normalizedCondition = __normalizeEnsureCondition(condition);
+      let lastResult = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        __ensureDepth += 1;
+        try {
+          lastResult = await action();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          lastResult = { ok: false, error: { action: "unknown", params: {}, code: "facade_call_failed", message } };
+        } finally {
+          __ensureDepth -= 1;
+        }
+        if (!__isFailedResult(lastResult)) {
+          return lastResult;
+        }
+        const recovered = await __sandboxCall("bot.ensure", [{
+          failure: lastResult.error,
+          condition: normalizedCondition
+        }]);
+        if (__isFailedResult(recovered)) {
+          return recovered;
+        }
       }
-      if (key === "wooden_pickaxe") {
-        return "bot.ensureWoodenPickaxeEquipped";
-      }
-      if (key === "cobblestone" || key === "stone") {
-        return "bot.ensureCobblestone";
-      }
-      if (key === "stone_pickaxe") {
-        return "bot.ensureStonePickaxeEquipped";
-      }
-      throw new Error("Unsupported ensure target: " + key);
+      return {
+        ok: false,
+        error: {
+          code: "unsupported_capability",
+          message: "ensure retry limit reached",
+          world_key: null,
+          details: { last_result: lastResult, condition: normalizedCondition }
+        }
+      };
     };
-    const ensure = (target, ...args) => {
-      if (typeof target === "function") {
-        return until(target, args[0] ?? {});
-      }
-      return __sandboxCall(__ensureMethodByTarget(target), args);
-    };
-    ensure.logs = (count) => __sandboxCall("bot.ensureLogs", [count]);
-    ensure.craftingTable = () => __sandboxCall("bot.ensureCraftingTablePlaced", []);
-    ensure.woodenPickaxe = () => __sandboxCall("bot.ensureWoodenPickaxeEquipped", []);
-    ensure.cobblestone = (count) => __sandboxCall("bot.ensureCobblestone", [count]);
-    ensure.stonePickaxe = () => __sandboxCall("bot.ensureStonePickaxeEquipped", []);
     const runGoal = async (_goal, fn) => {
       if (typeof _goal === "function") {
         return await _goal();
@@ -857,12 +889,7 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
         cutTree: (...args) => __sandboxCall("bot.cutTree", args),
         craft: (...args) => __sandboxCall("bot.craft", args),
         place: (...args) => __sandboxCall("bot.place", args),
-        placeCraftingTable: (...args) => __sandboxCall("bot.placeCraftingTable", args),
-        ensureLogs: (...args) => __sandboxCall("bot.ensureLogs", args),
-        ensureCraftingTablePlaced: (...args) => __sandboxCall("bot.ensureCraftingTablePlaced", args),
-        ensureWoodenPickaxeEquipped: (...args) => __sandboxCall("bot.ensureWoodenPickaxeEquipped", args),
-        ensureCobblestone: (...args) => __sandboxCall("bot.ensureCobblestone", args),
-        ensureStonePickaxeEquipped: (...args) => __sandboxCall("bot.ensureStonePickaxeEquipped", args)
+        placeCraftingTable: (...args) => __sandboxCall("bot.placeCraftingTable", args)
       }),
       chat: Object.freeze({
         say: (...args) => __sandboxCall("chat.say", args),
@@ -885,6 +912,10 @@ async function handleSandboxHostCall(input: {
   setLastFacadeError: (error: FacadeCallError) => void;
   now: () => number;
 }): Promise<SandboxHostCallResult> {
+  if (input.method === "system.tryFacadeCall") {
+    return handleSandboxTryFacadeCall(input);
+  }
+
   const action = toSandboxStepActionName(input.method);
   const params = normalizeSandboxCallParams(action, input.args);
   const startedAt = input.now();
@@ -978,7 +1009,7 @@ async function handleSandboxHostCall(input: {
       createSandboxStepResult({
         step_index: input.stepResults.length,
         action,
-        params,
+        params: params as SandboxStepParamsByAction[typeof action],
         status: "err",
         duration_ms: durationMs,
         error: facadeError,
@@ -996,6 +1027,116 @@ async function handleSandboxHostCall(input: {
     );
 
     throw new Error(facadeError.message);
+  }
+}
+
+async function handleSandboxTryFacadeCall(input: {
+  method: string;
+  args: readonly unknown[];
+  facade: SandboxFacadeExecutionAdapter;
+  phaseLogs: SandboxJsonlLine[];
+  stepResults: SandboxStepResult[];
+  controlState: SandboxExecutionControlState;
+  resourceLimits: SandboxExecutionResourceLimits;
+  setLastFacadeError: (error: FacadeCallError) => void;
+  now: () => number;
+}): Promise<SandboxHostCallResult> {
+  assertSandboxFacadeCallAllowed(input.controlState, input.resourceLimits, input.now());
+
+  const method = typeof input.args[0] === "string" ? input.args[0] : "";
+  const callArgs = Array.isArray(input.args[1]) ? input.args[1] : [];
+  const action = toSandboxStepActionName(method);
+  if (action === "say" || action === "report") {
+    throw new Error("tryFacadeCall only supports bot actions");
+  }
+
+  const params = normalizeSandboxCallParams(action, callArgs);
+  const startedAt = input.now();
+  input.phaseLogs.push(
+    createSandboxLogLine({
+      t: input.now(),
+      phase: "facade_call",
+      m: action,
+      p: params,
+    }),
+  );
+
+  try {
+    const control = createSandboxFacadeCallControl(input.controlState);
+    const result = await trackSandboxFacadeCall(
+      input.controlState,
+      executeSandboxBotFacadeCall(input.facade, action, params, control),
+    );
+    if (input.controlState.terminalError !== null) {
+      throw input.controlState.terminalError;
+    }
+
+    const durationMs = Math.max(0, input.now() - startedAt);
+    input.stepResults.push(
+      createSandboxStepResult({
+        step_index: input.stepResults.length,
+        action,
+        params: params as SandboxStepParamsByAction[typeof action],
+        status: "ok",
+        duration_ms: durationMs,
+        result,
+      }),
+    );
+    input.phaseLogs.push(
+      createSandboxLogLine({
+        t: input.now(),
+        phase: "facade_result",
+        m: action,
+        s: "ok",
+        r: result,
+        ms: durationMs,
+      }),
+    );
+
+    return Object.freeze({ ok: true, result });
+  } catch (error) {
+    if (
+      input.controlState.terminalError !== null &&
+      input.controlState.terminalError.name !== "FacadeCallError"
+    ) {
+      throw new Error(input.controlState.terminalError.message);
+    }
+
+    const facadeError = createFacadeCallError(action, params, error, {
+      ensure_recoverable: true,
+    });
+    const durationMs = Math.max(0, input.now() - startedAt);
+    input.stepResults.push(
+      createSandboxStepResult({
+        step_index: input.stepResults.length,
+        action,
+        params: params as SandboxStepParamsByAction[typeof action],
+        status: "err",
+        duration_ms: durationMs,
+        error: facadeError,
+      }),
+    );
+    input.phaseLogs.push(
+      createSandboxLogLine({
+        t: input.now(),
+        phase: "facade_result",
+        m: action,
+        s: "err",
+        err: toJsonlErrorSnapshot(facadeError),
+        ms: durationMs,
+      }),
+    );
+
+    return Object.freeze({
+      ok: false,
+      error: Object.freeze({
+        action,
+        params,
+        code: facadeError.error_code,
+        message: facadeError.message,
+        ...(facadeError.details === undefined ? {} : { details: facadeError.details }),
+      }),
+    });
   }
 }
 
@@ -1127,33 +1268,12 @@ function normalizeSandboxCallParams(
     return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["place"];
   }
 
-  if (action === "ensureLogs") {
-    if (typeof first === "number") {
-      return { count: first } as SandboxStepParamsByAction["ensureLogs"];
-    }
-
-    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["ensureLogs"];
+  if (action === "placeCraftingTable") {
+    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["placeCraftingTable"];
   }
 
-  if (action === "ensureCobblestone") {
-    if (typeof first === "number") {
-      return { count: first } as SandboxStepParamsByAction["ensureCobblestone"];
-    }
-
-    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["ensureCobblestone"];
-  }
-
-  if (
-    action === "placeCraftingTable" ||
-    action === "ensureCraftingTablePlaced" ||
-    action === "ensureWoodenPickaxeEquipped" ||
-    action === "ensureStonePickaxeEquipped"
-  ) {
-    return cloneReadonlyValue(first ?? {}) as
-      | SandboxStepParamsByAction["placeCraftingTable"]
-      | SandboxStepParamsByAction["ensureCraftingTablePlaced"]
-      | SandboxStepParamsByAction["ensureWoodenPickaxeEquipped"]
-      | SandboxStepParamsByAction["ensureStonePickaxeEquipped"];
+  if (action === "ensure") {
+    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["ensure"];
   }
 
   if (action === "cutTree") {
@@ -1259,11 +1379,7 @@ function isToolchainSandboxAction(
     action === "craft" ||
     action === "place" ||
     action === "placeCraftingTable" ||
-    action === "ensureLogs" ||
-    action === "ensureCraftingTablePlaced" ||
-    action === "ensureWoodenPickaxeEquipped" ||
-    action === "ensureCobblestone" ||
-    action === "ensureStonePickaxeEquipped"
+    action === "ensure"
   );
 }
 
@@ -1384,7 +1500,11 @@ async function waitForActiveFacadeCalls(
 
 function findFacadeStepError(stepResults: readonly SandboxStepResult[]): FacadeCallError | null {
   for (const stepResult of stepResults) {
-    if (stepResult.status === "err" && stepResult.error?.name === "FacadeCallError") {
+    if (
+      stepResult.status === "err" &&
+      stepResult.error?.name === "FacadeCallError" &&
+      stepResult.error.details?.ensure_recoverable !== true
+    ) {
       return stepResult.error;
     }
   }
@@ -1396,7 +1516,9 @@ function createFacadeCallError(
   action: SandboxStepActionName,
   params: SandboxStepResult["params"],
   error: unknown,
+  detailsOverlay: Readonly<Record<string, unknown>> = {},
 ): FacadeCallError {
+  const details = mergeFacadeErrorDetails(readFacadeErrorDetails(error).details, detailsOverlay);
   return createSandboxError({
     name: "FacadeCallError",
     message: error instanceof Error ? error.message : String(error),
@@ -1404,8 +1526,20 @@ function createFacadeCallError(
     method: action,
     params: params as Readonly<Record<string, unknown>>,
     error_code: readFacadeErrorCode(error),
-    ...readFacadeErrorDetails(error),
+    ...(details === undefined ? {} : { details }),
   });
+}
+
+function mergeFacadeErrorDetails(
+  details: Readonly<Record<string, unknown>> | undefined,
+  overlay: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> | undefined {
+  return Object.keys(overlay).length === 0 && details === undefined
+    ? undefined
+    : Object.freeze({
+        ...(details ?? {}),
+        ...overlay,
+      });
 }
 
 function readFacadeErrorCode(error: unknown): string {

@@ -68,6 +68,10 @@ class FakeAppMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   loadPlugin(): void {
     // 测试替身只需要满足 Mineflayer（Minecraft 协议客户端） 插件加载形态。
   }
+
+  chat(): void {
+    // 测试替身只验证 BotActor（机器人执行代理） 聊天写入路径可达。
+  }
 }
 
 describe("app（应用装配） 骨架", () => {
@@ -265,7 +269,7 @@ describe("app（应用装配） 骨架", () => {
     expect(closeOrder).toContain("runtime_transport");
   });
 
-  it("运行时核心装配应使用 runtime（运行时）语义事实统计已有原木", async () => {
+  it("运行时核心装配应注入通用 ensure（确保） 语义入口", async () => {
     const closeOrder: string[] = [];
     const bootstrap = createAppBootstrapContract({
       botId: "bot-ensure-logs",
@@ -291,23 +295,14 @@ describe("app（应用装配） 骨架", () => {
         intent_epoch: 1,
         snapshot_ts: Date.parse("2026-05-05T00:00:00.000Z"),
         priority: ExecPriority.Normal,
-        code: "await api.bot.ensureLogs(4)",
+        code: "await ensure(async () => ({ done: true }), until.gained('oak_log', 4)); await report('done')",
       }),
     );
 
     expect(outcome.result.status).toBe("completed");
     expect(outcome.result.step_results[0]).toMatchObject({
-      action: "ensureLogs",
+      action: "report",
       status: "ok",
-      result: {
-        ok: true,
-        data: {
-          completed_count: 8,
-          target_count: 4,
-          world_key: "minecraft:overworld",
-          actions: [],
-        },
-      },
     });
 
     await runtime.close();

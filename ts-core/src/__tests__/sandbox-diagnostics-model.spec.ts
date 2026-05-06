@@ -208,11 +208,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       "placeCraftingTable",
       "equip",
       "mine",
-      "ensureLogs",
-      "ensureCraftingTablePlaced",
-      "ensureWoodenPickaxeEquipped",
-      "ensureCobblestone",
-      "ensureStonePickaxeEquipped",
+      "ensure",
     ]);
     expect(SANDBOX_FORBIDDEN_DEMO_METHOD_NAMES).toEqual(["demoMineIron"]);
     expect(SANDBOX_TOOLCHAIN_CAPABILITY_NAMES).not.toContain("demoMineIron");
@@ -223,7 +219,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(facadeContract.bot).toHaveProperty("craft");
     expect(facadeContract.bot).toHaveProperty("place");
     expect(facadeContract.bot).toHaveProperty("placeCraftingTable");
-    expect(facadeContract.bot).toHaveProperty("ensureStonePickaxeEquipped");
+    expect(facadeContract.bot).toHaveProperty("ensure");
   });
 
   it("应提供渐进披露索引并按 namespace（命名空间） 描述 Facade API（门面接口）", () => {
@@ -340,9 +336,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
           if (owner.position.x !== 8) { throw new Error('owner mutated') }
           const memory = await search('基地坐标', 2);
           if (memory.hits[0].task_id !== 'task-base') { throw new Error('bad search') }
-          const pickaxe = await ensure('stone_pickaxe');
-          if (!pickaxe.ok) { await report('准备石镐失败喵~'); throw new Error('ensure failed') }
-          const mined = await mine('iron_ore', 1);
+          const mined = await ensure(async () => mine('iron_ore', 1), until.gained('raw_iron', 1));
           if (!mined.ok) { await report('挖铁失败喵~'); throw new Error('mine failed') }
           await report('语义 API 执行完成喵~');
         `,
@@ -401,13 +395,9 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       { method: "report", params: { message: "语义 API 执行完成喵~" } },
     ]);
     expect(searchCalls).toEqual([{ bot_id: "bot-027", query: "基地坐标", limit: 2 }]);
-    expect(botCalls).toEqual([
-      { capability: "ensureStonePickaxeEquipped", params: {} },
-      { skill: "mine", params: { blockName: "iron_ore", count: 1 } },
-    ]);
+    expect(botCalls).toEqual([{ skill: "mine", params: { blockName: "iron_ore", count: 1 } }]);
     expect(result.step_results).toMatchObject([
       { action: "say", status: "ok" },
-      { action: "ensureStonePickaxeEquipped", status: "ok" },
       { action: "mine", status: "ok" },
       { action: "report", status: "ok" },
     ]);
@@ -534,14 +524,22 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
 
   it("应让 code（沙箱代码） 调用 ensure（确保） 工具链能力", async () => {
     const calls: unknown[] = [];
+    let mineCalls = 0;
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
-        code: "await api.bot.ensureStonePickaxeEquipped()",
+        code: "await ensure(async () => mine('iron_ore', 1), until.gained('raw_iron', 1))",
         messageId: "T-060-ensure",
       }),
       facade: {
         async executeBotSkill() {
-          throw new Error("unexpected skill call");
+          mineCalls += 1;
+          if (mineCalls === 1) {
+            throw Object.assign(new Error("not_equipped:iron_ore:requires_stone_pickaxe"), {
+              error_code: "not_equipped",
+            });
+          }
+
+          return { skill: "mine", total_steps: 1, collected_count: 1 };
         },
         async executeToolchainCapability(capability, params) {
           calls.push({ capability, params });
@@ -564,10 +562,29 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     });
 
     expect(result.status).toBe(TaskHistoryStatus.Completed);
-    expect(calls).toEqual([{ capability: "ensureStonePickaxeEquipped", params: {} }]);
+    expect(calls).toEqual([
+      {
+        capability: "ensure",
+        params: {
+          failure: expect.objectContaining({
+            action: "mine",
+            code: "not_equipped",
+          }),
+          condition: { kind: "gained", itemName: "raw_iron", count: 1 },
+        },
+      },
+    ]);
     expect(result.step_results).toMatchObject([
       {
-        action: "ensureStonePickaxeEquipped",
+        action: "mine",
+        status: "err",
+      },
+      {
+        action: "ensure",
+        status: "ok",
+      },
+      {
+        action: "mine",
         status: "ok",
       },
     ]);

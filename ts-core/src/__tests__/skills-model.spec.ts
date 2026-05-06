@@ -17,6 +17,7 @@ import {
   TOOLCHAIN_FAILURE_CODES,
   type ToolchainCapabilityName,
   type ToolchainCapabilityResult,
+  type ToolchainEnsureFacts,
   createCraftService,
   createMineSkillExecutionResult,
   createPhase1SkillRegistry,
@@ -128,11 +129,7 @@ describe("skills 模块契约", () => {
       "placeCraftingTable",
       "equip",
       "mine",
-      "ensureLogs",
-      "ensureCraftingTablePlaced",
-      "ensureWoodenPickaxeEquipped",
-      "ensureCobblestone",
-      "ensureStonePickaxeEquipped",
+      "ensure",
     ]);
     expect(FORBIDDEN_TOOLCHAIN_DEMO_NAMES).toEqual(["demoMineIron"]);
     expect(TOOLCHAIN_CAPABILITY_NAMES).not.toContain("demoMineIron");
@@ -253,6 +250,7 @@ describe("skills 模块契约", () => {
     const inventory: { item_name: string; count: number }[] = [];
     const actions: string[] = [];
     const ensure = createToolchainEnsureExecutor({
+      facts: createFakeEnsureFacts(),
       inventory: {
         readInventoryItems: () => inventory,
         countLogs: (items) =>
@@ -298,6 +296,9 @@ describe("skills 模块契约", () => {
       },
       async craft(params) {
         actions.push(`craft:${params.itemName}`);
+        if (params.itemName === "oak_planks" && countInventory(inventory, "oak_log") <= 0) {
+          return createMissingMaterialsFailure("oak_planks", "oak_log", 1);
+        }
         if (params.itemName === "wooden_pickaxe" && countInventory(inventory, "oak_log") <= 0) {
           return createMissingMaterialsFailure("wooden_pickaxe", "oak_planks", 3);
         }
@@ -344,7 +345,15 @@ describe("skills 模块契约", () => {
       },
     });
 
-    const result = await ensure.ensureStonePickaxeEquipped();
+    const result = await ensure.ensureDependency({
+      failure: {
+        action: "mine",
+        params: { blockName: "iron_ore", count: 1 },
+        code: "not_equipped",
+        message: "not_equipped:iron_ore:requires_stone_pickaxe",
+      },
+      condition: { kind: "gained", itemName: "raw_iron", count: 1 },
+    });
 
     expect(result).toMatchObject({
       ok: true,
@@ -356,7 +365,6 @@ describe("skills 模块契约", () => {
     });
     expect(actions).toEqual(
       expect.arrayContaining([
-        "place:crafting_table",
         "craft:wooden_pickaxe",
         "cutTree:1",
         "mine:stone:3",
@@ -366,8 +374,116 @@ describe("skills 模块契约", () => {
     );
   });
 
+  it("ToolchainEnsure（工具链确保） 应能为挖石头的未装备失败补木镐", async () => {
+    const inventory: { item_name: string; count: number }[] = [];
+    const actions: string[] = [];
+    const ensure = createToolchainEnsureExecutor({
+      facts: createFakeEnsureFacts(),
+      inventory: {
+        readInventoryItems: () => inventory,
+        countLogs: (items) =>
+          items.reduce((sum, item) => sum + (item.item_name === "oak_log" ? item.count : 0), 0),
+      },
+      async cutTree(params) {
+        actions.push(`cutTree:${params.count}`);
+        addInventory(inventory, "oak_log", Math.max(4, params.count));
+        return {
+          skill: "cutTree",
+          requested_count: params.count,
+          world_key: "minecraft:overworld",
+          collected_count: Math.max(4, params.count),
+          completed: true,
+          status: "completed",
+          clusters: [],
+          diagnostics: [],
+          total_steps: 1,
+        };
+      },
+      async collect() {
+        actions.push("collect");
+        return {
+          skill: "collect",
+          item_name: null,
+          center: { x: 0, y: 64, z: 0 },
+          radius: 8,
+          collected: [],
+          skipped: [],
+          total_steps: 1,
+        };
+      },
+      async place(params) {
+        actions.push(`place:${params.blockName}`);
+        return {
+          ok: true,
+          data: {
+            block_name: params.blockName,
+            completed_count: 1,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async craft(params) {
+        actions.push(`craft:${params.itemName}`);
+        if (params.itemName === "oak_planks" && countInventory(inventory, "oak_log") <= 0) {
+          return createMissingMaterialsFailure("oak_planks", "oak_log", 1);
+        }
+        if (params.itemName === "wooden_pickaxe" && countInventory(inventory, "oak_log") <= 0) {
+          return createMissingMaterialsFailure("wooden_pickaxe", "oak_planks", 3);
+        }
+        addInventory(inventory, params.itemName, params.count);
+        return {
+          ok: true,
+          data: {
+            item_name: params.itemName,
+            completed_count: params.count,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async equip(params) {
+        actions.push(`equip:${params.itemName}`);
+        if (countInventory(inventory, params.itemName) <= 0) {
+          throw new Error(`missing_item:${params.itemName}`);
+        }
+        return {
+          skill: "equip",
+          item_name: params.itemName,
+          destination: "hand",
+          status: "equipped",
+          total_steps: 1,
+        };
+      },
+      async mine() {
+        throw new Error("mine should be retried by ensure caller, not dependency resolver");
+      },
+    });
+
+    const result = await ensure.ensureDependency({
+      failure: {
+        action: "mine",
+        params: { blockName: "stone", count: 5 },
+        code: "not_equipped",
+        message: "not_equipped:stone:requires_wooden_or_stone_pickaxe",
+      },
+      condition: { kind: "gained", itemName: "cobblestone", count: 5 },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        item_name: "wooden_pickaxe",
+        completed_count: 1,
+      },
+    });
+    expect(actions).toEqual(
+      expect.arrayContaining(["cutTree:1", "craft:wooden_pickaxe", "equip:wooden_pickaxe"]),
+    );
+    expect(actions).not.toContain("craft:stone_pickaxe");
+  });
+
   it("ToolchainEnsure（工具链确保） 应保留底层失败原因与动作摘要", async () => {
     const ensure = createToolchainEnsureExecutor({
+      facts: createFakeEnsureFacts(),
       inventory: {
         readInventoryItems: () => [],
         countLogs: () => 0,
@@ -403,7 +519,15 @@ describe("skills 模块契约", () => {
       },
     });
 
-    const result = await ensure.ensureCraftingTablePlaced();
+    const result = await ensure.ensureDependency({
+      failure: {
+        action: "craft",
+        params: { itemName: "stone_pickaxe", count: 1 },
+        code: "missing_crafting_table",
+        message: "Craft target requires a nearby crafting table",
+      },
+      condition: { kind: "gained", itemName: "stone_pickaxe", count: 1 },
+    });
 
     expect(result).toMatchObject({
       ok: false,
@@ -432,6 +556,7 @@ describe("skills 模块契约", () => {
     const actions: string[] = [];
     const ensure = createToolchainEnsureExecutor({
       readCurrentWorldKey: () => "minecraft:overworld",
+      facts: createFakeEnsureFacts(),
       inventory: {
         readInventoryItems: () => inventory,
         countLogs: () => 0,
@@ -492,7 +617,15 @@ describe("skills 模块契约", () => {
       },
     });
 
-    const result = await ensure.ensureStonePickaxeEquipped();
+    const result = await ensure.ensureDependency({
+      failure: {
+        action: "mine",
+        params: { blockName: "iron_ore", count: 1 },
+        code: "not_equipped",
+        message: "not_equipped:iron_ore:requires_stone_pickaxe",
+      },
+      condition: { kind: "gained", itemName: "raw_iron", count: 1 },
+    });
 
     expect(result).toMatchObject({
       ok: true,
@@ -505,10 +638,11 @@ describe("skills 模块契约", () => {
     expect(actions.filter((action) => action === "craft:stone_pickaxe")).toHaveLength(2);
   });
 
-  it("ToolchainEnsure（工具链确保） 背包已有足够原木时不得触发 cutTree（砍树）", async () => {
+  it("ToolchainEnsure（工具链确保） 不再暴露具体原木确保入口", async () => {
     let cutTreeCalls = 0;
     const ensure = createToolchainEnsureExecutor({
       readCurrentWorldKey: () => "minecraft:overworld",
+      facts: createFakeEnsureFacts(),
       inventory: {
         readInventoryItems: () => [{ item_name: "oak_log", count: 8 }],
         countLogs: (items) =>
@@ -535,16 +669,20 @@ describe("skills 模块契约", () => {
       },
     });
 
-    const result = await ensure.ensureLogs({ count: 4 });
+    const result = await ensure.ensureDependency({
+      failure: {
+        action: "unknown",
+        params: {},
+        code: "unsupported_capability",
+        message: "unsupported",
+      },
+      condition: { kind: "gained", itemName: "oak_log", count: 4 },
+    });
 
     expect(result).toMatchObject({
-      ok: true,
-      data: {
-        item_name: "logs",
-        completed_count: 8,
-        target_count: 4,
-        world_key: "minecraft:overworld",
-        actions: [],
+      ok: false,
+      error: {
+        code: "unsupported_capability",
       },
     });
     expect(cutTreeCalls).toBe(0);
@@ -596,6 +734,41 @@ function countInventory(
   itemName: string,
 ): number {
   return inventory.reduce((sum, item) => sum + (item.item_name === itemName ? item.count : 0), 0);
+}
+
+function createFakeEnsureFacts(): ToolchainEnsureFacts {
+  return Object.freeze({
+    resolveRequiredEquipment({ failure, inventory }) {
+      const blockName =
+        typeof failure.params.blockName === "string" ? failure.params.blockName : "";
+      if (blockName === "iron_ore") {
+        return "stone_pickaxe";
+      }
+      if (blockName === "stone") {
+        return inventory.some((item) => item.item_name === "stone_pickaxe" && item.count > 0)
+          ? "stone_pickaxe"
+          : "wooden_pickaxe";
+      }
+      return null;
+    },
+    resolveMaterialSource({ itemName }) {
+      if (itemName === "cobblestone") {
+        return { action: "mine", itemName: "cobblestone", blockName: "stone" };
+      }
+      if (itemName === "oak_log") {
+        return { action: "cutTree", itemName: "oak_log", blockName: "oak_log" };
+      }
+      return null;
+    },
+    canCraft({ itemName }) {
+      return ["oak_planks", "stick", "crafting_table", "wooden_pickaxe", "stone_pickaxe"].includes(
+        itemName,
+      );
+    },
+    resolveCraftingTableBlockName() {
+      return "crafting_table";
+    },
+  });
 }
 
 function createMissingMaterialsFailure(

@@ -195,6 +195,50 @@ export interface ToolchainFailure {
   readonly details?: Readonly<Record<string, unknown>>;
 }
 
+/** 工具链 ensure（确保） 可读取的背包物品摘要。 */
+export interface ToolchainEnsureInventoryItem {
+  /** 物品标准名称。 */
+  readonly item_name: string;
+  /** 物品数量。 */
+  readonly count: number;
+}
+
+/** ensure（确保） 可用于补物料的事实来源动作。 */
+export type ToolchainMaterialSource =
+  | Readonly<{
+      /** 通过 mine（挖掘） 从指定方块获得目标物品。 */
+      readonly action: "mine";
+      /** 目标物品标准名称。 */
+      readonly itemName: string;
+      /** 来源方块标准名称。 */
+      readonly blockName: string;
+    }>
+  | Readonly<{
+      /** 通过 cutTree（砍树） 获取目标物品所属的树木资源。 */
+      readonly action: "cutTree";
+      /** 目标物品标准名称。 */
+      readonly itemName: string;
+      /** 可选来源方块标准名称。 */
+      readonly blockName?: string;
+    }>;
+
+/** ensure（确保） 只读事实端口；实现必须来自 runtime（运行时） / minecraft-data（Minecraft 数据库）事实源。 */
+export interface ToolchainEnsureFacts {
+  /** 从结构化失败与当前背包推导需要装备的物品；不得由 ensure（确保） 本体写死工具等级。 */
+  resolveRequiredEquipment(input: {
+    readonly failure: EnsureActionFailureSnapshot;
+    readonly inventory: readonly ToolchainEnsureInventoryItem[];
+  }): string | null;
+  /** 从目标物品反查可补齐来源；不得由 ensure（确保） 本体写死掉落关系。 */
+  resolveMaterialSource(input: {
+    readonly itemName: string;
+  }): ToolchainMaterialSource | null;
+  /** 判断目标是否存在可用合成事实；不得由 ensure（确保） 本体写死可合成白名单。 */
+  canCraft(input: { readonly itemName: string }): boolean;
+  /** 读取工作台方块名；缺失时 ensure（确保） 不自行猜测。 */
+  resolveCraftingTableBlockName(): string | null;
+}
+
 /** 工具链 ensure（确保） 内部执行过的可审计动作摘要。 */
 export interface ToolchainActionSummary {
   /** 被调用的通用能力名。 */
@@ -241,11 +285,7 @@ export const TOOLCHAIN_CAPABILITY_NAMES = Object.freeze([
   "placeCraftingTable",
   "equip",
   "mine",
-  "ensureLogs",
-  "ensureCraftingTablePlaced",
-  "ensureWoodenPickaxeEquipped",
-  "ensureCobblestone",
-  "ensureStonePickaxeEquipped",
+  "ensure",
 ] as const);
 
 /** 禁止出现的一键 demo（演示） 能力名。 */
@@ -273,20 +313,40 @@ export interface PlaceCapabilityParams {
   readonly near?: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>;
 }
 
-/** `ensureLogs`（确保原木） 参数。 */
-export interface EnsureLogsCapabilityParams {
-  /** 期望背包中至少存在的原木数量。 */
-  readonly count: number;
-}
-
-/** `ensureCobblestone`（确保圆石） 参数。 */
-export interface EnsureCobblestoneCapabilityParams {
-  /** 期望背包中至少存在的圆石数量。 */
-  readonly count: number;
-}
-
 /** 无参数 ensure（确保） 能力参数。 */
 export type EmptyEnsureCapabilityParams = Readonly<Record<string, never>>;
+
+/** ensure（确保） 支持的完成条件。 */
+export type EnsureCondition = Readonly<{
+  /** 当前唯一条件：背包较任务起点获得指定物品。 */
+  readonly kind: "gained";
+  /** 目标物品标准名称。 */
+  readonly itemName: string;
+  /** 目标获得数量。 */
+  readonly count: number;
+}>;
+
+/** ensure（确保） 从失败动作恢复所需的结构化失败快照。 */
+export interface EnsureActionFailureSnapshot {
+  /** 失败动作名。 */
+  readonly action: string;
+  /** 失败动作参数。 */
+  readonly params: Readonly<Record<string, unknown>>;
+  /** 结构化失败码。 */
+  readonly code: ToolchainFailureCode | string;
+  /** 原始失败消息。 */
+  readonly message: string;
+  /** 诊断详情。 */
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
+/** 通用 ensure（确保） 依赖解析输入。 */
+export interface EnsureDependencyParams {
+  /** 触发恢复的动作失败。 */
+  readonly failure: EnsureActionFailureSnapshot;
+  /** 原始动作完成条件。 */
+  readonly condition: EnsureCondition;
+}
 
 /** 工具链能力参数映射。 */
 export interface ToolchainCapabilityParamsByName {
@@ -300,16 +360,8 @@ export interface ToolchainCapabilityParamsByName {
   readonly equip: EquipSkillParams;
   /** `mine`（挖掘） 复用技能参数。 */
   readonly mine: MineSkillParams;
-  /** `ensureLogs`（确保原木） 参数。 */
-  readonly ensureLogs: EnsureLogsCapabilityParams;
-  /** `ensureCraftingTablePlaced`（确保工作台已放置） 参数。 */
-  readonly ensureCraftingTablePlaced: EmptyEnsureCapabilityParams;
-  /** `ensureWoodenPickaxeEquipped`（确保木镐已装备） 参数。 */
-  readonly ensureWoodenPickaxeEquipped: EmptyEnsureCapabilityParams;
-  /** `ensureCobblestone`（确保圆石） 参数。 */
-  readonly ensureCobblestone: EnsureCobblestoneCapabilityParams;
-  /** `ensureStonePickaxeEquipped`（确保石镐已装备） 参数。 */
-  readonly ensureStonePickaxeEquipped: EmptyEnsureCapabilityParams;
+  /** `ensure`（确保） 通用依赖解析参数。 */
+  readonly ensure: EnsureDependencyParams;
 }
 
 /** 工具链能力通用成功数据。 */
@@ -499,33 +551,47 @@ export function isCraftCapabilityParams(params: unknown): params is CraftCapabil
   return isNonEmptyString(params.itemName) && isPositiveInteger(params.count);
 }
 
-/** 校验 `ensureLogs`（确保原木） 工具链参数。 */
-export function isEnsureLogsCapabilityParams(
-  params: unknown,
-): params is EnsureLogsCapabilityParams {
-  if (!isRecord(params) || !hasOnlyAllowedKeys(params, ["count"])) {
-    return false;
-  }
-
-  return isPositiveInteger(params.count);
-}
-
-/** 校验 `ensureCobblestone`（确保圆石） 工具链参数。 */
-export function isEnsureCobblestoneCapabilityParams(
-  params: unknown,
-): params is EnsureCobblestoneCapabilityParams {
-  if (!isRecord(params) || !hasOnlyAllowedKeys(params, ["count"])) {
-    return false;
-  }
-
-  return isPositiveInteger(params.count);
-}
-
 /** 校验无参数 ensure（确保） 工具链参数。 */
 export function isEmptyEnsureCapabilityParams(
   params: unknown,
 ): params is EmptyEnsureCapabilityParams {
   return isRecord(params) && hasOnlyAllowedKeys(params, []);
+}
+
+/** 校验 ensure（确保） 完成条件。 */
+export function isEnsureCondition(value: unknown): value is EnsureCondition {
+  return (
+    isRecord(value) &&
+    hasOnlyAllowedKeys(value, ["kind", "itemName", "count"]) &&
+    value.kind === "gained" &&
+    isNonEmptyString(value.itemName) &&
+    isPositiveInteger(value.count)
+  );
+}
+
+/** 校验 ensure（确保） 动作失败快照。 */
+export function isEnsureActionFailureSnapshot(
+  value: unknown,
+): value is EnsureActionFailureSnapshot {
+  return (
+    isRecord(value) &&
+    hasOnlyAllowedKeys(value, ["action", "params", "code", "message", "details"]) &&
+    isNonEmptyString(value.action) &&
+    isRecord(value.params) &&
+    isNonEmptyString(value.code) &&
+    isNonEmptyString(value.message) &&
+    (value.details === undefined || isRecord(value.details))
+  );
+}
+
+/** 校验通用 ensure（确保） 依赖解析参数。 */
+export function isEnsureDependencyParams(value: unknown): value is EnsureDependencyParams {
+  return (
+    isRecord(value) &&
+    hasOnlyAllowedKeys(value, ["failure", "condition"]) &&
+    isEnsureActionFailureSnapshot(value.failure) &&
+    isEnsureCondition(value.condition)
+  );
 }
 
 /** 创建与技能目录强绑定的只读技能调用结构。 */
@@ -772,25 +838,9 @@ export interface PlaceToolchainAdapter {
 
 /** ensure（确保） 工具链执行适配器集合。 */
 export interface ToolchainEnsureAdapter {
-  /** 确保背包中有足够原木。 */
-  ensureLogs?(
-    params: Readonly<EnsureLogsCapabilityParams>,
-  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
-  /** 确保当前世界存在可用工作台。 */
-  ensureCraftingTablePlaced?(
-    params: Readonly<EmptyEnsureCapabilityParams>,
-  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
-  /** 确保木镐已装备到主手。 */
-  ensureWoodenPickaxeEquipped?(
-    params: Readonly<EmptyEnsureCapabilityParams>,
-  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
-  /** 确保背包中有足够圆石。 */
-  ensureCobblestone?(
-    params: Readonly<EnsureCobblestoneCapabilityParams>,
-  ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
-  /** 确保石镐已装备到主手。 */
-  ensureStonePickaxeEquipped?(
-    params: Readonly<EmptyEnsureCapabilityParams>,
+  /** 根据结构化失败码补齐局部依赖，然后让 sandbox（沙箱） 回到原动作。 */
+  ensureDependency?(
+    params: Readonly<EnsureDependencyParams>,
   ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
 }
 

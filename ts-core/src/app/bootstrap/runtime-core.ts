@@ -91,6 +91,7 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
     });
     const ensureToolchain = createToolchainEnsureExecutor({
       readCurrentWorldKey: () => created.transport?.getCurrentWorldKey() ?? null,
+      facts: created.transport.createToolchainEnsureFacts(),
       inventory: {
         readInventoryItems: () => created.transport?.readObservationInput()?.inventory.items ?? [],
         countLogs: () => created.transport?.countInventoryItemsBySemanticRole("cut_tree_log") ?? 0,
@@ -114,11 +115,7 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
         craft: created.transport.craft.bind(created.transport),
         place: created.transport.place.bind(created.transport),
         cutTree: cutTreeSkill,
-        ensureLogs: ensureToolchain.ensureLogs,
-        ensureCraftingTablePlaced: ensureToolchain.ensureCraftingTablePlaced,
-        ensureWoodenPickaxeEquipped: ensureToolchain.ensureWoodenPickaxeEquipped,
-        ensureCobblestone: ensureToolchain.ensureCobblestone,
-        ensureStonePickaxeEquipped: ensureToolchain.ensureStonePickaxeEquipped,
+        ensureDependency: ensureToolchain.ensureDependency,
       },
       externalAuth,
       externalAuthPlan,

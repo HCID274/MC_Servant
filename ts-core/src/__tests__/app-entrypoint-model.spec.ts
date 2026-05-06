@@ -783,7 +783,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       intent_epoch: 1,
       snapshot_ts: 1777906762364,
       priority: ExecPriority.Normal,
-      code: "await api.bot.ensureStonePickaxeEquipped()",
+      code: "await ensure(async () => mine('iron_ore', 1), until.gained('raw_iron', 1))",
     });
     const successResult = {
       status: TaskHistoryStatus.Completed,
@@ -816,9 +816,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           },
         },
         {
-          action: "ensureStonePickaxeEquipped",
+          action: "ensure",
           status: "ok",
-          params: {},
+          params: {
+            condition: { kind: "gained", itemName: "raw_iron", count: 1 },
+          },
           result: {
             ok: true,
             data: {
@@ -867,7 +869,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     expect(successSummary).toMatchObject({
-      skill_name: "ensureStonePickaxeEquipped",
+      skill_name: "ensure",
       status: "completed",
       target: "stone_pickaxe",
       completed_count: 1,
@@ -3374,7 +3376,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             if (userMessage.includes("主人的指令：")) {
               if (currentInstruction.includes("挖两块石头")) {
                 assistantContent =
-                  '{"code":"await api.chat.say(\\"收到，我去挖石头喵~\\"); const result = await api.bot.mine(\\"stone\\", 2); if (!result.ok) { await api.chat.report(`挖石头失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"挖石头完成喵~\\");"}';
+                  '{"code":"await reply(\\"收到，我去挖石头喵~\\"); const result = await ensure(async () => mine(\\"stone\\", 2), until.gained(\\"cobblestone\\", 2)); if (result.ok === false) { await report(`挖石头失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await report(\\"挖石头完成喵~\\");"}';
               } else if (currentInstruction.includes("把地上的圆石捡起来")) {
                 assistantContent =
                   '{"code":"await api.chat.say(\\"收到，我去捡圆石喵~\\"); const result = await api.bot.collect(\\"cobblestone\\", 32); if (!result.ok) { await api.chat.report(`捡拾失败: ${result.error.code}喵~`); throw new Error(result.error.code); } await api.chat.report(\\"捡拾完成喵~\\");"}';
@@ -3537,7 +3539,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             message_id: "msg-online-mine",
             priority: "normal",
             type: "code",
-            code: expect.stringContaining('api.bot.mine("stone", 2)'),
+            code: expect.stringContaining('ensure(async () => mine("stone", 2)'),
           }),
         }),
         options: {

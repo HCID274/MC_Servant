@@ -18,6 +18,7 @@ import type {
   PlaceCapabilityParams,
   ToolchainCapabilityData,
   ToolchainCapabilityResult,
+  ToolchainEnsureFacts,
 } from "../../core-ports/skills.js";
 
 /** Mineflayer（Minecraft 协议客户端） 传输连接状态清单。 */
@@ -500,6 +501,8 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   place(
     params: Readonly<PlaceCapabilityParams>,
   ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
+  /** 创建 ensure 依赖解析所需的只读事实端口。 */
+  createToolchainEnsureFacts(): ToolchainEnsureFacts;
   /** 停止当前 Mineflayer（Minecraft 协议客户端） 世界交互动作。 */
   stopCurrentAction(): void;
   /** 围绕 Bot（机器人） 当前位置执行只读资源刷新。 */

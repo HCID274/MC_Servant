@@ -2,21 +2,22 @@ import type {
   CollectSkillAdapter,
   CraftToolchainAdapter,
   CutTreeSkillAdapter,
-  EmptyEnsureCapabilityParams,
-  EnsureCobblestoneCapabilityParams,
-  EnsureLogsCapabilityParams,
+  EnsureDependencyParams,
   EquipSkillAdapter,
   MineSkillAdapter,
   PlaceToolchainAdapter,
   ToolchainActionSummary,
   ToolchainCapabilityData,
   ToolchainCapabilityResult,
+  ToolchainEnsureFacts,
+  ToolchainEnsureInventoryItem,
   ToolchainFailure,
   ToolchainFailureCode,
+  ToolchainMaterialSource,
 } from "../core-ports/skills.js";
 
-const ENSURE_COLLECT_RADIUS = 8;
-const ENSURE_RETRY_LIMIT = 3;
+const DEPENDENCY_COLLECT_RADIUS = 8;
+const DEPENDENCY_RETRY_LIMIT = 3;
 
 type EnsureResult = ToolchainCapabilityResult<ToolchainCapabilityData>;
 
@@ -33,6 +34,7 @@ export interface ToolchainEnsureInventoryReader {
 /** ToolchainEnsure（工具链确保） 依赖集合；只能组合底层通用能力。 */
 export interface ToolchainEnsureDependencies {
   readonly inventory: ToolchainEnsureInventoryReader;
+  readonly facts: ToolchainEnsureFacts;
   /** 读取当前世界键；由 runtime（运行时） 既有世界键端口注入。 */
   readonly readCurrentWorldKey?: () => string | null;
   readonly craft: CraftToolchainAdapter["craft"];
@@ -43,311 +45,158 @@ export interface ToolchainEnsureDependencies {
   readonly cutTree?: CutTreeSkillAdapter["cutTree"];
 }
 
-/** 可复用 ensure（确保） 函数组。 */
+/** 通用 ensure（确保） 依赖解析器。 */
 export interface ToolchainEnsureExecutor {
-  readonly ensureLogs: (params: Readonly<EnsureLogsCapabilityParams>) => Promise<EnsureResult>;
-  readonly ensureCraftingTablePlaced: (
-    params?: Readonly<EmptyEnsureCapabilityParams>,
-  ) => Promise<EnsureResult>;
-  readonly ensureWoodenPickaxeEquipped: (
-    params?: Readonly<EmptyEnsureCapabilityParams>,
-  ) => Promise<EnsureResult>;
-  readonly ensureCobblestone: (
-    params: Readonly<EnsureCobblestoneCapabilityParams>,
-  ) => Promise<EnsureResult>;
-  readonly ensureStonePickaxeEquipped: (
-    params?: Readonly<EmptyEnsureCapabilityParams>,
-  ) => Promise<EnsureResult>;
+  readonly ensureDependency: (params: Readonly<EnsureDependencyParams>) => Promise<EnsureResult>;
 }
 
-/** 创建工具链 ensure（确保） 编排器；不直接操作 runtime（运行时）。 */
+/** 创建工具链 ensure（确保） 解析器；只根据结构化失败补局部依赖，不直接操作 runtime（运行时）。 */
 export function createToolchainEnsureExecutor(
   dependencies: ToolchainEnsureDependencies,
 ): ToolchainEnsureExecutor {
-  const executor: ToolchainEnsureExecutor = Object.freeze({
-    async ensureLogs(params: Readonly<EnsureLogsCapabilityParams>) {
-      const actions: ToolchainActionSummary[] = [];
-      const before = countLogs(dependencies.inventory);
-      if (before >= params.count) {
-        return createEnsureSuccess({
-          itemName: "logs",
-          completedCount: before,
-          targetCount: params.count,
-          actions,
-          worldKey: readCurrentWorldKey(dependencies),
-        });
-      }
+  const context: ResolverContext = { dependencies };
 
-      const missing = params.count - before;
-      if (dependencies.cutTree === undefined) {
-        return createEnsureFailure({
-          code: "unsupported_capability",
-          message: "cutTree execution dependency is not configured for ensureLogs",
-          worldKey: null,
-          actions,
-          details: { target_count: params.count, completed_count: before },
-        });
-      }
-
-      const cutTreeResult = await callSkill({
-        action: "cutTree",
-        target: "logs",
-        requestedCount: missing,
-        actions,
-        run: () => dependencies.cutTree?.({ count: missing }) ?? Promise.reject(),
-      });
-      if (!cutTreeResult.ok) {
-        return cutTreeResult.failure;
-      }
-
-      const collectResult = await callSkill({
-        action: "collect",
-        target: "logs",
-        requestedCount: missing,
-        actions,
-        run: () => dependencies.collect({ radius: ENSURE_COLLECT_RADIUS }),
-      });
-      if (!collectResult.ok) {
-        return collectResult.failure;
-      }
-
-      const after = Math.max(
-        countLogs(dependencies.inventory),
-        before + cutTreeResult.result.collected_count,
-      );
-      return after >= params.count
-        ? createEnsureSuccess({
-            itemName: "logs",
-            completedCount: after,
-            targetCount: params.count,
-            actions,
-            worldKey: readWorldKeyFromActions(actions) ?? readCurrentWorldKey(dependencies),
-          })
-        : createEnsureFailure({
-            code: "resource_not_found",
-            message: "ensureLogs did not reach target inventory count",
-            worldKey: readWorldKeyFromActions(actions),
-            actions,
-            details: { target_count: params.count, completed_count: after },
-          });
-    },
-
-    async ensureCraftingTablePlaced() {
-      const actions: ToolchainActionSummary[] = [];
-      const placed = await callToolchain({
-        action: "place",
-        target: "crafting_table",
-        requestedCount: 1,
-        actions,
-        run: () => dependencies.place({ blockName: "crafting_table" }),
-      });
-
-      return placed.ok
-        ? createEnsureSuccess({
-            blockName: "crafting_table",
-            completedCount: 1,
-            targetCount: 1,
-            actions,
-            worldKey: placed.result.data.world_key,
-            position: placed.result.data.position,
-          })
-        : placed.failure;
-    },
-
-    async ensureWoodenPickaxeEquipped() {
-      const actions: ToolchainActionSummary[] = [];
-      const existing = countInventoryItem(
-        dependencies.inventory.readInventoryItems(),
-        "wooden_pickaxe",
-      );
-      if (existing <= 0) {
-        const crafted = await craftWithRecovery({
-          target: "wooden_pickaxe",
-          actions,
-          executor,
-          dependencies,
-        });
-        if (!crafted.ok) {
-          return crafted.failure;
-        }
-      }
-
-      const equipped = await callSkill({
-        action: "equip",
-        target: "wooden_pickaxe",
-        requestedCount: 1,
-        actions,
-        run: () => dependencies.equip({ itemName: "wooden_pickaxe", destination: "hand" }),
-      });
-
-      return equipped.ok
-        ? createEnsureSuccess({
-            itemName: "wooden_pickaxe",
-            completedCount: 1,
-            targetCount: 1,
-            actions,
-          })
-        : equipped.failure;
-    },
-
-    async ensureCobblestone(params: Readonly<EnsureCobblestoneCapabilityParams>) {
-      const actions: ToolchainActionSummary[] = [];
-      const before = countInventoryItem(dependencies.inventory.readInventoryItems(), "cobblestone");
-      if (before >= params.count) {
-        return createEnsureSuccess({
-          itemName: "cobblestone",
-          completedCount: before,
-          targetCount: params.count,
-          actions,
-          worldKey: readCurrentWorldKey(dependencies),
-        });
-      }
-
-      const pickaxe = await executor.ensureWoodenPickaxeEquipped();
-      actions.push(
-        ...(pickaxe.ok
-          ? (pickaxe.data.actions ?? [])
-          : ((pickaxe.error.details?.actions as ToolchainActionSummary[] | undefined) ?? [])),
-      );
-      if (!pickaxe.ok) {
-        return pickaxe;
-      }
-
-      const missing = params.count - before;
-      const mined = await callSkill({
-        action: "mine",
-        target: "stone",
-        requestedCount: missing,
-        actions,
-        run: () => dependencies.mine({ blockName: "stone", count: missing }),
-      });
-      if (!mined.ok) {
-        return mined.failure;
-      }
-
-      const after = countInventoryItem(dependencies.inventory.readInventoryItems(), "cobblestone");
-      return after >= params.count
-        ? createEnsureSuccess({
-            itemName: "cobblestone",
-            completedCount: after,
-            targetCount: params.count,
-            actions,
-          })
-        : createEnsureFailure({
-            code: "drop_not_obtained",
-            message: "ensureCobblestone did not reach target inventory count",
-            worldKey: readWorldKeyFromActions(actions),
-            actions,
-            details: { target_count: params.count, completed_count: after },
-          });
-    },
-
-    async ensureStonePickaxeEquipped() {
-      const actions: ToolchainActionSummary[] = [];
-      const existing = countInventoryItem(
-        dependencies.inventory.readInventoryItems(),
-        "stone_pickaxe",
-      );
-      if (existing <= 0) {
-        const table = await executor.ensureCraftingTablePlaced();
-        actions.push(
-          ...(table.ok
-            ? (table.data.actions ?? [])
-            : ((table.error.details?.actions as ToolchainActionSummary[] | undefined) ?? [])),
-        );
-        if (!table.ok) {
-          return table;
-        }
-
-        const wooden = await executor.ensureWoodenPickaxeEquipped();
-        actions.push(
-          ...(wooden.ok
-            ? (wooden.data.actions ?? [])
-            : ((wooden.error.details?.actions as ToolchainActionSummary[] | undefined) ?? [])),
-        );
-        if (!wooden.ok) {
-          return wooden;
-        }
-
-        const crafted = await craftWithRecovery({
-          target: "stone_pickaxe",
-          actions,
-          executor,
-          dependencies,
-        });
-        if (!crafted.ok) {
-          return crafted.failure;
-        }
-      }
-
-      const equipped = await callSkill({
-        action: "equip",
-        target: "stone_pickaxe",
-        requestedCount: 1,
-        actions,
-        run: () => dependencies.equip({ itemName: "stone_pickaxe", destination: "hand" }),
-      });
-
-      return equipped.ok
-        ? createEnsureSuccess({
-            itemName: "stone_pickaxe",
-            completedCount: 1,
-            targetCount: 1,
-            actions,
-          })
-        : equipped.failure;
+  return Object.freeze({
+    async ensureDependency(params: Readonly<EnsureDependencyParams>) {
+      return resolveDependency(context, params);
     },
   });
-
-  return executor;
 }
 
-async function craftWithRecovery(input: {
-  readonly target: string;
-  readonly actions: ToolchainActionSummary[];
-  readonly executor: ToolchainEnsureExecutor;
+interface ResolverContext {
   readonly dependencies: ToolchainEnsureDependencies;
-}): Promise<{ readonly ok: true } | { readonly ok: false; readonly failure: EnsureResult }> {
-  for (let attempt = 0; attempt < ENSURE_RETRY_LIMIT; attempt += 1) {
+}
+
+async function resolveDependency(
+  context: ResolverContext,
+  params: Readonly<EnsureDependencyParams>,
+): Promise<EnsureResult> {
+  const actions: ToolchainActionSummary[] = [];
+
+  if (params.failure.code === "not_equipped") {
+    const tool = context.dependencies.facts.resolveRequiredEquipment({
+      failure: params.failure,
+      inventory: readInventoryItems(context),
+    });
+    return tool === null
+      ? createEnsureFailure({
+          code: "not_equipped",
+          message: "ensure cannot resolve required equipment from facts",
+          worldKey: readCurrentWorldKey(context.dependencies),
+          actions,
+          details: { failure: params.failure, condition: params.condition },
+        })
+      : equipItemWithLocalRecovery(context, tool, actions);
+  }
+
+  if (params.failure.code === "missing_crafting_table") {
+    return placeCraftingTable(context, actions);
+  }
+
+  if (params.failure.code === "missing_materials") {
+    const recovered = await recoverMissingMaterials(context, params, actions);
+    if (recovered !== null) {
+      return recovered;
+    }
+  }
+
+  return createEnsureFailure({
+    code: normalizeFailureCode(params.failure.code),
+    message: `ensure cannot recover failure: ${params.failure.message}`,
+    worldKey: readCurrentWorldKey(context.dependencies),
+    actions,
+    details: { failure: params.failure, condition: params.condition },
+  });
+}
+
+async function recoverMissingMaterials(
+  context: ResolverContext,
+  params: Readonly<EnsureDependencyParams>,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult | null> {
+  const missingItems = readMissingMaterialRequests(params.failure.details);
+  if (missingItems.length === 0) {
+    return null;
+  }
+
+  for (const missingItem of missingItems) {
+    const recovered = await recoverMissingItem(context, missingItem, actions);
+    if (!recovered.ok) {
+      return recovered;
+    }
+  }
+
+  return createEnsureSuccess({
+    completedCount: missingItems.length,
+    actions,
+    worldKey: readWorldKeyFromActions(actions) ?? readCurrentWorldKey(context.dependencies),
+  });
+}
+
+async function equipItemWithLocalRecovery(
+  context: ResolverContext,
+  itemName: string,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult> {
+  if (countInventoryItem(context.dependencies.inventory.readInventoryItems(), itemName) <= 0) {
+    const crafted = await craftWithLocalRecovery(context, itemName, actions);
+    if (!crafted.ok) {
+      return crafted.failure;
+    }
+  }
+
+  const equipped = await callSkill({
+    action: "equip",
+    target: itemName,
+    requestedCount: 1,
+    actions,
+    run: () => context.dependencies.equip({ itemName, destination: "hand" }),
+  });
+
+  return equipped.ok
+    ? createEnsureSuccess({
+        itemName,
+        completedCount: 1,
+        targetCount: 1,
+        actions,
+        worldKey: readWorldKeyFromActions(actions) ?? readCurrentWorldKey(context.dependencies),
+      })
+    : equipped.failure;
+}
+
+async function craftWithLocalRecovery(
+  context: ResolverContext,
+  target: string,
+  actions: ToolchainActionSummary[],
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly failure: EnsureResult }> {
+  for (let attempt = 0; attempt < DEPENDENCY_RETRY_LIMIT; attempt += 1) {
     const crafted = await callToolchain({
       action: "craft",
-      target: input.target,
+      target,
       requestedCount: 1,
-      actions: input.actions,
-      run: () => input.dependencies.craft({ itemName: input.target, count: 1 }),
+      actions,
+      run: () => context.dependencies.craft({ itemName: target, count: 1 }),
     });
     if (crafted.ok) {
       return { ok: true as const };
     }
 
     if (crafted.result.error.code === "missing_crafting_table") {
-      const table = await input.executor.ensureCraftingTablePlaced();
-      input.actions.push(...readResultActions(table));
+      const table = await placeCraftingTable(context, actions);
       if (!table.ok) {
         return { ok: false as const, failure: table };
       }
       continue;
     }
 
-    const missingCobblestone = readMissingCount(crafted.result.error.details, "cobblestone");
-    if (missingCobblestone > 0) {
-      const cobblestoneTarget =
-        countInventoryItem(input.dependencies.inventory.readInventoryItems(), "cobblestone") +
-        missingCobblestone;
-      const cobble = await input.executor.ensureCobblestone({ count: cobblestoneTarget });
-      input.actions.push(...readResultActions(cobble));
-      if (!cobble.ok) {
-        return { ok: false as const, failure: cobble };
-      }
-      continue;
-    }
-
     if (crafted.result.error.code === "missing_materials") {
-      const logTarget = countLogs(input.dependencies.inventory) + 1;
-      const logs = await input.executor.ensureLogs({ count: logTarget });
-      input.actions.push(...readResultActions(logs));
-      if (!logs.ok) {
-        return { ok: false as const, failure: logs };
+      const recovered = await recoverMissingMaterialsFromDetails(
+        context,
+        crafted.result.error.details,
+        actions,
+      );
+      if (!recovered.ok) {
+        return { ok: false as const, failure: recovered };
       }
       continue;
     }
@@ -359,12 +208,252 @@ async function craftWithRecovery(input: {
     ok: false as const,
     failure: createEnsureFailure({
       code: "missing_materials",
-      message: `ensure craft retry limit reached for ${input.target}`,
-      worldKey: readWorldKeyFromActions(input.actions),
-      actions: input.actions,
-      details: { item_name: input.target, retry_limit: ENSURE_RETRY_LIMIT },
+      message: `ensure dependency retry limit reached for ${target}`,
+      worldKey: readWorldKeyFromActions(actions),
+      actions,
+      details: { item_name: target, retry_limit: DEPENDENCY_RETRY_LIMIT },
     }),
   };
+}
+
+async function placeCraftingTable(
+  context: ResolverContext,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult> {
+  const blockName = context.dependencies.facts.resolveCraftingTableBlockName();
+  if (blockName === null) {
+    return createEnsureFailure({
+      code: "missing_crafting_table",
+      message: "ensure cannot resolve crafting table block from facts",
+      worldKey: readCurrentWorldKey(context.dependencies),
+      actions,
+    });
+  }
+
+  const placed = await callToolchain({
+    action: "place",
+    target: blockName,
+    requestedCount: 1,
+    actions,
+    run: () => context.dependencies.place({ blockName }),
+  });
+
+  return placed.ok
+    ? createEnsureSuccess({
+        blockName,
+        completedCount: 1,
+        targetCount: 1,
+        actions,
+        worldKey: placed.result.data.world_key,
+        ...(placed.result.data.position === undefined
+          ? {}
+          : { position: placed.result.data.position }),
+      })
+    : placed.failure;
+}
+
+async function recoverMissingMaterialsFromDetails(
+  context: ResolverContext,
+  details: Readonly<Record<string, unknown>> | undefined,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult> {
+  const missingItems = readMissingMaterialRequests(details);
+  if (missingItems.length === 0) {
+    return createEnsureFailure({
+      code: "missing_materials",
+      message: "missing_materials did not include recoverable material details",
+      worldKey: readWorldKeyFromActions(actions) ?? readCurrentWorldKey(context.dependencies),
+      actions,
+      ...(details === undefined ? {} : { details }),
+    });
+  }
+
+  for (const missingItem of missingItems) {
+    const recovered = await recoverMissingItem(context, missingItem, actions);
+    if (!recovered.ok) {
+      return recovered;
+    }
+  }
+
+  return createEnsureSuccess({
+    completedCount: missingItems.length,
+    actions,
+    worldKey: readWorldKeyFromActions(actions) ?? readCurrentWorldKey(context.dependencies),
+  });
+}
+
+async function recoverMissingItem(
+  context: ResolverContext,
+  missingItem: Readonly<{ readonly itemName: string; readonly missing: number }>,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult> {
+  if (context.dependencies.facts.canCraft({ itemName: missingItem.itemName })) {
+    const crafted = await craftWithLocalRecovery(context, missingItem.itemName, actions);
+    if (!crafted.ok) {
+      return crafted.failure;
+    }
+
+    return createEnsureSuccess({
+      itemName: missingItem.itemName,
+      completedCount: countInventoryItem(readInventoryItems(context), missingItem.itemName),
+      targetCount: countInventoryItem(readInventoryItems(context), missingItem.itemName),
+      actions,
+      worldKey: readWorldKeyFromActions(actions) ?? readCurrentWorldKey(context.dependencies),
+    });
+  }
+
+  const targetCount =
+    countInventoryItem(readInventoryItems(context), missingItem.itemName) + missingItem.missing;
+  return provideMaterial(context, missingItem.itemName, targetCount, actions);
+}
+
+async function provideMaterial(
+  context: ResolverContext,
+  itemName: string,
+  targetCount: number,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult> {
+  const before = countInventoryItem(readInventoryItems(context), itemName);
+  if (before >= targetCount) {
+    return createEnsureSuccess({
+      itemName,
+      completedCount: before,
+      targetCount,
+      actions,
+      worldKey: readCurrentWorldKey(context.dependencies),
+    });
+  }
+
+  const source = context.dependencies.facts.resolveMaterialSource({ itemName });
+  if (source === null) {
+    return createEnsureFailure({
+      code: "missing_materials",
+      message: `ensure cannot resolve material source from facts: ${itemName}`,
+      worldKey: readCurrentWorldKey(context.dependencies),
+      actions,
+      details: { item_name: itemName, target_count: targetCount, completed_count: before },
+    });
+  }
+
+  return source.action === "mine"
+    ? provideMaterialByMining(context, source, targetCount, actions)
+    : provideMaterialByCutTree(context, source, targetCount, actions);
+}
+
+async function provideMaterialByMining(
+  context: ResolverContext,
+  source: Extract<ToolchainMaterialSource, { readonly action: "mine" }>,
+  targetCount: number,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult> {
+  const before = countInventoryItem(readInventoryItems(context), source.itemName);
+  const missing = targetCount - before;
+  const requiredEquipment = context.dependencies.facts.resolveRequiredEquipment({
+    failure: {
+      action: "mine",
+      params: { blockName: source.blockName, count: Math.max(1, missing) },
+      code: "not_equipped",
+      message: "not_equipped",
+    },
+    inventory: readInventoryItems(context),
+  });
+  if (requiredEquipment !== null) {
+    const equipped = await equipItemWithLocalRecovery(context, requiredEquipment, actions);
+    if (!equipped.ok) {
+      return equipped;
+    }
+  }
+
+  const mined = await callSkill({
+    action: "mine",
+    target: source.blockName,
+    requestedCount: missing,
+    actions,
+    run: () => context.dependencies.mine({ blockName: source.blockName, count: missing }),
+  });
+  if (!mined.ok) {
+    return mined.failure;
+  }
+
+  const after = countInventoryItem(readInventoryItems(context), source.itemName);
+  return after >= targetCount
+    ? createEnsureSuccess({
+        itemName: source.itemName,
+        completedCount: after,
+        targetCount,
+        actions,
+        worldKey: readWorldKeyFromActions(actions) ?? readCurrentWorldKey(context.dependencies),
+      })
+    : createEnsureFailure({
+        code: "drop_not_obtained",
+        message: `ensure dependency did not reach material target: ${source.itemName}`,
+        worldKey: readWorldKeyFromActions(actions),
+        actions,
+        details: {
+          item_name: source.itemName,
+          source_block_name: source.blockName,
+          target_count: targetCount,
+          completed_count: after,
+        },
+      });
+}
+
+async function provideMaterialByCutTree(
+  context: ResolverContext,
+  source: Extract<ToolchainMaterialSource, { readonly action: "cutTree" }>,
+  targetCount: number,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult> {
+  const before = countInventoryItem(readInventoryItems(context), source.itemName);
+  if (context.dependencies.cutTree === undefined) {
+    return createEnsureFailure({
+      code: "unsupported_capability",
+      message: "cutTree dependency is not configured for material recovery",
+      worldKey: readCurrentWorldKey(context.dependencies),
+      actions,
+      details: { item_name: source.itemName, target_count: targetCount, completed_count: before },
+    });
+  }
+
+  const missing = targetCount - before;
+  const cut = await callSkill({
+    action: "cutTree",
+    target: source.blockName ?? source.itemName,
+    requestedCount: missing,
+    actions,
+    run: () => context.dependencies.cutTree?.({ count: missing }) ?? Promise.reject(),
+  });
+  if (!cut.ok) {
+    return cut.failure;
+  }
+
+  const collected = await callSkill({
+    action: "collect",
+    target: source.itemName,
+    requestedCount: missing,
+    actions,
+    run: () => context.dependencies.collect({ radius: DEPENDENCY_COLLECT_RADIUS }),
+  });
+  if (!collected.ok) {
+    return collected.failure;
+  }
+
+  const after = countInventoryItem(readInventoryItems(context), source.itemName);
+  return after >= targetCount
+    ? createEnsureSuccess({
+        itemName: source.itemName,
+        completedCount: after,
+        targetCount,
+        actions,
+        worldKey: readWorldKeyFromActions(actions) ?? readCurrentWorldKey(context.dependencies),
+      })
+    : createEnsureFailure({
+        code: "resource_not_found",
+        message: `ensure dependency did not reach material target: ${source.itemName}`,
+        worldKey: readWorldKeyFromActions(actions),
+        actions,
+        details: { item_name: source.itemName, target_count: targetCount, completed_count: after },
+      });
 }
 
 async function callToolchain(input: {
@@ -417,27 +506,18 @@ async function callSkill<TResult extends { readonly total_steps: number }>(input
     const result = await input.run();
     const worldKey = readSkillWorldKey(result);
     input.actions.push(
-      worldKey === undefined
-        ? createActionSummary({
-            action: input.action,
-            target: input.target,
-            requestedCount: input.requestedCount,
-            completedCount: readSkillCompletedCount(result),
-            status: "completed",
-          })
-        : createActionSummary({
-            action: input.action,
-            target: input.target,
-            requestedCount: input.requestedCount,
-            completedCount: readSkillCompletedCount(result),
-            status: "completed",
-            worldKey,
-          }),
+      createActionSummary({
+        action: input.action,
+        target: input.target,
+        requestedCount: input.requestedCount,
+        completedCount: readSkillCompletedCount(result),
+        status: "completed",
+        ...(worldKey === undefined ? {} : { worldKey }),
+      }),
     );
+
     return { ok: true as const, result };
   } catch (error) {
-    const message = getErrorMessage(error);
-    const code = classifySkillFailure(message);
     input.actions.push(
       createActionSummary({
         action: input.action,
@@ -445,18 +525,17 @@ async function callSkill<TResult extends { readonly total_steps: number }>(input
         requestedCount: input.requestedCount,
         completedCount: 0,
         status: "failed",
-        worldKey: readWorldKeyFromActions(input.actions),
-        reason: code,
+        reason: classifySkillFailure(getErrorMessage(error)),
       }),
     );
+
     return {
       ok: false as const,
       failure: createEnsureFailure({
-        code,
-        message,
+        code: classifySkillFailure(getErrorMessage(error)),
+        message: getErrorMessage(error),
         worldKey: readWorldKeyFromActions(input.actions),
         actions: input.actions,
-        details: { action: input.action, target: input.target },
       }),
     };
   }
@@ -466,17 +545,17 @@ function createEnsureSuccess(input: {
   readonly itemName?: string;
   readonly blockName?: string;
   readonly completedCount: number;
-  readonly targetCount: number;
+  readonly targetCount?: number;
   readonly actions: readonly ToolchainActionSummary[];
   readonly worldKey?: string | null;
-  readonly position?: ToolchainCapabilityData["position"];
+  readonly position?: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>;
 }): EnsureResult {
   return Object.freeze({
     ok: true as const,
     data: Object.freeze({
-      world_key: input.worldKey ?? readWorldKeyFromActions(input.actions),
+      world_key: input.worldKey ?? null,
       completed_count: input.completedCount,
-      target_count: input.targetCount,
+      ...(input.targetCount === undefined ? {} : { target_count: input.targetCount }),
       ...(input.itemName === undefined ? {} : { item_name: input.itemName }),
       ...(input.blockName === undefined ? {} : { block_name: input.blockName }),
       ...(input.position === undefined ? {} : { position: input.position }),
@@ -498,6 +577,7 @@ function createEnsureFailure(input: {
       code: input.code,
       message: input.message,
       world_key: input.worldKey,
+      failure_stage: "ensure",
       details: Object.freeze({
         ...(input.details ?? {}),
         actions: freezeActions(input.actions),
@@ -545,22 +625,18 @@ function freezeActions(
   return Object.freeze(actions.map((action) => Object.freeze({ ...action })));
 }
 
-function readResultActions(result: EnsureResult): readonly ToolchainActionSummary[] {
-  if (result.ok) {
-    return result.data.actions ?? [];
-  }
-
-  const actions = result.error.details?.actions;
-  return Array.isArray(actions) ? (actions as readonly ToolchainActionSummary[]) : [];
-}
-
 function countLogs(reader: ToolchainEnsureInventoryReader): number {
   const items = reader.readInventoryItems();
-  if (reader.countLogs !== undefined) {
-    return reader.countLogs(items);
-  }
+  return reader.countLogs?.(items) ?? 0;
+}
 
-  return 0;
+function readInventoryItems(context: ResolverContext): readonly ToolchainEnsureInventoryItem[] {
+  return context.dependencies.inventory.readInventoryItems().map((item) =>
+    Object.freeze({
+      item_name: normalizeMinecraftName(item.item_name),
+      count: item.count,
+    }),
+  );
 }
 
 function countInventoryItem(
@@ -574,36 +650,43 @@ function countInventoryItem(
   );
 }
 
-function readMissingCount(
+function readMissingMaterialRequests(
   details: Readonly<Record<string, unknown>> | undefined,
-  itemName: string,
-): number {
+): readonly Readonly<{ readonly itemName: string; readonly missing: number }>[] {
   if (details === undefined) {
-    return 0;
+    return Object.freeze([]);
   }
 
-  return readMissingCountFromUnknown(details, itemName);
+  const collected = new Map<string, number>();
+  collectMissingMaterialRequests(details, collected);
+
+  return Object.freeze(
+    [...collected.entries()].map(([itemName, missing]) => Object.freeze({ itemName, missing })),
+  );
 }
 
-function readMissingCountFromUnknown(value: unknown, itemName: string): number {
+function collectMissingMaterialRequests(value: unknown, output: Map<string, number>): void {
   if (Array.isArray(value)) {
-    return value.reduce((sum, item) => sum + readMissingCountFromUnknown(item, itemName), 0);
+    for (const item of value) {
+      collectMissingMaterialRequests(item, output);
+    }
+    return;
   }
-
   if (typeof value !== "object" || value === null) {
-    return 0;
+    return;
   }
 
   const record = value as Readonly<Record<string, unknown>>;
-  const ownMissing =
-    record.item_name === itemName && typeof record.missing === "number"
-      ? Math.max(0, Math.ceil(record.missing))
-      : 0;
+  const direct = readString(record.missing_item_name) ?? readString(record.item_name);
+  if (direct !== null && typeof record.missing === "number" && record.missing > 0) {
+    const itemName = normalizeMinecraftName(direct);
+    output.set(itemName, (output.get(itemName) ?? 0) + Math.ceil(record.missing));
+    return;
+  }
 
-  return Object.values(record).reduce<number>(
-    (sum, nested) => sum + readMissingCountFromUnknown(nested, itemName),
-    ownMissing,
-  );
+  for (const nested of Object.values(record)) {
+    collectMissingMaterialRequests(nested, output);
+  }
 }
 
 function readSkillCompletedCount(
@@ -658,6 +741,35 @@ function classifySkillFailure(message: string): ToolchainFailureCode {
   return "unsupported_capability";
 }
 
+function normalizeFailureCode(code: string): ToolchainFailureCode {
+  switch (code) {
+    case "missing_materials":
+    case "missing_crafting_table":
+    case "crafting_table_unavailable":
+    case "recipe_not_found":
+    case "runtime_craft_failed":
+    case "runtime_mine_failed":
+    case "drop_not_obtained":
+    case "missing_crafting_table_item":
+    case "no_placeable_position":
+    case "place_failed":
+    case "cached_position_invalid":
+    case "cannot_place":
+    case "missing_item":
+    case "runtime_equip_failed":
+    case "not_equipped":
+    case "resource_not_found":
+    case "unsafe_path":
+    case "unreachable_target":
+    case "inventory_full":
+    case "world_mismatch":
+    case "unsupported_capability":
+      return code;
+    default:
+      return "unsupported_capability";
+  }
+}
+
 function normalizeMinecraftName(value: string): string {
   return value
     .trim()
@@ -665,6 +777,10 @@ function normalizeMinecraftName(value: string): string {
     .replaceAll("minecraft:", "")
     .replaceAll(" ", "_")
     .replaceAll("-", "_");
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function getErrorMessage(error: unknown): string {

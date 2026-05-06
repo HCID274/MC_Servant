@@ -43,6 +43,14 @@
 
 (从这里开始,Reviewer C 通过任务后追加)
 
+## T-069B | 2026-05-06 | 通用 ensure（确保）依赖解析器与事实端口收敛
+
+- 涉及模块: core-ports/skills（技能端口契约）,skills/toolchain-ensure（工具链确保解析器）,sandbox（沙箱） execution（执行器）/contracts（契约）/facade（门面）,runtime（运行时） BotActor（机器人执行代理）/transport（传输层） facts（事实端口）,app bootstrap（应用装配）,conversation/llm（对话大语言模型） plan prompt（规划提示词）/triage prompt（分诊提示词）,相关回归测试
+- A 拆解依据: 用户要求把暴露给 LLM（大语言模型）的具体 ensure（确保）函数组替换为唯一 `ensure(action, condition)`（确保动作与条件）,由系统根据 `not_equipped`（未装备）/`missing_materials`（缺材料）/`missing_crafting_table`（缺工作台）等结构化失败码和 Minecraft（我的世界）事实源补局部前置;边界限定 toolchain ensure（工具链确保）、core-ports（核心端口）、sandbox（沙箱）、BotActor（机器人执行代理）、craft/place/equip/mine/cutTree（合成/放置/装备/挖掘/砍树）组合与测试,不得新增 `demoMineIron()`（演示挖铁） 或在 ensure（确保）本体写死配方、掉落、工具等级
+- C 审查结论: 曾打回 1 次 (首次返修虽然测试全绿,但 `toolchain-ensure.ts`（工具链确保解析器） 内仍硬编码 `iron_ore -> stone_pickaxe`（铁矿到石镐）、`stone -> wooden_pickaxe`（石头到木镐）、`cobblestone`（圆石）来源与可合成白名单,属于"测试绿、架构红");二次返修后通过。当前 `ensure`（确保语义）只消费 `ToolchainEnsureFacts`（确保事实端口）返回的装备需求、物料来源、合成可用性与工作台事实,事实实现由 runtime transport（运行时传输层）从 bot registry（机器人注册表）/recipe（配方）/drops（掉落）/harvestTools（采掘工具）读取;旧具体 ensure（确保）函数不再暴露给 Plan prompt（规划提示词）或 sandbox bot facade（沙箱机器人门面）。用户实服确认 `[svs]回来` 分诊返修通过;`git diff --check`（差异空白检查）通过,`pnpm typecheck`（类型检查）通过,定向 Vitest（测试框架）6 个文件 136 个 test（测试）通过,`bash scripts/pre_review.sh`（评审前预检脚本）全绿,34 个 test file（测试文件）/400 passed（通过）/8 skipped（跳过）;B 已补真实 OpenAI compatible API（OpenAI 兼容接口）验证,"挖5个石头"生成 `ensure(async () => mine("stone", 5), until.gained("cobblestone", 5))` 且无手写 pickaxe（镐）链
+- 关键决策: 选择"ensure（确保）只编排、事实端口负责读 Minecraft（我的世界）事实",而不是把木头到工具到矿物的链路藏成 demo（演示）函数或写在 ensure（确保）内部;Plan prompt（规划提示词）用 `ensure(async () => mine(...), until.gained(...))` 表达目标动作与完成条件,依赖补齐由结构化失败触发。分诊问题按用户边界只改 triage prompt（分诊提示词）,不扩展 chat（闲聊）输出防线
+- 架构冲突: 无
+
 ## T-067 | 2026-05-06 | Plan（规划）输出契约收敛为唯一 code（代码）任务
 
 - 涉及模块: conversation/llm（对话大语言模型） plan prompt（规划提示词）/parser（解析器）/client（客户端）,ConversationWorker（对话工作线程）,ExecJob（执行任务）契约,runtime（运行时） BotActor（机器人执行代理）/scaffold（脚手架）,sandbox（沙箱）请求契约,data（数据层） task_history（任务历史）/task_card（任务卡）,diagnostics（诊断）摘要,相关回归测试

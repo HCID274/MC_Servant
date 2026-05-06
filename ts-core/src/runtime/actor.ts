@@ -22,9 +22,7 @@ import {
   isCollectSkillParams,
   isCraftCapabilityParams,
   isCutTreeSkillParams,
-  isEmptyEnsureCapabilityParams,
-  isEnsureCobblestoneCapabilityParams,
-  isEnsureLogsCapabilityParams,
+  isEnsureDependencyParams,
   isEquipSkillParams,
   isGoToSkillParams,
   isMineSkillParams,
@@ -367,20 +365,11 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         if (capability === "place" && !isPlaceCapabilityParams(params)) {
           throw new Error("sandbox place params are invalid");
         }
-        if (capability === "ensureLogs" && !isEnsureLogsCapabilityParams(params)) {
-          throw new Error("sandbox ensureLogs params are invalid");
-        }
-        if (capability === "ensureCobblestone" && !isEnsureCobblestoneCapabilityParams(params)) {
-          throw new Error("sandbox ensureCobblestone params are invalid");
-        }
-        if (
-          (capability === "ensureCraftingTablePlaced" ||
-            capability === "placeCraftingTable" ||
-            capability === "ensureWoodenPickaxeEquipped" ||
-            capability === "ensureStonePickaxeEquipped") &&
-          !isEmptyEnsureCapabilityParams(params)
-        ) {
+        if (capability === "placeCraftingTable" && Object.keys(params).length > 0) {
           throw new Error(`sandbox ${capability} params are invalid`);
+        }
+        if (capability === "ensure" && !isEnsureDependencyParams(params)) {
+          throw new Error("sandbox ensure params are invalid");
         }
 
         try {
@@ -1154,31 +1143,11 @@ async function executeActorToolchainCapability<TName extends ToolchainCapability
       );
     case "placeCraftingTable":
       return input.skillExecution.place({ blockName: "crafting_table" });
-    case "ensureLogs":
+    case "ensure":
       return readConfiguredEnsure(
-        input.skillExecution.ensureLogs,
+        input.skillExecution.ensureDependency,
         input.capability,
-      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensureLogs"]>);
-    case "ensureCraftingTablePlaced":
-      return readConfiguredEnsure(
-        input.skillExecution.ensureCraftingTablePlaced,
-        input.capability,
-      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensureCraftingTablePlaced"]>);
-    case "ensureWoodenPickaxeEquipped":
-      return readConfiguredEnsure(
-        input.skillExecution.ensureWoodenPickaxeEquipped,
-        input.capability,
-      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensureWoodenPickaxeEquipped"]>);
-    case "ensureCobblestone":
-      return readConfiguredEnsure(
-        input.skillExecution.ensureCobblestone,
-        input.capability,
-      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensureCobblestone"]>);
-    case "ensureStonePickaxeEquipped":
-      return readConfiguredEnsure(
-        input.skillExecution.ensureStonePickaxeEquipped,
-        input.capability,
-      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensureStonePickaxeEquipped"]>);
+      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensure"]>);
     case "equip":
     case "mine":
       throw new Error(
