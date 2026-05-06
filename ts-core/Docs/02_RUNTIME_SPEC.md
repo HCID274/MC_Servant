@@ -516,11 +516,8 @@ BotWorker 取出 job
 ║     └─ 构造 Facade API 实例           ║
 ║         （注入 signal + mineflayer）   ║
 ║                                      ║
-║  3. 判定执行路径                      ║
-║     ├─ job.type === 'skill_call'?     ║
-║     │   → 直接调用 skill 函数         ║
-║     │                                ║
-║     └─ job.type === 'sandbox_code'?   ║
+║  3. 执行代码任务                      ║
+║     └─ job.type === 'code'            ║
 ║         → esbuild 转译               ║
 ║         → isolated-vm 执行            ║
 ║                                      ║
@@ -539,38 +536,25 @@ BotWorker 取出 job
 ╚══════════════════════════════════════╝
 ```
 
-### 5.3 两种 Job 类型
+### 5.3 Job 类型
 
-ConversationWorker 产出的 job 分两种，BotActor 根据 `job.type` 走不同执行路径：
+ConversationWorker（对话工作线程） 产出的动作 job 只有代码型任务。在线 Plan（规划） 不再产出动作直调快路径；简单动作也必须进入 TS（TypeScript） 代码生命周期,以便统一 `reply`（开场回复）、`runGoal`（目标运行）、`ensure`（确保语义）、`until`（完成条件）、`report`（汇报） 与 Failure Capsule（失败胶囊）：
 
 ```typescript
-type ExecJob =
-  | {
-      type: 'skill_call'
-      skill: string            // 'goTo' | 'mine' | 'follow' | ...
-      params: Record<string, unknown>
-      intent_epoch: number
-      snapshot_ts: number
-      message_id: string
-    }
-  | {
-      type: 'sandbox_code'
-      code: string             // LLM 生成的 TS 代码
-      intent_epoch: number
-      snapshot_ts: number
-      message_id: string
-    }
+type ExecJob = {
+  type: 'code'
+  code: string             // LLM 生成的 TS（TypeScript）代码
+  intent_epoch: number
+  snapshot_ts: number
+  message_id: string
+}
 ```
 
-**skill_call**：快路径产出，或 ConversationWorker 判断意图可直接映射到已注册 skill 时产出。BotActor 直接调用 skill 函数，不经过沙箱。
-
-**sandbox_code**：LLM 生成的 TS 代码片段。BotActor 通过 isolated-vm 在沙箱中执行。
-
-两种路径最终都通过 AsyncGenerator yield 步骤结果，从 BotActor 的角度看行为一致。
+`code`（代码） job 由 BotActor（机器人执行代理） 通过 isolated-vm（V8 隔离沙箱） 执行。底层 `mine`（挖掘）、`cutTree`（砍树）、`craft`（合成）、`place`（放置）、`equip`（装备）、`collect`（捡拾） 仍可复用 skills（技能） 模块实现,但这些 skill（技能） 不再作为 ConversationWorker（对话工作线程） 的在线输出路径。
 
 ### 5.4 AsyncGenerator 执行模型
 
-无论是 skill 还是沙箱代码，执行过程统一封装为 AsyncGenerator：
+代码任务执行过程统一封装为 AsyncGenerator（异步生成器）：
 
 ```typescript
 interface StepResult {
@@ -643,8 +627,7 @@ async executeTaskLoop(gen: AsyncGenerator<StepResult>, job: Job): Promise<void> 
 
 ```typescript
 const JOB_TIMEOUT_MS = {
-  skill_call: 60_000,     // skill 最多 60 秒
-  sandbox_code: 120_000,  // 沙箱代码最多 120 秒
+  code: 120_000,  // 代码任务最多 120 秒
 }
 ```
 
@@ -939,8 +922,7 @@ LLM 生成的代码有 bug（类型错误、无限循环被超时杀死、访问
 | 参数 | 默认值 | 环境变量 | 说明 |
 |------|--------|---------|------|
 | `SNAPSHOT_STALE_THRESHOLD_MS` | 30000 | `SNAPSHOT_STALE_MS` | snapshot_ts 过期阈值 |
-| `SKILL_TIMEOUT_MS` | 60000 | `SKILL_TIMEOUT_MS` | skill_call 执行总超时 |
-| `SANDBOX_TIMEOUT_MS` | 120000 | `SANDBOX_TIMEOUT_MS` | sandbox_code 执行总超时 |
+| `CODE_JOB_TIMEOUT_MS` | 120000 | `CODE_JOB_TIMEOUT_MS` | 代码任务执行总超时 |
 | `SANDBOX_MEMORY_LIMIT_MB` | 128 | `SANDBOX_MEM_MB` | isolated-vm 内存上限 |
 | `REFLEX_HOSTILE_FLEE_COUNT` | 4 | `REFLEX_FLEE_COUNT` | 触发群体逃跑的敌对生物数量 |
 | `REFLEX_HOSTILE_RANGE` | 16 | `REFLEX_RANGE` | 威胁检测半径（格） |
@@ -957,7 +939,7 @@ LLM 生成的代码有 bug（类型错误、无限循环被超时杀死、访问
 本文档定义了 BotActor 的完整运行时行为。以下文档依赖本文档：
 
 - **SANDBOX_SPEC.md**：依赖第 3.5 节 signal 穿透约定、第 5.3 节 Job 类型定义、第 5.4 节 AsyncGenerator 模型
-- **SKILL_CATALOG.md**：依赖第 3.5 节 signal 签名约定、第 5.3 节 skill_call Job 结构
+- **SKILL_CATALOG.md**：若恢复维护,只能记录底层动作能力与 signal（中断信号） 签名,不得恢复在线 Plan（规划） 的动作直调 Job 结构
 - **CONVERSATION_SPEC.md**：依赖第 5.3 节 ExecJob 类型定义、第 7 节 epoch 行为
 
 ---

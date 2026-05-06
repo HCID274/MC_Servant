@@ -32,8 +32,9 @@
 **硬约束**：
 
 - 禁止新增 `demoMineIron()`（演示挖铁） 或等价一键隐藏入口。
-- 用户说"挖铁"时,应由 Stage 2-Plan（第二阶段规划）生成可读 sandbox TS（沙箱 TypeScript）计划。
-- 允许提供 `ensureStonePickaxeEquipped()`（确保石镐已装备） 等可复用 ensure（确保）函数,因为它们是通用目标达成能力,不是一次性脚本。
+- 用户说"挖铁"时,应由 Stage 2-Plan（第二阶段规划）生成可读 TS（TypeScript）计划。
+- 只向 LLM（大语言模型） 暴露通用 `ensure(action, condition)`（确保语义）,不暴露具体 ensure（确保）函数。
+- `mine`（挖掘） 与 `cutTree`（砍树） 自带掉落物 `collect`（捡拾） 和背包增量验收；`craft`（合成）、`place`（放置）、`equip`（装备） 只返回结构化失败,由 `ensure`（确保语义） 补局部前置。
 - Minecraft（我的世界）事实只能来自 minecraft-data（Minecraft 数据库）、Mineflayer（Minecraft 协议客户端）或实时 runtime（运行时）校验。
 
 ---
@@ -51,7 +52,7 @@
         ↓
 deterministic merge gate（确定性合并闸门）
         ↓
-Chat（闲聊） / skill_call（技能调用） / sandbox_code（沙箱代码）
+Chat（闲聊） / TS code plan（TypeScript 代码规划）
 ```
 
 control fast-path（控制快路径） 命中"停下 / 取消"等精确控制词时,不启动检索,直接中断。
@@ -81,8 +82,8 @@ Triage（分诊）返回后,由确定性规则决定是否采用投机候选：
 |-------------------|--------------|
 | 普通 chat（闲聊） 且无记忆指代 | 丢弃检索候选 |
 | 记忆型 chat（闲聊）,如"上次 / 之前 / 还记得 / 基地在哪" | 使用 memory（记忆）候选 |
-| 简单 skill_call（技能调用）,如 goTo（移动）/ collect（捡拾）/ cutTree（砍树） | 丢弃检索候选 |
-| sandbox_code（沙箱代码）复杂任务 | 使用 skill index（技能索引）与相关经验候选 |
+| 明确简单 action（动作）,如 goTo（移动）/ collect（捡拾）/ cutTree（砍树） | 可丢弃检索候选,但仍输出 TS（TypeScript）代码 |
+| 多步 action（动作）或含不熟悉名词 | 使用 skill index（技能索引）与相关经验候选；不熟悉名词必须 search（检索） |
 | 上轮失败后的 continuation（继续任务） | 只强制加载短 Failure Capsule（失败胶囊）与必要经验候选 |
 
 本地检索若超过小超时（建议 80ms）,merge gate（合并闸门）不得等待；Plan（规划）确实需要时再通过 `search()`（检索）工具补查。
@@ -119,34 +120,54 @@ Plan/Chat（规划/闲聊）最终拿到的是被选中的内容,不是全库内
 
 ## 4. 规划与执行闭环
 
-### 4.1 "挖铁"必须走 sandbox TS（沙箱 TypeScript）
+### 4.1 "挖铁"必须走可编程 TS（TypeScript）
 
-"挖铁"属于多步目标,不得映射为单个 `demoMineIron()`（演示挖铁） skill_call（技能调用）。Plan（规划）应生成类似结构。示例只表达组合方式,不代表一键隐藏入口：
+"挖铁"属于多步目标,不得映射为单个 `demoMineIron()`（演示挖铁） 或具体 ensure（确保）函数。Plan（规划）应生成类似结构。示例只表达目标、动作和完成条件,不代表一键隐藏入口：
 
 ```ts
-const tool = await api.bot.ensureStonePickaxeEquipped()
-if (!tool.ok) throw new Error(tool.error.message)
+await reply("好的，我去挖铁矿喵")
 
-const mined = await api.bot.mine("iron_ore", 1)
-if (!mined.ok) throw new Error(mined.error.message)
+const task = await runGoal("挖铁矿", async () => {
+  try {
+    await ensure(
+      async () => {
+        await mine("iron_ore", 1)
+      },
+      until.gained("raw_iron", 1),
+    )
+  } catch (error) {
+    if (error.code !== "resource_not_found") {
+      throw error
+    }
 
-await api.bot.collect("raw_iron", 32)
-await api.chat.report("已经挖到粗铁了喵~")
+    await ensure(
+      async () => {
+        await mine("deepslate_iron_ore", 1)
+      },
+      until.gained("raw_iron", 1),
+    )
+  }
+})
+
+await report(task)
 ```
 
 如果附近没有 `iron_ore`（铁矿）,Plan（规划）应能在 Failure Capsule（失败胶囊） 的提示下改试 `deepslate_iron_ore`（深层铁矿）或清晰汇报附近无矿；不得依赖完整坐标列表或完整资源搜索结果进入 prompt（提示词）。
 
-### 4.2 ensure（确保）函数
+### 4.2 ensure（确保语义）
 
-允许暴露的最小 ensure（确保）函数：
+LLM（大语言模型） 只允许使用一个通用 ensure（确保语义）：
 
-- `ensureLogs(count)`（确保原木数量）。
-- `ensureCraftingTablePlaced()`（确保工作台已放置）。
-- `ensureWoodenPickaxeEquipped()`（确保木镐已装备）。
-- `ensureCobblestone(count)`（确保圆石数量）。
-- `ensureStonePickaxeEquipped()`（确保石镐已装备）。
+```ts
+await ensure(
+  async () => {
+    await mine("stone", 5)
+  },
+  until.gained("cobblestone", 5),
+)
+```
 
-ensure（确保）函数内部允许 if/else（条件分支）、循环、补采、位置搜索和最小恢复,但必须调用底层通用原语：
+ensure（确保语义）内部允许 if/else（条件分支）、循环、补采、位置搜索和最小恢复,但必须调用底层通用原语：
 
 - `cutTree()`（砍树）。
 - `collect()`（捡拾）。
@@ -155,14 +176,10 @@ ensure（确保）函数内部允许 if/else（条件分支）、循环、补采
 - `equip()`（装备）。
 - `mine()`（挖掘）。
 
-ensure（确保）函数必须返回统一结构：
+底层动作必须在失败时抛出统一结构化错误,供 ensure（确保语义） 解析：
 
 ```ts
-type ToolchainResult<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: ToolchainFailure }
-
-type ToolchainFailure = {
+type ActionError = {
   code:
     | "missing_materials"
     | "missing_crafting_table"
@@ -177,6 +194,9 @@ type ToolchainFailure = {
     | "unsupported_capability"
   message: string
   world_key: string | null
+  action: string
+  target?: string
+  missing?: Array<{ item_name: string; count: number }>
   details?: Record<string, unknown>
 }
 ```
@@ -434,7 +454,7 @@ Failure Capsule（失败胶囊）只允许包含：
 建议：可尝试 deepslate_iron_ore 或汇报附近无矿
 ```
 
-以下内容不得默认进入下一轮 Plan（规划） prompt（提示词）：完整 bot_position（机器人坐标）、完整 inventory/equipment（背包/装备）、完整 resource_search_result（资源搜索结果）、visible_hazard（可见危险）列表、失败轮的 last_ts_code（上一段 TypeScript 代码）、stack trace（堆栈）、runtime details（运行时详情） 与完整 JSONL（结构化日志）。这些内容必须进入 diagnostics（诊断）/ JSONL（结构化日志）。普通非失败轮的 sandbox TS（沙箱 TypeScript） recent context（最近上下文） 仍按 CONVERSATION_SPEC（对话规格） §7.6.4 处理；失败 continuation（继续任务） 时由 Failure Capsule（失败胶囊）替代失败轮完整代码。
+以下内容不得默认进入下一轮 Plan（规划） prompt（提示词）：完整 bot_position（机器人坐标）、完整 inventory/equipment（背包/装备）、完整 resource_search_result（资源搜索结果）、visible_hazard（可见危险）列表、失败轮的 last_ts_code（上一段 TypeScript 代码）、stack trace（堆栈）、runtime details（运行时详情） 与完整 JSONL（结构化日志）。这些内容必须进入 diagnostics（诊断）/ JSONL（结构化日志）。普通非失败轮的 TS（TypeScript） recent context（最近上下文） 仍按 CONVERSATION_SPEC（对话规格） §7.6.4 处理；失败 continuation（继续任务） 时由 Failure Capsule（失败胶囊）替代失败轮完整代码。
 
 事实 owner（所有者） 边界：
 
@@ -487,8 +507,8 @@ BrainWorker（大脑工作线程）在以下情况下创建或更新 agent-manag
 1. 用户自然语言说"挖铁"。
 2. Triage（分诊）判定为复杂任务。
 3. cheap speculative retrieval（廉价投机检索）并发给出候选经验。
-4. Plan（规划）在真实上下文中生成可读 sandbox TS（沙箱 TypeScript）组合。
-5. 执行层显式使用 ensure（确保）函数和 mine（挖掘）原语。
+4. Plan（规划）在真实上下文中生成可读 TS（TypeScript）组合。
+5. 执行层显式使用 `ensure(action, condition)`（确保语义） 和 mine（挖掘）原语。
 6. 若失败,下一轮 Plan（规划）读取短 Failure Capsule（失败胶囊） 并换策略,完整失败详情留在 diagnostics（诊断）/ JSONL（结构化日志）。
 7. 成功后 BrainWorker（大脑工作线程）沉淀经验 skill（经验技能）。
 8. 下一次类似任务能通过索引和检索更快加载经验。

@@ -138,24 +138,27 @@
 
     ### 3.3 代码包装模板
 
-    LLM 生成的代码被包装为一个接受 `api` 参数的 async 函数：
+    LLM（大语言模型）生成的代码被包装为一个 async（异步）函数。执行器注入语义化全局函数,这些全局函数再映射到 Facade API（门面接口）：
 
     ```javascript
     // 包装后的最终脚本
-    (async function(api) {
+    (async function(runtime) {
     // ===== LLM 生成的代码开始 =====
-    const trees = await api.world.nearestBlocks('oak_log', 64, 5)
-    for (const tree of trees) {
-        await api.bot.goTo(tree.x, tree.y, tree.z)
-        await api.bot.mine('oak_log', 1)
-    }
-    await api.bot.goTo(api.owner.position)
-    await api.chat.say('木头砍好了，给你拿回来了')
+    await reply("好的，我去砍 5 个木头喵")
+    const task = await runGoal("砍 5 个木头", async () => {
+      await ensure(
+        async () => {
+          await cutTree(5)
+        },
+        until.gainedTag("logs", 5),
+      )
+    })
+    await report(task)
     // ===== LLM 生成的代码结束 =====
-    })(api)
+    })(runtime)
     ```
 
-    `api` 对象是宿主进程通过 isolated-vm 的 Reference 机制注入的 Facade API。沙箱内的代码只能通过这个对象与外界交互。
+    `runtime`（运行时注入对象）由宿主进程通过 isolated-vm（V8 隔离沙箱） Reference（引用）机制注入。LLM（大语言模型） 不直接看到 `runtime`（运行时注入对象） 或 Facade API（门面接口） 的底层形态,只能调用受控语义函数与外界交互。
 
     ---
 
@@ -175,15 +178,17 @@
     }
     ```
 
+    Plan（规划） prompt（提示词） 不直接暴露上述命名空间结构,而是暴露 `reply`（开场回复）、`runGoal`（目标运行）、`ensure`（确保语义）、`until`（完成条件）、`mine`（挖掘）、`cutTree`（砍树）、`craft`（合成）、`place`（放置）、`equip`（装备）、`collect`（捡拾）、`report`（汇报） 等语义化全局函数。沙箱执行器在注入阶段把这些全局函数映射回 Facade API（门面接口） 与 BotActor（机器人执行代理） 单写者入口。这样 LLM（大语言模型） 写的是可读 TS（TypeScript） 计划,不是底层命名空间路径。
+
     ### 4.2 BotAPI — 物理动作
 
     每个方法都是异步的，执行完成后才返回。内部由 BotActor（机器人执行代理） 驱动 Mineflayer（Minecraft 协议客户端） 执行。
 
-    T-054（任务）后，工具链能力分为两类：
+    T-054（任务）后，工具链能力分为三类：
 
     - 已注册 Phase 1（第一阶段） 技能：`goTo`（前往）、`mine`（挖掘）、`cutTree`（砍树）、`collect`（捡拾）、`equip`（装备）。
     - 已实现工具链基础能力：`craft`（合成） 与 `place`（放置）。其中 `place`（放置） Phase 1（第一阶段） 只允许放置 `crafting_table`（工作台），不得扩展成通用建筑系统。
-    - 已实现可复用 ensure（确保）函数：`ensureLogs`（确保原木）、`ensureCraftingTablePlaced`（确保工作台已放置）、`ensureWoodenPickaxeEquipped`（确保木镐已装备）、`ensureCobblestone`（确保圆石）、`ensureStonePickaxeEquipped`（确保石镐已装备）。ensure 只能组合底层通用能力，必须返回目标完成度、动作摘要和结构化失败原因。
+    - 已实现通用 `ensure(action, condition)`（确保语义）：尝试动作、检查完成条件、捕获结构化失败、按 Minecraft（我的世界）事实解析依赖、补前置并回到原动作。不得向 LLM（大语言模型） 暴露一组具体 ensure（确保）函数。
 
     未实现能力不得注入真实 Facade API（门面接口） 伪装可用；实现前必须返回结构化 unsupported failure（不支持失败） 或不出现在当前 prompt（提示词） 可用方法中。
 
@@ -238,7 +243,7 @@
     follow(distance?: number): Promise<void>
 
     /**
-     * 挖掘指定资源方块。stone 不进入 ResourceService，执行层直接 runtime scan；iron_ore / deepslate_iron_ore 先走 ResourceService 具体方块簇，再用 StairBFSPlanner 生成安全短段。完成标准来自 runtime 基于背包增量返回的 collected_count。
+     * 挖掘指定资源方块。stone 不进入 ResourceService，执行层直接 runtime scan；iron_ore / deepslate_iron_ore 先走 ResourceService 具体方块簇，再用 StairBFSPlanner 生成安全短段。mine 自带移动、挖掘与掉落物 collect（捡拾）,完成标准来自 runtime 基于背包增量返回的 collected_count。
      * 失败必须保留结构化原因：not_equipped、resource_not_found、unsafe_path、unreachable_target、drop_not_obtained、runtime_mine_failed。
      */
     mine(blockName: string, count: number): Promise<ToolchainResult<{ block_name: string; completed_count: number; world_key: string | null }>>
@@ -249,7 +254,9 @@
     craft(itemName: string, count: number): Promise<ToolchainResult<{ item_name: string; completed_count: number; world_key: string | null }>>
 
     /**
-    * 放置指定方块。Phase 1 仅允许 crafting_table；若背包没有工作台物品，先通过 craft 能力合成 1 个；若配方校验显示缺少中间材料，再通过 craft('planks', n) 这类已开放最小合成能力补齐，随后由 runtime 在当前世界中选择最多 3 个附近合法候选点顺序尝试。工具链返回 ok:false 时必须使沙箱步骤失败并保留结构化 error.code，不得把失败当成成功执行。
+     * 放置指定方块。Phase 1 仅允许 crafting_table；place 只尝试放置背包已有物品,不展开完整资源链。
+     * 若缺工作台物品、缺材料、无合法位置或运行时放置失败,必须返回结构化失败,由 ensure 解析依赖并补前置。
+     * runtime 在当前世界中选择最多 3 个附近合法候选点顺序尝试。工具链返回 ok:false 时必须使代码步骤失败并保留结构化 error.code，不得把失败当成成功执行。
      */
     place(blockName: 'crafting_table', near?: Position): Promise<ToolchainResult<{ block_name: string; completed_count: number; world_key: string | null; position?: Position }>>
     placeCraftingTable(): Promise<ToolchainResult<{ block_name: 'crafting_table'; completed_count: number; world_key: string | null; position?: Position }>>
@@ -277,13 +284,10 @@
     cutTree(count: number): Promise<{ collected: number }>
 
     /**
-     * 可复用 ensure（确保）函数。ensure 内部只能组合底层通用原语，不得变成一次性挖铁脚本。
+     * 通用 ensure（确保语义）。action 是要尝试的动作,condition 是完成条件。
+     * ensure 内部只能基于结构化失败码和 Minecraft（我的世界）事实源补局部前置,不得变成一次性挖铁脚本。
      */
-    ensureLogs(count: number): Promise<ToolchainResult<{ item_name: string; completed_count: number; target_count: number; world_key: string | null; actions: ToolchainActionSummary[] }>>
-    ensureCraftingTablePlaced(): Promise<ToolchainResult<{ block_name: string; completed_count: number; target_count: number; world_key: string | null; actions: ToolchainActionSummary[] }>>
-    ensureWoodenPickaxeEquipped(): Promise<ToolchainResult<{ item_name: string; completed_count: number; target_count: number; world_key: string | null; actions: ToolchainActionSummary[] }>>
-    ensureCobblestone(count: number): Promise<ToolchainResult<{ item_name: string; completed_count: number; target_count: number; world_key: string | null; actions: ToolchainActionSummary[] }>>
-    ensureStonePickaxeEquipped(): Promise<ToolchainResult<{ item_name: string; completed_count: number; target_count: number; world_key: string | null; actions: ToolchainActionSummary[] }>>
+    ensure(action: () => Promise<void>, condition: UntilCondition): Promise<void>
 
     /**
      * 攻击实体
@@ -324,7 +328,7 @@
     }
     ```
 
-    **统一结果摘要**：sandbox TS（沙箱 TypeScript） 能力的终态必须进入统一 `SkillResultSummary`（技能结果摘要），供 `TaskResultReporter`（任务结果汇报器）、diagnostics（诊断） 与后续上下文消费：
+    **统一结果摘要**：TS（TypeScript） 代码任务能力的终态必须进入统一 `SkillResultSummary`（技能结果摘要），供 `TaskResultReporter`（任务结果汇报器）、diagnostics（诊断） 与后续上下文消费：
 
     ```typescript
     interface SkillResultSummary {
@@ -356,13 +360,13 @@
     }
     ```
 
-    `craft`（合成）、`place`（放置）、`equip`（装备）、`mine`（挖掘）、`collect`（捡拾）、`cutTree`（砍树） 与所有 `ensure*`（确保函数） 都必须能转换为上述摘要。没有数量语义的 `equip` / `place` 仍要写入可读状态，例如 `already_equipped`（已装备） 或 `placed`（已放置） 到 `details` / diagnostics（诊断） 中。失败码至少区分 `resource_not_found`（找不到资源）、`unsafe_path`（路径不安全）、`not_equipped`（未装备）、`missing_materials`（缺材料）。
+    `craft`（合成）、`place`（放置）、`equip`（装备）、`mine`（挖掘）、`collect`（捡拾）、`cutTree`（砍树） 与 `ensure`（确保语义） 都必须能转换为上述摘要。没有数量语义的 `equip` / `place` 仍要写入可读状态，例如 `already_equipped`（已装备） 或 `placed`（已放置） 到 `details` / diagnostics（诊断） 中。失败码至少区分 `resource_not_found`（找不到资源）、`unsafe_path`（路径不安全）、`not_equipped`（未装备）、`missing_materials`（缺材料）。
 
     **失败上下文**：所有可编程动作失败时，`FacadeCallError.details`（门面调用错误细节） 必须保留 `failure_stage`（失败阶段）、`current_position`（当前位置摘要）、`inventory_summary`（背包摘要）、`equipment_summary`（装备摘要） 与 `target_progress`（目标完成度）。这些完整字段进入 sandbox（沙箱） JSONL（结构化日志）、diagnostics（诊断） 和 step result（步骤结果）；下一轮 Plan（规划） prompt（提示词） 只读取由执行终态摘要格式化出的短 Failure Capsule（失败胶囊）,不默认注入完整失败详情。不允许只返回字符串。
 
-    **禁止项**：不得新增或暴露 `demoMineIron()`（演示挖铁） 或等价的一键隐藏链路。用户说“挖铁”时，LLM（大语言模型） 应生成可读 sandbox TS（沙箱 TypeScript） 组合，显式调用 `ensure*`（确保函数）、`craft`（合成）、`place`（放置）、`placeCraftingTable`（放置工作台）、`equip`（装备）、`mine`（挖掘）、`collect`（捡拾） 等通用能力；TS Core（TypeScript 核心） 不得把整条链路藏在单个 demo（演示） 方法里。
+    **禁止项**：不得新增或暴露 `demoMineIron()`（演示挖铁） 或等价的一键隐藏链路。用户说“挖铁”时，LLM（大语言模型） 应生成可读 TS（TypeScript） 组合，显式调用 `reply`（开场回复）、`runGoal`（目标运行）、`ensure`（确保语义）、`until`（完成条件）、`mine`（挖掘） 与 `report`（汇报）。TS Core（TypeScript 核心） 不得把整条链路藏在单个 demo（演示） 方法里,也不得向 LLM（大语言模型） 暴露具体 ensure（确保）函数。
 
-    **世界定位硬约束**：上述所有能力涉及资源、坐标、维度或缓存时，必须从 existing world tag（既有世界标签）、`currentWorld`（当前世界） 或 ResourceService（资源服务） 读取世界上下文。sandbox TS（沙箱 TypeScript）、skills（技能） 与 runtime（运行时） 不得自行读取维度字段并拼接 `world_key`（世界键），也不得跨世界复用资源缓存。
+    **世界定位硬约束**：上述所有能力涉及资源、坐标、维度或缓存时，必须从 existing world tag（既有世界标签）、`currentWorld`（当前世界） 或 ResourceService（资源服务） 读取世界上下文。TS（TypeScript） 计划、skills（技能） 与 runtime（运行时） 不得自行读取维度字段并拼接 `world_key`（世界键），也不得跨世界复用资源缓存。
 
     ### 4.3 WorldAPI — 环境查询
 
@@ -558,7 +562,7 @@
     }
     ```
 
-    注意：`position` 是读取时的实时值（通过 observation 缓存），不是任务开始时的快照。沙箱代码每次访问 `api.owner.position` 都会拿到最新位置。
+    注意：`owner.position`（主人位置） 是读取时的实时值（通过 observation 缓存），不是任务开始时的快照。TS（TypeScript） 代码每次访问 `owner.position` 都会拿到最新位置。
 
     ### 4.8 TaskAPI — 任务自身元信息
 
@@ -843,9 +847,16 @@
     LLM 生成的代码必须是一段顶层 async 函数体：
 
     ✅ 正确：
-    const pos = await api.bot.goTo(100, 64, 200)
-    await api.bot.mine('oak_log', 5)
-    await api.chat.say('挖好了')
+    await reply("好的，我去挖 5 个石头喵")
+    const task = await runGoal("挖 5 个石头", async () => {
+      await ensure(
+        async () => {
+          await mine("stone", 5)
+        },
+        until.gained("cobblestone", 5),
+      )
+    })
+    await report(task)
 
     ❌ 错误：
     import { something } from 'somewhere'   // 禁止 import
@@ -858,7 +869,11 @@
 
     | 对象 | 说明 |
     |------|------|
-    | `api` | Facade API，唯一的外界交互入口 |
+    | `reply` / `report` | 开场回复与终态汇报 |
+    | `runGoal` | 目标生命周期包装 |
+    | `ensure` / `until` | 依赖补齐与完成条件 |
+    | `mine` / `cutTree` / `craft` / `place` / `equip` / `collect` / `goTo` | 受控动作能力 |
+    | `owner` | 主人只读上下文 |
     | `console` | 安全版 console，只支持 log/warn/error |
     | `sleep(ms)` | 等待指定毫秒数（上限 10 秒） |
     | `Math` | 标准 Math 对象 |
@@ -874,11 +889,20 @@
     ```typescript
     // 推荐模式
     try {
-    await api.bot.mine('diamond_ore', 10)
+    await ensure(
+      async () => {
+        await mine("diamond_ore", 10)
+      },
+      until.gained("diamond", 10),
+    )
     } catch (e) {
-    await api.chat.say('挖不到钻石矿，可能附近没有')
-    // 尝试替代方案
-    await api.bot.mine('iron_ore', 10)
+    await reply("附近暂时没找到钻石矿，我先换一个可行目标喵")
+    await ensure(
+      async () => {
+        await mine("iron_ore", 10)
+      },
+      until.gained("raw_iron", 10),
+    )
     }
     ```
 
@@ -900,19 +924,19 @@
 
     ### 9.1 沙箱内代码如何产出 StepResult
 
-    沙箱内的代码不需要显式 yield。BotActor 的 `executeFacadeCall` 在每次 Facade API 调用完成后，自动收集一个 StepResult。
+    沙箱内的代码不需要显式 yield。BotActor 的 `executeFacadeCall` 在每次语义函数映射到 Facade API（门面接口） 调用完成后，自动收集一个 StepResult。
 
     从 BotActor 的角度看，沙箱执行的步骤流就是一连串的 `executeFacadeCall` 调用：
 
     ```
-    沙箱代码:  await api.bot.goTo(100, 64, 200)
+    TS 代码:   await goTo(100, 64, 200)
     BotActor:  executeFacadeCall('goTo', {x:100,y:64,z:200}) → StepResult #0
 
-    沙箱代码:  await api.bot.mine('oak_log', 5)
-    BotActor:  executeFacadeCall('mine', {blockName:'oak_log',count:5}) → StepResult #1
+    TS 代码:   await mine('stone', 5)
+    BotActor:  executeFacadeCall('mine', {blockName:'stone',count:5}) → StepResult #1
 
-    沙箱代码:  await api.chat.say('挖好了')
-    BotActor:  executeFacadeCall('say', {message:'挖好了'}) → StepResult #2
+    TS 代码:   await report(task)
+    BotActor:  executeFacadeCall('report', {task}) → StepResult #2
     ```
 
     ### 9.2 StepResult 与事件流的关系
@@ -949,60 +973,53 @@
 
     ---
 
-    ## 10. skill_call 与 sandbox_code 的统一抽象
+    ## 10. 代码任务与底层动作能力
 
-    ### 10.1 SkillRegistry
+    ### 10.1 唯一在线执行入口
 
-    BotActor 持有一个 skill 注册表。skill_call 类型的 job 通过注册表直接路由到对应函数，不经过沙箱：
+    ConversationWorker（对话工作线程） 在线只产出代码型 job。简单任务和复杂任务都进入同一个代码执行生命周期：
 
     ```typescript
-    class SkillRegistry {
-    private skills: Map<string, SkillFunction> = new Map()
-
-    register(name: string, fn: SkillFunction): void {
-        this.skills.set(name, fn)
+    type ExecJob = {
+      type: 'code'
+      code: string
+      intent_epoch: number
+      snapshot_ts: number
+      message_id: string
     }
-
-    get(name: string): SkillFunction | undefined {
-        return this.skills.get(name)
-    }
-    }
-
-    type SkillFunction = (
-    params: Record<string, unknown>,
-    signal: AbortSignal
-    ) => AsyncGenerator<StepResult>
     ```
 
-    ### 10.2 Facade API 方法与 Skill 的关系
+    代码任务统一经过静态预检、esbuild（构建转译器） 转译、isolated-vm（V8 隔离沙箱） 执行、Facade API（门面接口） 审批和 BotActor（机器人执行代理） 单写者动作入口。不得恢复 ConversationWorker（对话工作线程） 直接指定 skill（技能） 名与参数的在线快路径。
 
-    Facade API 的每个 BotAPI 方法，底层调用的就是 SkillRegistry 中注册的 skill：
+    ### 10.2 语义 API 与底层 skill 的关系
+
+    Plan（规划） 看到的是语义化全局 API（应用程序接口）,底层可复用 skill（技能） 模块实现：
 
     ```
-    Facade API 方法          Skill 名称          注册来源
-    ──────────────          ──────────          ─────────
-    api.bot.goTo()     →    'goTo'         →    skills/goto.ts
-    api.bot.mine()     →    'mine'         →    skills/mine.ts
-    api.bot.cutTree()  →    'cutTree'      →    skills/cut-tree.ts
-    api.bot.collect()  →    'collect'      →    skills/collect.ts
-    api.bot.equip()    →    'equip'        →    skills/equip.ts
-    api.bot.follow()   →    'follow'       →    skills/follow.ts
-    api.bot.attack()   →    'attack'       →    skills/attack.ts
+    TS 语义 API                 底层动作能力
+    ─────────────               ─────────────
+    goTo(...)              →    goTo（移动）
+    mine(...)              →    mine（挖掘，自带 collect）
+    cutTree(...)           →    cutTree（砍树，自带 collect）
+    collect(...)           →    collect（捡拾）
+    craft(...)             →    craft（合成）
+    place(...)             →    place（放置）
+    equip(...)             →    equip（装备）
+    ensure(action, until)   →    dependency resolver（依赖解析器）+ 上述动作能力
+    report(task)           →    TaskResultReporter（任务结果汇报器）/ optional report LLM（可选汇报大语言模型）
     ```
 
-    这意味着 skill_call 和 sandbox_code 两种路径最终都走 SkillRegistry。区别只在于：
-    - **skill_call**：ConversationWorker 直接指定 skill 名和参数，BotActor 直接调用
-    - **sandbox_code**：LLM 代码在沙箱里通过 Facade API 间接调用 skill
+    `ensure`（确保语义） 的 dependency resolver（依赖解析器） 根据结构化失败码和 Minecraft（我的世界）事实源推导局部依赖。例如 `mine("iron_ore", 1)` 返回 `not_equipped`（未装备） 时,解析器查询 runtime（运行时）/minecraft-data（Minecraft 数据库） 得到所需工具,再通过 `craft`（合成）、`equip`（装备）、`mine("stone")`（挖石头）、`cutTree`（砍树） 等动作补前置。该依赖链是系统能力,不是 LLM（大语言模型） 手写事实表。
 
-    ### 10.3 新增 Skill 的步骤
+    ### 10.3 新增动作能力的步骤
 
-    增加一个新的 Bot 能力只需要三步：
+    增加一个新的 Bot（机器人）动作能力只需要三步：
 
-    1. 在 `skills/` 目录下实现 SkillFunction
-    2. 在 SkillRegistry 中注册
-    3. 在 Facade API 的 BotAPI interface 中增加对应方法
+    1. 在 skills（技能）/runtime（运行时） 边界实现动作能力。
+    2. 在语义 API（应用程序接口） 与 Facade API（门面接口） 中暴露最小函数。
+    3. 在 dependency resolver（依赖解析器） 中补充该能力的结构化失败处理和依赖映射。
 
-    不需要改 BotActor、不需要改沙箱、不需要改队列。**Skill 是系统的扩展单元。**
+    多步目标必须通过 TS（TypeScript） 代码里的 `runGoal`（目标运行） + `ensure`（确保语义） + `until`（完成条件） 组合表达。
 
     ---
 
@@ -1061,7 +1078,7 @@
     | `AbortError` | 中断信号到达 | 沙箱执行终止，emit task.interrupted |
     | `UnhandledError` | 沙箱代码未捕获的 JS 运行时异常 | emit task.failed |
 
-    sandbox TS（沙箱 TypeScript） 终态由 BotWorker（机器人工作线程） 统一进入 `TaskResultReporter`（任务结果汇报器）。成功、失败、中断都必须生成一次结构化 `result_summary`（结果摘要），再由模板同步到 game chat（游戏聊天） 与 realtime（实时推送）；不得让 sandbox（沙箱） 失败沉默，也不得用 LLM（大语言模型）二次总结执行结果。
+    TS（TypeScript） 代码任务终态由 BotWorker（机器人工作线程） 统一进入 `TaskResultReporter`（任务结果汇报器）。成功、失败、中断都必须生成一次结构化 `result_summary`（结果摘要）。`report(task)`（汇报任务） 可以把结构化事实交给受限 report LLM（汇报大语言模型） 润色成更自然的游戏聊天文本,但 LLM（大语言模型） 只能改表达,不能改事实、数量、世界、耗时、失败码或完成状态；润色失败时必须回退到确定性模板。不得让代码任务失败沉默。
 
     ### 12.2 错误信息的传递
 

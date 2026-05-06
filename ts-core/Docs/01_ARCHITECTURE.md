@@ -446,14 +446,14 @@ LLM 输出 TS 代码片段
 
 ### 7.3 Facade API 是 BotActor 的代理
 
-沙箱内代码通过 Facade API 向 BotActor 发起 RPC，BotActor 全权审批：
+TS（TypeScript）代码通过语义化全局函数发起动作,执行器映射到 Facade API（门面接口） 后再交给 BotActor（机器人执行代理） 全权审批：
 
 ```
-沙箱内 api.bot.mine('oak_log', 5)
+TS 代码内 mine('stone', 5)
     → 跨 isolate Reference 回调
-    → BotActor.executeFacadeCall('mine', { target: 'oak_log', count: 5 }, signal)
+    → BotActor.executeFacadeCall('mine', { target: 'stone', count: 5 }, signal)
     → Mineflayer 执行
-    → 结果返回沙箱
+    → 结果返回 TS 代码任务
 ```
 
 安全边界：沙箱内代码无法访问文件系统、网络、进程管理。所有与 Bot 的交互必须通过 Facade API。执行超时自动终止。

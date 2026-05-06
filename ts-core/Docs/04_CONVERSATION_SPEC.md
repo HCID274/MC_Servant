@@ -6,7 +6,7 @@
 
 ## 0. 本文档的职责边界
 
-本文档定义 ConversationWorker 的完整行为规格：两阶段 LLM 调用模型、意图分类与优先级判定、上下文组装策略、代码/skill 产出格式、回复生成、Token 预算管理、记忆检索集成。
+本文档定义 ConversationWorker 的完整行为规格：两阶段 LLM 调用模型、意图分类与优先级判定、上下文组装策略、TS（TypeScript）代码产出契约、回复生成、Token 预算管理、记忆检索集成。
 
 **本文档不涉及**：BotActor 状态机（见 RUNTIME_SPEC.md）、沙箱执行细节（见 SANDBOX_SPEC.md）、BrainWorker 摘要压缩算法（见 DATA_SPEC.md）、具体 skill 实现（见 SKILL_CATALOG.md）。
 
@@ -18,7 +18,7 @@ ConversationWorker 是 Bot 的「理解与决策中枢」。它不碰 Bot，不�
 
 1. **理解**：用户说了什么，什么意图，什么紧迫度
 2. **决策**：闲聊直接回、任务生成执行计划、中断直接转发
-3. **产出**：聊天回复文本 / ExecJob（skill_call 或 sandbox_code）
+3. **产出**：聊天回复文本 / 代码型 ExecJob（执行任务）
 
 ConversationWorker 消费 `msg:{botId}` 队列，产出物推入 `bot:{botId}:exec` 队列或直接通过 Socket.io 广播回复。
 
@@ -206,57 +206,92 @@ LLM 的文本输出直接作为 Bot 回复，通过 Socket.io 广播到双端。
 
 ## 5. Stage 2-Plan: 任务规划
 
-### 5.1 输出格式选择：skill_call 优先
+### 5.1 唯一输出契约：TS 代码
 
-ConversationWorker 的规划输出有两种路径。**默认走 skill_call**，只有当意图复杂到无法映射为单个 skill 时才走 sandbox_code。
+ConversationWorker 的任务规划只有一种在线输出：TS（TypeScript）代码。LLM（大语言模型）不得选择旧双路径分支,也不得输出自然语言解释。外层传输仍使用 JSON（结构化数据） 只是为了硬解析,JSON（结构化数据） 中只允许一个 `code` 字段：
 
-判定逻辑：
-
-```
-用户意图能否映射为单个 Facade API 调用？
-    │
-    ├─ 是："帮我砍 5 棵树" → skill_call { skill: 'cutTree', params: { count: 5 } }
-    │      "过来" → skill_call { skill: 'goToOwner', params: {} }
-    │      "跟着我" → skill_call { skill: 'follow', params: {} }
-    │
-    └─ 否："去矿洞挖 10 个钻石，挖完回来给我" → sandbox_code
-           "先做一把石镐再去挖铁" → sandbox_code
-           任何需要条件判断、多步编排、错误处理的意图 → sandbox_code
+```typescript
+interface PlanCodeOutput {
+  code: string
+}
 ```
 
-### 5.2 Plan Prompt v2（规划提示词第二版）
+硬约束在 Plan prompt（规划提示词） 中重复三遍,并由 OpenAI compatible API（OpenAI 兼容接口） 的 `response_format`（响应格式）/ `json_schema`（结构约束） 或等价 tool output（工具输出） 强制：
+
+```text
+硬规则 1：你只能输出符合 schema（结构约束） 的 JSON（结构化数据）,且 JSON（结构化数据） 只能包含 code 字段。
+硬规则 2：禁止在 JSON（结构化数据） 外输出自然语言、Markdown（标记文本）、解释或多余字段。
+硬规则 3：如果你要对主人说话,必须写进 code（代码） 里的 reply(...) 或 report(...),不能在 JSON（结构化数据） 外说话。
+```
+
+`code` 是一段顶层 async（异步） TS（TypeScript） 函数体。用户可见的开场回复、动作编排、完成条件和最终汇报全部写在代码里：
+
+```ts
+await reply("好的，我去挖 5 个石头喵")
+
+const task = await runGoal("挖 5 个石头", async () => {
+  await ensure(
+    async () => {
+      await mine("stone", 5)
+    },
+    until.gained("cobblestone", 5),
+  )
+})
+
+await report(task)
+```
+
+### 5.2 Plan Prompt v3（规划提示词第三版）
 
 ```
 你是 Minecraft task planner（任务规划器）。
 
 # 你是什么
-- 只把主人的意图转成可执行计划
+- 只把主人的意图转成可执行 TS（TypeScript） 代码
+- 代码表达目标、动作和完成条件
+- 代码必须能被执行层审计、记录和失败脱困
 
 # 你不是什么
 - 不直接执行世界动作
 - 不猜 Minecraft（我的世界）事实
 - 不拼 world_key（世界键）
 
-# 输出格式
-- skill_call：单步任务优先
-- sandbox_code：多步组合 / 条件判断 / 失败处理
-- cannot_plan：缺少必要参数或能力不可用
+# 输出硬规则
+- 只能输出 JSON（结构化数据）：{"code":"..."}
+- 只能输出 JSON（结构化数据）：{"code":"..."}
+- 只能输出 JSON（结构化数据）：{"code":"..."}
+- JSON（结构化数据） 外禁止任何文字
+- 对主人说话必须写进 code（代码） 里的 reply(...) 或 report(...)
 
-# sandbox_code 约束
-- 代码是一段顶层 async 函数体，不需要 import/export/class
-- 全局可用对象：api, console, sleep(ms), Math, JSON, Date
-- 每个 ToolchainResult（工具链结果）必须检查 ok
-- ok:false 必须 throw 或 api.chat.report() 汇报结构化失败原因
-- 最后必须调用 api.chat.report()
-- 禁止 demoMineIron()（演示挖铁） 或等价一键隐藏脚本
-- 禁止手写 world_key（世界键）
+# 可编程 TS（TypeScript） 结构
+- 每个任务先 reply("开场回复喵")
+- 每个任务用 runGoal("目标名", async () => { ... }) 包裹主体
+- 需要达成资源 / 装备 / 放置目标时,用 ensure(async () => { ... }, until.xxx(...))
+- 每个任务最后 await report(task)
+- 不手写依赖链细节；依赖补齐由 ensure（确保语义） 根据结构化失败和 Minecraft（我的世界）事实源处理
+
+# ensure（确保语义）
+- ensure 不是一组具体函数,而是通用语义：尝试动作 → 检查 until 条件 → 捕获结构化失败 → 解析依赖 → 补前置 → 回到原动作
+- ensure 可以从 not_equipped（未装备）、missing_materials（缺材料）、missing_crafting_table（无工作台）、resource_not_found（找不到资源）、unsafe_path（路径不安全） 等失败码恢复
+- ensure 的依赖事实只能来自 mineflayer（Minecraft 客户端库）、minecraft-data（Minecraft 数据库）、runtime（运行时） 与实时快照
+- LLM（大语言模型） 不得输出任何具体 ensure（确保）函数名；只能使用通用 `ensure(action, condition)`（确保语义）
+
+# 动作边界
+- mine(blockName, count) 自带移动、挖掘、掉落物 collect（捡拾）,成功标准看背包增量
+- cutTree(count) 自带树簇选择、移动、连锁砍树触发、掉落物 collect（捡拾）,成功标准看原木背包增量
+- craft(itemName, count)、place(blockName)、equip(itemName, "hand") 不补完整资源链；缺前置时返回结构化失败,交给 ensure 处理
+- collect(itemName?) 只处理地面掉落物捡拾
+
+# search（检索）
+- 如果用户输入包含你不确定的名词、模组名、历史经验名、技能经验或陌生资源名,必须先调用 search()（检索） 查名词或经验
+- 如果 prompt（提示词） 中已有足够上下文,可以不 search（检索）
+- 如果 search（检索） 后仍无法解析成可执行 Minecraft（我的世界） id（标识符） 或当前能力,代码只能 reply/report 当前不支持,不得猜 id（标识符）
 
 # 上一轮失败
-- 如果 prompt（提示词） 中出现 [上一轮失败] Failure Capsule（失败胶囊）,必须读取其中 goal（目标）、failed_action（失败动作）、failure_code（失败码）、progress（进度）、retry_guard（重复保护） 与 hint（提示）
+- 如果 prompt（提示词） 中出现 [上一轮失败] Failure Capsule（失败胶囊）,必须读取 goal（目标）、failed_action（失败动作）、failure_code（失败码）、progress（进度）、retry_guard（重复保护） 与 hint（提示）
 - 不得原样重复 retry_guard（重复保护） 中的动作
-- 可恢复失败必须换策略,例如换资源目标、补材料、装备工具、重新选择安全路径或直接汇报附近不足
-- 实现阻塞失败不得乱试,必须汇报阻塞原因
-- 没有合法替代策略时,直接 api.chat.report() 汇报阻塞
+- 可恢复失败必须换策略,例如换资源目标、补材料、装备工具、重新选择安全路径或汇报附近不足
+- 实现阻塞失败不得乱试,必须 report（汇报） 阻塞原因
 ```
 
 ### 5.3 Plan User Prompt 组装
@@ -275,198 +310,133 @@ ConversationWorker 的规划输出有两种路径。**默认走 skill_call**，�
 {当前消息}
 ```
 
-### 5.4 Facade API 精简版类型定义
+### 5.4 可编程 TS API 精简版类型定义
 
-完整的 Facade API 定义在 SANDBOX_SPEC.md 第 4 节。注入 LLM prompt 时使用精简版，省去注释和次要字段，压缩 token 用量：
+完整执行边界在 SANDBOX_SPEC.md 第 4 节。注入 LLM prompt（提示词） 时只暴露语义化全局 API（应用程序接口）,省去内部机器人命名空间层级,避免 LLM（大语言模型） 把执行路径写成底层实现细节：
 
 ```typescript
-interface api {
-  bot: {
-    goTo(x: number, y: number, z: number): Promise<Position>
-    goToOwner(distance?: number): Promise<Position>
-    follow(distance?: number): Promise<void>
-    mine(blockName: string, count: number): Promise<ToolchainResult<{block_name:string,completed_count:number,world_key:string|null}>>
-    craft(itemName: string, count: number): Promise<ToolchainResult<{item_name:string,completed_count:number,world_key:string|null}>>
-    place(blockName: 'crafting_table', near?: Position): Promise<ToolchainResult<{block_name:string,completed_count:number,world_key:string|null,position?:Position}>>
-    placeCraftingTable(): Promise<ToolchainResult<{block_name:'crafting_table',completed_count:number,world_key:string|null,position?:Position}>>
-    collect(itemName: string, radius?: number): Promise<{collected: number}>
-    equip(itemName: string, destination?: 'hand'): Promise<{skill:'equip',item_name:string,destination:'hand',status:'already_equipped'|'equipped',total_steps:0|1}>
-    cutTree(count: number): Promise<{collected: number}>
-    ensureLogs(count: number): Promise<ToolchainResult<{item_name:string,completed_count:number,target_count:number,world_key:string|null,actions:ToolchainActionSummary[]}>>
-    ensureCraftingTablePlaced(): Promise<ToolchainResult<{block_name:string,completed_count:number,target_count:number,world_key:string|null,actions:ToolchainActionSummary[]}>>
-    ensureWoodenPickaxeEquipped(): Promise<ToolchainResult<{item_name:string,completed_count:number,target_count:number,world_key:string|null,actions:ToolchainActionSummary[]}>>
-    ensureCobblestone(count: number): Promise<ToolchainResult<{item_name:string,completed_count:number,target_count:number,world_key:string|null,actions:ToolchainActionSummary[]}>>
-    ensureStonePickaxeEquipped(): Promise<ToolchainResult<{item_name:string,completed_count:number,target_count:number,world_key:string|null,actions:ToolchainActionSummary[]}>>
-    attack(entityName: string): Promise<{killed: boolean}>
-    getStatus(): Promise<BotStatus>
-    getInventory(): Promise<InventoryItem[]>
-  }
-  world: {
-    nearestBlocks(blockName: string, radius?: number, maxCount?: number): Promise<BlockInfo[]>
-    nearestEntities(filter?: {type?: string, name?: string}, radius?: number): Promise<EntityInfo[]>
-    blockAt(x: number, y: number, z: number): Promise<BlockInfo | null>
-    getTime(): Promise<{timeOfDay: number, isDay: boolean}>
-  }
-  knowledge: {
-    getRecipe(itemName: string): Promise<Recipe[]>
-    getBlockInfo(blockName: string): Promise<BlockData | null>
-    getItemInfo(itemName: string): Promise<ItemData | null>
-  }
-  memory: {
-    search(query: string, limit?: number): Promise<MemoryEntry[]>
-    recentTasks(limit?: number): Promise<TaskSummary[]>
-  }
-  chat: {
-    say(message: string): Promise<void>
-    report(message: string): Promise<void>
-  }
-  owner: {
-    readonly position: Position
-    readonly name: string
-    readonly online: boolean
-  }
-  task: {
-    readonly id: string
-    readonly userMessage: string
-  }
+declare function reply(message: string): Promise<void>
+declare function report(task: GoalResult): Promise<void>
+declare function runGoal(name: string, body: () => Promise<void>): Promise<GoalResult>
+
+declare function ensure(action: () => Promise<void>, condition: UntilCondition): Promise<void>
+
+declare const until: {
+  gained(itemName: string, count: number): UntilCondition
+  gainedTag(tagName: string, count: number): UntilCondition
+  has(itemName: string, count: number): UntilCondition
+  equipped(itemName: string): UntilCondition
+  placed(blockName: string): UntilCondition
+}
+
+declare function goTo(pos: Position): Promise<void>
+declare function goTo(x: number, y: number, z: number): Promise<void>
+declare function mine(blockName: string, count: number): Promise<void>
+declare function cutTree(count: number): Promise<void>
+declare function collect(itemName?: string, radius?: number): Promise<void>
+declare function craft(itemName: string, count: number): Promise<void>
+declare function place(blockName: "crafting_table", near?: Position): Promise<void>
+declare function equip(itemName: string, destination?: "hand"): Promise<void>
+declare function search(query: string, limit?: number): Promise<MemoryEntry[]>
+
+declare const owner: {
+  readonly position: Position
+  readonly name: string
+  readonly online: boolean
 }
 ```
 
-`ToolchainResult`（工具链结果） 固定为 `{ok:true,data}` 或 `{ok:false,error}`。`error.code`（错误码） 必须使用结构化失败码,覆盖 `missing_materials`（缺材料）、`missing_crafting_table`（无工作台）、`missing_crafting_table_item`（背包无工作台物品）、`no_placeable_position`（附近无可放位置）、`place_failed`（放置失败）、`cached_position_invalid`（缓存位置失效）、`cannot_place`（无法放置）、`missing_item`（缺目标物品）、`runtime_equip_failed`（运行时装备失败）、`not_equipped`（未装备）、`resource_not_found`（找不到资源）、`unsafe_path`（路径不安全） 等可恢复原因。sandbox（沙箱） 步骤失败必须保留 `failure_stage`（失败阶段）、`current_position`（当前位置摘要）、`inventory_summary`（背包摘要）、`equipment_summary`（装备摘要） 和 `target_progress`（目标完成度）；这些完整详情进入 diagnostics（诊断）/ JSONL（结构化日志） 与 step result（步骤结果）,下一轮 prompt（提示词） 只注入 §7.6.5 的短 Failure Capsule（失败胶囊）。Plan（规划）不得生成或引用 `demoMineIron()`（演示挖铁） 或等价一键隐藏脚本。
+底层动作失败必须抛出结构化 `ActionError`（动作错误）,不得只抛字符串。`ActionError.code`（错误码） 必须覆盖 `missing_materials`（缺材料）、`missing_crafting_table`（无工作台）、`missing_crafting_table_item`（背包无工作台物品）、`no_placeable_position`（附近无可放位置）、`place_failed`（放置失败）、`cached_position_invalid`（缓存位置失效）、`cannot_place`（无法放置）、`missing_item`（缺目标物品）、`runtime_equip_failed`（运行时装备失败）、`not_equipped`（未装备）、`resource_not_found`（找不到资源）、`unsafe_path`（路径不安全） 等可恢复原因。完整详情进入 diagnostics（诊断）/ JSONL（结构化日志） 与 step result（步骤结果）,下一轮 prompt（提示词） 只注入 §7.6.5 的短 Failure Capsule（失败胶囊）。
 
-`place('crafting_table')`（放置工作台） 若背包没有 crafting table（工作台） 物品，执行层必须先通过 `craft('crafting_table', 1)`（合成工作台） 尝试获得物品；若 runtime（运行时） 配方校验显示缺少中间材料，可继续调用已开放的最小 `craft('planks', n)`（合成木板） 能力补齐，再重试合成工作台。放置阶段必须在当前世界附近预选最多 3 个合法候选点顺序尝试，一个被挡住或验证失败则顺延。材料不足时返回 `missing_materials`（缺材料），不得直接停在“无工作台物品”；工具链 `ok:false`（失败结果） 必须让 sandbox（沙箱） 步骤失败并保留结构化 `error.code`（错误码），后续 Plan（规划）只能通过 Failure Capsule（失败胶囊） 的短字段决定补材料或重新选位。
+`mine`（挖掘） 与 `cutTree`（砍树） 是少数自带 `collect`（捡拾） 的动作：它们的完成标准必须来自背包增量,不是“方块破坏动作已发出”。`craft`（合成）、`place`（放置）、`equip`（装备） 不主动展开完整依赖链；它们只返回结构化失败,由 `ensure`（确保语义） 的依赖解析器补前置。
 
-所有资源、坐标和维度上下文必须通过 existing world tag（既有世界标签）、`currentWorld`（当前世界） 或 ResourceService（资源服务） 接口读取；sandbox TS（沙箱 TypeScript） 不得自行拼接 `world_key`（世界键）。
+所有资源、坐标和维度上下文必须通过 existing world tag（既有世界标签）、`currentWorld`（当前世界） 或 ResourceService（资源服务） 接口读取；TS（TypeScript） 计划不得自行拼接 `world_key`（世界键）。
 
-约 800 token。这是 sandbox_code 路径 prompt 的固定开销，闲聊路径完全不需要。
+约 900 token。这是 Plan（规划）路径 prompt（提示词） 的固定开销,闲聊路径不需要。
 
 ### 5.5 Plan 输出解析
 
 ```typescript
-type PlanOutput =
-  | {
-      type: 'skill_call'
-      reply: string
-      skill: 'goTo' | 'collect' | 'mine' | 'cutTree' | 'equip'
-      params: Record<string, unknown>
-    }
-  | {
-      type: 'sandbox_code'
-      reply: string
-      code: string
-    }
-  | {
-      type: 'cannot_plan'
-      reason: string
-      code?: string
-    }
+interface PlanCodeOutput {
+  code: string
 }
 ```
 
-解析失败时（JSON 格式错误、缺少字段、sandbox_code 缺少 `api.chat.report()`、调用 `demoMineIron()`）：
+解析失败时（JSON（结构化数据） 格式错误、缺少 `code`、出现 `type`/`skill`/`params` 等旧字段、代码缺少 `reply`/`runGoal`/`report`、调用具体 ensure 函数、调用 `demoMineIron()`）：
 
 1. 记录 LLM diagnostics（大语言模型诊断）。
 2. emit `task.failed`，由 TaskResultReporter（任务结果汇报器）汇报结构化失败摘要。
 
-### 5.6 skill_call 路径的 Prompt
-
-skill_call 路径不需要 LLM 生成代码。Stage 2-Plan 的 prompt 简化为：
-
-```
-根据主人的指令和当前状态，选择最合适的动作。
-
-可用动作：
-- goTo(x, y, z)：移动到坐标
-- collect(itemName)：捡拾掉落物
-- mine(blockName, count)：挖掘 stone / iron_ore / deepslate_iron_ore；count 是实际进入背包的掉落物数量
-- cutTree(count)：砍树；count 是实际进入背包的原木数量
-- equip(itemName, destination?)：把背包目标物品拿到主手；destination 当前只支持 hand
-
-规划约束：
-- 用户说"砍 12 块木头"时只输出 cutTree(count=12)
-- 用户说"挖 5 个石头 / 圆石"时只输出 mine(blockName="stone", count=5)
-- 用户说"做一把石镐"时输出 sandbox_code：ensureStonePickaxeEquipped()，检查 ok，最后 api.chat.report()
-- 用户说"去挖铁"时输出 sandbox_code：先 ensureStonePickaxeEquipped()，再 mine('iron_ore',1)，失败可尝试 deepslate_iron_ore，最后 api.chat.report()
-- 用户说"放个工作台在我旁边"时读取 [主人] 坐标，goTo 后 place('crafting_table', near)，检查 ok，最后 api.chat.report()
-- LLM 不输出树木簇、坐标、循环次数或挖掘目标；这些由执行层确定
-- LLM 不输出矿石簇、阶梯路线或挖掘坐标；这些由执行层确定
-- LLM 不输出 demoMineIron()
-- LLM 不手写 world_key
-- LLM 不调用 craft('oak_planks')；木板统一请求 craft('planks')
-- LLM 不能在 ok:false 后继续执行下一步
-
-输出 JSON：
-{"type":"skill_call","reply":"开场回复（带喵）","skill":"动作名","params":{参数对象}}
-```
-
-Token 预算：输入 ~500，输出 ~100。比 sandbox_code 路径省 5-10 倍。
-
-### 5.7 skill_call 输出解析
-
-```typescript
-interface SkillCallOutput {
-  reply: string
-  skill: string
-  params: Record<string, unknown>
-}
-```
-
-ConversationWorker 将其包装为 ExecJob：
-
-```typescript
-const execJob: ExecJob = {
-  type: 'skill_call',
-  skill: output.skill,
-  params: output.params,
-  intent_epoch: currentEpoch,
-  snapshot_ts: snapshot.timestamp,
-  message_id: msg.message_id,
-}
-```
-
-### 5.8 正例 / 反例
+### 5.6 正例 / 反例
 
 正例必须短，只表达组合方式，不写 Minecraft（我的世界）事实百科：
 
-```json
-{"type":"skill_call","reply":"好的，我去砍 12 块木头喵~","skill":"cutTree","params":{"count":12}}
-{"type":"skill_call","reply":"好的，我去挖 5 个圆石喵~","skill":"mine","params":{"blockName":"stone","count":5}}
+```typescript
+await reply("好的，我去挖 5 个石头喵")
+
+const task = await runGoal("挖 5 个石头", async () => {
+  await ensure(
+    async () => {
+      await mine("stone", 5)
+    },
+    until.gained("cobblestone", 5),
+  )
+})
+
+await report(task)
 ```
 
 ```typescript
-const pickaxe = await api.bot.ensureStonePickaxeEquipped();
-if (!pickaxe.ok) {
-  await api.chat.report(`做石镐失败: ${pickaxe.error.code}喵~`);
-  throw new Error(pickaxe.error.code);
-}
-await api.chat.report("石镐已准备好喵~");
+await reply("好的，我去砍 12 个木头喵")
+
+const task = await runGoal("砍 12 个木头", async () => {
+  await ensure(
+    async () => {
+      await cutTree(12)
+    },
+    until.gainedTag("logs", 12),
+  )
+})
+
+await report(task)
 ```
 
 ```typescript
-const pickaxe = await api.bot.ensureStonePickaxeEquipped();
-if (!pickaxe.ok) {
-  await api.chat.report(`挖铁失败: ${pickaxe.error.code}喵~`);
-  throw new Error(pickaxe.error.code);
-}
-const iron = await api.bot.mine("iron_ore", 1);
-if (!iron.ok) {
-  const deep = await api.bot.mine("deepslate_iron_ore", 1);
-  if (!deep.ok) {
-    await api.chat.report(`挖铁失败: ${deep.error.code}喵~`);
-    throw new Error(deep.error.code);
+await reply("好的，我去挖铁矿喵")
+
+const task = await runGoal("挖铁矿", async () => {
+  try {
+    await ensure(
+      async () => {
+        await mine("iron_ore", 1)
+      },
+      until.gained("raw_iron", 1),
+    )
+  } catch (error) {
+    if (error.code !== "resource_not_found") {
+      throw error
+    }
+
+    await ensure(
+      async () => {
+        await mine("deepslate_iron_ore", 1)
+      },
+      until.gained("raw_iron", 1),
+    )
   }
-}
-await api.chat.report("挖铁任务完成喵~");
+})
+
+await report(task)
 ```
 
 反例：
 
 - `demoMineIron()`：隐藏一键 demo（演示）脚本。
 - `const world_key = "minecraft:overworld"`：手写世界键。
-- `await api.bot.mine("iron_ore", 1)`：挖铁前没检查石镐。
-- `await api.bot.craft("oak_planks", 4)`：木板应该请求 `craft("planks", count)`。
-- `const r = await api.bot.ensureCobblestone(3); await api.bot.craft("stone_pickaxe", 1)`：`ok:false` 未检查。
-- sandbox_code 没有 `api.chat.report()`：终态不闭环。
+- `await mine("iron_ore", 1)`：缺少 `ensure(..., until.gained(...))` 完成条件与失败恢复语义。
+- `await craft("oak_planks", 4)`：木板应该请求 `craft("planks", count)`。
+- `await 具体Ensure函数()`：暴露具体 ensure（确保）函数,破坏通用可编程语义。
+- 代码没有 `report(task)`：终态不闭环。
 
 ---
 
@@ -480,10 +450,9 @@ ConversationWorker 的每一次 LLM 调用都有严格的 token 预算。预算�
 |---------|-----------|-----------|
 | Stage 1 Triage | 500 | 100 |
 | Stage 2-Chat | 800 | 200 |
-| Stage 2-Plan (skill_call) | 800 | 150 |
-| Stage 2-Plan (sandbox_code) | 3000 | 1500 |
+| Stage 2-Plan | 3000 | 1500 |
 
-### 6.2 输入 Token 分配（sandbox_code 路径，最重的场景）
+### 6.2 输入 Token 分配（Plan 路径）
 
 ```
 ┌───────────────────────────────────────────┐
@@ -584,7 +553,7 @@ Bot：去砍橡木。
 [时间] 白天(6000)
 ```
 
-`[最近上下文]` 段不做 token 预算精算，按 §7.6.2 容量规则限制为最近 10 整轮；超长沙盒 TS 由 §7.6.4 截断兜底。
+`[最近上下文]` 段不做 token 预算精算，按 §7.6.2 容量规则限制为最近 10 整轮；超长 TS（TypeScript）代码由 §7.6.4 截断兜底。
 
 ### 7.3 主人坐标行
 
@@ -717,7 +686,7 @@ prompt 注入文本格式：`oak_log+5, cobblestone-2, iron_ingot+1`。所有 en
 
 ### 7.6 [最近上下文] 对话与执行时间线
 
-让 LLM 在 Chat / Plan / Modify 路径接续对话时，能看到「最近几轮主人说了什么 / Bot 回了什么 / 沙盒怎么写的 / 实际执行结果如何」——不依赖 LLM 总结，不依赖 §8 异步压缩通路，不依赖数据库，由 ConversationWorker 与 BotActor 在现有事件链路上确定性合并产出。
+让 LLM 在 Chat / Plan / Modify 路径接续对话时，能看到「最近几轮主人说了什么 / Bot 回了什么 / TS（TypeScript）代码怎么写的 / 实际执行结果如何」——不依赖 LLM 总结，不依赖 §8 异步压缩通路，不依赖数据库，由 ConversationWorker 与 BotActor 在现有事件链路上确定性合并产出。
 
 #### 7.6.1 双 owner 与合并
 
@@ -725,36 +694,36 @@ prompt 注入文本格式：`oak_log+5, cobblestone-2, iron_ingot+1`。所有 en
 
 | owner | 记录内容 | 触发时机 |
 |-------|---------|---------|
-| ConversationWorker | 主人原文 / Bot reply 原文 / 沙盒 TS 代码原文 / 沙盒报错（`error.message`） | 路由分发 / 回复广播 / 沙盒 finalize |
+| ConversationWorker | 主人原文 / Bot reply 原文 / TS（TypeScript）代码原文 / 代码任务报错（`error.message`） | 路由分发 / 回复广播 / 代码任务 finalize |
 | BotActor | `recent_events`：skill / sandbox 执行结果一行（确定性 formatter） | skill / sandbox 执行完成（成功 / 失败 / 中断 / 取消） |
 
 合并方式：
 
-- 聚合键 = 主人 `message_id`。同一 `message_id` 触发的所有事件（主人输入 / Bot reply / 沙盒 TS / 沙盒报错 / 执行结果）归为一轮。
+- 聚合键 = 主人 `message_id`。同一 `message_id` 触发的所有事件（主人输入 / Bot reply / TS（TypeScript）代码 / 代码任务报错 / 执行结果）归为一轮。
 - 没有 `message_id` 的事件（reflex 反射、system 自发动作）单独成一轮，以 reflex / system 标识为聚合键，容量上同样算 1 整轮。
 - 同轮内按真实事件 timestamp 排序；不强制四要素齐全（chat-only 轮可能只有「主人 / Bot」，plan 轮可能有「主人 / Bot / 沙盒TS / 执行结果」）。
 - 跨轮按时间从旧到新排列。
 
-BotActor 通过 `BotActorStateProjection.recent_events: ReadonlyArray<{ message_id: string | null; line: string; timestamp: number }>` 投影只读暴露执行结果一侧。BotActor 仍是 `recent_events` 的 single writer；ConversationWorker 是对话轮一侧（主人 / Bot / 沙盒 TS / 沙盒报错）的 single writer。**两侧不得交叉写**（BotActor 不写对话轮，ConversationWorker 不写 `recent_events`）。
+BotActor 通过 `BotActorStateProjection.recent_events: ReadonlyArray<{ message_id: string | null; line: string; timestamp: number }>` 投影只读暴露执行结果一侧。BotActor 仍是 `recent_events` 的 single writer；ConversationWorker 是对话轮一侧（主人 / Bot / TS（TypeScript）代码 / 代码任务报错）的 single writer。**两侧不得交叉写**（BotActor 不写对话轮，ConversationWorker 不写 `recent_events`）。
 
 #### 7.6.2 容量规则
 
 | 项 | 值 |
 |----|---|
 | 容量 | 最近 **10 整轮**，LRU 淘汰 |
-| 淘汰粒度 | **整轮淘汰**——主人输入 / Bot reply / 沙盒 TS / 沙盒报错 / 执行结果作为原子单位一并丢弃，不允许只剩半轮 |
+| 淘汰粒度 | **整轮淘汰**——主人输入 / Bot reply / TS（TypeScript）代码 / 代码任务报错 / 执行结果作为原子单位一并丢弃，不允许只剩半轮 |
 | 持久化 | 无，进程内，重启清空 |
 | 排序 | 渲染时按从旧到新排列 |
 
-不做 token 预算精算；10 整轮 + 单条沙盒 TS 超阈值截断（§7.6.4）即可。
+不做 token 预算精算；10 整轮 + 单条 TS（TypeScript）代码超阈值截断（§7.6.4）即可。
 
 #### 7.6.3 渲染规则
 
 - prompt 段名：`[最近上下文]`，位于 `[背包变化]` 之后、`[资源簇]` 之前（全量模板）；Chat 子集位置见 §7.1.2。
 - 渲染范围：**只渲染当前 prompt 之前已经完成的轮次**。当前 user message 由正常 user message 槽位提供，**不得**同时进入 `[最近上下文]`，否则与 user message 重复。
 - 缺失元素跳过对应行；不输出占位符。
-- 沙盒 TS 用 ` ```ts ... ``` ` 围栏多行包裹，其余各项单行渲染。
-- 如果某轮任务失败并生成 Failure Capsule（失败胶囊）,且当前消息被识别为 continuation（继续任务）,该失败轮在 Stage 2-Plan（第二阶段规划） prompt（提示词） 中只渲染 Failure Capsule（失败胶囊）,不渲染该轮完整沙盒 TS、完整报错、完整执行结果详情；完整内容仅保留在 diagnostics（诊断）/ JSONL（结构化日志）。
+- TS（TypeScript）代码用 ` ```ts ... ``` ` 围栏多行包裹，其余各项单行渲染。
+- 如果某轮任务失败并生成 Failure Capsule（失败胶囊）,且当前消息被识别为 continuation（继续任务）,该失败轮在 Stage 2-Plan（第二阶段规划） prompt（提示词） 中只渲染 Failure Capsule（失败胶囊）,不渲染该轮完整 TS（TypeScript）代码、完整报错、完整执行结果详情；完整内容仅保留在 diagnostics（诊断）/ JSONL（结构化日志）。
 - 字面格式（按真实 timestamp 排序，本示例展示典型顺序）：
 
 ```
@@ -772,9 +741,9 @@ Bot：<reply 原文>
 - 整段无任何轮次时，`[最近上下文]` 段省略。
 - 轮与轮之间用一个空行分隔，便于 LLM 阅读。
 
-#### 7.6.4 沙盒 TS 代码注入与截断
+#### 7.6.4 TS（TypeScript）代码注入与截断
 
-默认完整注入非失败轮的沙盒 TS 代码原文，**不做语义摘要、不调用 LLM 总结、不写规则猜代码含义**。失败 continuation（继续任务） 是唯一语义例外：上一轮失败的 `last_ts_code`（上一段 TypeScript 代码） 不进入下一轮 Plan（规划） prompt（提示词）,由 §7.6.5 的 Failure Capsule（失败胶囊）替代。仅以下安全阈值触发截断：
+默认完整注入非失败轮的 TS（TypeScript）代码原文，**不做语义摘要、不调用 LLM 总结、不写规则猜代码含义**。失败 continuation（继续任务） 是唯一语义例外：上一轮失败的 `last_ts_code`（上一段 TypeScript 代码） 不进入下一轮 Plan（规划） prompt（提示词）,由 §7.6.5 的 Failure Capsule（失败胶囊）替代。仅以下安全阈值触发截断：
 
 - 单段 TS 代码 > 200 行 **或** > 8000 字符。
 - 触发后渲染：
@@ -848,9 +817,9 @@ Failure Capsule（失败胶囊）事实 owner（所有者） 是执行终态侧�
 #### 7.6.8 不变量
 
 - skill 模块新增时，**必须**同处实现 `formatRecentEventLine`。缺失 formatter 应在测试或 review 阶段失败；运行时不得调用 LLM 兜底，也不得静默丢弃事件。
-- 沙盒 TS 注入 **不做** 摘要、不调用 LLM 总结、不写规则猜代码含义；允许的偏离只有 §7.6.4 的超长截断,以及失败 continuation（继续任务） 时用 Failure Capsule（失败胶囊）替代上一轮失败的完整沙盒 TS。
-- 沙盒报错只取 `error.message`，不接 stack trace，不做 LLM 改写。
-- ConversationWorker 不得调用 LLM 总结 skill 结果或对话内容作为回退路径。
+- TS（TypeScript） 代码注入 **不做** 摘要、不调用 LLM 总结、不写规则猜代码含义；允许的偏离只有 §7.6.4 的超长截断,以及失败 continuation（继续任务） 时用 Failure Capsule（失败胶囊）替代上一轮失败的完整 TS（TypeScript） 代码。
+- 代码任务报错只取 `error.message`，不接 stack trace，不做 LLM 改写。
+- ConversationWorker 不得调用 LLM 总结执行结果或对话内容作为回退路径；`report(task)`（汇报任务） 的可选 report LLM（汇报大语言模型） 只能由执行终态摘要驱动,只改表达不改事实,失败时回退确定性模板。
 - BotActor 是 `recent_events` 的 single writer；ConversationWorker 是对话轮一侧的 single writer。**两侧不得交叉写**。
 - Failure Capsule（失败胶囊）只能由执行终态摘要确定性格式化产生；ConversationWorker 只合并渲染,不得补造 bot_position（机器人坐标）、inventory（背包） 或 resource_search_result（资源搜索结果） 等完整执行事实。
 - 当前用户输入不重复进 `[最近上下文]`；当前 prompt 之后才完成的事件下一轮再渲染。
@@ -933,7 +902,7 @@ BrainWorker 处理每个任务卡时跑一次 rubric LLM 调用
 明确排除（学 Hermes "memory 只存稳定事实,不存这次发生了什么"）：
 
 - 一次性任务结果、临时 TODO、completed-work logs → 已在 B 层任务卡里,不再进 A.5 / C 层
-- 沙盒 TS 源码、背包 diff 数值、具体时间戳 → 留在 A 层 `recent_events` + B 层 `task_card`,不提拔
+- TS（TypeScript）源码、背包 diff 数值、具体时间戳 → 留在 A 层 `recent_events` + B 层 `task_card`,不提拔
 - 当前会话的进度、未完成的步骤 → A 层窗口承担
 
 ### 8.6 Curator 后台维护（防资产层腐烂）
@@ -954,7 +923,7 @@ BrainWorker 处理每个任务卡时跑一次 rubric LLM 调用
 为避免把每轮链路扩成 `Triage LLM → ContextGate LLM → Chat/Plan LLM`,系统不新增默认 ContextGate LLM（上下文门控大语言模型）。检索策略分两段：
 
 - 消息进入后,除 control fast-path（控制快路径）外,ConversationWorker 可与 Triage LLM（分诊大语言模型）并发启动 cheap speculative retrieval（廉价投机检索）。该检索只返回候选,不直接注入 prompt。
-- Triage（分诊）返回后,由 deterministic merge gate（确定性合并闸门）决定是否采用候选：简单 skill_call（技能调用）丢弃,记忆型 chat（闲聊）采用 memory（记忆）候选,复杂 sandbox plan（沙箱规划）采用 skill index（技能索引）/经验候选,上轮失败 continuation（继续任务）只强制加载短 Failure Capsule（失败胶囊） 与必要经验候选,不得注入完整失败日志。
+- Triage（分诊）返回后,由 deterministic merge gate（确定性合并闸门）决定是否采用候选：action（动作）计划统一生成 TS（TypeScript）代码,明确简单动作可只采用短资源 / 背包上下文,多步目标采用 skill index（技能索引）/经验候选,上轮失败 continuation（继续任务）只强制加载短 Failure Capsule（失败胶囊） 与必要经验候选,不得注入完整失败日志。
 - Stage 2-Chat / Stage 2-Plan 仍暴露 `search()` 工具给 LLM（大语言模型）,用于候选不足时的按需深查。
 - `search()` 是单次 chat / plan 请求生命周期内的多轮 tool calling（工具调用）,**不是再发起一次新任务请求**。
 
@@ -1134,38 +1103,18 @@ async function broadcastChatReply(botId: string, reply: string, messageId: strin
 
 ### 11.2 任务规划回复
 
-任务规划产出后，先广播开场回复（`PlanOutput.reply`），再推入 exec 队列：
+任务规划产出后不在 ConversationWorker（对话工作线程） 层广播开场回复。开场回复必须写在 TS（TypeScript） 代码的第一段 `reply(...)` 中,由 BotActor（机器人执行代理） 单写者入口发送,这样开场、动作、完成汇报在同一执行生命周期里可审计：
 
 ```typescript
-async function handlePlanOutput(output: PlanOutput | SkillCallOutput, msg: IncomingMessage): Promise<void> {
-  // 1. 广播开场回复
-  if (output.reply) {
-    await broadcastChatReply(msg.botId, output.reply, msg.message_id)
+async function handlePlanOutput(output: PlanCodeOutput, msg: IncomingMessage): Promise<void> {
+  const execJob: ExecJob = {
+    type: 'code',
+    code: output.code,
+    intent_epoch: msg.epoch,
+    snapshot_ts: msg.snapshot_ts,
+    message_id: msg.message_id,
   }
 
-  // 2. 构造 ExecJob
-  let execJob: ExecJob
-
-  if ('code' in output) {
-    execJob = {
-      type: 'sandbox_code',
-      code: output.code,
-      intent_epoch: msg.epoch,
-      snapshot_ts: msg.snapshot_ts,
-      message_id: msg.message_id,
-    }
-  } else {
-    execJob = {
-      type: 'skill_call',
-      skill: output.skill,
-      params: output.params,
-      intent_epoch: msg.epoch,
-      snapshot_ts: msg.snapshot_ts,
-      message_id: msg.message_id,
-    }
-  }
-
-  // 3. 推入 exec 队列
   await execQueue.add('exec', execJob, {
     priority: priorityToNumber(msg.priority),
     jobId: msg.message_id,  // 去重
@@ -1221,13 +1170,11 @@ msg:{botId} 队列取出 job（用户消息）
     │
     └─ action 存在
     │   → 并发：拉取环境快照 + C 层 SKILL
-    │   → 判断：单 skill 可映射？
-    │       ├─ 是 → ══ Stage 2-Plan (skill_call) LLM 调用（暴露 search()） ══
-    │       └─ 否 → ══ Stage 2-Plan (sandbox_code) LLM 调用（暴露 search()） ══
+    │   → ══ Stage 2-Plan LLM 调用（暴露 search()） ══
+    │     - 输出唯一形态：{"code":"TS 代码"}
     │     - 输入：A + A.5 + C(USER+MEMORY+SKILL) + 环境快照 + 当前消息
     │     - 多轮 tool calling 规则同 Stage 2-Chat
     │   → 解析输出
-    │   → 若前面已广播 reply/cancel 模板,则不重复广播开场回复
     │   → 推入 exec 队列
     │   → done（任务完成后 BotWorker 推任务卡进 brain 队列,详见 §8）
 ```
@@ -1255,17 +1202,16 @@ msg:{botId} 队列取出 job（用户消息）
 |---------|------------|
 | Triage | 不注入人设（纯分类器，不需要角色扮演） |
 | Chat | 完整人设 system prompt |
-| Plan (skill_call) | 只注入"回复带喵"约束 |
-| Plan (sandbox_code) | 只注入"api.chat.say 内容带喵"约束 |
+| Plan | 只注入"`reply(...)` / `report(...)` 内容带喵"约束 |
 
 Triage 阶段刻意不注入人设。分类器越干净越好，角色扮演会污染分类判断。
 
 ### 14.2 "喵"尾缀兜底
 
-所有 Bot 发出的文本（聊天回复、api.chat.say/report 调用）在最终广播前，经过一次后处理：
+所有 Bot 发出的文本（聊天回复、`reply` / `report` 调用）在最终广播前，经过一次后处理：
 
 ```typescript
-function ensureMeow(text: string): string {
+function appendMeowSuffix(text: string): string {
   const trimmed = text.trimEnd()
   if (trimmed.endsWith('喵') || trimmed.endsWith('喵~') || trimmed.endsWith('喵！')) {
     return trimmed
@@ -1323,8 +1269,7 @@ ConversationWorker 只依赖此接口，不依赖具体 SDK。Phase 1 实现 Min
 |---------|-------------|------|
 | Triage | 0.1 | 分类要稳定，不需要创意 |
 | Chat | 0.7 | 闲聊要自然，需要变化 |
-| Plan (skill_call) | 0.2 | 结构化输出要稳定 |
-| Plan (sandbox_code) | 0.3 | 代码要正确，但允许一定灵活性 |
+| Plan | 0.2 | 结构化输出和代码都要稳定 |
 
 ### 16.3 LLM 性能指标
 
@@ -1367,7 +1312,7 @@ LLM diagnostics 本地 JSONL 写入必须走 bounded async sink（有界异步�
 本文档定义了 ConversationWorker 的完整行为。以下文档依赖本文档：
 
 - **DATA_SPEC.md**：依赖第 8 节任务索引层级定义、第 10 节 chat_messages 表结构
-- **SKILL_CATALOG.md**：依赖第 5.6 节 skill_call 路径的映射关系
+- **SKILL_CATALOG.md**：若恢复维护,只能记录底层动作能力,不得恢复在线 Plan（规划） 的旧动作直调输出路径
 
 本文档依赖的上游文档：
 
