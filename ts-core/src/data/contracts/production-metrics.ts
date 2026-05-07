@@ -1,3 +1,5 @@
+import type { FailureRecoveryClass } from "../../core-ports/task-result.js";
+
 /** 生产指标事件 JSONL 契约版本。 */
 export const PRODUCTION_METRIC_SCHEMA_VERSION = "ts-core.metric.v1" as const;
 
@@ -74,4 +76,6 @@ export interface ProductionMetricEventJsonlLine {
   readonly terminal_status: ProductionMetricTerminalStatus | null;
   readonly step_count: number | null;
   readonly is_manual_intervention: boolean | null;
+  readonly recovery_class: FailureRecoveryClass | null;
+  readonly replan_count: number | null;
 }

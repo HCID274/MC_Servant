@@ -90,6 +90,10 @@ export interface TaskLifecyclePayloadBase<TStatus extends TaskHistoryStatus> {
   readonly message_id: string;
   /** 意图纪元。 */
   readonly epoch: number;
+  /** 恢复链路 ID；非恢复任务为空。 */
+  readonly recovery_chain_id?: string;
+  /** 当前恢复链路内的重规划次数。 */
+  readonly replan_count?: number;
 }
 
 /** 任务 accepted（已接受） 事件载荷。 */

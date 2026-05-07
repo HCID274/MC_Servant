@@ -27,6 +27,16 @@ export const PRODUCTION_EXECUTION_METRIC_NAMES = [
 
 export type ProductionExecutionMetricName = (typeof PRODUCTION_EXECUTION_METRIC_NAMES)[number];
 
+export const PRODUCTION_RECOVERY_METRIC_NAMES = [
+  "recoverable_failure_count",
+  "recoverable_replan_success_rate",
+  "average_replan_count_to_success",
+  "implementation_blocker_count",
+  "unknown_failure_count",
+] as const;
+
+export type ProductionRecoveryMetricName = (typeof PRODUCTION_RECOVERY_METRIC_NAMES)[number];
+
 export interface ProductionLlmMetricSummary {
   readonly name: ProductionLlmMetricName;
   readonly value: number | null;
@@ -40,6 +50,13 @@ export interface ProductionExecutionMetricSummary {
   readonly numerator: number;
   readonly denominator: number;
   readonly breakdown?: Readonly<Record<string, number>>;
+}
+
+export interface ProductionRecoveryMetricSummary {
+  readonly name: ProductionRecoveryMetricName;
+  readonly value: number | null;
+  readonly numerator: number;
+  readonly denominator: number;
 }
 
 /** 从生产指标 JSONL 事件汇总 T-075R 的 LLM 与 Plan 输出指标。 */
@@ -143,6 +160,49 @@ export function createProductionExecutionMetricSummaries(
   ]);
 }
 
+/** 从生产指标 JSONL 事件汇总 T-077R 的失败恢复链路指标。 */
+export function createProductionRecoveryMetricSummaries(
+  events: readonly ProductionMetricEventJsonlLine[],
+): readonly ProductionRecoveryMetricSummary[] {
+  const rootFailures = events.filter(isRecoveryRootFailureMetricEvent);
+  const recoverableFailures = rootFailures.filter(
+    (event) => event.recovery_class === "recoverable",
+  );
+  const successfulRecoveries = recoverableFailures.flatMap((failure) =>
+    readSuccessfulRecoveryReplanCount(events, failure.recovery_chain_id),
+  );
+  const successfulReplanTotal = successfulRecoveries.reduce((sum, count) => sum + count, 0);
+
+  return Object.freeze([
+    createRecoveryCountMetric({
+      name: "recoverable_failure_count",
+      value: recoverableFailures.length,
+      denominator: rootFailures.length,
+    }),
+    createRecoveryRatioMetric({
+      name: "recoverable_replan_success_rate",
+      numerator: successfulRecoveries.length,
+      denominator: recoverableFailures.length,
+    }),
+    createRecoveryAverageMetric({
+      name: "average_replan_count_to_success",
+      numerator: successfulReplanTotal,
+      denominator: successfulRecoveries.length,
+    }),
+    createRecoveryCountMetric({
+      name: "implementation_blocker_count",
+      value: rootFailures.filter((event) => event.recovery_class === "implementation_blocker")
+        .length,
+      denominator: rootFailures.length,
+    }),
+    createRecoveryCountMetric({
+      name: "unknown_failure_count",
+      value: rootFailures.filter((event) => event.recovery_class === "unknown").length,
+      denominator: rootFailures.length,
+    }),
+  ]);
+}
+
 function createRatioMetric(input: {
   readonly name: ProductionLlmMetricName;
   readonly numerator: number;
@@ -195,6 +255,40 @@ function isExecutionTerminalMetricEvent(event: ProductionMetricEventJsonlLine): 
   return (
     event.source === "bot_worker" && event.stage === "execution" && event.terminal_status !== null
   );
+}
+
+function isRecoveryRootFailureMetricEvent(event: ProductionMetricEventJsonlLine): boolean {
+  return (
+    isExecutionTerminalMetricEvent(event) &&
+    event.terminal_status === "failed" &&
+    event.recovery_chain_id !== null &&
+    (event.replan_count ?? 0) === 0
+  );
+}
+
+function readSuccessfulRecoveryReplanCount(
+  events: readonly ProductionMetricEventJsonlLine[],
+  recoveryChainId: string | null,
+): readonly number[] {
+  if (recoveryChainId === null) {
+    return [];
+  }
+
+  const completed = events
+    .filter(
+      (event) =>
+        isExecutionTerminalMetricEvent(event) &&
+        event.terminal_status === "completed" &&
+        event.recovery_chain_id === recoveryChainId &&
+        event.replan_count !== null &&
+        event.replan_count > 0,
+    )
+    .sort((left, right) => left.created_at.localeCompare(right.created_at))
+    .at(0);
+
+  return completed?.replan_count === undefined || completed.replan_count === null
+    ? []
+    : [completed.replan_count];
 }
 
 function createExecutionRatioMetric(input: {
@@ -254,4 +348,43 @@ function countFailureCodes(
   return Object.freeze(
     Object.fromEntries(Object.entries(counts).sort(([left], [right]) => left.localeCompare(right))),
   );
+}
+
+function createRecoveryRatioMetric(input: {
+  readonly name: ProductionRecoveryMetricName;
+  readonly numerator: number;
+  readonly denominator: number;
+}): ProductionRecoveryMetricSummary {
+  return Object.freeze({
+    name: input.name,
+    value: input.denominator === 0 ? null : input.numerator / input.denominator,
+    numerator: input.numerator,
+    denominator: input.denominator,
+  });
+}
+
+function createRecoveryAverageMetric(input: {
+  readonly name: ProductionRecoveryMetricName;
+  readonly numerator: number;
+  readonly denominator: number;
+}): ProductionRecoveryMetricSummary {
+  return Object.freeze({
+    name: input.name,
+    value: input.denominator === 0 ? null : input.numerator / input.denominator,
+    numerator: input.numerator,
+    denominator: input.denominator,
+  });
+}
+
+function createRecoveryCountMetric(input: {
+  readonly name: ProductionRecoveryMetricName;
+  readonly value: number;
+  readonly denominator: number;
+}): ProductionRecoveryMetricSummary {
+  return Object.freeze({
+    name: input.name,
+    value: input.value,
+    numerator: input.value,
+    denominator: input.denominator,
+  });
 }

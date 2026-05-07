@@ -194,6 +194,8 @@ function cloneCodeJob(job: CodeJob): CodeJob {
     snapshot_ts: job.snapshot_ts,
     priority: job.priority,
     code: job.code,
+    ...(job.recovery_chain_id === undefined ? {} : { recovery_chain_id: job.recovery_chain_id }),
+    ...(job.replan_count === undefined ? {} : { replan_count: job.replan_count }),
   });
 }
 /** 校验执行任务的通用必要字段。 */

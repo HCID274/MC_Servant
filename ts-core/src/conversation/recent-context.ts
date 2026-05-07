@@ -1,5 +1,9 @@
 import type { BotActorRecentEventProjection } from "../core-ports/runtime.js";
-import type { FailureCapsule } from "../core-ports/task-result.js";
+import {
+  type FailureCapsule,
+  type FailureRecoveryClass,
+  classifyFailureCode,
+} from "../core-ports/task-result.js";
 import { assertNonEmptyString } from "../domain/invariants.js";
 
 const DEFAULT_RECENT_CONTEXT_ROUND_LIMIT = 10;
@@ -21,6 +25,9 @@ interface ConversationRecentContextEvent {
   readonly line?: string;
   readonly code?: string;
   readonly failure_capsule?: FailureCapsule;
+  readonly recovery_chain_id?: string | null;
+  readonly recovery_class?: FailureRecoveryClass | null;
+  readonly replan_count?: number | null;
   readonly timestamp: number;
   readonly sequence: number;
 }
@@ -48,6 +55,8 @@ export interface ConversationRecentContextStore {
   render(input?: ConversationRecentContextRenderInput): string | undefined;
   /** 读取最近一条 Failure Capsule（失败胶囊），供 continuation（继续任务） 判定。 */
   getLatestFailureCapsule(): FailureCapsule | null;
+  /** 读取最近一条 Failure Capsule（失败胶囊）的隐藏恢复链路元数据。 */
+  getLatestFailureCapsuleInfo(): ConversationRecentContextFailureCapsuleInfo | null;
   /** 暴露只读快照，供测试和诊断使用。 */
   getRounds(): readonly ConversationRecentContextRenderedRound[];
 }
@@ -70,7 +79,19 @@ export interface ConversationRecentContextCodeInput {
 export interface ConversationRecentContextFailureCapsuleInput {
   readonly message_id: string;
   readonly capsule: FailureCapsule;
+  readonly recovery_chain_id?: string;
+  readonly recovery_class?: FailureRecoveryClass;
+  readonly replan_count?: number;
   readonly timestamp?: number;
+}
+
+/** Failure Capsule（失败胶囊） 对应的恢复链路元数据；不会进入 prompt（提示词）渲染。 */
+export interface ConversationRecentContextFailureCapsuleInfo {
+  readonly message_id: string;
+  readonly capsule: FailureCapsule;
+  readonly recovery_chain_id: string | null;
+  readonly recovery_class: FailureRecoveryClass;
+  readonly replan_count: number;
 }
 
 /** 最近上下文渲染输入。 */
@@ -154,6 +175,9 @@ export function createConversationRecentContextStore(
         message_id: input.message_id,
         aggregate_key: createMessageAggregateKey(input.message_id),
         failure_capsule: freezeFailureCapsule(input.capsule),
+        recovery_chain_id: input.recovery_chain_id ?? null,
+        recovery_class: input.recovery_class ?? classifyFailureCode(input.capsule.failure_code),
+        replan_count: input.replan_count ?? 0,
         timestamp: input.timestamp ?? now(),
       });
     },
@@ -176,6 +200,9 @@ export function createConversationRecentContextStore(
     },
     getLatestFailureCapsule(): FailureCapsule | null {
       return readLatestFailureCapsule([...rounds.values()]);
+    },
+    getLatestFailureCapsuleInfo(): ConversationRecentContextFailureCapsuleInfo | null {
+      return readLatestFailureCapsuleInfo([...rounds.values()]);
     },
     getRounds(): readonly ConversationRecentContextRenderedRound[] {
       return Object.freeze(
@@ -249,7 +276,12 @@ export function renderConversationRecentContextRounds(input: {
       line: normalizeSingleLine(event.line),
       ...(event.failure_capsule === undefined
         ? {}
-        : { failure_capsule: freezeFailureCapsule(event.failure_capsule) }),
+        : {
+            failure_capsule: freezeFailureCapsule(event.failure_capsule),
+            recovery_chain_id: null,
+            recovery_class: classifyFailureCode(event.failure_capsule.failure_code),
+            replan_count: 0,
+          }),
       timestamp: event.timestamp,
       sequence: Number.MAX_SAFE_INTEGER,
     });
@@ -406,8 +438,18 @@ function normalizeSingleLine(value: string): string {
 function readLatestFailureCapsule(
   rounds: readonly ConversationRecentContextRound[],
 ): FailureCapsule | null {
+  return readLatestFailureCapsuleInfo(rounds)?.capsule ?? null;
+}
+
+function readLatestFailureCapsuleInfo(
+  rounds: readonly ConversationRecentContextRound[],
+): ConversationRecentContextFailureCapsuleInfo | null {
   const round = readLatestFailureCapsuleRound(rounds);
-  return round === null ? null : readLatestFailureCapsuleFromEvents([...round.events]);
+  if (round === null) {
+    return null;
+  }
+
+  return readLatestFailureCapsuleInfoFromEvents([...round.events]);
 }
 
 function readLatestFailureCapsuleRound(
@@ -424,13 +466,30 @@ function readLatestFailureCapsuleRound(
 function readLatestFailureCapsuleFromEvents(
   events: readonly ConversationRecentContextEvent[],
 ): FailureCapsule | null {
+  return readLatestFailureCapsuleInfoFromEvents(events)?.capsule ?? null;
+}
+
+function readLatestFailureCapsuleInfoFromEvents(
+  events: readonly ConversationRecentContextEvent[],
+): ConversationRecentContextFailureCapsuleInfo | null {
   const event =
     [...events]
       .filter((candidate) => candidate.failure_capsule !== undefined)
       .sort((left, right) => left.timestamp - right.timestamp || left.sequence - right.sequence)
       .at(-1) ?? null;
 
-  return event?.failure_capsule ?? null;
+  if (event?.failure_capsule === undefined || event.message_id === null) {
+    return null;
+  }
+
+  const capsule = event.failure_capsule;
+  return Object.freeze({
+    message_id: event.message_id,
+    capsule,
+    recovery_chain_id: event.recovery_chain_id ?? null,
+    recovery_class: event.recovery_class ?? classifyFailureCode(capsule.failure_code),
+    replan_count: event.replan_count ?? 0,
+  });
 }
 
 function freezeFailureCapsule(capsule: FailureCapsule): FailureCapsule {

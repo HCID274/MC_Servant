@@ -1,5 +1,6 @@
 import type { ConversationRecentContextStore } from "../../conversation/recent-context.js";
-import { TaskHistoryStatus } from "../../core-ports/tasking.js";
+import { classifyFailureCode } from "../../core-ports/task-result.js";
+import { TaskHistoryStatus, createRecoveryChainId } from "../../core-ports/tasking.js";
 import type { BotWorkerAction } from "../contracts.js";
 
 /** ConversationWorker（对话工作线程） 侧消费 BotWorker（机器人工作线程） 终态动作的 sink（汇点）。 */
@@ -62,7 +63,8 @@ function appendTaskFailureCapsuleToRecentContext(input: {
     return;
   }
 
-  const taskCard = input.action.task.payload.task_card;
+  const payload = input.action.task.payload;
+  const taskCard = payload.task_card;
   const capsule = taskCard.result.result_summary?.failure_capsule;
   if (capsule === undefined) {
     return;
@@ -71,5 +73,13 @@ function appendTaskFailureCapsuleToRecentContext(input: {
   input.store.appendFailureCapsule({
     message_id: taskCard.message_id,
     capsule,
+    recovery_chain_id:
+      payload.recovery_chain_id ??
+      createRecoveryChainId({
+        bot_id: payload.bot_id,
+        message_id: taskCard.message_id,
+      }),
+    recovery_class: classifyFailureCode(capsule.failure_code),
+    replan_count: payload.replan_count ?? 0,
   });
 }

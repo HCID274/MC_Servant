@@ -74,6 +74,8 @@ export function createExecJobFromPlan(input: {
   intent_epoch: number;
   snapshot_ts: number;
   priority: ExecPriority;
+  recovery_chain_id?: string;
+  replan_count?: number;
 }): ExecJob {
   assertNonEmptyString(input.message_id, "message_id");
 
@@ -83,6 +85,10 @@ export function createExecJobFromPlan(input: {
     snapshot_ts: input.snapshot_ts,
     priority: input.priority,
     code: input.plan.code,
+    ...(input.recovery_chain_id === undefined
+      ? {}
+      : { recovery_chain_id: input.recovery_chain_id }),
+    ...(input.replan_count === undefined ? {} : { replan_count: input.replan_count }),
   });
 }
 

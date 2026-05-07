@@ -15,6 +15,7 @@ import {
   createProductionExecutionMetricSummaries,
   createProductionLlmMetricSummaries,
   createProductionMetricEventJsonlLine,
+  createProductionRecoveryMetricSummaries,
   parseEvalCaseJsonlLines,
   serializeEvalJsonlLine,
 } from "../diagnostics/index.js";
@@ -228,6 +229,8 @@ describe("eval runner（离线评测执行器）契约", () => {
     expect(line.terminal_status).toBeNull();
     expect(line.step_count).toBeNull();
     expect(line.is_manual_intervention).toBeNull();
+    expect(line.recovery_class).toBeNull();
+    expect(line.replan_count).toBeNull();
     expect(() =>
       createProductionMetricEventJsonlLine({
         ...line,
@@ -396,6 +399,9 @@ describe("eval runner（离线评测执行器）契约", () => {
       terminal_status: "failed",
       step_count: 2,
       is_manual_intervention: false,
+      recovery_chain_id: "recovery:local-bot:msg-exec",
+      recovery_class: "unknown",
+      replan_count: 0,
     });
 
     const interruptedAction = createBotWorkerActions({
@@ -541,6 +547,174 @@ describe("eval runner（离线评测执行器）契约", () => {
       breakdown: {
         not_equipped: 1,
       },
+    });
+  });
+
+  it("应汇总失败恢复链路生产指标", () => {
+    const recoverableFailure = createProductionMetricEventJsonlLine({
+      event_id: "recovery-root-recoverable",
+      event_type: "task.failed",
+      message_id: "msg-root-recoverable",
+      task_id: "msg-root-recoverable",
+      bot_id: "local-bot",
+      root_goal_id: null,
+      recovery_chain_id: "recovery:local-bot:msg-root-recoverable",
+      created_at: "2026-05-07T00:00:00.000Z",
+      source: "bot_worker",
+      prompt_version: null,
+      model: null,
+      stage: "execution",
+      ok: false,
+      error_code: "not_equipped",
+      duration_ms: 1000,
+      input_tokens: null,
+      output_tokens: null,
+      terminal_status: "failed",
+      step_count: 1,
+      is_manual_intervention: false,
+      recovery_class: "recoverable",
+      replan_count: 0,
+    });
+    const recoveryPlan = createProductionMetricEventJsonlLine({
+      event_id: "recovery-plan",
+      event_type: "conversation.plan_accepted",
+      message_id: "msg-continuation",
+      task_id: "msg-continuation",
+      bot_id: "local-bot",
+      root_goal_id: null,
+      recovery_chain_id: "recovery:local-bot:msg-root-recoverable",
+      created_at: "2026-05-07T00:01:00.000Z",
+      source: "conversation_worker",
+      prompt_version: null,
+      model: null,
+      stage: "plan",
+      ok: true,
+      error_code: null,
+      duration_ms: null,
+      input_tokens: null,
+      output_tokens: null,
+      recovery_class: "recoverable",
+      replan_count: 1,
+    });
+    const recoveredCompletion = createProductionMetricEventJsonlLine({
+      event_id: "recovery-completed",
+      event_type: "task.completed",
+      message_id: "msg-continuation",
+      task_id: "msg-continuation",
+      bot_id: "local-bot",
+      root_goal_id: null,
+      recovery_chain_id: "recovery:local-bot:msg-root-recoverable",
+      created_at: "2026-05-07T00:02:00.000Z",
+      source: "bot_worker",
+      prompt_version: null,
+      model: null,
+      stage: "execution",
+      ok: true,
+      error_code: null,
+      duration_ms: 2000,
+      input_tokens: null,
+      output_tokens: null,
+      terminal_status: "completed",
+      step_count: 2,
+      is_manual_intervention: false,
+      replan_count: 1,
+    });
+    const blockedFailure = createProductionMetricEventJsonlLine({
+      event_id: "recovery-root-blocked",
+      event_type: "task.failed",
+      message_id: "msg-root-blocked",
+      task_id: "msg-root-blocked",
+      bot_id: "local-bot",
+      root_goal_id: null,
+      recovery_chain_id: "recovery:local-bot:msg-root-blocked",
+      created_at: "2026-05-07T00:03:00.000Z",
+      source: "bot_worker",
+      prompt_version: null,
+      model: null,
+      stage: "execution",
+      ok: false,
+      error_code: "runtime_adapter_error",
+      duration_ms: 1000,
+      input_tokens: null,
+      output_tokens: null,
+      terminal_status: "failed",
+      step_count: 1,
+      is_manual_intervention: false,
+      recovery_class: "implementation_blocker",
+      replan_count: 0,
+    });
+    const unknownFailure = createProductionMetricEventJsonlLine({
+      event_id: "recovery-root-unknown",
+      event_type: "task.failed",
+      message_id: "msg-root-unknown",
+      task_id: "msg-root-unknown",
+      bot_id: "local-bot",
+      root_goal_id: null,
+      recovery_chain_id: "recovery:local-bot:msg-root-unknown",
+      created_at: "2026-05-07T00:04:00.000Z",
+      source: "bot_worker",
+      prompt_version: null,
+      model: null,
+      stage: "execution",
+      ok: false,
+      error_code: "unexpected",
+      duration_ms: 1000,
+      input_tokens: null,
+      output_tokens: null,
+      terminal_status: "failed",
+      step_count: 1,
+      is_manual_intervention: false,
+      recovery_class: "unknown",
+      replan_count: 0,
+    });
+
+    const summaries = createProductionRecoveryMetricSummaries([
+      recoverableFailure,
+      recoveryPlan,
+      recoveredCompletion,
+      blockedFailure,
+      unknownFailure,
+    ]);
+
+    expect(summaries.map((summary) => summary.name)).toEqual([
+      "recoverable_failure_count",
+      "recoverable_replan_success_rate",
+      "average_replan_count_to_success",
+      "implementation_blocker_count",
+      "unknown_failure_count",
+    ]);
+    expect(summaries.find((summary) => summary.name === "recoverable_failure_count")).toMatchObject(
+      {
+        value: 1,
+        numerator: 1,
+        denominator: 3,
+      },
+    );
+    expect(
+      summaries.find((summary) => summary.name === "recoverable_replan_success_rate"),
+    ).toMatchObject({
+      value: 1,
+      numerator: 1,
+      denominator: 1,
+    });
+    expect(
+      summaries.find((summary) => summary.name === "average_replan_count_to_success"),
+    ).toMatchObject({
+      value: 1,
+      numerator: 1,
+      denominator: 1,
+    });
+    expect(
+      summaries.find((summary) => summary.name === "implementation_blocker_count"),
+    ).toMatchObject({
+      value: 1,
+      numerator: 1,
+      denominator: 3,
+    });
+    expect(summaries.find((summary) => summary.name === "unknown_failure_count")).toMatchObject({
+      value: 1,
+      numerator: 1,
+      denominator: 3,
     });
   });
 

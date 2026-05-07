@@ -75,6 +75,8 @@ function createTaskLifecyclePayloadBase<TStatus extends TaskHistoryStatus>(
     type: job.type,
     message_id: job.message_id,
     epoch: job.intent_epoch,
+    ...(job.recovery_chain_id === undefined ? {} : { recovery_chain_id: job.recovery_chain_id }),
+    ...(job.replan_count === undefined ? {} : { replan_count: job.replan_count }),
   });
 }
 

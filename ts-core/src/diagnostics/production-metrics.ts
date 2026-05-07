@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { FAILURE_RECOVERY_CLASSES } from "../core-ports/task-result.js";
 import {
   PRODUCTION_METRIC_EVENT_TYPES,
   PRODUCTION_METRIC_SCHEMA_VERSION,
@@ -28,7 +29,7 @@ type ProductionMetricPlanFields = Pick<
 
 type ProductionMetricExecutionFields = Pick<
   ProductionMetricEventJsonlLine,
-  "terminal_status" | "step_count" | "is_manual_intervention"
+  "terminal_status" | "step_count" | "is_manual_intervention" | "recovery_class" | "replan_count"
 >;
 
 /** 创建生产指标事件，所有可未知字段显式落 null，避免下游猜字段缺失语义。 */
@@ -58,6 +59,8 @@ export function createProductionMetricEventJsonlLine(
   assertNullableProductionMetricTerminalStatus(input.terminal_status ?? null);
   assertNullableNonNegativeInteger(input.step_count ?? null, "step_count");
   assertNullableBoolean(input.is_manual_intervention ?? null, "is_manual_intervention");
+  assertNullableProductionMetricRecoveryClass(input.recovery_class ?? null);
+  assertNullableNonNegativeInteger(input.replan_count ?? null, "replan_count");
 
   return cloneReadonlyValue({
     schema_version: PRODUCTION_METRIC_SCHEMA_VERSION,
@@ -69,6 +72,8 @@ export function createProductionMetricEventJsonlLine(
     terminal_status: null,
     step_count: null,
     is_manual_intervention: null,
+    recovery_class: null,
+    replan_count: null,
     ...input,
   } satisfies ProductionMetricEventJsonlLine);
 }
@@ -134,6 +139,14 @@ function assertNullableProductionMetricTerminalStatus(
     !(PRODUCTION_METRIC_TERMINAL_STATUSES as readonly string[]).includes(value)
   ) {
     throw new Error(`unsupported production metric terminal_status: ${value}`);
+  }
+}
+
+function assertNullableProductionMetricRecoveryClass(
+  value: ProductionMetricEventJsonlLine["recovery_class"],
+): void {
+  if (value !== null && !(FAILURE_RECOVERY_CLASSES as readonly string[]).includes(value)) {
+    throw new Error(`unsupported production metric recovery_class: ${value}`);
   }
 }
 

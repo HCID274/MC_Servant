@@ -66,6 +66,8 @@ A2 代表早期 baseline Plan 解析成功率；当前没有可比历史数据�
 | `terminal_status` | BotWorker 执行终态：`completed`、`failed`、`interrupted`、`discarded`；非执行终态为 `null` |
 | `step_count` | BotWorker 执行终态步骤数；不可得或非执行终态为 `null` |
 | `is_manual_intervention` | 是否人工干预；当前 `control` 中断为 `true`，其他执行终态为 `false`，非执行终态为 `null` |
+| `recovery_class` | 失败恢复分类：`recoverable`、`implementation_blocker`、`unknown`；非失败恢复相关事件为 `null` |
+| `replan_count` | 同一恢复链中已经历的重规划次数；失败根为 `0`，非恢复事件为 `null` |
 
 生产指标派生口径：
 
@@ -88,8 +90,11 @@ A2 代表早期 baseline Plan 解析成功率；当前没有可比历史数据�
 | `execution_failed_count` | 失败终态数量 | `terminal_status=failed` |
 | `execution_interrupted_count` | 中断终态数量 | `terminal_status=interrupted` |
 | `execution_failure_code_count_by_code` | 失败码计数分布 | `terminal_status=failed` 的 `error_code`，缺失归为 `unknown` |
-| `recoverable_replan_success_rate` | 可恢复失败后自动重规划成功率 | 后续从 `recovery_chain_id` 与恢复分类扩展 |
-| `avg_replan_count_to_success` | 成功恢复任务平均重规划次数 | 后续从恢复链路事件扩展 |
+| `recoverable_failure_count` | 可恢复失败根数量 | `terminal_status=failed && recovery_class=recoverable && replan_count=0` |
+| `recoverable_replan_success_rate` | 可恢复失败后自动重规划并最终完成的比例 | 同一 `recovery_chain_id` 下出现恢复执行完成 / 可恢复失败根数量 |
+| `average_replan_count_to_success` | 成功恢复任务平均重规划次数 | 只统计最终恢复成功链路的完成事件 `replan_count` |
+| `implementation_blocker_count` | 实现阻塞失败根数量 | `terminal_status=failed && recovery_class=implementation_blocker && replan_count=0` |
+| `unknown_failure_count` | 未知失败根数量 | `terminal_status=failed && recovery_class=unknown && replan_count=0` |
 
 T-074R 先定义事件契约与自动落盘；B/C 类指标后续从 `logs/metrics` 归档统计，不再把主动 eval CLI 作为主数据来源。
 

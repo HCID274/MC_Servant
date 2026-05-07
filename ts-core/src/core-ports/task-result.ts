@@ -56,8 +56,15 @@ export interface FailureCapsule {
   readonly hint: string;
 }
 
+/** 失败码恢复分类全集。 */
+export const FAILURE_RECOVERY_CLASSES = [
+  "recoverable",
+  "implementation_blocker",
+  "unknown",
+] as const;
+
 /** 失败码恢复分类。 */
-export type FailureRecoveryClass = "recoverable" | "implementation_blocker" | "unknown";
+export type FailureRecoveryClass = (typeof FAILURE_RECOVERY_CLASSES)[number];
 
 /** 技能失败统一摘要。 */
 export interface SkillFailureSummary {

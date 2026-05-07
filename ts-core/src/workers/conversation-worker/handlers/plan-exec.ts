@@ -10,7 +10,11 @@ import {
 } from "../../../conversation/llm/errors.js";
 import { createExecJobFromPlan } from "../../../conversation/planning.js";
 import { type FailureCapsule, classifyFailureCode } from "../../../core-ports/task-result.js";
-import { type ExecJob, TaskHistoryStatus } from "../../../core-ports/tasking.js";
+import {
+  type ExecJob,
+  TaskHistoryStatus,
+  createRecoveryChainId,
+} from "../../../core-ports/tasking.js";
 import { createProductionMetricEventJsonlLine } from "../../../diagnostics/index.js";
 import { type ConversationWorkerTask, createBotWorkerTask } from "../../contracts.js";
 import { tryEnqueueConversationFactCandidate } from "../brain-facts.js";
@@ -49,6 +53,11 @@ export async function handlePlanExecRoute(input: {
   let brainContext: string | undefined;
   let recentContext: string | undefined;
   let continuationFailureCapsule: FailureCapsule | null = null;
+  let continuationRecoveryContext: {
+    readonly recovery_chain_id: string;
+    readonly recovery_class: "recoverable" | "unknown";
+    readonly replan_count: number;
+  } | null = null;
   let inventoryChangeContext: string | undefined;
   let ownerPositionAtMessage = input.task.message.owner_position_at_message;
   try {
@@ -59,6 +68,19 @@ export async function handlePlanExecRoute(input: {
     });
     continuationFailureCapsule =
       continuation.kind === "none" ? null : recentContextInfo.failure_capsule;
+    continuationRecoveryContext =
+      continuation.kind === "recoverable" || continuation.kind === "unknown"
+        ? {
+            recovery_chain_id:
+              recentContextInfo.recovery_chain_id ??
+              createRecoveryChainId({
+                bot_id: input.task.bot_id,
+                message_id: recentContextInfo.failure_message_id ?? input.task.message.message_id,
+              }),
+            recovery_class: continuation.kind,
+            replan_count: recentContextInfo.replan_count + 1,
+          }
+        : null;
     if (
       continuation.kind === "implementation_blocker" &&
       recentContextInfo.failure_capsule !== null
@@ -69,6 +91,14 @@ export async function handlePlanExecRoute(input: {
         `上次失败是实现阻塞：${recentContextInfo.failure_capsule.failure_code}，${recentContextInfo.failure_capsule.hint}，已停止喵~`,
         {
           failure_capsule: recentContextInfo.failure_capsule,
+          recovery_chain_id:
+            recentContextInfo.recovery_chain_id ??
+            createRecoveryChainId({
+              bot_id: input.task.bot_id,
+              message_id: recentContextInfo.failure_message_id ?? input.task.message.message_id,
+            }),
+          recovery_class: "implementation_blocker",
+          replan_count: recentContextInfo.replan_count,
         },
       );
       return;
@@ -146,6 +176,12 @@ export async function handlePlanExecRoute(input: {
     intent_epoch: input.task.message.intent_epoch,
     snapshot_ts: input.task.message.snapshot_ts,
     priority: input.route.exec_priority,
+    ...(continuationRecoveryContext === null
+      ? {}
+      : {
+          recovery_chain_id: continuationRecoveryContext.recovery_chain_id,
+          replan_count: continuationRecoveryContext.replan_count,
+        }),
   });
 
   const repeatedFailure = detectRepeatedFailurePlan({
@@ -159,6 +195,13 @@ export async function handlePlanExecRoute(input: {
       `上次这个动作已经失败：${repeatedFailure.retry_guard}，我不会原样重复，已停止喵~`,
       {
         failure_capsule: repeatedFailure,
+        ...(continuationRecoveryContext === null
+          ? {}
+          : {
+              recovery_chain_id: continuationRecoveryContext.recovery_chain_id,
+              recovery_class: continuationRecoveryContext.recovery_class,
+              replan_count: continuationRecoveryContext.replan_count,
+            }),
         ...(plan.diagnostics === undefined ? {} : { llm_diagnostics: plan.diagnostics }),
       },
     );
@@ -208,6 +251,13 @@ export async function handlePlanExecRoute(input: {
   await emitPlanAcceptedMetric({
     input,
     task_id: execJob.message_id,
+    ...(continuationRecoveryContext === null
+      ? {}
+      : {
+          recovery_chain_id: continuationRecoveryContext.recovery_chain_id,
+          recovery_class: continuationRecoveryContext.recovery_class,
+          replan_count: continuationRecoveryContext.replan_count,
+        }),
   });
   input.events.push(
     Object.freeze({
@@ -235,12 +285,17 @@ async function readRecentContextInfo(input: {
 }): Promise<{
   readonly recent_context?: string;
   readonly failure_capsule: FailureCapsule | null;
+  readonly failure_message_id?: string;
+  readonly recovery_chain_id?: string | null;
+  readonly replan_count: number;
 }> {
   try {
     const projection = await input.dependencies.actorStateProjectionProvider?.({
       task: input.task,
     });
-    const failureCapsule = input.dependencies.recentContextStore?.getLatestFailureCapsule() ?? null;
+    const failureInfo =
+      input.dependencies.recentContextStore?.getLatestFailureCapsuleInfo() ?? null;
+    const failureCapsule = failureInfo?.capsule ?? null;
     const continuation = createContinuationDecision({
       message: input.task.message.content,
       failure_capsule: failureCapsule,
@@ -257,9 +312,12 @@ async function readRecentContextInfo(input: {
     return Object.freeze({
       ...(recentContext === undefined ? {} : { recent_context: recentContext }),
       failure_capsule: failureCapsule,
+      ...(failureInfo === null ? {} : { failure_message_id: failureInfo.message_id }),
+      ...(failureInfo === null ? {} : { recovery_chain_id: failureInfo.recovery_chain_id }),
+      replan_count: failureInfo?.replan_count ?? 0,
     });
   } catch {
-    return Object.freeze({ failure_capsule: null });
+    return Object.freeze({ failure_capsule: null, replan_count: 0 });
   }
 }
 
@@ -417,6 +475,9 @@ async function pushPlanningFailure(
     readonly inventory_change_context?: string;
     readonly llm_diagnostics?: ConversationLlmDiagnosticRecord;
     readonly failure_capsule?: FailureCapsule;
+    readonly recovery_chain_id?: string;
+    readonly recovery_class?: "recoverable" | "implementation_blocker" | "unknown";
+    readonly replan_count?: number;
   },
 ): Promise<void> {
   await input.dependencies.broadcastReplySink({
@@ -469,7 +530,15 @@ async function pushPlanningFailure(
       reason,
     }),
   );
-  await emitPlanDiscardedMetric({ input, reason });
+  await emitPlanDiscardedMetric({
+    input,
+    reason,
+    ...(contexts.recovery_chain_id === undefined
+      ? {}
+      : { recovery_chain_id: contexts.recovery_chain_id }),
+    ...(contexts.recovery_class === undefined ? {} : { recovery_class: contexts.recovery_class }),
+    ...(contexts.replan_count === undefined ? {} : { replan_count: contexts.replan_count }),
+  });
 }
 
 async function emitPlanAcceptedMetric(input: {
@@ -478,6 +547,9 @@ async function emitPlanAcceptedMetric(input: {
     readonly dependencies: ConversationWorkerRuntimeDependencies;
   };
   readonly task_id: string;
+  readonly recovery_chain_id?: string;
+  readonly recovery_class?: "recoverable" | "unknown";
+  readonly replan_count?: number;
 }): Promise<void> {
   try {
     await input.input.dependencies.productionMetricSink?.(
@@ -487,7 +559,7 @@ async function emitPlanAcceptedMetric(input: {
         task_id: input.task_id,
         bot_id: input.input.task.bot_id,
         root_goal_id: null,
-        recovery_chain_id: null,
+        recovery_chain_id: input.recovery_chain_id ?? null,
         created_at: new Date().toISOString(),
         source: "conversation_worker",
         prompt_version: null,
@@ -498,6 +570,8 @@ async function emitPlanAcceptedMetric(input: {
         duration_ms: null,
         input_tokens: null,
         output_tokens: null,
+        recovery_class: input.recovery_class ?? null,
+        replan_count: input.replan_count ?? null,
       }),
     );
   } catch {
@@ -516,6 +590,9 @@ async function emitPlanDiscardedMetric(input: {
     | "skill_not_enabled"
     | "implementation_blocker"
     | "retry_guard_repeated";
+  readonly recovery_chain_id?: string;
+  readonly recovery_class?: "recoverable" | "implementation_blocker" | "unknown";
+  readonly replan_count?: number;
 }): Promise<void> {
   try {
     await input.input.dependencies.productionMetricSink?.(
@@ -525,7 +602,7 @@ async function emitPlanDiscardedMetric(input: {
         task_id: null,
         bot_id: input.input.task.bot_id,
         root_goal_id: null,
-        recovery_chain_id: null,
+        recovery_chain_id: input.recovery_chain_id ?? null,
         created_at: new Date().toISOString(),
         source: "conversation_worker",
         prompt_version: null,
@@ -536,6 +613,8 @@ async function emitPlanDiscardedMetric(input: {
         duration_ms: null,
         input_tokens: null,
         output_tokens: null,
+        recovery_class: input.recovery_class ?? null,
+        replan_count: input.replan_count ?? null,
       }),
     );
   } catch {

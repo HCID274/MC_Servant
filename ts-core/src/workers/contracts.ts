@@ -113,6 +113,10 @@ export interface BrainTaskEventWorkerTask {
     readonly task_card: BrainTaskCard;
     /** JSONL（结构化日志） 引用。 */
     readonly log_ref?: string;
+    /** 恢复链路 ID；仅恢复链路任务携带。 */
+    readonly recovery_chain_id?: string;
+    /** 当前恢复链路内的重规划次数。 */
+    readonly replan_count?: number;
   }>;
 }
 
@@ -372,10 +376,21 @@ export function createBrainWorkerTask(input: {
   owner_text: string;
   task_card: BrainTaskCard;
   log_ref?: string;
+  recovery_chain_id?: string;
+  replan_count?: number;
 }): BrainWorkerTask {
   assertNonEmptyString(input.bot_id, "bot_id");
   assertNonEmptyString(input.message_id, "message_id");
   assertNonEmptyString(input.owner_text, "owner_text");
+  if (input.recovery_chain_id !== undefined) {
+    assertNonEmptyString(input.recovery_chain_id, "recovery_chain_id");
+  }
+  if (
+    input.replan_count !== undefined &&
+    (!Number.isInteger(input.replan_count) || input.replan_count < 0)
+  ) {
+    throw new Error("replan_count must be a non-negative integer");
+  }
   const taskCard = createBrainTaskCard(input.task_card);
   if (taskCard.message_id !== input.message_id) {
     throw new Error("task_card.message_id must match message_id");
@@ -401,6 +416,10 @@ export function createBrainWorkerTask(input: {
       owner_text: input.owner_text,
       task_card: taskCard,
       ...(input.log_ref === undefined ? {} : { log_ref: input.log_ref }),
+      ...(input.recovery_chain_id === undefined
+        ? {}
+        : { recovery_chain_id: input.recovery_chain_id }),
+      ...(input.replan_count === undefined ? {} : { replan_count: input.replan_count }),
     }),
   });
 }
@@ -743,6 +762,12 @@ export function createBotWorkerActions(
             ...(input.code_result?.log_ref === undefined
               ? {}
               : { log_ref: input.code_result.log_ref }),
+            ...(input.task.exec_job.recovery_chain_id === undefined
+              ? {}
+              : { recovery_chain_id: input.task.exec_job.recovery_chain_id }),
+            ...(input.task.exec_job.replan_count === undefined
+              ? {}
+              : { replan_count: input.task.exec_job.replan_count }),
           }),
         }),
       ];

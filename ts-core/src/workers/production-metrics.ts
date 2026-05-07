@@ -1,5 +1,6 @@
 import type { ConversationLlmDiagnosticRecord } from "../conversation/llm/index.js";
-import { TaskHistoryStatus } from "../core-ports/tasking.js";
+import { classifyFailureCode } from "../core-ports/task-result.js";
+import { TaskHistoryStatus, createRecoveryChainId } from "../core-ports/tasking.js";
 import type { ProductionMetricEventJsonlLine } from "../data/contracts/index.js";
 import {
   type ProductionMetricLogSink,
@@ -52,6 +53,8 @@ export function createProductionMetricEventFromBotWorkerAction(input: {
   const payload = lifecycle.payload;
   const durationMs = "duration_ms" in payload ? payload.duration_ms : null;
   const terminalStatus = readTerminalStatus(lifecycle.status);
+  const recoveryChainId = readLifecycleRecoveryChainId(input.action.bot_id, lifecycle);
+  const replanCount = readLifecycleReplanCount(lifecycle, terminalStatus);
 
   return createProductionMetricEventJsonlLine({
     event_type: lifecycle.event_type,
@@ -59,7 +62,7 @@ export function createProductionMetricEventFromBotWorkerAction(input: {
     task_id: payload.job_id,
     bot_id: input.action.bot_id,
     root_goal_id: null,
-    recovery_chain_id: null,
+    recovery_chain_id: recoveryChainId,
     created_at: input.created_at,
     source: "bot_worker",
     prompt_version: null,
@@ -76,6 +79,8 @@ export function createProductionMetricEventFromBotWorkerAction(input: {
     step_count: "total_steps" in payload ? payload.total_steps : null,
     is_manual_intervention:
       terminalStatus === null ? null : readLifecycleManualIntervention(lifecycle),
+    recovery_class: readLifecycleRecoveryClass(lifecycle),
+    replan_count: replanCount,
   });
 }
 
@@ -127,4 +132,61 @@ function readLifecycleErrorCode(action: EmitTaskLifecycleAction["lifecycle"]): s
   }
 
   return action.status === TaskHistoryStatus.Failed ? "task_failed" : null;
+}
+
+function readLifecycleRecoveryChainId(
+  botId: string,
+  action: EmitTaskLifecycleAction["lifecycle"],
+): string | null {
+  const payload = action.payload;
+
+  if ("recovery_chain_id" in payload && typeof payload.recovery_chain_id === "string") {
+    return payload.recovery_chain_id;
+  }
+
+  if (action.status === TaskHistoryStatus.Failed) {
+    return createRecoveryChainId({
+      bot_id: botId,
+      message_id: payload.message_id,
+    });
+  }
+
+  return null;
+}
+
+function readLifecycleReplanCount(
+  action: EmitTaskLifecycleAction["lifecycle"],
+  terminalStatus: ProductionMetricEventJsonlLine["terminal_status"],
+): number | null {
+  const payload = action.payload;
+
+  if ("replan_count" in payload && typeof payload.replan_count === "number") {
+    return payload.replan_count;
+  }
+
+  return terminalStatus === "failed" ? 0 : null;
+}
+
+function readLifecycleRecoveryClass(
+  action: EmitTaskLifecycleAction["lifecycle"],
+): ProductionMetricEventJsonlLine["recovery_class"] {
+  if (action.status !== TaskHistoryStatus.Failed) {
+    return null;
+  }
+
+  const failureCode =
+    readLifecycleResultSummaryFailureCode(action) ?? readLifecycleErrorCode(action);
+  return classifyFailureCode(failureCode ?? undefined);
+}
+
+function readLifecycleResultSummaryFailureCode(
+  action: EmitTaskLifecycleAction["lifecycle"],
+): string | null {
+  const payload = action.payload;
+
+  if (!("result_summary" in payload) || payload.result_summary === undefined) {
+    return null;
+  }
+
+  return payload.result_summary.failure?.failure_code ?? null;
 }

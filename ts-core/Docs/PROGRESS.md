@@ -75,6 +75,14 @@
 - 关键决策: 选择在 `workers/production-metrics` 里把 BotWorker 生命周期动作映射为生产指标事件,而不是让 diagnostics 反向读取 runtime 或 sandbox 内部状态;步骤数直接来自执行结果摘要里的 `total_steps`,人工干预只按已有 control 中断源判定,不新增生产执行逻辑或 Mineflayer 事实规则
 - 架构冲突: 无
 
+## T-077R | 2026-05-07 | 失败恢复链路关联与自动统计
+
+- 涉及模块: Failure Capsule（失败胶囊） 与 recent context（最近上下文）隐藏元数据,conversation worker（对话工作线程） continuation Plan（继续规划） 链路,BotWorker（机器人工作线程） terminal summary（终态摘要） 到生产指标透传,diagnostics（诊断） production metrics 汇总,data contracts（数据契约） production-metrics,Docs/07_EVAL_SPEC.md（评测与生产指标规格）
+- A 拆解依据: 用户要求把失败任务、Failure Capsule、后续 continuation Plan、二次执行串成同一条恢复链,支持直接统计 `recoverable_failure_count`、`recoverable_replan_success_rate`、`average_replan_count_to_success`、`implementation_blocker_count`、`unknown_failure_count`;边界限定 Failure Capsule、recent context、conversation worker、BotWorker terminal summary、diagnostics,前置依赖 T-074R/T-075R/T-076R,且需真实 LLM 验收
+- C 审查结论: 曾打回 1 次。首轮实现已能在一次失败后把 continuation Plan、二次 `task.started`、二次 `task.completed` 对齐到同一 `recovery_chain_id`,但 continuation 再次失败时 recent context sink 会重新生成链路并把 `replan_count` 重置为 0,导致 2 次及以上重规划无法计入同一恢复链;返修后 `BrainTaskEventWorkerTask` payload 透传 `recovery_chain_id`/`replan_count`,`recent-context-sink` 优先保留 payload 元数据,缺失时才按根失败生成新链并置 0,并补“continuation 失败后再次 continuation 不换链且计数 1→2”的回归。Reviewer 复核 `logs/metrics/2026-05-07/production-metrics.jsonl` 中 `t077r-root-1778150401` 真实链路: 根 `task.failed` 为 `recovery_class:"recoverable"`、`replan_count:0`,后续 `conversation.plan_accepted`、`task.started`、`task.completed` 使用同一 `recovery_chain_id` 且 `replan_count:1`;汇总输出 `recoverable_failure_count=1`、`recoverable_replan_success_rate=1`、`average_replan_count_to_success=1`、阻塞/未知计数为 0。`git diff --check` 通过,定向 Vitest `conversation-worker-runtime-model.spec.ts` 34 passed,`pnpm typecheck` 通过,`pnpm lint` 通过,`bash scripts/pre_review.sh` 全绿,36 个 test file /441 passed/8 skipped
+- 关键决策: 选择把恢复链 ID 与重规划次数作为隐藏元数据沿既有 `ExecJob -> lifecycle event -> enqueue_brain -> recent context` 通道透传,而不是把链路状态写进 prompt 文本、PG schema、event_log 或额外生产门禁;Failure Capsule 渲染仍只暴露最小失败事实和 retry guard,生产指标汇总只消费 JSONL 契约事件
+- 架构冲突: 无
+
 ## T-071D | 2026-05-07 | terrain-router 水平挖穿成本与 A* 搜索诊断修复
 
 - 涉及模块: runtime/transport（运行时传输层） terrain-router（地形路由）,runtime Mineflayer（Minecraft 协议客户端）回归测试

@@ -5,6 +5,7 @@
  * runtime（运行时）、sandbox（沙箱）、diagnostics（诊断） 和 data（数据层） 共享，统一放在端口层。
  */
 
+import { assertNonEmptyString } from "../domain/invariants.js";
 import { ConversationPriority, ExecutionTaskKind } from "./foundation.js";
 import type { InterruptSource } from "./runtime.js";
 
@@ -70,6 +71,10 @@ export interface CodeJob {
   readonly priority: ExecPriority;
   /** 待执行 TS（TypeScript）代码。 */
   readonly code: string;
+  /** 恢复链路 ID；非恢复任务为空。 */
+  readonly recovery_chain_id?: string;
+  /** 当前恢复链路内的重规划次数。 */
+  readonly replan_count?: number;
 }
 
 /** BotActor（机器人执行代理） 可消费的唯一执行任务。 */
@@ -106,7 +111,19 @@ export function createCodeJob(input: {
   snapshot_ts: number;
   priority: ExecPriority;
   code: string;
+  recovery_chain_id?: string;
+  replan_count?: number;
 }): CodeJob {
+  if (input.recovery_chain_id !== undefined) {
+    assertNonEmptyString(input.recovery_chain_id, "recovery_chain_id");
+  }
+  if (
+    input.replan_count !== undefined &&
+    (!Number.isInteger(input.replan_count) || input.replan_count < 0)
+  ) {
+    throw new Error("replan_count must be a non-negative integer");
+  }
+
   return Object.freeze({
     type: ExecutionTaskKind.Code,
     message_id: input.message_id,
@@ -114,5 +131,20 @@ export function createCodeJob(input: {
     snapshot_ts: input.snapshot_ts,
     priority: input.priority,
     code: input.code,
+    ...(input.recovery_chain_id === undefined
+      ? {}
+      : { recovery_chain_id: input.recovery_chain_id }),
+    ...(input.replan_count === undefined ? {} : { replan_count: input.replan_count }),
   });
+}
+
+/** 为失败根任务创建确定性的恢复链路 ID，供 recent context 与生产指标对齐。 */
+export function createRecoveryChainId(input: {
+  readonly bot_id: string;
+  readonly message_id: string;
+}): string {
+  assertNonEmptyString(input.bot_id, "bot_id");
+  assertNonEmptyString(input.message_id, "message_id");
+
+  return `recovery:${input.bot_id}:${input.message_id}`;
 }
