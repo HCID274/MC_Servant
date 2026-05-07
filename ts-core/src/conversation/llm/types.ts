@@ -155,6 +155,26 @@ export interface ConversationLlmPlanInput {
   readonly queue_wait_ms?: number;
 }
 
+/** 终态汇报润色请求输入。 */
+export interface ConversationLlmReportInput {
+  /** 原始消息标识。 */
+  readonly message_id: string;
+  /** 主人原始任务摘要。 */
+  readonly owner_text: string;
+  /** 任务终态。 */
+  readonly status: "completed" | "failed" | "interrupted";
+  /** 确定性事实模板，LLM 失败时直接回退。 */
+  readonly deterministic_report: string;
+  /** 面向 LLM 的短事实摘要。 */
+  readonly fact_summary: string;
+  /** 必须保留的事实片段。 */
+  readonly required_facts: readonly string[];
+  /** 角色语气要求。 */
+  readonly tone: string;
+  /** 从消息入队到本阶段 LLM 调用开始前的等待耗时。 */
+  readonly queue_wait_ms?: number;
+}
+
 /** 闲聊调用成功结果。 */
 export interface ConversationLlmChatResult {
   /** 固定为 `llm`（大语言模型） 回复。 */
@@ -170,6 +190,14 @@ export type ConversationLlmPlanResult = ConversationCodePlanDraft & {
   /** 可选诊断摘要；在线调用成功时用于 conversation（对话） 本地完整日志。 */
   readonly diagnostics?: ConversationLlmDiagnosticRecord;
 };
+
+/** 终态汇报润色结果。 */
+export interface ConversationLlmReportResult {
+  /** 润色后的短文本。 */
+  readonly reply: string;
+  /** 诊断摘要。 */
+  readonly diagnostics: ConversationLlmDiagnosticRecord;
+}
 
 /** OpenAI 兼容聊天请求依赖。 */
 export interface ConversationLlmDependencies {
@@ -191,4 +219,6 @@ export interface ConversationLlmClient {
   generateChatReply(input: ConversationLlmChatInput): Promise<ConversationLlmChatResult>;
   /** 基于真实 OpenAI 兼容接口生成 TS（TypeScript）代码规划。 */
   generateCodePlan(input: ConversationLlmPlanInput): Promise<ConversationLlmPlanResult>;
+  /** 基于真实 OpenAI 兼容接口润色任务终态汇报。 */
+  generateReport(input: ConversationLlmReportInput): Promise<ConversationLlmReportResult>;
 }

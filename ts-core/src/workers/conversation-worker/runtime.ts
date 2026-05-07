@@ -154,6 +154,7 @@ async function handleCompositeTriage(input: {
       message: input.task.message.content,
       has_active_task:
         input.triage.cancel === undefined && (input.dependencies.hasActiveTask?.() ?? false),
+      needs_memory_search: input.triage.action.needs_memory_search === true,
     });
 
     if (route.kind !== "plan_exec") {

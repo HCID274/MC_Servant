@@ -11,6 +11,10 @@ export interface MineBlockFactReader {
   readonly registry: unknown;
   normalizeName(value: string | undefined): string;
   classifyBlockRole(block: MineflayerBlockHandle, targetBlockName: string): StairBFSBlockRole;
+  isAirBlock(block: MineflayerBlockHandle): boolean;
+  isHazardBlock(block: MineflayerBlockHandle): boolean;
+  isSupportBlock(block: MineflayerBlockHandle): boolean;
+  isDiggableBlock(block: MineflayerBlockHandle): boolean;
   resolveExpectedDropName(blockName: string): string;
   readRequiredHarvestToolIds(blockName: string): readonly number[];
   isInventoryItemAllowedForBlock(item: MineflayerItemHandle, blockName: string): boolean;
@@ -23,6 +27,18 @@ export function createMineBlockFactReader(registry: unknown): MineBlockFactReade
     normalizeName,
     classifyBlockRole(block, targetBlockName) {
       return classifyMineBlockRole(registry, block, targetBlockName);
+    },
+    isAirBlock(block) {
+      return isAirBlock(registry, block);
+    },
+    isHazardBlock(block) {
+      return isHazardBlock(registry, block);
+    },
+    isSupportBlock(block) {
+      return isSupportBlock(registry, block);
+    },
+    isDiggableBlock(block) {
+      return isDiggableBlock(registry, block);
     },
     resolveExpectedDropName(blockName) {
       return resolveExpectedDropName(registry, blockName);
@@ -47,7 +63,7 @@ function classifyMineBlockRole(
   const blockName = normalizeName(block.name);
   const fact = readRegistryBlockFact(registry, blockName);
 
-  if (isAirBlockFact(blockName, fact) || fact?.boundingBox === "empty") {
+  if (isAirBlockFact(blockName, fact)) {
     return "air";
   }
 
@@ -69,6 +85,30 @@ function classifyMineBlockRole(
   }
 
   return "solid";
+}
+
+function isAirBlock(registry: unknown, block: MineflayerBlockHandle): boolean {
+  const blockName = normalizeName(block.name);
+  return isAirBlockFact(blockName, readRegistryBlockFact(registry, blockName));
+}
+
+function isHazardBlock(registry: unknown, block: MineflayerBlockHandle): boolean {
+  const blockName = normalizeName(block.name);
+  return isHazardBlockFact(blockName, readRegistryBlockFact(registry, blockName));
+}
+
+function isSupportBlock(registry: unknown, block: MineflayerBlockHandle): boolean {
+  return !isAirBlock(registry, block) && !isHazardBlock(registry, block);
+}
+
+function isDiggableBlock(registry: unknown, block: MineflayerBlockHandle): boolean {
+  const blockName = normalizeName(block.name);
+  const fact = readRegistryBlockFact(registry, blockName);
+  if (block.diggable === false) return false;
+  if (isAirBlockFact(blockName, fact)) return false;
+  if (isHazardBlockFact(blockName, fact)) return false;
+  if (isUnbreakableBlockFact(blockName, fact)) return false;
+  return true;
 }
 
 function resolveExpectedDropName(registry: unknown, blockName: string): string {
@@ -116,7 +156,25 @@ function isAirBlockFact(
   blockName: string,
   fact: MineflayerRegistryBlockFactWithMining | undefined,
 ): boolean {
-  return blockName === "air" || fact?.boundingBox === "empty";
+  return AIR_BLOCK_NAMES.has(blockName) || fact?.boundingBox === "empty";
+}
+
+function isHazardBlockFact(
+  blockName: string,
+  fact: MineflayerRegistryBlockFactWithMining | undefined,
+): boolean {
+  const material = normalizeName(fact?.material);
+  return HAZARD_BLOCK_NAMES.has(blockName) || HAZARD_MATERIALS.has(material);
+}
+
+function isUnbreakableBlockFact(
+  blockName: string,
+  fact: MineflayerRegistryBlockFactWithMining | undefined,
+): boolean {
+  return (
+    UNBREAKABLE_BLOCK_NAMES.has(blockName) ||
+    (typeof fact?.hardness === "number" && fact.hardness < 0)
+  );
 }
 
 function isFallingBlockFact(fact: MineflayerRegistryBlockFactWithMining | undefined): boolean {
@@ -141,6 +199,12 @@ interface MineflayerRegistryBlockFactWithMining {
   readonly drops?: readonly number[];
   readonly boundingBox?: string;
   readonly material?: string;
+  readonly hardness?: number;
   readonly falling?: boolean;
   readonly harvestTools?: Readonly<Record<string, unknown>>;
 }
+
+const AIR_BLOCK_NAMES = new Set(["air", "cave_air", "void_air"]);
+const HAZARD_BLOCK_NAMES = new Set(["lava", "water", "magma_block", "fire"]);
+const HAZARD_MATERIALS = new Set(["lava", "water", "fire"]);
+const UNBREAKABLE_BLOCK_NAMES = new Set(["bedrock"]);

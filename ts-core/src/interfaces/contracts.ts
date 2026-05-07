@@ -8,6 +8,7 @@
  */
 
 import { type BotStatus, MessageSource } from "../core-ports/index.js";
+import type { SnapshotPosition } from "../core-ports/observation.js";
 import type { LlmDiagnosticSummary } from "../diagnostics/contracts.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import {
@@ -224,6 +225,8 @@ export interface InterfaceMineflayerStatusSnapshot {
   readonly world_ready: boolean;
   /** Bot（机器人） 游戏名。 */
   readonly username?: string;
+  /** Bot 当前只读坐标；来自 runtime/transport observation。 */
+  readonly position?: SnapshotPosition;
 }
 
 /** 工作线程装配摘要。 */

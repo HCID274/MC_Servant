@@ -709,7 +709,9 @@ export interface GoToSkillExecutionResult {
   /** 是否已由底层移动适配器确认完成。 */
   readonly reached: true;
   /** 当前最小执行器的步骤数。 */
-  readonly total_steps: 1;
+  readonly total_steps: number;
+  /** 执行诊断。 */
+  readonly diagnostics?: readonly string[];
 }
 
 /** `mine`（挖掘） 技能执行结果。 */
@@ -910,6 +912,8 @@ export function createGoToSkillExecutionResult(
   params: Readonly<GoToSkillParams>,
   outcome: {
     readonly world_key?: string | null;
+    readonly total_steps?: number;
+    readonly diagnostics?: readonly string[];
   } = {},
 ): GoToSkillExecutionResult {
   return Object.freeze({
@@ -921,7 +925,10 @@ export function createGoToSkillExecutionResult(
     }),
     world_key: outcome.world_key ?? null,
     reached: true as const,
-    total_steps: 1 as const,
+    total_steps: outcome.total_steps ?? 1,
+    ...(outcome.diagnostics === undefined
+      ? {}
+      : { diagnostics: Object.freeze([...outcome.diagnostics]) }),
   });
 }
 

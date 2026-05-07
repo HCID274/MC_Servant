@@ -268,6 +268,7 @@ export function createAppDefaultInterfaceStatusSnapshot<TBotId extends string>(
         readonly world_ready?: boolean;
       }
     | undefined;
+  const observationInput = runtimeCore?.transport.readObservationInput();
 
   return createInterfaceBotStatusSnapshot({
     bot_id: bootstrap.bot_id,
@@ -284,6 +285,9 @@ export function createAppDefaultInterfaceStatusSnapshot<TBotId extends string>(
             ...(transportSnapshot.username === undefined
               ? {}
               : { username: transportSnapshot.username }),
+            ...(observationInput?.bot.position === undefined
+              ? {}
+              : { position: observationInput.bot.position }),
           },
         }),
     llm: latestLlmDiagnostic,

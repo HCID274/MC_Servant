@@ -140,6 +140,8 @@ export interface ConversationCompositeAction {
   readonly priority: ConversationPriority;
   /** 分诊原因。 */
   readonly reason: string;
+  /** 是否需要 Stage 2-Plan 暴露 search 工具。明确动作默认不需要。 */
+  readonly needs_memory_search?: boolean;
 }
 
 /** ConversationWorker（对话工作线程） 可消费的复合分诊结构。 */
@@ -243,8 +245,8 @@ export interface ConversationPlanRouteDecision {
   readonly requires_planning: true;
   /** 进入执行队列时使用的优先级。 */
   readonly exec_priority: ExecPriority;
-  /** 任务规划固定做记忆检索。 */
-  readonly needs_memory_search: true;
+  /** 是否允许 Plan LLM 调用 search 工具。 */
+  readonly needs_memory_search: boolean;
 }
 
 /** ConversationWorker（对话工作线程） 的纯路由结果联合。 */

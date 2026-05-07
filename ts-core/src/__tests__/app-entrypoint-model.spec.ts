@@ -323,7 +323,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(Object.isFrozen(replyEvent.payload)).toBe(true);
   });
 
-  it("应把任务终态转换为游戏聊天可见结果且同一终态只汇报一次", () => {
+  it("应把任务终态转换为游戏聊天可见结果且同一终态只汇报一次", async () => {
     const action = createBotWorkerActions({
       task: createBotWorkerTask({
         bot_id: "bot-realtime-action",
@@ -386,8 +386,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     const reporter = createTaskResultReporter();
-    const failureReply = reporter.consume(action[1]);
-    const completedReply = reporter.consume(completedAction[1]);
+    const failureReply = await reporter.consume(action[1]);
+    const completedReply = await reporter.consume(completedAction[1]);
 
     expect(failureReply).toMatchObject({
       message_id: "msg-mine-failed-reply:task_result",
@@ -397,7 +397,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(failureReply?.content).toContain("可恢复");
     expect(completedReply?.content).toContain("任务完成：砍到 oak_log x12");
     expect(completedReply?.content).toContain("已捡拾掉落物");
-    expect(reporter.consume(completedAction[1])).toBeNull();
+    await expect(reporter.consume(completedAction[1])).resolves.toBeNull();
 
     const multiCompletedAction = createBotWorkerActions({
       task: createBotWorkerTask({
@@ -425,11 +425,11 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         world_key: "multiworld:resource",
       },
     });
-    const multiCompletedReply = reporter.consume(multiCompletedAction[1]);
+    const multiCompletedReply = await reporter.consume(multiCompletedAction[1]);
     expect(multiCompletedReply?.content).toContain("oak_log x20、cobblestone x5");
   });
 
-  it("应汇报 sandbox TS（沙箱 TypeScript） 报错与中断终态", () => {
+  it("应汇报 sandbox TS（沙箱 TypeScript） 报错与中断终态", async () => {
     const task = createBotWorkerTask({
       bot_id: "bot-realtime-action",
       exec_job: createCodeJob({
@@ -489,8 +489,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     const reporter = createTaskResultReporter();
-    const failedReply = reporter.consume(failedActions[1]);
-    const interruptedReply = reporter.consume(interruptedActions[1]);
+    const failedReply = await reporter.consume(failedActions[1]);
+    const interruptedReply = await reporter.consume(interruptedActions[1]);
 
     expect(failedReply?.content).toContain(
       "任务失败：mine 失败码 resource_not_found，阶段 mine，可恢复",
@@ -500,7 +500,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(interruptedReply?.content).not.toContain("任务完成");
   });
 
-  it("应在 sandbox TS（沙箱 TypeScript） 前置成功后准确汇报后续失败操作", () => {
+  it("应在 sandbox TS（沙箱 TypeScript） 前置成功后准确汇报后续失败操作", async () => {
     const sandboxJob = createCodeJob({
       message_id: "msg-sandbox-step-failure",
       intent_epoch: 6,
@@ -583,7 +583,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     const reporter = createTaskResultReporter();
-    const failedReply = reporter.consume(failedActions[1]);
+    const failedReply = await reporter.consume(failedActions[1]);
 
     expect(failedReply?.content).toContain(
       "任务失败：mine 失败码 resource_not_found，阶段 mine，可恢复",
@@ -717,7 +717,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     expect(summaries[4]?.details).toMatchObject({ status: "already_equipped" });
   });
 
-  it("goTo（移动）成功汇报应使用摘要中的真实世界键", () => {
+  it("goTo（移动）成功汇报应使用摘要中的真实世界键", async () => {
     const task = createBotWorkerTask({
       bot_id: "bot-realtime-action",
       exec_job: createCodeJobForSkill({
@@ -747,7 +747,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
     });
 
     const reporter = createTaskResultReporter();
-    const reply = reporter.consume(actions[1]);
+    const reply = await reporter.consume(actions[1]);
 
     expect(reply?.content).toContain("世界 multiworld:resource");
     expect(reply?.content).not.toContain("世界 unknown");

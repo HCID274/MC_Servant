@@ -104,6 +104,7 @@ export function createConversationCompositeTriage(input: {
     readonly intent?: string;
     readonly priority?: string;
     readonly reason?: string;
+    readonly needs_memory_search?: boolean;
   } | null;
 }): ConversationCompositeTriage {
   const cancel =
@@ -166,7 +167,12 @@ function createCompositeChat(
 
 function createCompositeAction(
   value:
-    | { readonly intent?: string; readonly priority?: string; readonly reason?: string }
+    | {
+        readonly intent?: string;
+        readonly priority?: string;
+        readonly reason?: string;
+        readonly needs_memory_search?: boolean;
+      }
     | null
     | undefined,
 ): ConversationCompositeTriage["action"] {
@@ -185,6 +191,7 @@ function createCompositeAction(
         ? value.priority
         : ConversationPriority.Normal,
     reason: value.reason?.trim() || "composite_action",
+    ...(value.needs_memory_search === true ? { needs_memory_search: true } : {}),
   });
 }
 
@@ -221,11 +228,15 @@ function pickActionInput(record: Record<string, unknown>): {
   readonly intent?: string;
   readonly priority?: string;
   readonly reason?: string;
+  readonly needs_memory_search?: boolean;
 } {
   return {
     ...(typeof record.intent === "string" ? { intent: record.intent } : {}),
     ...(typeof record.priority === "string" ? { priority: record.priority } : {}),
     ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+    ...(typeof record.needs_memory_search === "boolean"
+      ? { needs_memory_search: record.needs_memory_search }
+      : {}),
   };
 }
 
@@ -266,6 +277,7 @@ export function createConversationRouteDecision(input: {
   triage: MessageTriage;
   message: string;
   has_active_task: boolean;
+  needs_memory_search?: boolean;
 }): ConversationRouteDecision {
   assertNonEmptyString(input.message, "message");
 
@@ -303,7 +315,7 @@ export function createConversationRouteDecision(input: {
           input.triage.priority === ConversationPriority.Interrupt && input.has_active_task,
         requires_planning: true,
         exec_priority: toConversationExecPriority(input.triage.priority),
-        needs_memory_search: true,
+        needs_memory_search: input.needs_memory_search === true,
       } satisfies ConversationPlanRouteDecision);
   }
 }

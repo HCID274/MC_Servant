@@ -8,6 +8,7 @@ import {
 import {
   createConversationChatMessages,
   createConversationPlanMessages,
+  createConversationReportMessages,
   createConversationTriageMessages,
 } from "./messages.js";
 import { parseConversationCodePlan, parseConversationCompositeTriage } from "./parsers.js";
@@ -20,6 +21,8 @@ import type {
   ConversationLlmDependencies,
   ConversationLlmPlanInput,
   ConversationLlmPlanResult,
+  ConversationLlmReportInput,
+  ConversationLlmReportResult,
   ConversationLlmTriageInput,
 } from "./types.js";
 
@@ -137,7 +140,72 @@ export function createConversationLlmClient(
         diagnostics: result.diagnostics,
       });
     },
+    async generateReport(input: ConversationLlmReportInput): Promise<ConversationLlmReportResult> {
+      const promptBuildStartedAt = monotonicNow();
+      const messages = createConversationReportMessages(input);
+      const promptBuildMs = elapsedMs(monotonicNow, promptBuildStartedAt);
+
+      const result = await executeStage({
+        config,
+        fetchImpl,
+        now,
+        monotonicNow,
+        onDiagnostic: dependencies.onDiagnostic,
+        stage: "report",
+        message_id: input.message_id,
+        messages,
+        ...(input.queue_wait_ms === undefined ? {} : { queue_wait_ms: input.queue_wait_ms }),
+        prompt_build_ms: promptBuildMs,
+        parse: (content) => parseConversationReport(content, input.required_facts),
+        diagnosticMeta: {
+          onSuccess: ({ value }) => ({
+            input_fact_summary: input.fact_summary,
+            output_summary: summarizeReportOutput(value),
+            fallback: false,
+            fallback_reason: null,
+          }),
+          onFailure: ({ error, assistantContent }) => ({
+            input_fact_summary: input.fact_summary,
+            ...(assistantContent === undefined
+              ? {}
+              : { output_summary: summarizeReportOutput(assistantContent) }),
+            fallback: true,
+            fallback_reason: error instanceof Error ? error.message : "report_llm_failed",
+          }),
+        },
+        onFailure: () => input.deterministic_report,
+      });
+
+      return Object.freeze({
+        reply: result.value,
+        diagnostics: result.diagnostics,
+      });
+    },
   });
+}
+
+function parseConversationReport(content: string, requiredFacts: readonly string[]): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (normalized.length === 0) {
+    throw new Error("ReportLLM output is empty");
+  }
+  if (normalized.length > 160) {
+    throw new Error("ReportLLM output is too long");
+  }
+  if (normalized.startsWith("{") || normalized.includes("```")) {
+    throw new Error("ReportLLM output must be plain short text");
+  }
+  const missingFact = requiredFacts.find((fact) => !normalized.includes(fact));
+  if (missingFact !== undefined) {
+    throw new Error(`ReportLLM output missing fact:${missingFact}`);
+  }
+
+  return normalized;
+}
+
+function summarizeReportOutput(content: string): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  return normalized.length <= 120 ? normalized : `${normalized.slice(0, 117)}...`;
 }
 
 function createDefaultMonotonicNow(): number {

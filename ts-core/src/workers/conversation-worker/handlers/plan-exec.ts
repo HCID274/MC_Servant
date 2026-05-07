@@ -84,6 +84,8 @@ export async function handlePlanExecRoute(input: {
     });
     inventoryChangeContext = promptContext.inventory_change_context;
     ownerPositionAtMessage ??= promptContext.owner_position_at_message;
+    const planSearchTool =
+      input.route.needs_memory_search === true ? input.dependencies.brainSearchTool : undefined;
 
     try {
       plan = await input.dependencies.planner({
@@ -92,9 +94,7 @@ export async function handlePlanExecRoute(input: {
         route: input.route,
         ...(memoryContext === undefined ? {} : { memory_context: memoryContext }),
         ...(brainContext === undefined ? {} : { brain_context: brainContext }),
-        ...(input.dependencies.brainSearchTool === undefined
-          ? {}
-          : { search_tool: input.dependencies.brainSearchTool }),
+        ...(planSearchTool === undefined ? {} : { search_tool: planSearchTool }),
         ...(resourceContext === undefined ? {} : { resource_context: resourceContext }),
         ...(recentContext === undefined ? {} : { recent_context: recentContext }),
         ...(promptContext.snapshot_context === undefined

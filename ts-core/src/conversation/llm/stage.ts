@@ -58,6 +58,22 @@ export interface ConversationLlmStageInput<TResult> extends ConversationLlmStage
   readonly searchToolBotId?: string;
   /** search 工具最多执行次数；未指定时使用 Brain 默认上限。 */
   readonly searchToolMaxCalls?: number;
+  /** 可选阶段专用诊断 meta 扩展；不得写入 prompt 全文或敏感数据。 */
+  readonly diagnosticMeta?: ConversationLlmStageDiagnosticMeta<TResult>;
+}
+
+/** 阶段专用 JSONL meta 扩展。 */
+export interface ConversationLlmStageDiagnosticMeta<TResult> {
+  /** 成功解析后追加的 meta。 */
+  readonly onSuccess?: (input: {
+    readonly value: TResult;
+    readonly assistantContent: string;
+  }) => Readonly<Record<string, string | number | boolean | null | undefined>>;
+  /** 调用或解析失败后追加的 meta。 */
+  readonly onFailure?: (input: {
+    readonly error: unknown;
+    readonly assistantContent?: string;
+  }) => Readonly<Record<string, string | number | boolean | null | undefined>>;
 }
 
 /** LLM（大语言模型） 阶段失败上下文。 */
@@ -107,6 +123,7 @@ export async function executeStage<TResult>(
   let latestResponseParseMs = 0;
   let latestToolRoundMs: readonly number[] = [];
   let latestExtraLines: readonly ReturnType<typeof createLlmLogLine>[] = [];
+  let latestAssistantContent: string | undefined;
 
   try {
     const toolExecution = await executeSearchToolLoop(input, monotonicNow);
@@ -119,7 +136,8 @@ export async function executeStage<TResult>(
     let value: TResult;
     try {
       try {
-        value = input.parse(extractAssistantReply(payload));
+        latestAssistantContent = extractAssistantReply(payload);
+        value = input.parse(latestAssistantContent);
       } catch (error) {
         if (!shouldRetryWithoutSearch(input, toolExecution, error)) {
           throw error;
@@ -136,7 +154,8 @@ export async function executeStage<TResult>(
           ...toolExecution.extraLines,
           ...retryExecution.extraLines,
         ]);
-        value = input.parse(extractAssistantReply(payload));
+        latestAssistantContent = extractAssistantReply(payload);
+        value = input.parse(latestAssistantContent);
       }
     } finally {
       latestResponseParseMs = elapsedMs(monotonicNow, parseStartedAt);
@@ -168,6 +187,12 @@ export async function executeStage<TResult>(
             ms: Math.max(0, finishedAt.getTime() - startedAtMs),
             ok: true,
             metrics,
+            ...normalizeDiagnosticMeta(
+              input.diagnosticMeta?.onSuccess?.({
+                value,
+                assistantContent: latestAssistantContent ?? "",
+              }),
+            ),
           },
         }),
       ],
@@ -210,6 +235,14 @@ export async function executeStage<TResult>(
             ms: Math.max(0, finishedAt.getTime() - startedAtMs),
             ok: false,
             metrics,
+            ...normalizeDiagnosticMeta(
+              input.diagnosticMeta?.onFailure?.({
+                error,
+                ...(latestAssistantContent === undefined
+                  ? {}
+                  : { assistantContent: latestAssistantContent }),
+              }),
+            ),
           },
           err: errorSnapshot,
         }),
@@ -227,6 +260,23 @@ export async function executeStage<TResult>(
       diagnostics,
     });
   }
+}
+
+function normalizeDiagnosticMeta(
+  meta: Readonly<Record<string, string | number | boolean | null | undefined>> | undefined,
+): Readonly<Record<string, string | number | boolean | null>> {
+  if (meta === undefined) {
+    return Object.freeze({});
+  }
+
+  const normalized: Record<string, string | number | boolean | null> = {};
+  for (const [key, value] of Object.entries(meta)) {
+    if (value !== undefined) {
+      normalized[key] = value;
+    }
+  }
+
+  return Object.freeze(normalized);
 }
 
 async function executeSearchToolLoop<TResult>(

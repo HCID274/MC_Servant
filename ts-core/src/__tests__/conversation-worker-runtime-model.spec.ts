@@ -49,12 +49,16 @@ function createCompositeChatTriage() {
 function createCompositeTaskTriage(input: {
   readonly priority: ConversationPriority;
   readonly reason: string;
+  readonly needs_memory_search?: boolean;
 }) {
   return createConversationCompositeTriage({
     action: {
       intent: "task",
       priority: input.priority,
       reason: input.reason,
+      ...(input.needs_memory_search === undefined
+        ? {}
+        : { needs_memory_search: input.needs_memory_search }),
     },
   });
 }
@@ -2293,6 +2297,66 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       exec_type: "code",
       priority: "normal",
     });
+  });
+
+  it("明确动作进入 plan 时不应把 search 工具传给 planner，历史引用才允许传入", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const searchToolStates: boolean[] = [];
+    let needsSearch = false;
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createCompositeTaskTriage({
+            priority: ConversationPriority.Normal,
+            reason: needsSearch ? "owner_referenced_history" : "explicit_mine_action",
+            needs_memory_search: needsSearch,
+          }),
+        environmentSnapshotProvider: () => createEnvironmentSnapshotFixture([]),
+        brainSearchTool: async () => ({ hits: [] }),
+        planner: async (input) => {
+          searchToolStates.push(input.search_tool !== undefined);
+
+          return {
+            code: 'await reply("收到"); const task = await runGoal("挖石头", async () => {}); await report(task);',
+          };
+        },
+        enqueueExecTaskSink: async () => undefined,
+        broadcastReplySink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    for (const [messageId, shouldSearch] of [
+      ["msg-explicit-mine", false],
+      ["msg-history-flow", true],
+    ] as const) {
+      needsSearch = shouldSearch;
+      await processor?.({
+        data: createConversationWorkerTask({
+          bot_id: "bot-cw",
+          message: {
+            bot_id: "bot-cw",
+            message_id: messageId,
+            content: shouldSearch ? "按以前流程挖矿" : "挖1个石头",
+            intent_epoch: shouldSearch ? 13 : 12,
+            snapshot_ts: 111,
+          },
+        }),
+      });
+    }
+
+    expect(searchToolStates).toEqual([false, true]);
   });
 
   it("应按 cancel（取消）→chat（闲聊）→action（动作） 顺序派发 composite triage（复合分诊）", async () => {

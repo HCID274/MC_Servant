@@ -43,6 +43,14 @@
 
 (从这里开始,Reviewer C 通过任务后追加)
 
+## T-071B | 2026-05-07 | ReportLLM（汇报大语言模型）终态润色与 terrain goTo/mine（地形移动/挖掘）实服返修
+
+- 涉及模块: workers（工作线程） TaskResultReporter（任务结果汇报器）/TaskResultSummary（任务结果摘要）,conversation/llm（对话大语言模型） report stage（汇报阶段）/prompt（提示词）/diagnostics（诊断）,app entrypoint（应用入口）,runtime/transport（运行时传输层） mine（挖掘）/goTo（移动）/terrain router（地形路由）/terrain action executor（地形动作执行器）/mine fact reader（挖掘事实读取器）,相关回归测试
+- A 拆解依据: 用户要求 T-071 在任务完成、失败或中断后由 ReportLLM（汇报大语言模型）在不篡改 result_summary（结果摘要）事实的前提下润色终态汇报,LLM（大语言模型）不可用或事实校验失败时回退确定性模板;后续实服连续打回暴露 mine（挖掘）石头路径、goTo（移动）从矿坑返回、Mineflayer（Minecraft 客户端库） 垫高 timing（时机）不稳定等 runtime/transport（运行时传输层）问题,用户明确要求先修底层移动/挖掘能力并实机验证
+- C 审查结论: 曾打回 1 次。首轮 ReportLLM（汇报大语言模型）实现本身具备模板先行、短文本事实校验、report 阶段 diagnostics（诊断）与 fallback（回退）,但 runtime（运行时）返修里新增的 `mine-bfs`（挖掘 BFS）/`terrain-router`（地形路由）/executor（执行器） 直接散落 `air/lava/bedrock`（空气/岩浆/基岩） 等 MC（Minecraft）方块事实判断,属于"测试绿、工程规范红";返修后方块事实收敛到 `MineBlockFactReader`（挖掘方块事实读取器）,`mine-bfs`/`terrain-router`/`mine-action-executor`/`terrain-action-executor` 只消费 `isAirBlock`/`isHazardBlock`/`isSupportBlock`/`isDiggableBlock`（空气/危险/支撑/可挖判断）抽象。当前 `git diff --check`（差异空白检查）通过,定向 Vitest（测试框架）2 个文件 68 个 test（测试）通过,`bash scripts/pre_review.sh`（评审前预检脚本）全绿,35 个 test file（测试文件）/414 passed（通过）/8 skipped（跳过）;B 已补真实本地 OpenAI compatible API（OpenAI 兼容接口） report（汇报）成功/超时回退验证,并实机验证 `[svs]挖1个石头` 与垫高 timing（时机）队列
+- 关键决策: 选择"确定性模板 -> ReportLLM 润色 -> required_facts（必保事实）校验 -> 回退模板"而不是让 LLM（大语言模型）直接生成终态事实;选择用自研 terrain router（地形路由）接管 goTo（移动）中的 walk/drop1/jumpUp/placeUp1/digWalk/digStep（行走/一格下落/跳上一格/垫高/挖通/阶梯挖）动作,不再依赖 mineflayer-pathfinder（Minecraft 寻路库）的一格塔;选择把方块事实集中在 `mine-block-facts.ts`（挖掘方块事实适配器）而不是在多个 planner/executor（规划器/执行器）里复制判断
+- 架构冲突: 无
+
 ## T-070B | 2026-05-06 | runGoal（目标运行）/until（完成条件）/report（汇报）任务生命周期闭环
 
 - 涉及模块: sandbox（沙箱） execution（执行器）/contracts（契约）,core-ports/skills（技能端口）,workers（工作线程） TaskResultSummary（任务结果摘要）/TaskResultReporter（任务结果汇报器）,conversation/llm（对话大语言模型） plan prompt（规划提示词）/parser（解析器）/stage（阶段执行器）/client（客户端）,runtime/transport（运行时传输层） movement policy（移动策略）/goTo（移动）/collect（捡拾）/dig-block（按坐标挖掘）/mine queue（挖掘队列）,相关回归测试

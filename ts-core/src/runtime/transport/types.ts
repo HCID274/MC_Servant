@@ -174,6 +174,8 @@ export interface MineflayerRegistryBlockFact {
   readonly boundingBox?: string;
   /** 材质分类。 */
   readonly material?: string;
+  /** 破坏硬度，来自 minecraft-data，用于选择低成本临时垫材。 */
+  readonly hardness?: number;
   /** 是否为坠落方块。 */
   readonly falling?: boolean;
   /** 可采集工具 id 集合。 */
@@ -287,6 +289,16 @@ export interface MineflayerPlacementPort {
     referenceBlock: MineflayerBlockHandle,
     faceVector: MineflayerVec3Like,
   ): void | Promise<void>;
+  /** Mineflayer 内部放置原语：允许控制 forceLook，同时保留 blockUpdate 确认。 */
+  _placeBlockWithOptions?(
+    referenceBlock: MineflayerBlockHandle,
+    faceVector: MineflayerVec3Like,
+    options: {
+      readonly forceLook?: boolean | "ignore";
+      readonly swingArm?: "right" | "left";
+      readonly showHand?: boolean;
+    },
+  ): unknown | Promise<unknown>;
 }
 
 /** Mineflayer（Minecraft 协议客户端） 合成能力端口。 */

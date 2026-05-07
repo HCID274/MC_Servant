@@ -424,7 +424,6 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
   const conversationBotWorkerActionSink = createConversationBotWorkerActionSink({
     recentContextStore,
   });
-  const taskResultReporter = createTaskResultReporter();
   const userAppendRealtimeEvent = input.dependencies?.services?.appendRealtimeEvent;
   const appendOnlineRealtimeEvent = async (
     event: Omit<RealtimeEventEnvelope, "seq">,
@@ -463,6 +462,9 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     },
     input.write,
   );
+  const taskResultReporter = createTaskResultReporter({
+    ...(onlineLlmClient === undefined ? {} : { reportLlm: onlineLlmClient }),
+  });
   const onlineTriage =
     input.dependencies?.conversationWorker?.triage ??
     createOnlineConversationTriage(onlineLlmClient);
@@ -802,7 +804,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
           });
           await conversationBotWorkerActionSink(action);
 
-          const taskResultReport = taskResultReporter.consume(action);
+          const taskResultReport = await taskResultReporter.consume(action);
           if (taskResultReport !== null) {
             try {
               await createdRuntime.actor.broadcastReply({
@@ -1779,6 +1781,7 @@ function createOnlineInterfaceStatusSnapshot<TBotId extends string>(input: {
         readonly world_ready?: boolean;
       }
     | undefined;
+  const observationInput = input.runtime?.transport.readObservationInput();
 
   return createInterfaceBotStatusSnapshot({
     bot_id: input.bootstrap.bot_id,
@@ -1795,6 +1798,9 @@ function createOnlineInterfaceStatusSnapshot<TBotId extends string>(input: {
             ...(transportSnapshot.username === undefined
               ? {}
               : { username: transportSnapshot.username }),
+            ...(observationInput?.bot.position === undefined
+              ? {}
+              : { position: observationInput.bot.position }),
           },
         }),
     workers: {

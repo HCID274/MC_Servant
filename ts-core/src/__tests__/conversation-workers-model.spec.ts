@@ -74,6 +74,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
         intent: "task",
         priority: "urgent",
         reason: "继续规划新动作",
+        needs_memory_search: true,
       },
     });
 
@@ -87,6 +88,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
         intent: "task",
         priority: "urgent",
         reason: "继续规划新动作",
+        needs_memory_search: true,
       },
     });
     expect(() =>
@@ -139,6 +141,19 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     if (taskRoute.kind !== "plan_exec") {
       throw new Error("expected plan_exec route");
     }
+    expect(taskRoute.needs_memory_search).toBe(false);
+    const memoryTaskRoute = createConversationRouteDecision({
+      triage: createMessageTriage({
+        intent: "task",
+        priority: "normal",
+        reason: "owner_referenced_history",
+      }),
+      message: "按以前流程挖矿",
+      has_active_task: false,
+      needs_memory_search: true,
+    });
+    expect(memoryTaskRoute.kind).toBe("plan_exec");
+    expect(memoryTaskRoute.needs_memory_search).toBe(true);
     const cancelActions = createConversationWorkerActions({
       bot_id: "bot-008",
       route: cancelRoute,

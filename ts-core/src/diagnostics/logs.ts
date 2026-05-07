@@ -24,6 +24,7 @@ import {
   type LlmCallMetrics,
   type LlmDiagnosticSummary,
   type LlmJsonlLine,
+  type LlmLogStage,
   type SandboxExperienceDraft,
   type SandboxExperienceErrorSummary,
   type SandboxJsonlLine,
@@ -339,7 +340,7 @@ export function createSandboxCodeRef(input: { date: string; job_id: string }): s
  */
 export function createLlmLogRef(input: {
   date: string;
-  stage: "triage" | "chat" | "plan" | "brain";
+  stage: LlmLogStage;
   message_id: string;
 }): string {
   return createDatedStorageRef({

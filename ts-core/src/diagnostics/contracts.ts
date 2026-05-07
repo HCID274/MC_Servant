@@ -450,7 +450,7 @@ export type SandboxJsonlLine =
   | SandboxTerminalJsonlLine;
 
 /** llm（大语言模型） 通道当前声明的调用阶段。 */
-export const LLM_LOG_STAGES = ["triage", "chat", "plan", "brain"] as const;
+export const LLM_LOG_STAGES = ["triage", "chat", "plan", "report", "brain"] as const;
 
 /** llm（大语言模型） 通道调用阶段联合类型。 */
 export type LlmLogStage = (typeof LLM_LOG_STAGES)[number];
@@ -569,6 +569,14 @@ export interface LlmMetaJsonlLine {
     ok: boolean;
     /** 分段性能指标。 */
     metrics?: LlmCallMetrics;
+    /** 输入事实摘要；当前仅 report 阶段写入。 */
+    input_fact_summary?: string;
+    /** 输出摘要；当前仅 report 阶段写入。 */
+    output_summary?: string;
+    /** 是否回退确定性模板；当前仅 report 阶段写入。 */
+    fallback?: boolean;
+    /** 回退原因；当前仅 report 阶段写入。 */
+    fallback_reason?: string;
   }>;
   /** 失败错误摘要。 */
   readonly err?: JsonlErrorSnapshot;

@@ -34,6 +34,8 @@ export function createTaskResultSummaryFromSkillResult(
         completed_count: 1,
         world_key: result.world_key,
         ...createDurationField(options),
+        ...(result.diagnostics === undefined ? {} : { diagnostics: result.diagnostics }),
+        details: { total_steps: result.total_steps },
       });
     case "mine": {
       const inventoryDelta = createInventoryDelta(
@@ -595,11 +597,17 @@ function readSandboxSkillResult(value: unknown): TaskResultSummary | null {
     }
     case "goTo": {
       const worldKey = readOptionalString(value.world_key);
+      const diagnostics = readStringArray(value.diagnostics);
+      const totalSteps = readNumber(value.total_steps);
       return createTaskResultSummary({
         task_type: ExecutionTaskKind.Code,
         operation: "goTo",
         completed_count: 1,
         ...(worldKey === undefined ? {} : { world_key: worldKey }),
+        ...(diagnostics === undefined ? {} : { diagnostics }),
+        details: {
+          ...(totalSteps === undefined ? {} : { total_steps: totalSteps }),
+        },
       });
     }
     default:
@@ -630,6 +638,14 @@ function readCollectedCount(value: unknown): number | undefined {
 
 function readOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function readStringArray(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const strings = value.filter((item): item is string => typeof item === "string");
+  return strings.length === 0 ? undefined : Object.freeze(strings);
 }
 
 function readNumber(value: unknown): number | undefined {
