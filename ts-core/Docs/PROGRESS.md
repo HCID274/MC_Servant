@@ -83,6 +83,14 @@
 - 关键决策: 选择把恢复链 ID 与重规划次数作为隐藏元数据沿既有 `ExecJob -> lifecycle event -> enqueue_brain -> recent context` 通道透传,而不是把链路状态写进 prompt 文本、PG schema、event_log 或额外生产门禁;Failure Capsule 渲染仍只暴露最小失败事实和 retry guard,生产指标汇总只消费 JSONL 契约事件
 - 架构冲突: 无
 
+## T-078R/T-079R | 2026-05-07 | 生产指标汇总脚本与固定样本 benchmark 降级
+
+- 涉及模块: diagnostics（诊断） production metrics report（生产指标报告） 与汇总函数,scripts/metrics（指标脚本）,scripts/eval（固定样本 benchmark 脚本）,data contracts（数据契约） eval metric 名称,Docs/07_EVAL_SPEC.md（评测与生产指标规格）,package scripts（命令入口）
+- A 拆解依据: 用户明确新主线为“生产指标自动落盘 + 汇总脚本”,要求 T-078R 读取生产指标 JSONL,按时间窗口、模型、prompt 版本、任务类型汇总所有语义化指标,输出控制台表格、汇总 JSON 和可贴进简历的中文摘要,支持 `--from`、`--to`、`--bot-id`、`--model`、`--prompt-version`、`--out`;T-079R 要求固定样本主动评测降级为可选 benchmark,不得再自己新建 Mineflayer runtime,执行类 benchmark 只能投递在线队列或在线 API,反事实 token 节省只放在 benchmark 中
+- C 审查结论: 通过。实现新增 `createProductionMetricReport` 与 `pnpm metrics:summary`,默认读取 `logs/metrics/**/production-metrics.jsonl`,在总体、模型、prompt 版本、任务类型四类分组下复用 T-075R/T-076R/T-077R 的 LLM、执行、恢复语义化汇总函数,并输出表格、JSON 文件和中文摘要;固定样本 runner 改为 `pnpm benchmark:llm`,仍保留 `eval:llm` 兼容别名,但输出文案与 metric id 均改成 benchmark 语义名。Reviewer 复核 `pnpm metrics:summary -- --from 2026-05-07 --to 2026-05-07 --out logs/metrics-summary/review-t078r.json` 输出 `production_metric_events=0` 且 JSON schema 为 `ts-core.production-metric-report.v1`;真实 `pnpm benchmark:llm -- --run-id benchmark-review-t079r-live --out logs/eval/benchmark-review-t079r-live.jsonl` 产出 13 行、6 个 attempt、5 个 metric,无 `A1/D1/D2/D3/E2/B1/B2/B3/C1/C2` 旧编号,Plan 超时样本按失败 attempt 记录且 input_tokens 非 0。数据库清理复核显示运行态表 `chat_messages/event_log/task_history/task_events/bot_memory/memory_candidates/memory_audit/task_summaries/session_summaries` 均为 0;基础表当前仅 `bots=1`,不影响本任务生产指标新基线。`git diff --check` 通过,定向 Vitest 2 个文件 12 passed,`pnpm typecheck` 通过,`pnpm lint` 通过,`bash scripts/pre_review.sh` 全绿,37 个 test file /443 passed/8 skipped
+- 关键决策: 选择让汇总脚本只消费生产 JSONL 契约事件并复用既有汇总函数,不反向解析日志文本、不接 PG schema、不接 event_log;固定样本 LLM runner 只保留为回归 benchmark 与反事实 `chat_route_plan_input_token_saved_ratio` 数据来源,不再作为简历主指标来源,也不恢复旧 `eval:execution`/`eval:recovery` in-process harness
+- 架构冲突: 无
+
 ## T-071D | 2026-05-07 | terrain-router 水平挖穿成本与 A* 搜索诊断修复
 
 - 涉及模块: runtime/transport（运行时传输层） terrain-router（地形路由）,runtime Mineflayer（Minecraft 协议客户端）回归测试

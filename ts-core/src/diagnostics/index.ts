@@ -48,3 +48,4 @@ export * from "./task-log-reader.js";
 export * from "./eval-jsonl.js";
 export * from "./production-metrics.js";
 export * from "./production-metrics-summary.js";
+export * from "./production-metrics-report.js";

@@ -22,17 +22,17 @@
 | `attempt` | 单个 LLM case 的调用结果 |
 | `metric` | 从本次 run 的 attempts 汇总出的指标 |
 
-## 3. LLM 离线评测指标
+## 3. 固定样本 benchmark 指标
 
 | id | 含义 | 分母 |
 |---|---|---|
-| A1 | Plan 阶段 `{code}` 严格解析成功率 | `stage=plan` attempts |
-| D1 | Stage 1 Triage 平均延迟 | `stage=triage` attempts |
-| D2 | Stage 2 Plan 平均延迟 | `stage=plan` attempts |
-| D3 | 两阶段路由避免进入 Plan 的输入 token 节省比例估算 | 带 `token_saving_probe` 的 attempts |
-| E2 | Plan 输出触发静态预检或规划门禁失败比例 | `stage=plan` attempts |
+| `plan_code_strict_parse_success_rate` | Plan 阶段 `{code}` 严格解析成功率 | `stage=plan` attempts |
+| `triage_average_latency_ms` | Triage 平均延迟 | `stage=triage` attempts |
+| `plan_average_latency_ms` | Plan 平均延迟 | `stage=plan` attempts |
+| `chat_route_plan_input_token_saved_ratio` | 闲聊不进入 Plan 时避免的输入 token 比例估算 | 带 `token_saving_probe` 的 attempts |
+| `plan_static_precheck_or_planner_gate_failure_rate` | Plan 输出触发静态预检或规划门禁失败比例 | `stage=plan` attempts |
 
-A2 代表早期 baseline Plan 解析成功率；当前没有可比历史数据输入，本阶段不定义、不输出。
+固定样本 runner 只作为可选 benchmark，不作为简历主指标来源；生产简历数据以 `logs/metrics` 汇总为准。
 
 ## 4. 生产指标事件
 
@@ -109,22 +109,42 @@ T-074R 先定义事件契约与自动落盘；B/C 类指标后续从 `logs/metri
 - `case_plan_place_or_goto_owner`
 - `case_report_terminal_summary`
 
-样本负责产生 attempt，A1/D1/D2/D3/E2 负责从一批 attempt 汇总统计；两者不得混用命名。
+样本负责产生 attempt，benchmark 指标负责从一批 attempt 汇总统计；两者不得混用命名。
 
-## 6. 运行命令
+## 6. 生产指标汇总命令
+
+默认读取 `logs/metrics/**/production-metrics.jsonl`：
+
+```bash
+cd ts-core
+pnpm metrics:summary
+```
+
+可选参数：
+
+- `--from <time>`：窗口起点，支持 `YYYY-MM-DD` 或 ISO 时间
+- `--to <time>`：窗口终点，支持 `YYYY-MM-DD` 或 ISO 时间
+- `--bot-id <id>`：只统计指定 Bot
+- `--model <model>`：只统计指定模型的 LLM 事件
+- `--prompt-version <version>`：只统计指定 prompt 版本的 LLM 事件
+- `--out <path>`：写出汇总 JSON
+
+输出包含控制台表格、汇总 JSON 和可贴进简历的中文指标摘要。汇总分组固定包含总体、模型、prompt 版本和任务类型；任务类型由生产事件推导，不新增生产指标契约字段。
+
+## 7. 固定样本 benchmark 命令
 
 默认网关：
 
 ```bash
 cd ts-core
-pnpm eval:llm
+pnpm benchmark:llm
 ```
 
 显式配置：
 
 ```bash
 cd ts-core
-pnpm eval:llm -- --base-url http://127.0.0.1:8045/v1 --api-key sk-local-dev --model bl-auto
+pnpm benchmark:llm -- --base-url http://127.0.0.1:8045/v1 --api-key sk-local-dev --model bl-auto
 ```
 
 可选参数：
@@ -134,13 +154,13 @@ pnpm eval:llm -- --base-url http://127.0.0.1:8045/v1 --api-key sk-local-dev --mo
 - `--run-id <id>`：指定运行编号
 - `--timeout-ms <ms>`：单次 LLM 请求超时
 
-执行链路和失败恢复不再提供主方案 CLI。真实验收路径是启动正常 TS Core app，让生产 ConversationWorker/BotWorker/LLM 链路自然运行，然后检查 `logs/metrics/YYYY-MM-DD/production-metrics.jsonl`。
+`pnpm eval:llm` 暂保留为兼容别名，但文档主入口使用 `benchmark:llm`。执行链路和失败恢复不再提供主方案 CLI。真实验收路径是启动正常 TS Core app，让生产 ConversationWorker/BotWorker/LLM 链路自然运行，然后检查 `logs/metrics/YYYY-MM-DD/production-metrics.jsonl`，再用 `pnpm metrics:summary` 汇总。
 
-## 7. 当前限制
+## 8. 当前限制
 
 - token 统计优先使用 OpenAI-compatible API 返回的 usage；缺失时使用本地近似估算。
-- 延迟统计优先使用 LLM diagnostics metrics；当前 Triage client 不返回 diagnostics，D1 使用 runner wall-clock 计时。
-- D3 是离线估算，表示 chat 类样本不进入 Plan 时避免的固定 Plan prompt 输入 token。
+- 延迟统计优先使用 LLM diagnostics metrics；当前 Triage client 不返回 diagnostics，benchmark 中的 Triage 延迟使用 runner wall-clock 计时。
+- `chat_route_plan_input_token_saved_ratio` 是离线估算，表示 chat 类样本不进入 Plan 时避免的固定 Plan prompt 输入 token。
 - LLM runner 不执行 sandbox 代码，只对 Plan 输出调用现有静态预检和规划门禁。
 - 旧的 `eval:execution` / `eval:recovery` in-process harness 已停用，不能作为 T-074R/T-075R 主验收证据。
 - 生产指标当前不接 PostgreSQL schema，不接 `event_log`，不改外部 API。

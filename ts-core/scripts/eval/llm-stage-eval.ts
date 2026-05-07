@@ -7,10 +7,7 @@ import {
   runConversationLlmEvalCases,
 } from "../../src/conversation/llm/index.js";
 import type { EvalRunConfigSummary } from "../../src/data/contracts/index.js";
-import {
-  parseEvalCaseJsonlLines,
-  serializeEvalJsonlLine,
-} from "../../src/diagnostics/index.js";
+import { parseEvalCaseJsonlLines, serializeEvalJsonlLine } from "../../src/diagnostics/index.js";
 
 const DEFAULT_CASES_PATH = "scripts/eval/cases/llm-stage-cases.jsonl";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8045/v1";
@@ -24,7 +21,9 @@ async function main(): Promise<void> {
   const apiKey = args.api_key ?? process.env.LLM_API_KEY ?? DEFAULT_API_KEY;
   const model = args.model ?? process.env.LLM_MODEL ?? DEFAULT_MODEL;
   const runId = args.run_id ?? createRunId(new Date());
-  const outputPath = resolve(args.out ?? `logs/eval/${new Date().toISOString().slice(0, 10)}/${runId}.jsonl`);
+  const outputPath = resolve(
+    args.out ?? `logs/eval/${new Date().toISOString().slice(0, 10)}/${runId}.jsonl`,
+  );
   const cases = parseEvalCaseJsonlLines(await readFile(casesPath, "utf8"));
   const config = createConversationLlmConfig({
     base_url: baseUrl,
@@ -50,9 +49,9 @@ async function main(): Promise<void> {
 
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, content, "utf8");
-  process.stdout.write(`eval_run_id=${runId}\n`);
-  process.stdout.write(`eval_cases=${cases.length}\n`);
-  process.stdout.write(`eval_output=${outputPath}\n`);
+  process.stdout.write(`benchmark_run_id=${runId}\n`);
+  process.stdout.write(`benchmark_cases=${cases.length}\n`);
+  process.stdout.write(`benchmark_output=${outputPath}\n`);
 }
 
 function parseArgs(args: readonly string[]): Readonly<Record<string, string>> {
@@ -84,6 +83,6 @@ function createRunId(now: Date): string {
 
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`eval_failed=${message}\n`);
+  process.stderr.write(`benchmark_failed=${message}\n`);
   process.exitCode = 1;
 });

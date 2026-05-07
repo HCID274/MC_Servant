@@ -80,7 +80,7 @@ describe("eval runner（离线评测执行器）契约", () => {
     expect(() => parseEvalCaseJsonlLines(content)).toThrow(/line 2/u);
   });
 
-  it("应从 attempts 汇总 A1/D1/D2/D3/E2 且不输出 A2", async () => {
+  it("应从 attempts 汇总语义化 benchmark 指标且不输出旧编号", async () => {
     const cases = [
       createEvalCaseJsonlLine({
         case_id: "case_triage_chat",
@@ -154,13 +154,32 @@ describe("eval runner（离线评测执行器）契约", () => {
     const metrics = lines.filter((line) => line.kind === "metric");
     const attempts = lines.filter((line) => line.kind === "attempt");
 
-    expect(metrics.map((metric) => metric.metric_id)).toEqual(["A1", "D1", "D2", "D3", "E2"]);
-    expect(metrics.some((metric) => metric.metric_id === "A2")).toBe(false);
-    expect(metrics.find((metric) => metric.metric_id === "A1")?.value).toBe(1);
-    expect(metrics.find((metric) => metric.metric_id === "D1")?.value).toBe(10);
-    expect(metrics.find((metric) => metric.metric_id === "D2")?.value).toBe(250);
-    expect(metrics.find((metric) => metric.metric_id === "D3")?.value).toBeGreaterThan(0);
-    expect(metrics.find((metric) => metric.metric_id === "E2")?.value).toBe(0.5);
+    expect(metrics.map((metric) => metric.metric_id)).toEqual([
+      "plan_code_strict_parse_success_rate",
+      "triage_average_latency_ms",
+      "plan_average_latency_ms",
+      "chat_route_plan_input_token_saved_ratio",
+      "plan_static_precheck_or_planner_gate_failure_rate",
+    ]);
+    expect(metrics.some((metric) => /^[A-E][0-9]$/u.test(metric.metric_id))).toBe(false);
+    expect(
+      metrics.find((metric) => metric.metric_id === "plan_code_strict_parse_success_rate")?.value,
+    ).toBe(1);
+    expect(metrics.find((metric) => metric.metric_id === "triage_average_latency_ms")?.value).toBe(
+      10,
+    );
+    expect(metrics.find((metric) => metric.metric_id === "plan_average_latency_ms")?.value).toBe(
+      250,
+    );
+    expect(
+      metrics.find((metric) => metric.metric_id === "chat_route_plan_input_token_saved_ratio")
+        ?.value,
+    ).toBeGreaterThan(0);
+    expect(
+      metrics.find(
+        (metric) => metric.metric_id === "plan_static_precheck_or_planner_gate_failure_rate",
+      )?.value,
+    ).toBe(0.5);
     expect(
       attempts.find((attempt) => attempt.case_id === "case_plan_static_fail")
         ?.static_precheck_failure_type,

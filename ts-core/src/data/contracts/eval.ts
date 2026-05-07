@@ -60,13 +60,13 @@ export const EVAL_ATTEMPT_STATUSES = ["passed", "failed", "error"] as const;
 /** attempt 终态联合。 */
 export type EvalAttemptStatus = (typeof EVAL_ATTEMPT_STATUSES)[number];
 
-/** 固定指标编号。A2 依赖历史 baseline，本阶段不输出。 */
+/** 固定样本 benchmark 指标名。主动 benchmark 不再输出简历编号。 */
 export const EVAL_METRIC_IDS = [
-  "A1",
-  "D1",
-  "D2",
-  "D3",
-  "E2",
+  "plan_code_strict_parse_success_rate",
+  "triage_average_latency_ms",
+  "plan_average_latency_ms",
+  "chat_route_plan_input_token_saved_ratio",
+  "plan_static_precheck_or_planner_gate_failure_rate",
   "execution_run_count",
   "execution_completion_rate",
   "execution_avg_duration_minutes",

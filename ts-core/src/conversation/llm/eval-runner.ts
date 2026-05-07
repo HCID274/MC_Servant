@@ -106,7 +106,7 @@ function createEvalMetricLines(
   return Object.freeze([
     createEvalMetricJsonlLine({
       run_id: runId,
-      metric_id: "A1",
+      metric_id: "plan_code_strict_parse_success_rate",
       name: "plan_code_strict_parse_success_rate",
       scope: "run",
       value: ratio(
@@ -120,7 +120,7 @@ function createEvalMetricLines(
     }),
     createEvalMetricJsonlLine({
       run_id: runId,
-      metric_id: "D1",
+      metric_id: "triage_average_latency_ms",
       name: "triage_average_latency_ms",
       scope: "run",
       value: average(triageAttempts.map((attempt) => attempt.latency_ms)),
@@ -130,7 +130,7 @@ function createEvalMetricLines(
     }),
     createEvalMetricJsonlLine({
       run_id: runId,
-      metric_id: "D2",
+      metric_id: "plan_average_latency_ms",
       name: "plan_average_latency_ms",
       scope: "run",
       value: average(planAttempts.map((attempt) => attempt.latency_ms)),
@@ -140,8 +140,8 @@ function createEvalMetricLines(
     }),
     createEvalMetricJsonlLine({
       run_id: runId,
-      metric_id: "D3",
-      name: "two_stage_route_estimated_input_token_saving_ratio",
+      metric_id: "chat_route_plan_input_token_saved_ratio",
+      name: "chat_route_plan_input_token_saved_ratio",
       scope: "run",
       value: ratio(d3SavedTokens, d3BaselineTokens),
       numerator: d3SavedTokens,
@@ -150,7 +150,7 @@ function createEvalMetricLines(
     }),
     createEvalMetricJsonlLine({
       run_id: runId,
-      metric_id: "E2",
+      metric_id: "plan_static_precheck_or_planner_gate_failure_rate",
       name: "plan_static_precheck_or_planner_gate_failure_rate",
       scope: "run",
       value: ratio(planGateFailures.length, planAttempts.length),
@@ -477,7 +477,7 @@ function estimateMessageTokens(messages: readonly { readonly content: string }[]
   return estimateTokenCount(messages.map((message) => message.content).join("\n"));
 }
 
-/** 本地近似 token 计数只用于无 usage 回退和 D3 离线路由节省估算。 */
+/** 本地近似 token 计数只用于无 usage 回退和 benchmark 路由节省估算。 */
 export function estimateTokenCount(content: string): number {
   const asciiChars = [...content].filter((char) => char.charCodeAt(0) <= 0x7f).length;
   const nonAsciiChars = [...content].length - asciiChars;
