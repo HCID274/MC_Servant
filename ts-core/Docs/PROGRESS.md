@@ -115,6 +115,14 @@
 - 关键决策: 选择"确定性模板 -> ReportLLM 润色 -> required_facts（必保事实）校验 -> 回退模板"而不是让 LLM（大语言模型）直接生成终态事实;选择用自研 terrain router（地形路由）接管 goTo（移动）中的 walk/drop1/jumpUp/placeUp1/digWalk/digStep（行走/一格下落/跳上一格/垫高/挖通/阶梯挖）动作,不再依赖 mineflayer-pathfinder（Minecraft 寻路库）的一格塔;选择把方块事实集中在 `mine-block-facts.ts`（挖掘方块事实适配器）而不是在多个 planner/executor（规划器/执行器）里复制判断
 - 架构冲突: 无
 
+## T-080 | 2026-05-07 | mine/goTo 脚位移动内核收敛与挖矿掉落恢复
+
+- 涉及模块: runtime/transport（运行时传输层） foot-step/mine-action-executor/terrain-action-executor/mine-bfs/mine,skills（技能层） mine,app bootstrap（应用装配）,conversation triage（对话分诊） prompt 与确定性归一化,workers（工作线程） ConversationWorker runtime,相关回归测试
+- A 拆解依据: 用户实服发现 `[svs]去挖10个石头,然后回来` 连续暴露 not_equipped 误失败、mine 旧移动底盘跑飞、下挖脚位水平到位但 Y 未落下、180 度折返矿道、固定 8 次挖掘上限导致 7/10 停止、掉落物偏到矿洞另一侧后 `await mine(...)` 没有按背包 diff 继续完成等问题;用户明确要求按第一性原理查决定性证据,修复要优雅、符合 SOLID/DRY,不能把 MC 事实硬编码回代码或 prompt,并保留 `mine`/`goTo` 两个对外高内聚接口、只合并底层重复地形执行能力
+- C 审查结论: 通过。实现删除 skill 层 `stone -> pickaxe` 工具硬编码,工具准备回到 runtime `mine-tool-policy` 基于 Mineflayer registry/minecraft-data 的事实策略;新增 `foot-step.ts` 作为共享脚位移动原语,`mine-action-executor`、`terrain-action-executor` 与 mine legacy 队列移动都改为脉冲移动、越界保护、Y 匹配后才允许判定抵达,并保留 digStepDown 的 jump 语义;`mine-bfs` 禁止连续 180 度反向扩展且 state key 纳入方向;动态 mine 最大尝试数随请求数量增长;`skills/mine.ts` 在 `drop_not_obtained` 且 runtime 提供 `expected_drop_name/current_position` 时调用既有 collect,再按真实背包增量计算剩余数量续挖。Reviewer 复核没有新增 PG schema/event_log/API 变更,没有在 prompt 或 skill 写死掉落事实;`git diff --check` 通过,定向 Vitest 4 个文件 141 passed,`pnpm typecheck` 通过,`pnpm lint` 通过,`bash scripts/pre_review.sh` 全绿,37 个 test file /450 passed/8 skipped。真实生产日志 `e3c2fe58-2caf-49c7-bb29-0276bf9169c1` 显示 triage 只输出 action,Plan 解析通过,`task.completed` 且 `step_count=4`,report 事实为 `cobblestone x10` 并返回主人,耗时约 34s
+- 关键决策: 选择保留 `goTo(...)` 与 `mine(...)` 两个业务接口,避免把调用方暴露给复杂地形动作细节;只把两者共同的“走到目标 foot block”执行内核抽为 `stepToFoot`,让 DRY 发生在同一变化原因的底层移动能力上。选择让 mine skill 编排 `mine -> collect -> 剩余数量续挖`,但掉落名和位置只从 runtime 结构化错误读取,不在 skill 层维护 Minecraft 掉落百科;背包容量满或 collect 无增量仍按结构化失败暴露给恢复链路
+- 架构冲突: 无
+
 ## T-070B | 2026-05-06 | runGoal（目标运行）/until（完成条件）/report（汇报）任务生命周期闭环
 
 - 涉及模块: sandbox（沙箱） execution（执行器）/contracts（契约）,core-ports/skills（技能端口）,workers（工作线程） TaskResultSummary（任务结果摘要）/TaskResultReporter（任务结果汇报器）,conversation/llm（对话大语言模型） plan prompt（规划提示词）/parser（解析器）/stage（阶段执行器）/client（客户端）,runtime/transport（运行时传输层） movement policy（移动策略）/goTo（移动）/collect（捡拾）/dig-block（按坐标挖掘）/mine queue（挖掘队列）,相关回归测试

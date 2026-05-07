@@ -4,12 +4,12 @@
  * 超时直接抛错，由外层 mine.ts 处理。
  */
 import { Vec3 } from "vec3";
+import { isFootStepBotAtFoot, stepToFoot } from "./foot-step.js";
 import type { MineBlockPos, MineRouteAction } from "./mine-bfs.js";
 import type { MineBlockFactReader } from "./mine-block-facts.js";
 import { prepareHandForMineDig } from "./mine-tool-policy.js";
 import type {
   MineflayerBlockHandle,
-  MineflayerControlState,
   MineflayerInventoryPort,
   MineflayerMiningPort,
   MineflayerMovementPort,
@@ -39,43 +39,74 @@ export async function executeMineRouteAction(input: {
 }): Promise<void> {
   switch (input.action.kind) {
     case "walk":
-      await stepForward(input.bot, input.action.toFoot, { jump: false }, MOVE_TIMEOUT_MS);
+      await stepForward(
+        input.bot,
+        input.action.toFoot,
+        { jump: false, kind: input.action.kind },
+        MOVE_TIMEOUT_MS,
+        input.diagnostics,
+      );
       return;
     case "drop1":
-      await stepForward(input.bot, input.action.toFoot, { jump: false }, DROP_TIMEOUT_MS);
+      await stepForward(
+        input.bot,
+        input.action.toFoot,
+        { jump: false, kind: input.action.kind },
+        DROP_TIMEOUT_MS,
+        input.diagnostics,
+      );
       return;
     case "jumpUp":
-      await stepForward(input.bot, input.action.toFoot, { jump: true }, MOVE_TIMEOUT_MS);
+      await stepForward(
+        input.bot,
+        input.action.toFoot,
+        { jump: true, kind: input.action.kind },
+        MOVE_TIMEOUT_MS,
+        input.diagnostics,
+      );
       return;
     case "digWalk":
       for (const dig of input.action.digs) {
         await digSingleBlock(input.bot, input.facts, dig, input.diagnostics);
       }
-      await stepForward(input.bot, input.action.toFoot, { jump: false }, MOVE_TIMEOUT_MS);
+      await stepForward(
+        input.bot,
+        input.action.toFoot,
+        { jump: false, kind: input.action.kind },
+        MOVE_TIMEOUT_MS,
+        input.diagnostics,
+      );
       return;
     case "digStepDown":
       for (const dig of input.action.digs) {
         await digSingleBlock(input.bot, input.facts, dig, input.diagnostics);
       }
-      await stepForward(input.bot, input.action.toFoot, { jump: true }, DROP_TIMEOUT_MS);
+      await stepForward(
+        input.bot,
+        input.action.toFoot,
+        { jump: true, kind: input.action.kind },
+        DROP_TIMEOUT_MS,
+        input.diagnostics,
+      );
       return;
     case "digStepUp":
       for (const dig of input.action.digs) {
         await digSingleBlock(input.bot, input.facts, dig, input.diagnostics);
       }
-      await stepForward(input.bot, input.action.toFoot, { jump: true }, MOVE_TIMEOUT_MS);
+      await stepForward(
+        input.bot,
+        input.action.toFoot,
+        { jump: true, kind: input.action.kind },
+        MOVE_TIMEOUT_MS,
+        input.diagnostics,
+      );
       return;
   }
 }
 
 /** 判定 bot 是否已抵达目标 foot block 的中心格区。 */
 export function isBotAtFoot(bot: MineActionBot, target: MineBlockPos): boolean {
-  const pos = bot.entity?.position;
-  if (pos === undefined) return false;
-  return (
-    Math.hypot(pos.x - (target.x + 0.5), pos.z - (target.z + 0.5)) <= 0.8 &&
-    Math.abs(pos.y - target.y) <= 0.75
-  );
+  return isFootStepBotAtFoot(bot, target);
 }
 
 async function digSingleBlock(
@@ -116,44 +147,24 @@ async function digSingleBlock(
 async function stepForward(
   bot: MineActionBot,
   target: MineBlockPos,
-  options: { readonly jump: boolean },
+  options: { readonly jump: boolean; readonly kind: MineRouteAction["kind"] },
   timeoutMs: number,
+  diagnostics: string[],
 ): Promise<void> {
-  if (isBotAtFoot(bot, target)) return;
-  if (typeof bot.setControlState !== "function") {
-    throw new Error("mine_control_unavailable:setControlState");
-  }
-
-  const startedAt = Date.now();
-  const controls: MineflayerControlState[] = ["forward"];
-  if (options.jump) controls.push("jump");
-
-  try {
-    await withMineActionTimeout(
-      Promise.resolve(bot.lookAt?.(centerOfFootTarget(target), true)),
-      LOOK_TIMEOUT_MS,
-      `mine_look_timeout:move:${posLabel(target)}`,
-    );
-    for (const control of controls) bot.setControlState(control, true);
-
-    while (!isBotAtFoot(bot, target)) {
-      if (Date.now() - startedAt >= timeoutMs) {
-        throw new Error(`mine_step_timeout:${posLabel(target)}`);
-      }
-      await delay(POLL_MS);
-    }
-  } finally {
-    for (const control of controls) bot.setControlState(control, false);
-    bot.clearControlStates?.();
-  }
+  await stepToFoot({
+    bot,
+    target,
+    jump: options.jump,
+    timeoutMs,
+    lookTimeoutMs: LOOK_TIMEOUT_MS,
+    diagnosticPrefix: "mine",
+    actionKind: options.kind,
+    diagnostics,
+  });
 }
 
 function centerOfBlock(pos: MineBlockPos): Vec3 {
   return new Vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5);
-}
-
-function centerOfFootTarget(pos: MineBlockPos): Vec3 {
-  return new Vec3(pos.x + 0.5, pos.y + 1, pos.z + 0.5);
 }
 
 function posLabel(pos: MineBlockPos): string {

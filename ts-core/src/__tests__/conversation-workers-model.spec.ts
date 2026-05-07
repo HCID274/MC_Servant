@@ -24,6 +24,7 @@ import {
   createTaskEventDraft,
   createWorkerQueueCatalog,
   ensureReplyEndsWithMeow,
+  normalizeConversationCompositeTriageForMessage,
   shouldSearchConversationMemory,
 } from "../index.js";
 
@@ -96,6 +97,53 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
         chat: Object.fromEntries([["content", "知道了"]]) as Record<string, never>,
       }),
     ).toThrow(/chat must be an empty object/);
+  });
+
+  it("应丢弃普通新任务里 LLM 误带的 composite cancel（复合取消）", () => {
+    const noisy = createConversationCompositeTriage({
+      cancel: {
+        reason: "误判为重置当前状态",
+        priority: "interrupt",
+      },
+      action: {
+        intent: "task",
+        priority: ConversationPriority.Urgent,
+        reason: "挖石头后回来",
+      },
+    });
+    const normalized = normalizeConversationCompositeTriageForMessage({
+      triage: noisy,
+      message: "去挖10个石头,然后回来",
+    });
+
+    expect(normalized).toEqual({
+      action: {
+        intent: "task",
+        priority: ConversationPriority.Urgent,
+        reason: "挖石头后回来",
+      },
+    });
+  });
+
+  it("应保留明确中断语义里的 composite cancel（复合取消）", () => {
+    const triage = createConversationCompositeTriage({
+      cancel: {
+        reason: "用户要求先停下当前任务",
+        priority: "interrupt",
+      },
+      action: {
+        intent: "task",
+        priority: ConversationPriority.Urgent,
+        reason: "回到主人身边",
+      },
+    });
+
+    expect(
+      normalizeConversationCompositeTriageForMessage({
+        triage,
+        message: "停下当前任务，然后回来",
+      }),
+    ).toBe(triage);
   });
 
   it("应让 Plan（规划） 唯一 code（代码）形态对齐执行契约", () => {

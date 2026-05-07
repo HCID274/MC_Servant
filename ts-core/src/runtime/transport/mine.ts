@@ -5,6 +5,7 @@ import {
   type MineSkillTargetCandidate,
   createMineSkillExecutionResult,
 } from "../../core-ports/skills.js";
+import { stepToFoot } from "./foot-step.js";
 import { executeMineRouteAction, isBotAtFoot } from "./mine-action-executor.js";
 import { type MineBlockPos, type MineRouteTarget, planMineRoute } from "./mine-bfs.js";
 import { type MineBlockFactReader, createMineBlockFactReader } from "./mine-block-facts.js";
@@ -12,7 +13,6 @@ import { type PlannedMineAction, planMineQueueWithDiagnostics } from "./mine-que
 import { prepareHandForMineDig } from "./mine-tool-policy.js";
 import type {
   MineflayerBlockHandle,
-  MineflayerControlState,
   MineflayerInventoryPort,
   MineflayerMiningPort,
   MineflayerMovementPort,
@@ -33,7 +33,7 @@ const MINE_SETTLE_MS = 250;
 const MINE_DIG_TIMEOUT_MS = 10_000;
 const MINE_LOOK_TIMEOUT_MS = 3_000;
 const MINE_LEGACY_STEP_TIMEOUT_MS = 5_000;
-const MINE_LEGACY_POLL_MS = 50;
+const MINE_POLL_MS = 50;
 const SCAN_RADIUS = 16;
 const SCAN_COUNT = 32;
 const POST_DIG_VERIFY_TIMEOUT_MS = 1_000;
@@ -88,7 +88,7 @@ async function executeWithDynamicScan(ctx: ExecutionContext): Promise<MineSkillE
   let attempts = 0;
   let lastCollected = 0;
   let stagnantAttempts = 0;
-  const maxAttempts = Math.min(Math.max(ctx.params.count + 2, 4), 8);
+  const maxAttempts = Math.min(Math.max(ctx.params.count + 4, 4), 64);
   const maxStagnant = 2;
 
   while (collected < ctx.params.count && attempts < maxAttempts) {
@@ -227,14 +227,14 @@ async function executeWithSuppliedTargets(
   for (const action of queue.actions) {
     if (action.kind === "move") {
       if (isBotAtFoot(ctx.bot, action.pos)) continue;
-      await legacyMoveWithinMinedStair(ctx.bot, action.pos);
+      await legacyMoveWithinMinedStair(ctx.bot, action.pos, diagnostics);
       totalSteps += 1;
       continue;
     }
 
     const standingPos = action.standingPos;
     if (standingPos !== undefined && !isBotAtFoot(ctx.bot, standingPos)) {
-      await legacyMoveWithinMinedStair(ctx.bot, standingPos);
+      await legacyMoveWithinMinedStair(ctx.bot, standingPos, diagnostics);
       totalSteps += 1;
     }
 
@@ -453,7 +453,7 @@ async function legacySweepDrops(input: {
     }
 
     try {
-      await legacyMoveWithinMinedStair(input.bot, pickupPos);
+      await legacyMoveWithinMinedStair(input.bot, pickupPos, input.diagnostics);
       await delay(150);
     } catch (error) {
       input.diagnostics.push(`pickup_sweep_failed:${getErrorMessage(error)}`);
@@ -464,46 +464,25 @@ async function legacySweepDrops(input: {
 async function legacyMoveWithinMinedStair(
   bot: MineflayerMineInventoryPort,
   target: { readonly x: number; readonly y: number; readonly z: number },
+  diagnostics: string[],
 ): Promise<void> {
   if (isBotAtFoot(bot, target)) return;
-  if (typeof bot.setControlState !== "function") {
-    throw new Error("mine_control_unavailable:setControlState");
-  }
 
-  const startedAt = Date.now();
-  const controls: MineflayerControlState[] = ["forward"];
   const startY = bot.entity?.position?.y ?? target.y;
-  if (target.y > startY + 0.25) controls.push("jump");
-
-  try {
-    await legacyTimeout(
-      Promise.resolve(bot.lookAt?.(centerOfFootTarget(target), true)),
-      MINE_LOOK_TIMEOUT_MS,
-      `mine_look_timeout:move:${posLabel(target)}`,
-    );
-    for (const control of controls) bot.setControlState(control, true);
-    while (!isBotAtFoot(bot, target)) {
-      if (Date.now() - startedAt >= MINE_LEGACY_STEP_TIMEOUT_MS) {
-        throw new Error(`mine_step_timeout:${posLabel(target)}`);
-      }
-      await delay(MINE_LEGACY_POLL_MS);
-    }
-  } finally {
-    for (const control of controls) bot.setControlState(control, false);
-    bot.clearControlStates?.();
-  }
+  await stepToFoot({
+    bot,
+    target,
+    jump: target.y > startY + 0.25,
+    timeoutMs: MINE_LEGACY_STEP_TIMEOUT_MS,
+    lookTimeoutMs: MINE_LOOK_TIMEOUT_MS,
+    diagnosticPrefix: "mine",
+    actionKind: "legacyMove",
+    diagnostics,
+  });
 }
 
 function centerOfBlock(pos: { readonly x: number; readonly y: number; readonly z: number }): Vec3 {
   return new Vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5);
-}
-
-function centerOfFootTarget(pos: {
-  readonly x: number;
-  readonly y: number;
-  readonly z: number;
-}): Vec3 {
-  return new Vec3(pos.x + 0.5, pos.y + 1, pos.z + 0.5);
 }
 
 function posLabel(pos: { readonly x: number; readonly y: number; readonly z: number }): string {
@@ -523,7 +502,7 @@ async function waitUntilBlockChanged(
       await delay(150);
       return;
     }
-    await delay(MINE_LEGACY_POLL_MS);
+    await delay(MINE_POLL_MS);
   }
   throw new Error(`mine_dig_no_effect:${originalName}:${posLabel(pos)}`);
 }

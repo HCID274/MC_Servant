@@ -146,15 +146,18 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
     expect(calls).toEqual(["mine:stone:2", "collect:cobblestone:32", "equip:stone_pickaxe:hand"]);
   });
 
-  it("mine（挖掘） stone（石头） 应检查工具并以 cobblestone（圆石） 背包增量完成", async () => {
+  it("mine（挖掘） stone（石头） 应把工具准备交给 runtime（运行时） 并以背包增量完成", async () => {
     const inventory = new Map<string, number>();
+    const calls: string[] = [];
     const mine = createMineSkillExecutor({
-      resourceService: createResourceService(),
-      equipment: {
-        readMainHandItemName: () => "wooden_pickaxe",
-      },
+      resourceService: createResourceService({
+        worldKeyPort: {
+          getCurrentWorldKey: () => "multiworld:resource",
+        },
+      }),
       miner: {
         async mine(params) {
+          calls.push(`mine:${params.blockName}:${params.count}:${params.worldKey}`);
           inventory.set("cobblestone", (inventory.get("cobblestone") ?? 0) + params.count);
           return createMineSkillExecutionResult(params, {
             world_key: "multiworld:resource",
@@ -176,18 +179,96 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
       mined_count: 2,
       diagnostics: ["stair_bfs_phase:no_fill", "mine_completed_by_inventory_diff"],
     });
+    expect(calls).toEqual(["mine:stone:2:multiworld:resource"]);
   });
 
-  it("mine（挖掘） 应在工具未装备或掉落未进入背包时结构化失败", async () => {
-    const inventory = new Map<string, number>();
-    const createMine = (tool: string | null) =>
+  it("mine（挖掘） 在掉落物未进背包时应先 collect（捡拾） 再按剩余数量续挖", async () => {
+    const inventory = new Map<string, number>([["cobblestone", 56]]);
+    const calls: string[] = [];
+    const mine = createMineSkillExecutor({
+      resourceService: createResourceService({
+        worldKeyPort: {
+          getCurrentWorldKey: () => "multiworld:resource",
+        },
+      }),
+      miner: {
+        async mine(params) {
+          calls.push(`mine:${params.blockName}:${params.count}:${params.worldKey}`);
+          if (calls.filter((call) => call.startsWith("mine:")).length === 1) {
+            throw Object.assign(
+              new Error(
+                "drop_not_obtained:cobblestone:0/10:planned queue completed without enough inventory diff",
+              ),
+              {
+                details: {
+                  expected_drop_name: "cobblestone",
+                  collected_count: 0,
+                  current_position: { x: -29.3, y: 110, z: -236.58 },
+                },
+              },
+            );
+          }
+
+          inventory.set("cobblestone", (inventory.get("cobblestone") ?? 0) + params.count);
+          return createMineSkillExecutionResult(params, {
+            world_key: "multiworld:resource",
+            collected_item_name: "cobblestone",
+            collected_count: params.count,
+            mined_count: params.count,
+            diagnostics: [`mine_retry:${params.count}`],
+            total_steps: params.count,
+          });
+        },
+      },
+      collector: {
+        async collect(params) {
+          calls.push(
+            `collect:${params.itemName}:${params.radius}:${params.center?.x},${params.center?.y},${params.center?.z}`,
+          );
+          inventory.set("cobblestone", (inventory.get("cobblestone") ?? 0) + 2);
+          return createCollectSkillExecutionResult(params, {
+            collected: [{ name: "cobblestone", count: 2 }],
+            total_steps: 1,
+          });
+        },
+      },
+      inventory: {
+        readInventoryItems: () =>
+          Array.from(inventory, ([item_name, count]) => ({
+            item_name,
+            count,
+          })),
+      },
+    });
+
+    await expect(mine({ blockName: "stone", count: 10 })).resolves.toMatchObject({
+      skill: "mine",
+      block_name: "stone",
+      collected_item_name: "cobblestone",
+      collected_count: 10,
+      mined_count: 8,
+      total_steps: 9,
+      diagnostics: expect.arrayContaining([
+        "mine_drop_collect_recovery_gain:cobblestone:2",
+        "mine_completed_by_inventory_diff",
+      ]),
+    });
+    expect(calls).toEqual([
+      "mine:stone:10:multiworld:resource",
+      "collect:cobblestone:16:-29.3,110,-236.58",
+      "mine:stone:8:multiworld:resource",
+    ]);
+  });
+
+  it("mine（挖掘） 应让 runtime（运行时） 处理工具缺失并保留结构化失败", async () => {
+    const createMine = (mode: "not_equipped" | "drop_missing") =>
       createMineSkillExecutor({
         resourceService: createResourceService(),
-        equipment: {
-          readMainHandItemName: () => tool,
-        },
         miner: {
           async mine(params) {
+            if (mode === "not_equipped") {
+              throw new Error(`not_equipped:${params.blockName}:requires_harvest_tool`);
+            }
             return createMineSkillExecutionResult(params, {
               world_key: "multiworld:resource",
               collected_item_name: "cobblestone",
@@ -198,10 +279,10 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
         },
       });
 
-    await expect(createMine(null)({ blockName: "stone", count: 1 })).rejects.toThrow(
-      "not_equipped:stone:main_hand_empty",
+    await expect(createMine("not_equipped")({ blockName: "stone", count: 1 })).rejects.toThrow(
+      "runtime_mine_failed:not_equipped:stone:requires_harvest_tool",
     );
-    await expect(createMine("wooden_pickaxe")({ blockName: "stone", count: 1 })).rejects.toThrow(
+    await expect(createMine("drop_missing")({ blockName: "stone", count: 1 })).rejects.toThrow(
       "drop_not_obtained:cobblestone:0/1",
     );
   });
@@ -209,9 +290,6 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
   it("mine（挖掘） dirt（泥土） 等软方块不应要求主手工具", async () => {
     const mine = createMineSkillExecutor({
       resourceService: createResourceService(),
-      equipment: {
-        readMainHandItemName: () => null,
-      },
       miner: {
         async mine(params) {
           return createMineSkillExecutionResult(params, {
@@ -267,9 +345,6 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
     });
     const mine = createMineSkillExecutor({
       resourceService,
-      equipment: {
-        readMainHandItemName: () => "stone_pickaxe",
-      },
       miner: {
         async mine(params) {
           expect(params).toMatchObject({

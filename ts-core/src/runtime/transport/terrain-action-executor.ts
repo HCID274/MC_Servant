@@ -1,10 +1,10 @@
 import { Vec3 } from "vec3";
+import { isFootStepBotAtFoot, stepToFoot, waitUntilFootReached } from "./foot-step.js";
 import type { MineBlockFactReader } from "./mine-block-facts.js";
 import { prepareHandForMineDig } from "./mine-tool-policy.js";
 import type { TerrainBlockPos, TerrainRouteAction } from "./terrain-router.js";
 import type {
   MineflayerBlockHandle,
-  MineflayerControlState,
   MineflayerInventoryPort,
   MineflayerItemHandle,
   MineflayerMiningPort,
@@ -35,10 +35,6 @@ const POST_PLACE_VERIFY_TIMEOUT_MS = 1_500;
 const DEFAULT_PLACE_UP_DELAYS_MS = Object.freeze([110, 115, 120, 125] as const);
 const PLACE_UP_DELAYS_MS = readPlaceUpDelayQueue(process.env.TERRAIN_PLACE_UP_DELAYS_MS);
 const PLACE_UP_DELAY_STATS = new Map<number, { successes: number; failures: number }>();
-const MOVE_PULSE_MS = 350;
-const MOVE_SETTLE_MS = 120;
-const MOVE_HORIZONTAL_STOP_DISTANCE = 0.45;
-const MOVE_OVERSHOOT_MARGIN = 0.35;
 const CENTER_PULSE_MS = 90;
 
 export async function executeTerrainRouteAction(input: {
@@ -121,12 +117,7 @@ export async function executeTerrainRouteAction(input: {
 }
 
 export function isTerrainBotAtFoot(bot: TerrainActionBot, target: TerrainBlockPos): boolean {
-  const pos = bot.entity?.position;
-  if (pos === undefined) return false;
-  return (
-    isSameFootCell(bot, target) &&
-    Math.hypot(pos.x - (target.x + 0.5), pos.z - (target.z + 0.5)) <= 0.8
-  );
+  return isFootStepBotAtFoot(bot, target);
 }
 
 function isTerrainBotAtFootCenter(bot: TerrainActionBot, target: TerrainBlockPos): boolean {
@@ -224,7 +215,12 @@ async function placeUpOneBlock(
       );
       await placeAttempt;
       await waitUntilPlaced(bot, facts, livePlaceAt);
-      await waitUntilFoot(bot, liveTargetFoot, DROP_TIMEOUT_MS);
+      await waitUntilFootReached({
+        bot,
+        target: liveTargetFoot,
+        timeoutMs: DROP_TIMEOUT_MS,
+        diagnosticPrefix: "terrain",
+      });
       recordPlaceUpDelay(delayMs, "success");
       diagnostics.push(
         `terrain_place_up_attempt:delay=${delayMs};status=success;elapsed_ms=${Date.now() - attemptStartedAt};item=${facts.normalizeName(item.name)};pos=${posLabel(livePlaceAt)}`,
@@ -239,7 +235,12 @@ async function placeUpOneBlock(
       bot.setControlState?.("jump", false);
       await delay(120);
       if (!isEmptyBlock(facts, readMineflayerBlockAt(bot, livePlaceAt))) {
-        await waitUntilFoot(bot, liveTargetFoot, DROP_TIMEOUT_MS);
+        await waitUntilFootReached({
+          bot,
+          target: liveTargetFoot,
+          timeoutMs: DROP_TIMEOUT_MS,
+          diagnosticPrefix: "terrain",
+        });
         recordPlaceUpDelay(delayMs, "success");
         diagnostics.push(
           `terrain_place_up_attempt:delay=${delayMs};status=verified_after_error;elapsed_ms=${Date.now() - attemptStartedAt};pos=${posLabel(livePlaceAt)}`,
@@ -364,74 +365,16 @@ async function stepForward(
   timeoutMs: number,
   diagnostics: string[],
 ): Promise<void> {
-  if (isTerrainBotAtFoot(bot, target)) return;
-  if (typeof bot.setControlState !== "function") {
-    throw new Error("terrain_control_unavailable:setControlState");
-  }
-
-  const controls: MineflayerControlState[] = ["forward"];
-  if (options.jump) controls.push("jump");
-  const startedAt = Date.now();
-  let bestHorizontal = readHorizontalDistance(bot, target);
-  diagnostics.push(
-    `terrain_move_start:${options.kind}:target=${posLabel(target)};from=${positionLabel(bot.entity?.position)};jump=${options.jump}`,
-  );
-
-  try {
-    while (!isTerrainBotAtFoot(bot, target)) {
-      assertMoveNotTimedOut(bot, target, startedAt, timeoutMs, bestHorizontal);
-      await withTerrainActionTimeout(
-        Promise.resolve(bot.lookAt?.(centerOfFootTarget(target), true)),
-        LOOK_TIMEOUT_MS,
-        `terrain_look_timeout:move:${posLabel(target)}`,
-      );
-
-      for (const control of controls) bot.setControlState(control, true);
-      const pulseStartedAt = Date.now();
-      try {
-        while (!isTerrainBotAtFoot(bot, target)) {
-          assertMoveNotTimedOut(bot, target, startedAt, timeoutMs, bestHorizontal);
-          const horizontal = readHorizontalDistance(bot, target);
-          if (horizontal < bestHorizontal) bestHorizontal = horizontal;
-          if (horizontal <= MOVE_HORIZONTAL_STOP_DISTANCE) break;
-          if (horizontal > bestHorizontal + MOVE_OVERSHOOT_MARGIN) break;
-          if (Date.now() - pulseStartedAt >= MOVE_PULSE_MS) break;
-          await delay(POLL_MS);
-        }
-      } finally {
-        for (const control of controls) bot.setControlState(control, false);
-        bot.clearControlStates?.();
-      }
-
-      if (isTerrainBotAtFoot(bot, target)) break;
-      await delay(MOVE_SETTLE_MS);
-    }
-    diagnostics.push(
-      `terrain_move_reached:${options.kind}:target=${posLabel(target)};elapsed_ms=${Date.now() - startedAt};pos=${positionLabel(bot.entity?.position)}`,
-    );
-  } finally {
-    for (const control of controls) bot.setControlState(control, false);
-    bot.clearControlStates?.();
-  }
-}
-
-function assertMoveNotTimedOut(
-  bot: TerrainActionBot,
-  target: TerrainBlockPos,
-  startedAt: number,
-  timeoutMs: number,
-  bestHorizontal: number,
-): void {
-  if (Date.now() - startedAt < timeoutMs) return;
-  throw new Error(
-    `terrain_step_timeout:${posLabel(target)}:current=${positionLabel(bot.entity?.position)};best_horizontal=${bestHorizontal.toFixed(2)}`,
-  );
-}
-
-function readHorizontalDistance(bot: TerrainActionBot, target: TerrainBlockPos): number {
-  const pos = bot.entity?.position;
-  if (pos === undefined) return Number.POSITIVE_INFINITY;
-  return Math.hypot(pos.x - (target.x + 0.5), pos.z - (target.z + 0.5));
+  await stepToFoot({
+    bot,
+    target,
+    jump: options.jump,
+    timeoutMs,
+    lookTimeoutMs: LOOK_TIMEOUT_MS,
+    diagnosticPrefix: "terrain",
+    actionKind: options.kind,
+    diagnostics,
+  });
 }
 
 function positionLabel(
@@ -445,22 +388,6 @@ function positionLabel(
 ): string {
   if (pos === undefined) return "unknown";
   return `${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)}`;
-}
-
-async function waitUntilFoot(
-  bot: TerrainActionBot,
-  target: TerrainBlockPos,
-  timeoutMs: number,
-): Promise<void> {
-  const startedAt = Date.now();
-  while (!isTerrainBotAtFoot(bot, target)) {
-    if (Date.now() - startedAt >= timeoutMs) {
-      throw new Error(
-        `terrain_step_timeout:${posLabel(target)}:current=${positionLabel(bot.entity?.position)}`,
-      );
-    }
-    await delay(POLL_MS);
-  }
 }
 
 function selectPlaceUpItem(bot: TerrainActionBot): MineflayerItemHandle | null {

@@ -264,6 +264,9 @@ function expandSuccessors(
   const fy = node.foot.y;
 
   for (const dir of DIRECTIONS) {
+    if (node.lastDir !== null && isOppositeDirection(node.lastDir, dir)) {
+      continue;
+    }
     const vec = DIR_VEC[dir];
     const turn = node.lastDir !== null && node.lastDir !== dir ? COST_TURN_PENALTY : 0;
     const fx = node.foot.x + vec.dx;
@@ -424,9 +427,10 @@ function findDugTarget(
 
 function stateKey(node: SearchNode): string {
   const foot = positionKey(node.foot);
-  if (node.plannedAir.size === 0) return foot;
+  const dir = node.lastDir ?? "none";
+  if (node.plannedAir.size === 0) return `${foot}:${dir}`;
   const sorted = Array.from(node.plannedAir).sort().join("|");
-  return `${foot}:${node.lastActionKind ?? "none"}#${sorted}`;
+  return `${foot}:${dir}:${node.lastActionKind ?? "none"}#${sorted}`;
 }
 
 function positionKey(pos: MineBlockPos): string {
@@ -531,6 +535,15 @@ function distance(left: MineBlockPos, right: MineBlockPos): number {
 
 function samePos(left: MineBlockPos, right: MineBlockPos): boolean {
   return left.x === right.x && left.y === right.y && left.z === right.z;
+}
+
+function isOppositeDirection(left: MineRouteDirection, right: MineRouteDirection): boolean {
+  return (
+    (left === "north" && right === "south") ||
+    (left === "south" && right === "north") ||
+    (left === "east" && right === "west") ||
+    (left === "west" && right === "east")
+  );
 }
 
 function posLabel(pos: MineBlockPos): string {

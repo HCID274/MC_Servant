@@ -21,6 +21,31 @@ import type {
 
 const CONVERSATION_INTENTS = ["chat", "task", "cancel"] as const;
 const COMPOSITE_CANCEL_PRIORITIES = ["interrupt", "queued"] as const;
+const EXPLICIT_CANCEL_OR_MODIFY_PATTERNS = Object.freeze([
+  /停下/u,
+  /停止/u,
+  /停掉/u,
+  /停手/u,
+  /暂停/u,
+  /取消/u,
+  /中止/u,
+  /终止/u,
+  /打断/u,
+  /别做/u,
+  /别去了/u,
+  /不要做/u,
+  /先别/u,
+  /算了/u,
+  /改成/u,
+  /改为/u,
+  /改去/u,
+  /换成/u,
+  /换去/u,
+  /重新规划/u,
+  /\bstop\b/iu,
+  /\bcancel\b/iu,
+  /\babort\b/iu,
+] as const);
 
 /**
  * 校验字符串是否为合法的对话意图。
@@ -133,6 +158,24 @@ export function createConversationCompositeTriage(input: {
   });
 }
 
+/** 清理 LLM 把普通新任务误套成 cancel + action 的复合分诊噪声。 */
+export function normalizeConversationCompositeTriageForMessage(input: {
+  readonly triage: ConversationCompositeTriage;
+  readonly message: string;
+}): ConversationCompositeTriage {
+  if (input.triage.cancel === undefined || input.triage.action === undefined) {
+    return input.triage;
+  }
+  if (hasExplicitCancelOrModifyIntent(input.message)) {
+    return input.triage;
+  }
+
+  return createConversationCompositeTriage({
+    ...(input.triage.chat === undefined ? {} : { chat: {} }),
+    action: input.triage.action,
+  });
+}
+
 /** 从 JSON（结构化数据） 记录创建复合分诊结构。 */
 export function createConversationCompositeTriageFromRecord(
   record: Record<string, unknown>,
@@ -163,6 +206,12 @@ function createCompositeChat(
   }
 
   return Object.freeze({});
+}
+
+function hasExplicitCancelOrModifyIntent(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (normalized.length === 0) return false;
+  return EXPLICIT_CANCEL_OR_MODIFY_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function createCompositeAction(

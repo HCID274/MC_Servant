@@ -3,7 +3,11 @@ import { createCancelTemplateReply, createConversationReply } from "../../conver
 import type { ConversationCompositeTriage } from "../../conversation/contracts.js";
 import { createConversationInventoryDiffCache } from "../../conversation/inventory-diff-cache.js";
 import { createConversationRecentContextStore } from "../../conversation/recent-context.js";
-import { createConversationRouteDecision, createMessageTriage } from "../../conversation/triage.js";
+import {
+  createConversationRouteDecision,
+  createMessageTriage,
+  normalizeConversationCompositeTriageForMessage,
+} from "../../conversation/triage.js";
 import { ConversationPriority } from "../../core-ports/foundation.js";
 import type { InterruptSignal } from "../../core-ports/runtime.js";
 import { handleCancelInterruptRoute } from "./handlers/cancel-interrupt.js";
@@ -51,10 +55,14 @@ export function createConversationWorkerRuntime(input: {
       dependencies,
       includeSkill: false,
     });
-    const triage = await (dependencies.triage?.({
+    const rawTriage = await (dependencies.triage?.({
       task,
       ...(brainContext === undefined ? {} : { brain_context: brainContext }),
     }) ?? createDefaultTriage());
+    const triage = normalizeConversationCompositeTriageForMessage({
+      triage: rawTriage,
+      message: task.message.content,
+    });
     await handleCompositeTriage({
       task,
       triage,

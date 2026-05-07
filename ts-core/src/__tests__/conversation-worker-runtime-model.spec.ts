@@ -2629,6 +2629,71 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     ]);
   });
 
+  it("应在普通新任务误带 cancel 时只入队 action（动作）", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const calls: string[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createConversationCompositeTriage({
+            cancel: {
+              reason: "LLM 误判新任务需要重置状态",
+              priority: "interrupt",
+            },
+            action: {
+              intent: "task",
+              priority: ConversationPriority.Urgent,
+              reason: "挖石头后回来",
+            },
+          }),
+        interruptRuntimeSink: async () => {
+          calls.push("interrupt");
+        },
+        planner: async () => {
+          calls.push("planner");
+
+          return {
+            code: 'await api.bot.mine("stone", 10); await api.bot.goToOwner();',
+          };
+        },
+        enqueueExecTaskSink: async () => {
+          calls.push("enqueue");
+        },
+        broadcastReplySink: async (reply) => {
+          calls.push(`reply:${reply.content}`);
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-mine-return",
+          content: "去挖10个石头,然后回来",
+          intent_epoch: 8,
+          snapshot_ts: 107,
+        },
+      }),
+    });
+
+    expect(calls).toEqual(["planner", "enqueue"]);
+    expect(runtime.getEvents().filter((event) => event.type === "cancel.logged")).toEqual([]);
+  });
+
   it("应让无显式文本的 composite chat（复合闲聊） 复用状态上下文闲聊路径", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const stateContexts: Array<string | undefined> = [];

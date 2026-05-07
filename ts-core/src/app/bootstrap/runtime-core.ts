@@ -74,9 +74,11 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
     const mineSkill = createMineSkillExecutor({
       resourceService: created.resourceService,
       miner: created.transport,
-      equipment: {
-        readMainHandItemName: () =>
-          created.transport?.readObservationInput()?.equipment.main_hand?.item_name ?? null,
+      collector: {
+        collect: created.transport.collect.bind(created.transport),
+      },
+      inventory: {
+        readInventoryItems: () => created.transport?.readObservationInput()?.inventory.items ?? [],
       },
     });
     const cutTreeSkill = createCutTreeSkillExecutor({

@@ -8,6 +8,7 @@ export const TRIAGE_SYSTEM_PROMPT = [
   '- action：可选。用户要求 Bot 执行游戏内动作时输出 {"intent":"task","priority":"interrupt|urgent|normal|background","reason":"一句话原因","needs_memory_search":false}',
   "固定语义：如果同一句话同时包含停止、回复和新动作，三个字段可以同时出现。",
   "禁止输出 modify；修改当前任务必须表达为 cancel + action，例如把当前任务改成去某处，应输出 cancel 与 action。",
+  "普通新动作、回来、过来、顺序复合动作本身不代表停止当前任务；只有用户明确说停下、停止、取消、先别做、改成、换成等中断或修改语义时才输出 cancel。",
   "不要在 action 中生成技能名、坐标参数、代码或 Minecraft 事实，具体执行参数由后续 planner 生成。",
   "主人要求 Bot 移动、跟随、回来、采集、挖掘、砍树、合成、放置、装备或与游戏世界交互时，必须输出 action。",
   "例如“回来 / 过来 / 到我这来 / 回我身边 / 来我身边 / 给我砍 5 块木头 / 挖 5 个石头 / 去捡地上的东西”都必须输出 action。",

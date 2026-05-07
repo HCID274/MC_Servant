@@ -62,6 +62,7 @@ import type {
   MineflayerItemHandle,
   MineflayerRecipeHandle,
 } from "../runtime/transport.js";
+import { stepToFoot } from "../runtime/transport/foot-step.js";
 import { executeMineRouteAction } from "../runtime/transport/mine-action-executor.js";
 import { planMineRoute } from "../runtime/transport/mine-bfs.js";
 import { createMineBlockFactReader } from "../runtime/transport/mine-block-facts.js";
@@ -579,6 +580,33 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   }
 }
 
+class NonMovingMineflayerBot extends FakeMineflayerBot {
+  override setControlState(control: MineflayerControlState, state: boolean): void {
+    this.controlStateCalls.push({ control, state });
+  }
+}
+
+class HorizontalOnlyMineflayerBot extends FakeMineflayerBot {
+  override setControlState(control: MineflayerControlState, state: boolean): void {
+    this.controlStateCalls.push({ control, state });
+    if (control !== "forward" || !state) {
+      return;
+    }
+
+    const target = this.lookAtCalls.at(-1)?.position;
+    const current = this.entity.position;
+    if (target === undefined || current === undefined) {
+      return;
+    }
+
+    this.entity.position = {
+      x: Math.floor(target.x) + 0.5,
+      y: current.y,
+      z: Math.floor(target.z) + 0.5,
+    };
+  }
+}
+
 function readFakeBlockDrops(
   registry: FakeMineflayerBot["registry"],
   blockName: string | undefined,
@@ -679,6 +707,15 @@ function formatPositionKey(position: {
   readonly z: number;
 }): string {
   return `${position.x}:${position.y}:${position.z}`;
+}
+
+function isOppositeRouteDirection(left: string, right: string): boolean {
+  return (
+    (left === "north" && right === "south") ||
+    (left === "south" && right === "north") ||
+    (left === "east" && right === "west") ||
+    (left === "west" && right === "east")
+  );
 }
 
 function asGoalPosition(
@@ -1885,6 +1922,66 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(isTerrainBotAtFoot(bot, { x: -18, y: 112, z: -209 })).toBe(false);
   });
 
+  it("foot-step 移动超时时应松开控制键并带当前位置诊断", async () => {
+    const bot = new NonMovingMineflayerBot();
+    bot.entity.position = {
+      x: 0.5,
+      y: 64,
+      z: 0.5,
+    };
+    const diagnostics: string[] = [];
+
+    await expect(
+      stepToFoot({
+        bot,
+        target: { x: 2, y: 64, z: 0 },
+        jump: false,
+        timeoutMs: 120,
+        lookTimeoutMs: 50,
+        diagnosticPrefix: "mine",
+        actionKind: "walk",
+        diagnostics,
+      }),
+    ).rejects.toThrow(/mine_step_timeout:2,64,0:current=0\.50,64\.00,0\.50;best_horizontal=/u);
+
+    expect(bot.controlStateCalls).toContainEqual({ control: "forward", state: true });
+    expect(bot.controlStateCalls).toContainEqual({ control: "forward", state: false });
+    expect(bot.clearedControlStates).toBeGreaterThan(0);
+    expect(diagnostics[0]).toBe(
+      "mine_move_start:walk:target=2,64,0;from=0.50,64.00,0.50;jump=false",
+    );
+  });
+
+  it("foot-step 水平到中心但 Y 未到目标 foot 时不得提前停止移动", async () => {
+    const bot = new HorizontalOnlyMineflayerBot();
+    bot.entity.position = {
+      x: -30.5,
+      y: 112,
+      z: -235.7,
+    };
+
+    await expect(
+      stepToFoot({
+        bot,
+        target: { x: -31, y: 111, z: -236 },
+        jump: true,
+        timeoutMs: 180,
+        lookTimeoutMs: 50,
+        diagnosticPrefix: "mine",
+        actionKind: "digStepDown",
+      }),
+    ).rejects.toThrow(
+      /mine_step_timeout:-31,111,-236:current=-30\.50,112\.00,-235\.50;best_horizontal=0\.00;target_y=111;current_y=112;y_matched=false/u,
+    );
+
+    const forwardStarts = bot.controlStateCalls.filter(
+      (call) => call.control === "forward" && call.state,
+    );
+    expect(forwardStarts).toHaveLength(1);
+    expect(bot.controlStateCalls).toContainEqual({ control: "jump", state: true });
+    expect(bot.controlStateCalls).toContainEqual({ control: "jump", state: false });
+  });
+
   it("mine-action digStepDown 应按跳跃阶梯动作执行", async () => {
     const bot = new FakeMineflayerBot();
     bot.entity.position = {
@@ -2055,6 +2152,43 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     });
   });
 
+  it("mine-bfs 规划下挖矿道时不得连续 180 度折返", () => {
+    const bot = new FakeMineflayerBot();
+    for (let x = -4; x <= 4; x += 1) {
+      for (let y = 108; y <= 118; y += 1) {
+        for (let z = -4; z <= 4; z += 1) {
+          setFakeBlock(bot, { x, y, z }, y >= 111 ? "dirt" : "stone");
+        }
+      }
+    }
+    setFakeBlock(bot, { x: 0, y: 115, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 116, z: 0 }, "air");
+
+    const targets = [];
+    for (let x = -4; x <= 4; x += 1) {
+      for (let y = 108; y <= 110; y += 1) {
+        for (let z = -4; z <= 4; z += 1) {
+          targets.push({ blockName: "stone", position: { x, y, z } });
+        }
+      }
+    }
+
+    const result = planMineRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      blockName: "stone",
+      startFoot: { x: 0, y: 115, z: 0 },
+      targets,
+    });
+
+    expect(result.plan).not.toBeNull();
+    const dirs = result.plan?.actions.map((action) => action.dir) ?? [];
+    expect(dirs.length).toBeGreaterThan(1);
+    for (let index = 1; index < dirs.length; index += 1) {
+      expect(isOppositeRouteDirection(dirs[index - 1] ?? "", dirs[index] ?? "")).toBe(false);
+    }
+  });
+
   it("mine（挖掘） 应通过 mine-bfs（自研动作 BFS） 挖到附近 stone（石头） 并按背包增量返回", async () => {
     const createdBots: FakeMineflayerBot[] = [];
     const transport = createMineflayerRuntimeTransport(
@@ -2134,12 +2268,12 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     createdBots[0]?.emit("spawn");
     await connectPromise;
 
-    await expect(transport.mine({ blockName: "stone", count: 3 })).resolves.toMatchObject({
+    await expect(transport.mine({ blockName: "stone", count: 10 })).resolves.toMatchObject({
       skill: "mine",
       block_name: "stone",
       collected_item_name: "cobblestone",
-      collected_count: 3,
-      mined_count: 3,
+      collected_count: 10,
+      mined_count: 10,
     });
     expect(createdBots[0]?.findBlocksCalls).toBeGreaterThan(0);
     expect(createdBots[0]?.gotoCalls).toEqual([]);
