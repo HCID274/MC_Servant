@@ -63,6 +63,9 @@ A2 代表早期 baseline Plan 解析成功率；当前没有可比历史数据�
 | `plan_code_only_ok` | Plan 输出是否为唯一 `code` 字段；非 Plan 事件为 `null` |
 | `plan_gate_failure_type` | Plan parser 规划门禁失败类型；未失败或非 Plan 事件为 `null` |
 | `plan_static_precheck_failure_type` | sandbox static precheck 失败类型；未失败或非 Plan 事件为 `null` |
+| `terminal_status` | BotWorker 执行终态：`completed`、`failed`、`interrupted`、`discarded`；非执行终态为 `null` |
+| `step_count` | BotWorker 执行终态步骤数；不可得或非执行终态为 `null` |
+| `is_manual_intervention` | 是否人工干预；当前 `control` 中断为 `true`，其他执行终态为 `false`，非执行终态为 `null` |
 
 生产指标派生口径：
 
@@ -78,10 +81,13 @@ A2 代表早期 baseline Plan 解析成功率；当前没有可比历史数据�
 | `report_average_latency_ms` | Report 平均延迟，单位毫秒 | `stage=report` 的 `llm.stage.duration_ms` |
 | `llm_input_tokens_total` | LLM 输入 token 总数 | 所有 `llm.stage.input_tokens` |
 | `llm_output_tokens_total` | LLM 输出 token 总数 | 所有 `llm.stage.output_tokens` |
-| `execution_run_count` | 长链路任务实际跑过的次数 | `event_type in task.completed/task.failed/task.interrupted/task.discarded` |
-| `execution_completion_rate` | 端到端无人工干预完成率 | `task.completed / execution_run_count` |
-| `execution_avg_duration_minutes` | 单次平均耗时，单位分钟 | 终态任务事件的 `duration_ms` |
-| `execution_avg_step_count` | 单次平均步骤数 | 后续从任务终态摘要扩展；当前事件基线不写步骤数 |
+| `execution_task_run_count` | 进入终态的真实任务数量 | `source=bot_worker` 且 `terminal_status != null` |
+| `execution_no_manual_completion_rate` | 端到端无人工干预完成率 | `terminal_status=completed && is_manual_intervention != true` / 全部可统计终态任务 |
+| `execution_average_duration_minutes` | 单次平均耗时，单位分钟 | 终态任务事件的 `duration_ms / 60000` |
+| `execution_average_step_count` | 单次平均步骤数 | 终态任务事件的 `step_count` |
+| `execution_failed_count` | 失败终态数量 | `terminal_status=failed` |
+| `execution_interrupted_count` | 中断终态数量 | `terminal_status=interrupted` |
+| `execution_failure_code_count_by_code` | 失败码计数分布 | `terminal_status=failed` 的 `error_code`，缺失归为 `unknown` |
 | `recoverable_replan_success_rate` | 可恢复失败后自动重规划成功率 | 后续从 `recovery_chain_id` 与恢复分类扩展 |
 | `avg_replan_count_to_success` | 成功恢复任务平均重规划次数 | 后续从恢复链路事件扩展 |
 

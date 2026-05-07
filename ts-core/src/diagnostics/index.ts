@@ -33,6 +33,7 @@ export const diagnosticsModuleBoundary = {
     "createLocalTaskLogExcerptReader",
     "createLocalProductionMetricLogSink",
     "createProductionLlmMetricSummaries",
+    "createProductionExecutionMetricSummaries",
   ],
 } satisfies ModuleBoundary;
 

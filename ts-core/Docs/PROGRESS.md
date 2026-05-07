@@ -67,6 +67,14 @@
 - 关键决策: 选择在 LLM diagnostic 层记录 Plan 输出质量,再由 `workers/production-metrics` 映射到生产指标 JSONL,而不是让汇总逻辑反向解析 LLM 日志文本或耦合 ConversationWorker 内部状态;静态预检只复用既有 `checkSandboxSourceStaticPolicy` 作为只读分类,不改变生产执行门禁语义
 - 架构冲突: 无
 
+## T-076R | 2026-05-07 | 执行链路生产指标自动记录
+
+- 涉及模块: workers（工作线程） BotWorker 生命周期到生产指标映射,diagnostics（诊断） production metrics 与执行汇总,data contracts（数据契约） production-metrics,task result summary（任务结果摘要）步骤数来源,Docs/07_EVAL_SPEC.md（评测与生产指标规格）
+- A 拆解依据: 用户要求在 T-074R 的生产指标自动落盘基础上,每次真实 BotWorker 任务终态自动记录执行状态、耗时、步骤数、失败码、是否人工干预;边界限定 workers、sandbox、runtime、skills、diagnostics、task result summary,需实服验证;输出语义化指标名 `execution_task_run_count`、`execution_no_manual_completion_rate`、`execution_average_duration_minutes`、`execution_average_step_count`、`execution_failed_count`、`execution_interrupted_count`、`execution_failure_code_count_by_code`
+- C 审查结论: 通过。实现扩展生产指标事件契约,新增 `terminal_status`、`step_count`、`is_manual_intervention`,BotWorker 生命周期事件从既有 `TaskHistoryStatus`、`total_steps`、`duration_ms`、`error_code`、`interrupt_source` 映射执行终态指标,汇总函数只消费 `source=bot_worker`、`stage=execution` 且 `terminal_status != null` 的生产 JSONL 行并产出 7 个指定指标。Reviewer 复核 `logs/metrics/2026-05-07/production-metrics.jsonl` 中 `t076r-prod-exec-metrics-1778149059` 的真实生产链路,包含 `task.started` 与 `task.completed`,终态行 `terminal_status:"completed"`、`step_count:2`、`is_manual_intervention:false`、`duration_ms:1022`;当天日志可汇总执行终态 2 条,`execution_task_run_count=2`、`execution_no_manual_completion_rate=1`、`execution_average_step_count=2`。`git diff --check` 通过,定向 Vitest 1 个文件 9 passed,`pnpm typecheck` 通过,`pnpm lint` 通过,`bash scripts/pre_review.sh` 全绿,36 个 test file /439 passed/8 skipped
+- 关键决策: 选择在 `workers/production-metrics` 里把 BotWorker 生命周期动作映射为生产指标事件,而不是让 diagnostics 反向读取 runtime 或 sandbox 内部状态;步骤数直接来自执行结果摘要里的 `total_steps`,人工干预只按已有 control 中断源判定,不新增生产执行逻辑或 Mineflayer 事实规则
+- 架构冲突: 无
+
 ## T-071D | 2026-05-07 | terrain-router 水平挖穿成本与 A* 搜索诊断修复
 
 - 涉及模块: runtime/transport（运行时传输层） terrain-router（地形路由）,runtime Mineflayer（Minecraft 协议客户端）回归测试

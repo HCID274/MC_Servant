@@ -1,5 +1,6 @@
 import type { ConversationLlmDiagnosticRecord } from "../conversation/llm/index.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
+import type { ProductionMetricEventJsonlLine } from "../data/contracts/index.js";
 import {
   type ProductionMetricLogSink,
   createProductionMetricEventJsonlLine,
@@ -50,6 +51,7 @@ export function createProductionMetricEventFromBotWorkerAction(input: {
   const lifecycle = input.action.lifecycle;
   const payload = lifecycle.payload;
   const durationMs = "duration_ms" in payload ? payload.duration_ms : null;
+  const terminalStatus = readTerminalStatus(lifecycle.status);
 
   return createProductionMetricEventJsonlLine({
     event_type: lifecycle.event_type,
@@ -70,7 +72,43 @@ export function createProductionMetricEventFromBotWorkerAction(input: {
     duration_ms: durationMs,
     input_tokens: null,
     output_tokens: null,
+    terminal_status: terminalStatus,
+    step_count: "total_steps" in payload ? payload.total_steps : null,
+    is_manual_intervention:
+      terminalStatus === null ? null : readLifecycleManualIntervention(lifecycle),
   });
+}
+
+function readTerminalStatus(
+  status: EmitTaskLifecycleAction["lifecycle"]["status"],
+): ProductionMetricEventJsonlLine["terminal_status"] {
+  switch (status) {
+    case TaskHistoryStatus.Completed:
+      return "completed";
+    case TaskHistoryStatus.Failed:
+      return "failed";
+    case TaskHistoryStatus.Interrupted:
+      return "interrupted";
+    case TaskHistoryStatus.Discarded:
+      return "discarded";
+    default:
+      return null;
+  }
+}
+
+function readLifecycleManualIntervention(action: EmitTaskLifecycleAction["lifecycle"]): boolean {
+  const payload = action.payload;
+
+  if (
+    "interrupt_source" in payload &&
+    payload.interrupt_source !== null &&
+    typeof payload.interrupt_source === "object" &&
+    "type" in payload.interrupt_source
+  ) {
+    return payload.interrupt_source.type === "control";
+  }
+
+  return false;
 }
 
 function readLifecycleErrorCode(action: EmitTaskLifecycleAction["lifecycle"]): string | null {

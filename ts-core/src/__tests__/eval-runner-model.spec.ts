@@ -12,6 +12,7 @@ import {
   createEvalCaseJsonlLine,
   createEvalRunJsonlLine,
   createLocalProductionMetricLogSink,
+  createProductionExecutionMetricSummaries,
   createProductionLlmMetricSummaries,
   createProductionMetricEventJsonlLine,
   parseEvalCaseJsonlLines,
@@ -224,6 +225,9 @@ describe("eval runner（离线评测执行器）契约", () => {
     expect(line.root_goal_id).toBeNull();
     expect(line.plan_parse_ok).toBeNull();
     expect(line.plan_code_only_ok).toBeNull();
+    expect(line.terminal_status).toBeNull();
+    expect(line.step_count).toBeNull();
+    expect(line.is_manual_intervention).toBeNull();
     expect(() =>
       createProductionMetricEventJsonlLine({
         ...line,
@@ -389,6 +393,154 @@ describe("eval runner（离线评测执行器）契约", () => {
       ok: false,
       error_code: "static_precheck_failed",
       duration_ms: 2500,
+      terminal_status: "failed",
+      step_count: 2,
+      is_manual_intervention: false,
+    });
+
+    const interruptedAction = createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Interrupted,
+      duration_ms: 3000,
+      total_steps: 3,
+      interrupt_source: {
+        type: "control",
+        command: "interrupt",
+      },
+      reason: "owner interrupted",
+    }).find((action) => action.type === "emit_task_lifecycle");
+
+    expect(interruptedAction).toBeDefined();
+    if (interruptedAction === undefined) {
+      throw new Error("interrupted action missing");
+    }
+    const interruptedLine = createProductionMetricEventFromBotWorkerAction({
+      action: interruptedAction,
+      created_at: "2026-05-07T00:00:01.000Z",
+    });
+
+    expect(interruptedLine).toMatchObject({
+      event_type: "task.interrupted",
+      terminal_status: "interrupted",
+      step_count: 3,
+      is_manual_intervention: true,
+      error_code: "task_interrupted",
+    });
+  });
+
+  it("应汇总 BotWorker 终态生产执行指标", () => {
+    const completed = createProductionMetricEventJsonlLine({
+      event_id: "exec-completed",
+      event_type: "task.completed",
+      message_id: "msg-completed",
+      task_id: "msg-completed",
+      bot_id: "local-bot",
+      root_goal_id: null,
+      recovery_chain_id: null,
+      created_at: "2026-05-07T00:00:00.000Z",
+      source: "bot_worker",
+      prompt_version: null,
+      model: null,
+      stage: "execution",
+      ok: true,
+      error_code: null,
+      duration_ms: 120_000,
+      input_tokens: null,
+      output_tokens: null,
+      terminal_status: "completed",
+      step_count: 4,
+      is_manual_intervention: false,
+    });
+    const failed = createProductionMetricEventJsonlLine({
+      event_id: "exec-failed",
+      event_type: "task.failed",
+      message_id: "msg-failed",
+      task_id: "msg-failed",
+      bot_id: "local-bot",
+      root_goal_id: null,
+      recovery_chain_id: null,
+      created_at: "2026-05-07T00:01:00.000Z",
+      source: "bot_worker",
+      prompt_version: null,
+      model: null,
+      stage: "execution",
+      ok: false,
+      error_code: "not_equipped",
+      duration_ms: 60_000,
+      input_tokens: null,
+      output_tokens: null,
+      terminal_status: "failed",
+      step_count: 2,
+      is_manual_intervention: false,
+    });
+    const interrupted = createProductionMetricEventJsonlLine({
+      event_id: "exec-interrupted",
+      event_type: "task.interrupted",
+      message_id: "msg-interrupted",
+      task_id: "msg-interrupted",
+      bot_id: "local-bot",
+      root_goal_id: null,
+      recovery_chain_id: null,
+      created_at: "2026-05-07T00:02:00.000Z",
+      source: "bot_worker",
+      prompt_version: null,
+      model: null,
+      stage: "execution",
+      ok: false,
+      error_code: "task_interrupted",
+      duration_ms: 180_000,
+      input_tokens: null,
+      output_tokens: null,
+      terminal_status: "interrupted",
+      step_count: 3,
+      is_manual_intervention: true,
+    });
+
+    const summaries = createProductionExecutionMetricSummaries([completed, failed, interrupted]);
+
+    expect(summaries.map((summary) => summary.name)).toEqual([
+      "execution_task_run_count",
+      "execution_no_manual_completion_rate",
+      "execution_average_duration_minutes",
+      "execution_average_step_count",
+      "execution_failed_count",
+      "execution_interrupted_count",
+      "execution_failure_code_count_by_code",
+    ]);
+    expect(summaries.find((summary) => summary.name === "execution_task_run_count")).toMatchObject({
+      value: 3,
+      numerator: 3,
+      denominator: 3,
+    });
+    expect(
+      summaries.find((summary) => summary.name === "execution_no_manual_completion_rate"),
+    ).toMatchObject({
+      value: 1 / 3,
+      numerator: 1,
+      denominator: 3,
+    });
+    expect(
+      summaries.find((summary) => summary.name === "execution_average_duration_minutes"),
+    ).toMatchObject({
+      value: 2,
+      numerator: 6,
+      denominator: 3,
+    });
+    expect(
+      summaries.find((summary) => summary.name === "execution_average_step_count"),
+    ).toMatchObject({
+      value: 3,
+      numerator: 9,
+      denominator: 3,
+    });
+    expect(
+      summaries.find((summary) => summary.name === "execution_failure_code_count_by_code"),
+    ).toMatchObject({
+      value: 1,
+      breakdown: {
+        not_equipped: 1,
+      },
     });
   });
 

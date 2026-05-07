@@ -7,6 +7,7 @@ import {
   PRODUCTION_METRIC_SCHEMA_VERSION,
   PRODUCTION_METRIC_SOURCES,
   PRODUCTION_METRIC_STAGES,
+  PRODUCTION_METRIC_TERMINAL_STATUSES,
   type ProductionMetricEventJsonlLine,
 } from "../data/contracts/index.js";
 import { createDatedStorageRef } from "../data/index.js";
@@ -25,13 +26,22 @@ type ProductionMetricPlanFields = Pick<
   | "plan_static_precheck_failure_type"
 >;
 
+type ProductionMetricExecutionFields = Pick<
+  ProductionMetricEventJsonlLine,
+  "terminal_status" | "step_count" | "is_manual_intervention"
+>;
+
 /** 创建生产指标事件，所有可未知字段显式落 null，避免下游猜字段缺失语义。 */
 export function createProductionMetricEventJsonlLine(
   input: Omit<
     ProductionMetricEventJsonlLine,
-    "schema_version" | "event_id" | keyof ProductionMetricPlanFields
+    | "schema_version"
+    | "event_id"
+    | keyof ProductionMetricPlanFields
+    | keyof ProductionMetricExecutionFields
   > &
-    Partial<ProductionMetricPlanFields> & {
+    Partial<ProductionMetricPlanFields> &
+    Partial<ProductionMetricExecutionFields> & {
       readonly event_id?: string;
     },
 ): ProductionMetricEventJsonlLine {
@@ -45,6 +55,9 @@ export function createProductionMetricEventJsonlLine(
   assertNullableNonNegativeNumber(input.duration_ms, "duration_ms");
   assertNullableNonNegativeInteger(input.input_tokens, "input_tokens");
   assertNullableNonNegativeInteger(input.output_tokens, "output_tokens");
+  assertNullableProductionMetricTerminalStatus(input.terminal_status ?? null);
+  assertNullableNonNegativeInteger(input.step_count ?? null, "step_count");
+  assertNullableBoolean(input.is_manual_intervention ?? null, "is_manual_intervention");
 
   return cloneReadonlyValue({
     schema_version: PRODUCTION_METRIC_SCHEMA_VERSION,
@@ -53,6 +66,9 @@ export function createProductionMetricEventJsonlLine(
     plan_code_only_ok: null,
     plan_gate_failure_type: null,
     plan_static_precheck_failure_type: null,
+    terminal_status: null,
+    step_count: null,
+    is_manual_intervention: null,
     ...input,
   } satisfies ProductionMetricEventJsonlLine);
 }
@@ -110,6 +126,17 @@ function assertProductionMetricStage(value: ProductionMetricEventJsonlLine["stag
   }
 }
 
+function assertNullableProductionMetricTerminalStatus(
+  value: ProductionMetricEventJsonlLine["terminal_status"],
+): void {
+  if (
+    value !== null &&
+    !(PRODUCTION_METRIC_TERMINAL_STATUSES as readonly string[]).includes(value)
+  ) {
+    throw new Error(`unsupported production metric terminal_status: ${value}`);
+  }
+}
+
 function assertNullableNonNegativeNumber(value: number | null, name: string): void {
   if (value !== null && (!Number.isFinite(value) || value < 0)) {
     throw new Error(`${name} must be a non-negative number or null`);
@@ -119,5 +146,11 @@ function assertNullableNonNegativeNumber(value: number | null, name: string): vo
 function assertNullableNonNegativeInteger(value: number | null, name: string): void {
   if (value !== null && (!Number.isInteger(value) || value < 0)) {
     throw new Error(`${name} must be a non-negative integer or null`);
+  }
+}
+
+function assertNullableBoolean(value: boolean | null, name: string): void {
+  if (value !== null && typeof value !== "boolean") {
+    throw new Error(`${name} must be a boolean or null`);
   }
 }

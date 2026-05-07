@@ -37,6 +37,16 @@ export const PRODUCTION_METRIC_STAGES = [
 
 export type ProductionMetricStage = (typeof PRODUCTION_METRIC_STAGES)[number];
 
+/** 生产指标任务终态。 */
+export const PRODUCTION_METRIC_TERMINAL_STATUSES = [
+  "completed",
+  "failed",
+  "interrupted",
+  "discarded",
+] as const;
+
+export type ProductionMetricTerminalStatus = (typeof PRODUCTION_METRIC_TERMINAL_STATUSES)[number];
+
 /** 每次真实运行自动落盘的生产指标事件。 */
 export interface ProductionMetricEventJsonlLine {
   readonly schema_version: typeof PRODUCTION_METRIC_SCHEMA_VERSION;
@@ -61,4 +71,7 @@ export interface ProductionMetricEventJsonlLine {
   readonly plan_code_only_ok: boolean | null;
   readonly plan_gate_failure_type: string | null;
   readonly plan_static_precheck_failure_type: string | null;
+  readonly terminal_status: ProductionMetricTerminalStatus | null;
+  readonly step_count: number | null;
+  readonly is_manual_intervention: boolean | null;
 }

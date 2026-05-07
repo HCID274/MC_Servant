@@ -15,11 +15,31 @@ export const PRODUCTION_LLM_METRIC_NAMES = [
 
 export type ProductionLlmMetricName = (typeof PRODUCTION_LLM_METRIC_NAMES)[number];
 
+export const PRODUCTION_EXECUTION_METRIC_NAMES = [
+  "execution_task_run_count",
+  "execution_no_manual_completion_rate",
+  "execution_average_duration_minutes",
+  "execution_average_step_count",
+  "execution_failed_count",
+  "execution_interrupted_count",
+  "execution_failure_code_count_by_code",
+] as const;
+
+export type ProductionExecutionMetricName = (typeof PRODUCTION_EXECUTION_METRIC_NAMES)[number];
+
 export interface ProductionLlmMetricSummary {
   readonly name: ProductionLlmMetricName;
   readonly value: number | null;
   readonly numerator: number;
   readonly denominator: number;
+}
+
+export interface ProductionExecutionMetricSummary {
+  readonly name: ProductionExecutionMetricName;
+  readonly value: number | null;
+  readonly numerator: number;
+  readonly denominator: number;
+  readonly breakdown?: Readonly<Record<string, number>>;
 }
 
 /** 从生产指标 JSONL 事件汇总 T-075R 的 LLM 与 Plan 输出指标。 */
@@ -64,6 +84,61 @@ export function createProductionLlmMetricSummaries(
       name: "llm_output_tokens_total",
       value: sumNullable(llmEvents.map((event) => event.output_tokens)),
       denominator: llmEvents.length,
+    }),
+  ]);
+}
+
+/** 从生产指标 JSONL 事件汇总 T-076R 的执行链路指标。 */
+export function createProductionExecutionMetricSummaries(
+  events: readonly ProductionMetricEventJsonlLine[],
+): readonly ProductionExecutionMetricSummary[] {
+  const terminalEvents = events.filter(isExecutionTerminalMetricEvent);
+  const durations = terminalEvents.flatMap((event) =>
+    event.duration_ms === null ? [] : [event.duration_ms / 60_000],
+  );
+  const stepCounts = terminalEvents.flatMap((event) =>
+    event.step_count === null ? [] : [event.step_count],
+  );
+  const failureCodeCounts = countFailureCodes(terminalEvents);
+  const failureCodeTotal = Object.values(failureCodeCounts).reduce((sum, count) => sum + count, 0);
+
+  return Object.freeze([
+    createExecutionCountMetric({
+      name: "execution_task_run_count",
+      value: terminalEvents.length,
+      denominator: terminalEvents.length,
+    }),
+    createExecutionRatioMetric({
+      name: "execution_no_manual_completion_rate",
+      numerator: terminalEvents.filter(
+        (event) => event.terminal_status === "completed" && event.is_manual_intervention !== true,
+      ).length,
+      denominator: terminalEvents.length,
+    }),
+    createExecutionAverageMetric({
+      name: "execution_average_duration_minutes",
+      values: durations,
+    }),
+    createExecutionAverageMetric({
+      name: "execution_average_step_count",
+      values: stepCounts,
+    }),
+    createExecutionCountMetric({
+      name: "execution_failed_count",
+      value: terminalEvents.filter((event) => event.terminal_status === "failed").length,
+      denominator: terminalEvents.length,
+    }),
+    createExecutionCountMetric({
+      name: "execution_interrupted_count",
+      value: terminalEvents.filter((event) => event.terminal_status === "interrupted").length,
+      denominator: terminalEvents.length,
+    }),
+    Object.freeze({
+      name: "execution_failure_code_count_by_code",
+      value: failureCodeTotal,
+      numerator: failureCodeTotal,
+      denominator: terminalEvents.length,
+      breakdown: failureCodeCounts,
     }),
   ]);
 }
@@ -114,4 +189,69 @@ function createTotalMetric(input: {
 
 function sumNullable(values: readonly (number | null)[]): number {
   return values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+}
+
+function isExecutionTerminalMetricEvent(event: ProductionMetricEventJsonlLine): boolean {
+  return (
+    event.source === "bot_worker" && event.stage === "execution" && event.terminal_status !== null
+  );
+}
+
+function createExecutionRatioMetric(input: {
+  readonly name: ProductionExecutionMetricName;
+  readonly numerator: number;
+  readonly denominator: number;
+}): ProductionExecutionMetricSummary {
+  return Object.freeze({
+    name: input.name,
+    value: input.denominator === 0 ? null : input.numerator / input.denominator,
+    numerator: input.numerator,
+    denominator: input.denominator,
+  });
+}
+
+function createExecutionAverageMetric(input: {
+  readonly name: ProductionExecutionMetricName;
+  readonly values: readonly number[];
+}): ProductionExecutionMetricSummary {
+  const total = input.values.reduce((sum, value) => sum + value, 0);
+
+  return Object.freeze({
+    name: input.name,
+    value: input.values.length === 0 ? null : total / input.values.length,
+    numerator: total,
+    denominator: input.values.length,
+  });
+}
+
+function createExecutionCountMetric(input: {
+  readonly name: ProductionExecutionMetricName;
+  readonly value: number;
+  readonly denominator: number;
+}): ProductionExecutionMetricSummary {
+  return Object.freeze({
+    name: input.name,
+    value: input.value,
+    numerator: input.value,
+    denominator: input.denominator,
+  });
+}
+
+function countFailureCodes(
+  events: readonly ProductionMetricEventJsonlLine[],
+): Readonly<Record<string, number>> {
+  const counts: Record<string, number> = {};
+
+  for (const event of events) {
+    if (event.terminal_status !== "failed") {
+      continue;
+    }
+
+    const code = event.error_code ?? "unknown";
+    counts[code] = (counts[code] ?? 0) + 1;
+  }
+
+  return Object.freeze(
+    Object.fromEntries(Object.entries(counts).sort(([left], [right]) => left.localeCompare(right))),
+  );
 }
