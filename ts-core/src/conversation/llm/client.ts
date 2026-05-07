@@ -1,3 +1,4 @@
+import { checkSandboxSourceStaticPolicy } from "../../sandbox/execution.js";
 import {
   ConversationLlmChatError,
   ConversationLlmPlanError,
@@ -117,6 +118,19 @@ export function createConversationLlmClient(
         ...(input.search_tool === undefined ? {} : { searchTool: input.search_tool }),
         ...(input.search_tool === undefined ? {} : { searchToolMaxCalls: 1 }),
         ...(input.bot_id === undefined ? {} : { searchToolBotId: input.bot_id }),
+        diagnosticMeta: {
+          onSuccess: ({ value }) => {
+            const staticCheckError = checkSandboxSourceStaticPolicy(value.code);
+
+            return {
+              plan_parse_ok: true,
+              plan_code_only_ok: true,
+              plan_gate_failure_type: null,
+              plan_static_precheck_failure_type: staticCheckError?.violation ?? null,
+            };
+          },
+          onFailure: ({ error }) => createPlanFailureDiagnosticMeta(error),
+        },
         onFailure: ({ error, diagnostics, errorSnapshot }) => {
           if (isConversationLlmSkillNotEnabledError(error)) {
             throw new ConversationLlmSkillNotEnabledError(
@@ -216,4 +230,24 @@ function elapsedMs(now: () => number, startedAt: number): number {
   const value = now() - startedAt;
 
   return Number.isFinite(value) && value >= 0 ? Math.round(value) : 0;
+}
+
+function createPlanFailureDiagnosticMeta(
+  error: unknown,
+): Readonly<Record<string, string | number | boolean | null>> {
+  if (error instanceof ConversationLlmPlanError && error.plan_metric !== undefined) {
+    return {
+      plan_parse_ok: error.plan_metric.plan_parse_ok,
+      plan_code_only_ok: error.plan_metric.plan_code_only_ok,
+      plan_gate_failure_type: error.plan_metric.plan_gate_failure_type ?? null,
+      plan_static_precheck_failure_type: null,
+    };
+  }
+
+  return {
+    plan_parse_ok: false,
+    plan_code_only_ok: false,
+    plan_gate_failure_type: null,
+    plan_static_precheck_failure_type: null,
+  };
 }

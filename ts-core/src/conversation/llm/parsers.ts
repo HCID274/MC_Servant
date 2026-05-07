@@ -3,7 +3,11 @@ import { createCodePlanDraft } from "../planning.js";
 import { createConversationCompositeTriageFromRecord } from "../triage.js";
 import { ConversationLlmPlanError } from "./errors.js";
 import type { OpenAiCompatibleChatCompletionResponse } from "./http.js";
-import type { ConversationLlmPlanResult, ConversationLlmToolCall } from "./types.js";
+import type {
+  ConversationLlmPlanGateFailureType,
+  ConversationLlmPlanResult,
+  ConversationLlmToolCall,
+} from "./types.js";
 
 /** 提取 OpenAI 兼容返回中的回复文本。 */
 export function extractAssistantReply(payload: OpenAiCompatibleChatCompletionResponse): string {
@@ -41,18 +45,18 @@ export function parseConversationCompositeTriage(content: string): ConversationC
 
 /** 解析 Stage 2-Plan（第二阶段规划） 的唯一 TS（TypeScript）代码输出。 */
 export function parseConversationCodePlan(content: string): ConversationLlmPlanResult {
-  const record = parseStrictJsonRecord(content);
+  const record = parseStrictPlanJsonRecord(content);
   const keys = Object.keys(record);
   const forbiddenKey = keys.find((key) => PLAN_FORBIDDEN_KEYS.has(key));
 
   if (forbiddenKey !== undefined) {
-    throw new ConversationLlmPlanError(`planner output field ${forbiddenKey} is not allowed`);
+    throw createCodeOnlyPlanError(`planner output field ${forbiddenKey} is not allowed`);
   }
   if (keys.length !== 1 || keys[0] !== "code") {
-    throw new ConversationLlmPlanError("planner output must be a JSON object with only code field");
+    throw createCodeOnlyPlanError("planner output must be a JSON object with only code field");
   }
   if (typeof record.code !== "string" || record.code.trim().length === 0) {
-    throw new ConversationLlmPlanError("planner code must be a non-empty string");
+    throw createCodeOnlyPlanError("planner code must be a non-empty string");
   }
   validatePlanCode(record.code);
 
@@ -103,20 +107,62 @@ export function extractBraceWrappedJson(content: string): string | undefined {
  */
 function validatePlanCode(code: string): void {
   if (code.includes("demoMineIron")) {
-    throw new ConversationLlmPlanError("planner code must not call demoMineIron");
+    throw createPlanGateError(
+      "planner code must not call demoMineIron",
+      "forbidden_demo_mine_iron",
+    );
   }
 
   if (/\bapi\.(?:bot|chat)\b/.test(code)) {
-    throw new ConversationLlmPlanError("planner code must use semantic API, not api.bot/api.chat");
+    throw createPlanGateError(
+      "planner code must use semantic API, not api.bot/api.chat",
+      "forbidden_low_level_api",
+    );
   }
 
   if (!/\brunGoal\s*\(/.test(code)) {
-    throw new ConversationLlmPlanError("planner code must call runGoal");
+    throw createPlanGateError("planner code must call runGoal", "missing_run_goal");
   }
 
   if (!/\breport\s*\(\s*[A-Za-z_$][\w$]*\s*\)/.test(code)) {
-    throw new ConversationLlmPlanError("planner code must call report(task)");
+    throw createPlanGateError("planner code must call report(task)", "missing_report_task");
   }
 }
 
 const PLAN_FORBIDDEN_KEYS = new Set(["type", "skill", "params", "skill_call", "sandbox_code"]);
+
+function parseStrictPlanJsonRecord(content: string): Record<string, unknown> {
+  try {
+    return parseStrictJsonRecord(content);
+  } catch (error) {
+    throw new ConversationLlmPlanError("planner output must be a strict JSON object", {
+      cause: error,
+      plan_metric: {
+        plan_parse_ok: false,
+        plan_code_only_ok: false,
+      },
+    });
+  }
+}
+
+function createCodeOnlyPlanError(message: string): ConversationLlmPlanError {
+  return new ConversationLlmPlanError(message, {
+    plan_metric: {
+      plan_parse_ok: true,
+      plan_code_only_ok: false,
+    },
+  });
+}
+
+function createPlanGateError(
+  message: string,
+  failureType: ConversationLlmPlanGateFailureType,
+): ConversationLlmPlanError {
+  return new ConversationLlmPlanError(message, {
+    plan_metric: {
+      plan_parse_ok: true,
+      plan_code_only_ok: true,
+      plan_gate_failure_type: failureType,
+    },
+  });
+}

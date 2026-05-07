@@ -30,6 +30,11 @@ export function createProductionMetricEventFromLlmDiagnostic(input: {
     duration_ms: input.diagnostic.metrics.request_total_ms,
     input_tokens: input.diagnostic.metrics.input_tokens,
     output_tokens: input.diagnostic.metrics.output_tokens,
+    plan_parse_ok: input.diagnostic.plan_metric?.plan_parse_ok ?? null,
+    plan_code_only_ok: input.diagnostic.plan_metric?.plan_code_only_ok ?? null,
+    plan_gate_failure_type: input.diagnostic.plan_metric?.plan_gate_failure_type ?? null,
+    plan_static_precheck_failure_type:
+      input.diagnostic.plan_metric?.plan_static_precheck_failure_type ?? null,
   });
 }
 

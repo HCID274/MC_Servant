@@ -1,4 +1,13 @@
-import type { ConversationLlmDiagnosticRecord } from "./types.js";
+import type {
+  ConversationLlmDiagnosticRecord,
+  ConversationLlmPlanGateFailureType,
+} from "./types.js";
+
+export interface ConversationLlmPlanMetricFailure {
+  readonly plan_parse_ok: boolean;
+  readonly plan_code_only_ok: boolean;
+  readonly plan_gate_failure_type?: ConversationLlmPlanGateFailureType;
+}
 
 export class ConversationLlmTriageError extends Error {
   /** 失败时已生成的诊断摘要。 */
@@ -41,6 +50,8 @@ export class ConversationLlmChatError extends Error {
 export class ConversationLlmPlanError extends Error {
   /** 失败时已生成的诊断摘要。 */
   readonly diagnostics?: ConversationLlmDiagnosticRecord;
+  /** Plan 输出质量指标分类；仅由 Plan parser（规划解析器） 失败路径写入。 */
+  readonly plan_metric?: ConversationLlmPlanMetricFailure;
 
   /**
    * 创建规划失败错误。
@@ -50,13 +61,19 @@ export class ConversationLlmPlanError extends Error {
    */
   constructor(
     message: string,
-    options?: ErrorOptions & { readonly diagnostics?: ConversationLlmDiagnosticRecord },
+    options?: ErrorOptions & {
+      readonly diagnostics?: ConversationLlmDiagnosticRecord;
+      readonly plan_metric?: ConversationLlmPlanMetricFailure;
+    },
   ) {
     super(message, options);
     this.name = "ConversationLlmPlanError";
 
     if (options?.diagnostics !== undefined) {
       this.diagnostics = options.diagnostics;
+    }
+    if (options?.plan_metric !== undefined) {
+      this.plan_metric = options.plan_metric;
     }
   }
 }

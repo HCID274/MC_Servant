@@ -12,6 +12,7 @@ import {
   createEvalCaseJsonlLine,
   createEvalRunJsonlLine,
   createLocalProductionMetricLogSink,
+  createProductionLlmMetricSummaries,
   createProductionMetricEventJsonlLine,
   parseEvalCaseJsonlLines,
   serializeEvalJsonlLine,
@@ -20,6 +21,7 @@ import {
   createBotWorkerActions,
   createBotWorkerTask,
   createProductionMetricEventFromBotWorkerAction,
+  createProductionMetricEventFromLlmDiagnostic,
 } from "../workers/index.js";
 
 describe("eval runner（离线评测执行器）契约", () => {
@@ -220,12 +222,126 @@ describe("eval runner（离线评测执行器）契约", () => {
     expect(Object.isFrozen(line)).toBe(true);
     expect(line.schema_version).toBe("ts-core.metric.v1");
     expect(line.root_goal_id).toBeNull();
+    expect(line.plan_parse_ok).toBeNull();
+    expect(line.plan_code_only_ok).toBeNull();
     expect(() =>
       createProductionMetricEventJsonlLine({
         ...line,
         event_type: "bad" as typeof line.event_type,
       }),
     ).toThrow(/event_type/u);
+  });
+
+  it("应把 Plan 输出质量诊断映射为生产指标字段并汇总 T-075R 指标", () => {
+    const planOk = createProductionMetricEventFromLlmDiagnostic({
+      bot_id: "local-bot",
+      diagnostic: createDiagnostics({
+        stage: "plan",
+        messageId: "msg-plan-ok",
+        requestMs: 200,
+        inputTokens: 100,
+        outputTokens: 20,
+        planMetric: {
+          plan_parse_ok: true,
+          plan_code_only_ok: true,
+          plan_gate_failure_type: null,
+          plan_static_precheck_failure_type: null,
+        },
+      }),
+    });
+    const planGateFailed = createProductionMetricEventFromLlmDiagnostic({
+      bot_id: "local-bot",
+      diagnostic: createDiagnostics({
+        stage: "plan",
+        messageId: "msg-plan-gate",
+        requestMs: 300,
+        inputTokens: 120,
+        outputTokens: 30,
+        planMetric: {
+          plan_parse_ok: true,
+          plan_code_only_ok: true,
+          plan_gate_failure_type: "missing_run_goal",
+          plan_static_precheck_failure_type: null,
+        },
+      }),
+    });
+    const planStaticFailed = createProductionMetricEventFromLlmDiagnostic({
+      bot_id: "local-bot",
+      diagnostic: createDiagnostics({
+        stage: "plan",
+        messageId: "msg-plan-static",
+        requestMs: 400,
+        inputTokens: 140,
+        outputTokens: 40,
+        planMetric: {
+          plan_parse_ok: true,
+          plan_code_only_ok: true,
+          plan_gate_failure_type: null,
+          plan_static_precheck_failure_type: "forbidden_eval",
+        },
+      }),
+    });
+    const chat = createProductionMetricEventFromLlmDiagnostic({
+      bot_id: "local-bot",
+      diagnostic: createDiagnostics({
+        stage: "chat",
+        messageId: "msg-chat",
+        requestMs: 50,
+        inputTokens: 10,
+        outputTokens: 5,
+      }),
+    });
+
+    expect(planGateFailed).toMatchObject({
+      event_type: "llm.stage",
+      stage: "plan",
+      plan_parse_ok: true,
+      plan_code_only_ok: true,
+      plan_gate_failure_type: "missing_run_goal",
+      plan_static_precheck_failure_type: null,
+    });
+
+    const summaries = createProductionLlmMetricSummaries([
+      planOk,
+      planGateFailed,
+      planStaticFailed,
+      chat,
+    ]);
+
+    expect(summaries.map((summary) => summary.name)).toEqual([
+      "plan_code_strict_parse_success_rate",
+      "plan_code_only_success_rate",
+      "plan_gate_failure_rate",
+      "plan_static_precheck_failure_rate",
+      "triage_average_latency_ms",
+      "plan_average_latency_ms",
+      "chat_average_latency_ms",
+      "report_average_latency_ms",
+      "llm_input_tokens_total",
+      "llm_output_tokens_total",
+    ]);
+    expect(summaries.find((summary) => summary.name === "plan_gate_failure_rate")).toMatchObject({
+      value: 1 / 3,
+      numerator: 1,
+      denominator: 3,
+    });
+    expect(
+      summaries.find((summary) => summary.name === "plan_static_precheck_failure_rate"),
+    ).toMatchObject({
+      value: 1 / 3,
+      numerator: 1,
+      denominator: 3,
+    });
+    expect(summaries.find((summary) => summary.name === "plan_average_latency_ms")).toMatchObject({
+      value: 300,
+      numerator: 900,
+      denominator: 3,
+    });
+    expect(summaries.find((summary) => summary.name === "llm_input_tokens_total")).toMatchObject({
+      value: 370,
+      numerator: 370,
+      denominator: 4,
+    });
   });
 
   it("应将 BotWorker 真实生命周期 action 映射为生产指标事件", () => {
@@ -404,6 +520,7 @@ function createDiagnostics(input: {
   requestMs: number;
   inputTokens: number;
   outputTokens: number;
+  planMetric?: ConversationLlmDiagnosticRecord["plan_metric"];
 }): ConversationLlmDiagnosticRecord {
   const metrics: LlmCallMetrics = {
     queue_wait_ms: 0,
@@ -429,6 +546,7 @@ function createDiagnostics(input: {
     ok: true,
     lines: [],
     metrics,
+    ...(input.planMetric === undefined ? {} : { plan_metric: input.planMetric }),
   };
 }
 

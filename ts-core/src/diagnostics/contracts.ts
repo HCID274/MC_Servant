@@ -577,6 +577,14 @@ export interface LlmMetaJsonlLine {
     fallback?: boolean;
     /** 回退原因；当前仅 report 阶段写入。 */
     fallback_reason?: string;
+    /** Plan 严格解析是否成功；当前仅 plan 阶段写入。 */
+    plan_parse_ok?: boolean | null;
+    /** Plan 输出是否为唯一 code 字段；当前仅 plan 阶段写入。 */
+    plan_code_only_ok?: boolean | null;
+    /** Plan parser（规划解析器）门禁失败类型；当前仅 plan 阶段写入。 */
+    plan_gate_failure_type?: string | null;
+    /** sandbox static precheck（静态预检）失败类型；当前仅 plan 阶段写入。 */
+    plan_static_precheck_failure_type?: string | null;
   }>;
   /** 失败错误摘要。 */
   readonly err?: JsonlErrorSnapshot;

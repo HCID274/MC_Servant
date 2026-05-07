@@ -169,6 +169,12 @@ export async function executeStage<TResult>(
       response_parse_ms: latestResponseParseMs,
       tool_round_ms: toolExecution.toolRoundMs,
     });
+    const diagnosticMeta = normalizeDiagnosticMeta(
+      input.diagnosticMeta?.onSuccess?.({
+        value,
+        assistantContent: latestAssistantContent ?? "",
+      }),
+    );
     const diagnostics = createConversationLlmDiagnosticRecord({
       stage: input.stage,
       model: input.config.model,
@@ -177,6 +183,7 @@ export async function executeStage<TResult>(
       created_at: finishedAt.toISOString(),
       ok: true,
       metrics,
+      ...createPlanMetricDiagnosticField(input.stage, diagnosticMeta),
       lines: [
         ...invocationLines,
         ...latestExtraLines,
@@ -188,12 +195,7 @@ export async function executeStage<TResult>(
             ms: Math.max(0, finishedAt.getTime() - startedAtMs),
             ok: true,
             metrics,
-            ...normalizeDiagnosticMeta(
-              input.diagnosticMeta?.onSuccess?.({
-                value,
-                assistantContent: latestAssistantContent ?? "",
-              }),
-            ),
+            ...diagnosticMeta,
           },
         }),
       ],
@@ -217,6 +219,14 @@ export async function executeStage<TResult>(
       response_parse_ms: latestResponseParseMs,
       tool_round_ms: latestToolRoundMs,
     });
+    const diagnosticMeta = normalizeDiagnosticMeta(
+      input.diagnosticMeta?.onFailure?.({
+        error,
+        ...(latestAssistantContent === undefined
+          ? {}
+          : { assistantContent: latestAssistantContent }),
+      }),
+    );
     const diagnostics = createConversationLlmDiagnosticRecord({
       stage: input.stage,
       model: input.config.model,
@@ -226,6 +236,7 @@ export async function executeStage<TResult>(
       ok: false,
       metrics,
       error_summary: errorSnapshot.message,
+      ...createPlanMetricDiagnosticField(input.stage, diagnosticMeta),
       lines: [
         ...invocationLines,
         ...latestExtraLines,
@@ -237,14 +248,7 @@ export async function executeStage<TResult>(
             ms: Math.max(0, finishedAt.getTime() - startedAtMs),
             ok: false,
             metrics,
-            ...normalizeDiagnosticMeta(
-              input.diagnosticMeta?.onFailure?.({
-                error,
-                ...(latestAssistantContent === undefined
-                  ? {}
-                  : { assistantContent: latestAssistantContent }),
-              }),
-            ),
+            ...diagnosticMeta,
           },
           err: errorSnapshot,
         }),
@@ -262,6 +266,43 @@ export async function executeStage<TResult>(
       diagnostics,
     });
   }
+}
+
+function createPlanMetricDiagnosticField(
+  stage: LlmLogStage,
+  meta: Readonly<Record<string, string | number | boolean | null>>,
+): Pick<ConversationLlmDiagnosticRecord, "plan_metric"> | Record<string, never> {
+  if (stage !== "plan") {
+    return {};
+  }
+
+  return {
+    plan_metric: {
+      plan_parse_ok: readNullableBooleanMeta(meta.plan_parse_ok),
+      plan_code_only_ok: readNullableBooleanMeta(meta.plan_code_only_ok),
+      plan_gate_failure_type: readNullablePlanGateFailureType(meta.plan_gate_failure_type),
+      plan_static_precheck_failure_type:
+        typeof meta.plan_static_precheck_failure_type === "string"
+          ? meta.plan_static_precheck_failure_type
+          : null,
+    },
+  };
+}
+
+function readNullableBooleanMeta(
+  value: string | number | boolean | null | undefined,
+): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function readNullablePlanGateFailureType(
+  value: string | number | boolean | null | undefined,
+): NonNullable<ConversationLlmDiagnosticRecord["plan_metric"]>["plan_gate_failure_type"] {
+  return typeof value === "string"
+    ? (value as NonNullable<
+        ConversationLlmDiagnosticRecord["plan_metric"]
+      >["plan_gate_failure_type"])
+    : null;
 }
 
 function normalizeDiagnosticMeta(

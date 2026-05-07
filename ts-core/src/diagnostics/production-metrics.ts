@@ -17,11 +17,23 @@ import { assertDiagnosticStorageRef } from "./logs.js";
 /** 生产指标 JSONL（结构化日志） 写入函数。 */
 export type ProductionMetricLogSink = (line: ProductionMetricEventJsonlLine) => Promise<void>;
 
+type ProductionMetricPlanFields = Pick<
+  ProductionMetricEventJsonlLine,
+  | "plan_parse_ok"
+  | "plan_code_only_ok"
+  | "plan_gate_failure_type"
+  | "plan_static_precheck_failure_type"
+>;
+
 /** 创建生产指标事件，所有可未知字段显式落 null，避免下游猜字段缺失语义。 */
 export function createProductionMetricEventJsonlLine(
-  input: Omit<ProductionMetricEventJsonlLine, "schema_version" | "event_id"> & {
-    readonly event_id?: string;
-  },
+  input: Omit<
+    ProductionMetricEventJsonlLine,
+    "schema_version" | "event_id" | keyof ProductionMetricPlanFields
+  > &
+    Partial<ProductionMetricPlanFields> & {
+      readonly event_id?: string;
+    },
 ): ProductionMetricEventJsonlLine {
   const eventId = input.event_id ?? randomUUID();
   assertNonEmptyString(eventId, "event_id");
@@ -37,6 +49,10 @@ export function createProductionMetricEventJsonlLine(
   return cloneReadonlyValue({
     schema_version: PRODUCTION_METRIC_SCHEMA_VERSION,
     event_id: eventId,
+    plan_parse_ok: null,
+    plan_code_only_ok: null,
+    plan_gate_failure_type: null,
+    plan_static_precheck_failure_type: null,
     ...input,
   } satisfies ProductionMetricEventJsonlLine);
 }

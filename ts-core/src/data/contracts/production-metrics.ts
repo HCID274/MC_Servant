@@ -57,4 +57,8 @@ export interface ProductionMetricEventJsonlLine {
   readonly duration_ms: number | null;
   readonly input_tokens: number | null;
   readonly output_tokens: number | null;
+  readonly plan_parse_ok: boolean | null;
+  readonly plan_code_only_ok: boolean | null;
+  readonly plan_gate_failure_type: string | null;
+  readonly plan_static_precheck_failure_type: string | null;
 }

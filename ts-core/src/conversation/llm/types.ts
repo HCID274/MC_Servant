@@ -7,6 +7,19 @@ import type {
   ConversationReplyMode,
 } from "../contracts.js";
 
+export type ConversationLlmPlanGateFailureType =
+  | "forbidden_demo_mine_iron"
+  | "forbidden_low_level_api"
+  | "missing_run_goal"
+  | "missing_report_task";
+
+export interface ConversationLlmPlanMetricDiagnostic {
+  readonly plan_parse_ok: boolean | null;
+  readonly plan_code_only_ok: boolean | null;
+  readonly plan_gate_failure_type: ConversationLlmPlanGateFailureType | null;
+  readonly plan_static_precheck_failure_type: string | null;
+}
+
 export interface ConversationLlmConfig {
   /** OpenAI 兼容基础地址。 */
   readonly base_url: string;
@@ -75,6 +88,8 @@ export interface ConversationLlmDiagnosticRecord {
   readonly lines: readonly LlmJsonlLine[];
   /** 本次调用的分段性能指标。 */
   readonly metrics: LlmCallMetrics;
+  /** Plan 输出质量指标；仅 plan 阶段写入。 */
+  readonly plan_metric?: ConversationLlmPlanMetricDiagnostic;
 }
 
 /** 闲聊回复生成结果。 */

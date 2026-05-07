@@ -789,6 +789,157 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(requestBody.messages?.[0]?.content).not.toContain("你不直接执行世界动作");
   });
 
+  it("应在 Plan 诊断中记录解析、code-only、门禁与静态预检结果", async () => {
+    const diagnostics: unknown[] = [];
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        onDiagnostic: (record) => diagnostics.push(record),
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content:
+                      '{"code":"const task = await runGoal(\\"测试\\", async () => { eval(\\"1\\"); }); await report(task);"}',
+                  },
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          ),
+      },
+    );
+
+    const result = await client.generateCodePlan({
+      message_id: "msg-plan-static-metric",
+      message: "测试预检",
+      snapshot_context: "online_runtime: executable skills: goTo",
+    });
+
+    expect(result.diagnostics?.plan_metric).toEqual({
+      plan_parse_ok: true,
+      plan_code_only_ok: true,
+      plan_gate_failure_type: null,
+      plan_static_precheck_failure_type: "eval",
+    });
+    expect(diagnostics[0]).toMatchObject({
+      stage: "plan",
+      ok: true,
+      plan_metric: {
+        plan_parse_ok: true,
+        plan_code_only_ok: true,
+        plan_static_precheck_failure_type: "eval",
+      },
+    });
+  });
+
+  it("应在 Plan 失败诊断中区分严格解析失败与规划门禁失败", async () => {
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content:
+                      '{"code":"await reply(\\"开始\\"); await mine(\\"stone\\", 1); const task = null; await report(task);"}',
+                  },
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          ),
+      },
+    );
+
+    await expect(
+      client.generateCodePlan({
+        message_id: "msg-plan-gate-metric",
+        message: "挖 1 个石头",
+        snapshot_context: "online_runtime: executable skills: mine",
+      }),
+    ).rejects.toMatchObject({
+      diagnostics: {
+        plan_metric: {
+          plan_parse_ok: true,
+          plan_code_only_ok: true,
+          plan_gate_failure_type: "missing_run_goal",
+          plan_static_precheck_failure_type: null,
+        },
+      },
+    });
+
+    const parseFailClient = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: '```json\n{"code":"await report(task);"}\n```',
+                  },
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          ),
+      },
+    );
+
+    await expect(
+      parseFailClient.generateCodePlan({
+        message_id: "msg-plan-parse-metric",
+        message: "输出错误格式",
+        snapshot_context: "online_runtime: executable skills: goTo",
+      }),
+    ).rejects.toMatchObject({
+      diagnostics: {
+        plan_metric: {
+          plan_parse_ok: false,
+          plan_code_only_ok: false,
+          plan_gate_failure_type: null,
+          plan_static_precheck_failure_type: null,
+        },
+      },
+    });
+  });
+
   it("代码规划 prompt（提示词） 不应再把“三个坐标”写成通用失败条件", () => {
     const messages = createConversationPlanMessages({
       message_id: "msg-plan-prompt",

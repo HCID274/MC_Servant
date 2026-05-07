@@ -59,11 +59,25 @@ A2 代表早期 baseline Plan 解析成功率；当前没有可比历史数据�
 | `duration_ms` | 阶段或任务耗时；不可得时为 `null` |
 | `input_tokens` | 输入 token；非 LLM 事件为 `null` |
 | `output_tokens` | 输出 token；非 LLM 事件为 `null` |
+| `plan_parse_ok` | Plan 严格 JSON 解析是否成功；非 Plan 事件为 `null` |
+| `plan_code_only_ok` | Plan 输出是否为唯一 `code` 字段；非 Plan 事件为 `null` |
+| `plan_gate_failure_type` | Plan parser 规划门禁失败类型；未失败或非 Plan 事件为 `null` |
+| `plan_static_precheck_failure_type` | sandbox static precheck 失败类型；未失败或非 Plan 事件为 `null` |
 
 生产指标派生口径：
 
 | 指标名 | 含义 | 来源 |
 |---|---|---|
+| `plan_code_strict_parse_success_rate` | Plan `{code}` 严格解析成功率 | `stage=plan` 的 `llm.stage.plan_parse_ok` |
+| `plan_code_only_success_rate` | Plan 只输出 `code` 字段的成功率 | `stage=plan` 的 `llm.stage.plan_code_only_ok` |
+| `plan_gate_failure_rate` | Plan 输出触发规划门禁失败的比例 | `stage=plan` 的 `llm.stage.plan_gate_failure_type` |
+| `plan_static_precheck_failure_rate` | Plan 输出触发静态预检失败的比例 | `stage=plan` 的 `llm.stage.plan_static_precheck_failure_type` |
+| `triage_average_latency_ms` | Triage 平均延迟，单位毫秒 | `stage=triage` 的 `llm.stage.duration_ms` |
+| `plan_average_latency_ms` | Plan 平均延迟，单位毫秒 | `stage=plan` 的 `llm.stage.duration_ms` |
+| `chat_average_latency_ms` | Chat 平均延迟，单位毫秒 | `stage=chat` 的 `llm.stage.duration_ms` |
+| `report_average_latency_ms` | Report 平均延迟，单位毫秒 | `stage=report` 的 `llm.stage.duration_ms` |
+| `llm_input_tokens_total` | LLM 输入 token 总数 | 所有 `llm.stage.input_tokens` |
+| `llm_output_tokens_total` | LLM 输出 token 总数 | 所有 `llm.stage.output_tokens` |
 | `execution_run_count` | 长链路任务实际跑过的次数 | `event_type in task.completed/task.failed/task.interrupted/task.discarded` |
 | `execution_completion_rate` | 端到端无人工干预完成率 | `task.completed / execution_run_count` |
 | `execution_avg_duration_minutes` | 单次平均耗时，单位分钟 | 终态任务事件的 `duration_ms` |

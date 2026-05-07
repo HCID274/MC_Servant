@@ -59,6 +59,14 @@
 - 关键决策: 选择把执行/恢复指标的主数据来源切到生产链路自动写入的 `logs/metrics/YYYY-MM-DD/production-metrics.jsonl`,而不是继续维护主动执行 eval CLI;旧 LLM 离线 runner 保留用于 triage/plan/chat/report 固定样本验证。Plan prompt 中清理 `stone -> cobblestone`、`iron_ore -> raw_iron` 掉落事实硬编码,让 mine/cutTree 等语义 API 只表达动作,掉落、工具和完成判断交给执行层与 Minecraft 事实源
 - 架构冲突: 无
 
+## T-075R | 2026-05-07 | LLM 与 Plan 输出生产指标自动记录
+
+- 涉及模块: conversation/llm（对话大语言模型） client/parser/stage/types,plan parser（规划解析器） 门禁分类,sandbox static precheck（沙箱静态预检）只读复用,diagnostics（诊断） production metrics 与汇总,workers（工作线程） LLM diagnostic 到生产指标映射,Docs/07_EVAL_SPEC.md（评测与生产指标规格）
+- A 拆解依据: 用户要求在 T-074R 的生产指标自动落盘基础上,每次 triage/chat/plan/report 调用后自动记录延迟、token、Plan 解析结果与门禁/静态预检失败原因;边界限定 conversation/llm、plan parser、sandbox static precheck、diagnostics,需真实 LLM 验收;输出语义化指标名 `plan_code_strict_parse_success_rate`、`plan_code_only_success_rate`、`plan_gate_failure_rate`、`plan_static_precheck_failure_rate`、`triage_average_latency_ms`、`plan_average_latency_ms`、`chat_average_latency_ms`、`report_average_latency_ms`、`llm_input_tokens_total`、`llm_output_tokens_total`
+- C 审查结论: 通过。实现把 Plan parser 失败分为严格 JSON 解析失败、非唯一 `code` 字段失败与规划门禁失败,`executeStage` 统一把阶段 meta 提升为 `ConversationLlmDiagnosticRecord.plan_metric`,生产指标事件新增 `plan_parse_ok`、`plan_code_only_ok`、`plan_gate_failure_type`、`plan_static_precheck_failure_type`,汇总函数只消费生产 JSONL 契约行并产出 10 个指定指标名。Reviewer 复核 `logs/metrics/2026-05-07/production-metrics.jsonl` 中 `t075r-prod-plan-metrics-1778147681` 与 `t075r-prod-chat-metrics-1778147752` 的真实生产链路,覆盖 triage、plan、report、chat 的 `llm.stage`,Plan 行含 `plan_parse_ok:true`、`plan_code_only_ok:true` 且门禁/预检失败为 `null`;实际日志 16 行事件无缺字段,可汇总全部 10 个指标。`git diff --check` 通过,定向 Vitest 2 个文件 36 passed,`pnpm typecheck` 通过,`pnpm lint` 通过,`bash scripts/pre_review.sh` 全绿,36 个 test file /438 passed/8 skipped
+- 关键决策: 选择在 LLM diagnostic 层记录 Plan 输出质量,再由 `workers/production-metrics` 映射到生产指标 JSONL,而不是让汇总逻辑反向解析 LLM 日志文本或耦合 ConversationWorker 内部状态;静态预检只复用既有 `checkSandboxSourceStaticPolicy` 作为只读分类,不改变生产执行门禁语义
+- 架构冲突: 无
+
 ## T-071D | 2026-05-07 | terrain-router 水平挖穿成本与 A* 搜索诊断修复
 
 - 涉及模块: runtime/transport（运行时传输层） terrain-router（地形路由）,runtime Mineflayer（Minecraft 协议客户端）回归测试
