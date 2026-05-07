@@ -1687,6 +1687,85 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     ]);
   });
 
+  it("terrain-router 同水平被障碍封住时应优先规划水平挖穿，不应耗尽 expanded 预算", () => {
+    const bot = new FakeMineflayerBot();
+    for (let x = 0; x <= 4; x += 1) {
+      setFakeBlock(bot, { x, y: 63, z: 0 }, "dirt");
+      setFakeBlock(bot, { x, y: 66, z: 0 }, "dirt");
+    }
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 4, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 4, y: 65, z: 0 }, "air");
+    for (const x of [1, 2, 3]) {
+      setFakeBlock(bot, { x, y: 64, z: 0 }, "dirt");
+      setFakeBlock(bot, { x, y: 65, z: 0 }, "dirt");
+    }
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 4, y: 64, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: false,
+      maxExpandedStates: 80,
+    });
+
+    expect(result.plan).not.toBeNull();
+    expect(result.expandedStates).toBeLessThan(80);
+    expect(result.plan?.actions.filter((action) => action.kind === "digWalk")).toHaveLength(3);
+  });
+
+  it("terrain-router 短距离可绕行时不应为了直线距离挖穿障碍", () => {
+    const bot = new FakeMineflayerBot();
+    populateMiningBox(bot, {
+      minX: 0,
+      maxX: 3,
+      minY: 63,
+      maxY: 63,
+      minZ: 0,
+      maxZ: 1,
+      blockName: "dirt",
+    });
+    populateMiningBox(bot, {
+      minX: 0,
+      maxX: 3,
+      minY: 64,
+      maxY: 65,
+      minZ: 0,
+      maxZ: 1,
+      blockName: "air",
+    });
+    populateMiningBox(bot, {
+      minX: 0,
+      maxX: 3,
+      minY: 66,
+      maxY: 66,
+      minZ: 0,
+      maxZ: 1,
+      blockName: "dirt",
+    });
+    setFakeBlock(bot, { x: 1, y: 64, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 65, z: 0 }, "dirt");
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 3, y: 64, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: false,
+      maxExpandedStates: 80,
+    });
+
+    expect(result.plan).not.toBeNull();
+    expect(result.plan?.actions).toHaveLength(5);
+    expect(result.plan?.actions.every((action) => action.kind === "walk")).toBe(true);
+  });
+
   it("terrain-router digStepDown 应在当前 top 被挡时纳入 digs，并拒绝终点只有 2 格净空", () => {
     const bot = new FakeMineflayerBot();
     setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");

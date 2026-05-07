@@ -79,10 +79,9 @@ const DIR_VEC: Readonly<
 const COST_WALK = 10;
 const COST_DROP1 = 12;
 const COST_JUMP_UP = 14;
-const COST_PLACE_UP = 80;
-const COST_DIG_WALK_BASE = 120;
-const COST_DIG_STEP_BASE = 140;
-const COST_DIG_PER_BLOCK = 20;
+const COST_TERRAIN_CHANGE_BASE = 24;
+const COST_TERRAIN_CHANGE_PER_BLOCK = 6;
+const COST_PLACE_UP_ITEM_PENALTY = 6;
 const COST_TURN_PENALTY = 2;
 
 const DEFAULT_MAX_EXPANDED = 14_000;
@@ -208,7 +207,7 @@ export function planTerrainRoute(input: {
   }
 
   diagnostics.push(
-    `terrain_bfs_no_path:expanded=${expanded};max_expanded=${maxExpanded};open=${open.size()};best=${posLabel(bestNode.foot)};best_score=${bestScore};best_cost=${bestNode.cost};max_depth=${maxDepth};max_air=${DEFAULT_MAX_PLANNED_AIR};max_solid=${maxPlannedSolid};max_total=${DEFAULT_MAX_TOTAL_PLANNED_CHANGES}`,
+    `terrain_bfs_no_path:expanded=${expanded};max_expanded=${maxExpanded};open=${open.size()};best=${posLabel(bestNode.foot)};best_score=${bestScore};best_cost=${bestNode.cost};max_depth=${maxDepth};max_air=${DEFAULT_MAX_PLANNED_AIR};max_solid=${maxPlannedSolid};max_total=${DEFAULT_MAX_TOTAL_PLANNED_CHANGES};costs=walk:${COST_WALK},drop1:${COST_DROP1},jumpUp:${COST_JUMP_UP},terrainChangeBase:${COST_TERRAIN_CHANGE_BASE},terrainChangePerBlock:${COST_TERRAIN_CHANGE_PER_BLOCK},placeItemPenalty:${COST_PLACE_UP_ITEM_PENALTY}`,
   );
   return {
     plan: null,
@@ -320,7 +319,10 @@ function expandSuccessors(
             support: placeSupport,
             digs: placeDigs,
           },
-          COST_PLACE_UP + COST_DIG_PER_BLOCK * placeDigs.length + turn,
+          COST_TERRAIN_CHANGE_BASE +
+            COST_TERRAIN_CHANGE_PER_BLOCK * placeDigs.length +
+            COST_PLACE_UP_ITEM_PENALTY +
+            turn,
           input.targetFoot,
           goalRange,
         );
@@ -344,7 +346,7 @@ function expandSuccessors(
             dir,
             digs,
           },
-          COST_DIG_WALK_BASE + COST_DIG_PER_BLOCK * digs.length + turn,
+          COST_TERRAIN_CHANGE_BASE + COST_TERRAIN_CHANGE_PER_BLOCK * digs.length + turn,
           input.targetFoot,
           goalRange,
         );
@@ -375,7 +377,10 @@ function expandSuccessors(
           dir,
           digs: stepDownDigs,
         },
-        COST_DIG_STEP_BASE + COST_DIG_PER_BLOCK * stepDownDigs.length + turn,
+        COST_TERRAIN_CHANGE_BASE +
+          COST_TERRAIN_CHANGE_PER_BLOCK * stepDownDigs.length +
+          COST_DROP1 +
+          turn,
         input.targetFoot,
         goalRange,
       );
@@ -404,7 +409,10 @@ function expandSuccessors(
           dir,
           digs: stepUpDigs,
         },
-        COST_DIG_STEP_BASE + COST_DIG_PER_BLOCK * stepUpDigs.length + COST_JUMP_UP + turn,
+        COST_TERRAIN_CHANGE_BASE +
+          COST_TERRAIN_CHANGE_PER_BLOCK * stepUpDigs.length +
+          COST_JUMP_UP +
+          turn,
         input.targetFoot,
         goalRange,
       );
@@ -486,7 +494,8 @@ function routeHeuristic(current: TerrainBlockPos, target: TerrainBlockPos, range
     Math.ceil(Math.hypot(current.x - target.x, current.z - target.z) - range),
   );
   const dy = target.y - current.y;
-  const verticalCost = dy > 0 ? dy * COST_PLACE_UP : Math.abs(dy) * COST_DROP1;
+  const placeUpCost = COST_TERRAIN_CHANGE_BASE + COST_PLACE_UP_ITEM_PENALTY;
+  const verticalCost = dy > 0 ? dy * placeUpCost : Math.abs(dy) * COST_DROP1;
   return horizontalSteps * COST_WALK + verticalCost;
 }
 

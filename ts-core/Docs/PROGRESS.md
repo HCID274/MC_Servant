@@ -43,6 +43,14 @@
 
 (从这里开始,Reviewer C 通过任务后追加)
 
+## T-071D | 2026-05-07 | terrain-router 水平挖穿成本与 A* 搜索诊断修复
+
+- 涉及模块: runtime/transport（运行时传输层） terrain-router（地形路由）,runtime Mineflayer（Minecraft 协议客户端）回归测试
+- A 拆解依据: 用户实服发现 `goTo`（移动） 在同水平障碍前没有走水平挖穿,而是 A* 搜索到 `expanded=14000/open=61696` 后失败;用户明确要求优先按根因降低挖掘代价并加诊断,不要先做搜索走廊剪枝或单纯调大展开预算
+- C 审查结论: 通过。`digWalk`（水平挖通） 动作本身已存在,失败根因是 terrain change（地形改动）成本远高于 walk（行走）,导致 A* 在大量便宜绕路/垫高候选中耗尽 `maxExpanded`（最大展开数）;当前实现把 terrain change cost（地形改动成本）收敛为 `COST_TERRAIN_CHANGE_BASE=24` + `COST_TERRAIN_CHANGE_PER_BLOCK=6`,并在 `terrain_bfs_no_path`（地形 BFS 无路径） diagnostics（诊断）中输出 cost 配置。定向 Vitest（测试框架）2 个 terrain-router（地形路由）测试通过,`git diff --check`（差异空白检查）通过,`bash scripts/pre_review.sh`（评审前预检脚本）全绿,35 个 test file（测试文件）/428 passed（通过）/8 skipped（跳过）;B 已用实机坐标 `去坐标 -20 107 -214` 验证任务完成
+- 关键决策: 选择降低水平挖穿进入 A* 搜索的相对成本,而不是扩大 `maxExpanded` 或先引入 corridor（搜索走廊）;同时保留 walk（行走）成本最低,并用"短距离可绕行时不挖墙"回归测试防止 bot 无脑破坏地形
+- 架构冲突: 无
+
 ## T-071C | 2026-05-07 | terrain/mine BFS 净空语义与 digStepDown 执行契约收敛
 
 - 涉及模块: runtime/transport（运行时传输层） terrain-router（地形路由）/mine-bfs（挖掘 BFS）/terrain-action-executor（地形动作执行器）/mine-action-executor（挖掘动作执行器）,runtime Mineflayer（Minecraft 协议客户端）回归测试
