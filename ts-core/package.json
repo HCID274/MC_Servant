@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "biome check package.json tsconfig.json biome.json drizzle.config.ts vitest.config.ts README.md src",
     "format": "biome format --write package.json tsconfig.json biome.json drizzle.config.ts vitest.config.ts README.md src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "eval:llm": "tsx scripts/eval/llm-stage-eval.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

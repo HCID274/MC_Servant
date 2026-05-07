@@ -8,3 +8,4 @@ export * from "./skill-plan-table.js";
 export * from "./stage.js";
 export * from "./client.js";
 export * from "./diagnostics.js";
+export * from "./eval-runner.js";

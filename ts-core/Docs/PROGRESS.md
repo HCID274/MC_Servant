@@ -43,6 +43,14 @@
 
 (从这里开始,Reviewer C 通过任务后追加)
 
+## T-072/T-073 | 2026-05-07 | eval JSONL 契约与 LLM 阶段离线评测 runner
+
+- 涉及模块: data contracts（数据契约） eval JSONL,diagnostics（诊断） eval-jsonl,conversation/llm（对话大语言模型） eval-runner,scripts/eval（评测脚本）,Docs/07_EVAL_SPEC.md（评测规格）
+- A 拆解依据: 用户要求先定义轻量 eval runner（评测执行器） 的 case/run/attempt/metric JSONL 契约,再用固定样本真实调用 triage/plan/chat/report 并输出 A1/D1/D2/D3/E2 指标;边界明确不接 event_log（事件日志）,不改外部 API,不改 PostgreSQL schema,只落本地 JSONL;触碰 LLM（大语言模型） 必须真实 OpenAI-compatible API（OpenAI 兼容接口） 验收
+- C 审查结论: 曾打回 1 次。首轮实现范围和架构边界正确,但真实 eval 日志里超时失败 attempt 在 diagnostics 存在且 usage input_tokens 为 0 时没有回退本地估算,导致 token 记录与 `07_EVAL_SPEC.md` 的"usage 缺失时使用本地近似估算"不一致;返修后成功/失败 attempt 统一通过 `selectInputTokens`（输入 token 选择器） 采信 `input_tokens > 0` 的 usage,否则回退本地估算,并补失败路径回归。当前 `git diff --check`（差异空白检查）通过,`pnpm vitest run src/__tests__/eval-runner-model.spec.ts` 4 passed,`pnpm typecheck`（类型检查）通过,`pnpm lint`（Biome）通过,`bash scripts/pre_review.sh`（评审前预检脚本）全绿,36 个 test file（测试文件）/432 passed（通过）/8 skipped（跳过）;真实 `pnpm eval:llm -- --run-id eval-t073-fix-zero-usage --out logs/eval/eval-t073-fix-zero-usage.jsonl` 产出 6 个 case、13 行 JSONL,A1/D1/D2/D3/E2 均产出,超时失败 attempt 已不再输出 `input_tokens:0`,密钥保持脱敏
+- 关键决策: 选择把 A1/D1/D2/D3/E2 作为 metric id（指标编号） 而不是 case id（样本编号）,固定样本采用 `case_*` 命名;A2 因缺少早期 baseline 数据本阶段不输出;D3 通过 `case_triage_chat` 的 `token_saving_probe`（token 节省探针） 做离线路由节省估算;runner 只复用现有 LLM client（客户端） 和 sandbox static precheck（沙箱静态预检）,不执行 sandbox 代码,不进入 PG/API/event_log 链路
+- 架构冲突: 无
+
 ## T-071D | 2026-05-07 | terrain-router 水平挖穿成本与 A* 搜索诊断修复
 
 - 涉及模块: runtime/transport（运行时传输层） terrain-router（地形路由）,runtime Mineflayer（Minecraft 协议客户端）回归测试

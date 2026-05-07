@@ -41,3 +41,4 @@ export * from "./conversation-reply-log.js";
 export * from "./llm-log.js";
 export * from "./brain-log.js";
 export * from "./task-log-reader.js";
+export * from "./eval-jsonl.js";
