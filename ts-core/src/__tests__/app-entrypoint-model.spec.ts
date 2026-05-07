@@ -2955,6 +2955,27 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       });
       expect(logText).toContain("<redacted>");
       expect(logText).not.toContain("sk-local-dev");
+      const metricPath = join(logsDir, "metrics", "2026-04-24", "production-metrics.jsonl");
+      const metricText = await readFile(metricPath, "utf8");
+      const metricLines = metricText
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as unknown);
+
+      expect(metricLines).toHaveLength(1);
+      expect(metricLines[0]).toMatchObject({
+        schema_version: "ts-core.metric.v1",
+        event_type: "llm.stage",
+        message_id: "msg-online-parse-error",
+        task_id: null,
+        bot_id: "bot-llm-parse-log-online",
+        source: "conversation_llm",
+        stage: "triage",
+        ok: false,
+        error_code: "llm_stage_failed",
+        model: "bl-auto",
+      });
+      expect(metricText).not.toContain("sk-local-dev");
     } finally {
       if (!parseLogRuntimeClosed) {
         await runtime.close();
@@ -3409,7 +3430,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             if (userMessage.includes("主人的指令：")) {
               if (currentInstruction.includes("挖两块石头")) {
                 assistantContent =
-                  '{"code":"await reply(\\"收到，我去挖石头喵~\\"); const task = await runGoal(\\"挖石头\\", async () => { const result = await ensure(async () => mine(\\"stone\\", 2), until.gained(\\"cobblestone\\", 2)); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}';
+                  '{"code":"await reply(\\"收到，我去挖石头喵~\\"); const task = await runGoal(\\"挖石头\\", async () => { const result = await mine(\\"stone\\", 2); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}';
               } else if (currentInstruction.includes("把地上的圆石捡起来")) {
                 assistantContent =
                   '{"code":"await reply(\\"收到，我去捡圆石喵~\\"); const task = await runGoal(\\"捡圆石\\", async () => { const result = await collect(\\"cobblestone\\", 32); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}';
@@ -3572,7 +3593,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
             message_id: "msg-online-mine",
             priority: "normal",
             type: "code",
-            code: expect.stringContaining('ensure(async () => mine("stone", 2)'),
+            code: expect.stringContaining('mine("stone", 2)'),
           }),
         }),
         options: {

@@ -11,6 +11,7 @@ import {
 import { createExecJobFromPlan } from "../../../conversation/planning.js";
 import { type FailureCapsule, classifyFailureCode } from "../../../core-ports/task-result.js";
 import { type ExecJob, TaskHistoryStatus } from "../../../core-ports/tasking.js";
+import { createProductionMetricEventJsonlLine } from "../../../diagnostics/index.js";
 import { type ConversationWorkerTask, createBotWorkerTask } from "../../contracts.js";
 import { tryEnqueueConversationFactCandidate } from "../brain-facts.js";
 import {
@@ -203,6 +204,10 @@ export async function handlePlanExecRoute(input: {
   await input.dependencies.enqueueExecTaskSink({
     task: botTask,
     priority: toBullmqPriority(execJob.priority),
+  });
+  await emitPlanAcceptedMetric({
+    input,
+    task_id: execJob.message_id,
   });
   input.events.push(
     Object.freeze({
@@ -464,6 +469,78 @@ async function pushPlanningFailure(
       reason,
     }),
   );
+  await emitPlanDiscardedMetric({ input, reason });
+}
+
+async function emitPlanAcceptedMetric(input: {
+  readonly input: {
+    readonly task: ConversationWorkerTask;
+    readonly dependencies: ConversationWorkerRuntimeDependencies;
+  };
+  readonly task_id: string;
+}): Promise<void> {
+  try {
+    await input.input.dependencies.productionMetricSink?.(
+      createProductionMetricEventJsonlLine({
+        event_type: "conversation.plan_accepted",
+        message_id: input.input.task.message.message_id,
+        task_id: input.task_id,
+        bot_id: input.input.task.bot_id,
+        root_goal_id: null,
+        recovery_chain_id: null,
+        created_at: new Date().toISOString(),
+        source: "conversation_worker",
+        prompt_version: null,
+        model: null,
+        stage: "plan",
+        ok: true,
+        error_code: null,
+        duration_ms: null,
+        input_tokens: null,
+        output_tokens: null,
+      }),
+    );
+  } catch {
+    // 生产指标是旁路诊断，不能影响真实规划入队。
+  }
+}
+
+async function emitPlanDiscardedMetric(input: {
+  readonly input: {
+    readonly task: ConversationWorkerTask;
+    readonly dependencies: ConversationWorkerRuntimeDependencies;
+  };
+  readonly reason:
+    | "planner_unavailable"
+    | "planner_failed"
+    | "skill_not_enabled"
+    | "implementation_blocker"
+    | "retry_guard_repeated";
+}): Promise<void> {
+  try {
+    await input.input.dependencies.productionMetricSink?.(
+      createProductionMetricEventJsonlLine({
+        event_type: "conversation.plan_discarded",
+        message_id: input.input.task.message.message_id,
+        task_id: null,
+        bot_id: input.input.task.bot_id,
+        root_goal_id: null,
+        recovery_chain_id: null,
+        created_at: new Date().toISOString(),
+        source: "conversation_worker",
+        prompt_version: null,
+        model: null,
+        stage: "plan",
+        ok: false,
+        error_code: input.reason,
+        duration_ms: null,
+        input_tokens: null,
+        output_tokens: null,
+      }),
+    );
+  } catch {
+    // 生产指标是旁路诊断，不能影响真实回复。
+  }
 }
 
 async function appendConversationReplyLog(input: {

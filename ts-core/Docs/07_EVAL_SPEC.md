@@ -1,15 +1,17 @@
-# 评测契约规格
+# 评测与生产指标契约规格
 
-本文定义轻量 eval runner（评测执行器） 的本地 JSONL 数据格式。当前阶段只落本地文件，不接 `event_log`，不改 PostgreSQL schema，不改外部 HTTP API。
+本文定义两类本地 JSONL 数据格式：离线 LLM eval runner 的评测结果，以及真实线上运行自动落盘的生产指标事件。当前阶段都只落本地文件，不接 `event_log`，不改 PostgreSQL schema，不改外部 HTTP API。
 
 ## 1. 存储边界
 
-- 默认输出：`logs/eval/YYYY-MM-DD/<run_id>.jsonl`
-- 样本输入：`scripts/eval/cases/*.jsonl`
-- `logs/eval` 不作为业务真理源，只用于离线评测、回放和汇总。
+- LLM 离线评测输出：`logs/eval/YYYY-MM-DD/<run_id>.jsonl`
+- LLM 样本输入：`scripts/eval/cases/llm-stage-cases.jsonl`
+- 生产指标事件输出：`logs/metrics/YYYY-MM-DD/production-metrics.jsonl`
+- `logs/eval` 不作为业务真理源，只用于固定样本离线评测、回放和汇总。
+- `logs/metrics` 记录真实线上调用，由生产链路自动追加，不依赖主动 eval CLI。
 - LLM API key、OpenAI key、连接串密码等敏感值必须脱敏后写入。
 
-## 2. JSONL 行类型
+## 2. 离线 eval JSONL 行类型
 
 所有行带 `schema_version:"ts-core.eval.v1"`。
 
@@ -17,10 +19,10 @@
 |---|---|
 | `case` | 固定评测样本 |
 | `run` | 一次 runner 执行的开始/结束摘要 |
-| `attempt` | 单个 case 的执行结果 |
+| `attempt` | 单个 LLM case 的调用结果 |
 | `metric` | 从本次 run 的 attempts 汇总出的指标 |
 
-## 3. 指标编号
+## 3. LLM 离线评测指标
 
 | id | 含义 | 分母 |
 |---|---|---|
@@ -32,7 +34,46 @@
 
 A2 代表早期 baseline Plan 解析成功率；当前没有可比历史数据输入，本阶段不定义、不输出。
 
-## 4. 固定样本命名
+## 4. 生产指标事件
+
+所有生产指标事件带 `schema_version:"ts-core.metric.v1"`，每次真实线上运行自动追加到 `logs/metrics/YYYY-MM-DD/production-metrics.jsonl`。
+
+字段基线：
+
+| 字段 | 含义 |
+|---|---|
+| `event_id` | 单条生产指标事件 ID |
+| `event_type` | `llm.stage`、`conversation.plan_accepted`、`conversation.plan_discarded`、`task.started`、`task.completed`、`task.failed`、`task.interrupted`、`task.discarded` |
+| `message_id` | 主人消息 ID；没有时显式为 `null` |
+| `task_id` | 执行任务 ID；没有时显式为 `null` |
+| `bot_id` | 目标 Bot ID |
+| `root_goal_id` | 根目标链路 ID；当前未建链路时为 `null` |
+| `recovery_chain_id` | 恢复链路 ID；当前未建链路时为 `null` |
+| `created_at` | 事件创建时间 |
+| `source` | `conversation_llm`、`conversation_worker`、`bot_worker` |
+| `prompt_version` | prompt 版本；当前未显式版本化时为 `null` |
+| `model` | LLM 模型；非 LLM 事件为 `null` |
+| `stage` | `triage`、`chat`、`plan`、`report`、`brain`、`execution`、`recovery` |
+| `ok` | 本事件是否成功 |
+| `error_code` | 失败码；成功或无失败码时为 `null` |
+| `duration_ms` | 阶段或任务耗时；不可得时为 `null` |
+| `input_tokens` | 输入 token；非 LLM 事件为 `null` |
+| `output_tokens` | 输出 token；非 LLM 事件为 `null` |
+
+生产指标派生口径：
+
+| 指标名 | 含义 | 来源 |
+|---|---|---|
+| `execution_run_count` | 长链路任务实际跑过的次数 | `event_type in task.completed/task.failed/task.interrupted/task.discarded` |
+| `execution_completion_rate` | 端到端无人工干预完成率 | `task.completed / execution_run_count` |
+| `execution_avg_duration_minutes` | 单次平均耗时，单位分钟 | 终态任务事件的 `duration_ms` |
+| `execution_avg_step_count` | 单次平均步骤数 | 后续从任务终态摘要扩展；当前事件基线不写步骤数 |
+| `recoverable_replan_success_rate` | 可恢复失败后自动重规划成功率 | 后续从 `recovery_chain_id` 与恢复分类扩展 |
+| `avg_replan_count_to_success` | 成功恢复任务平均重规划次数 | 后续从恢复链路事件扩展 |
+
+T-074R 先定义事件契约与自动落盘；B/C 类指标后续从 `logs/metrics` 归档统计，不再把主动 eval CLI 作为主数据来源。
+
+## 5. 固定 LLM 样本命名
 
 当前基线样本：
 
@@ -45,7 +86,7 @@ A2 代表早期 baseline Plan 解析成功率；当前没有可比历史数据�
 
 样本负责产生 attempt，A1/D1/D2/D3/E2 负责从一批 attempt 汇总统计；两者不得混用命名。
 
-## 5. 运行命令
+## 6. 运行命令
 
 默认网关：
 
@@ -63,14 +104,18 @@ pnpm eval:llm -- --base-url http://127.0.0.1:8045/v1 --api-key sk-local-dev --mo
 
 可选参数：
 
-- `--cases <path>`：样本 JSONL，默认 `scripts/eval/cases/llm-stage-cases.jsonl`
+- `--cases <path>`：样本 JSONL；LLM 默认读取 `llm-stage-cases.jsonl`
 - `--out <path>`：输出 JSONL，默认 `logs/eval/YYYY-MM-DD/<run_id>.jsonl`
 - `--run-id <id>`：指定运行编号
 - `--timeout-ms <ms>`：单次 LLM 请求超时
 
-## 6. 当前限制
+执行链路和失败恢复不再提供主方案 CLI。真实验收路径是启动正常 TS Core app，让生产 ConversationWorker/BotWorker/LLM 链路自然运行，然后检查 `logs/metrics/YYYY-MM-DD/production-metrics.jsonl`。
+
+## 7. 当前限制
 
 - token 统计优先使用 OpenAI-compatible API 返回的 usage；缺失时使用本地近似估算。
 - 延迟统计优先使用 LLM diagnostics metrics；当前 Triage client 不返回 diagnostics，D1 使用 runner wall-clock 计时。
 - D3 是离线估算，表示 chat 类样本不进入 Plan 时避免的固定 Plan prompt 输入 token。
-- runner 不执行 sandbox 代码，只对 Plan 输出调用现有静态预检和规划门禁。
+- LLM runner 不执行 sandbox 代码，只对 Plan 输出调用现有静态预检和规划门禁。
+- 旧的 `eval:execution` / `eval:recovery` in-process harness 已停用，不能作为 T-074R/T-075R 主验收证据。
+- 生产指标当前不接 PostgreSQL schema，不接 `event_log`，不改外部 API。

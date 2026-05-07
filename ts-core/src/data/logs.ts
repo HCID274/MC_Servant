@@ -18,7 +18,7 @@ export const LOGS_BASE_DIR_ENV_VAR = "LOGS_DIR" as const;
 export const EVENT_LOG_RETENTION_DAYS = 30 as const;
 
 /** JSONL 冷日志目录分类。 */
-export const JSONL_LOG_DIRECTORIES = ["tasks", "sandbox", "llm"] as const;
+export const JSONL_LOG_DIRECTORIES = ["tasks", "sandbox", "llm", "metrics"] as const;
 
 /** JSONL 冷日志目录联合类型。 */
 export type JsonlLogDirectory = (typeof JSONL_LOG_DIRECTORIES)[number];
@@ -34,6 +34,7 @@ export const JSONL_RETENTION_DAYS = {
   tasks: 90,
   sandbox: 90,
   llm: 30,
+  metrics: 90,
 } as const satisfies Record<JsonlLogDirectory, number>;
 
 /** 单个目录的日志保留策略。 */
@@ -61,6 +62,11 @@ export const JSONL_DIRECTORY_POLICIES = {
   llm: {
     directory: "llm",
     retentionDays: JSONL_RETENTION_DAYS.llm,
+    refFields: ["log_ref"],
+  },
+  metrics: {
+    directory: "metrics",
+    retentionDays: JSONL_RETENTION_DAYS.metrics,
     refFields: ["log_ref"],
   },
 } as const satisfies Record<JsonlLogDirectory, JsonlDirectoryPolicy>;

@@ -1,17 +1,23 @@
 import {
   EVAL_ATTEMPT_STATUSES,
+  EVAL_CASE_KINDS,
+  EVAL_EXECUTION_TERMINAL_STATUSES,
   EVAL_JSONL_KINDS,
   EVAL_JSONL_SCHEMA_VERSION,
-  EVAL_LLM_STAGES,
   EVAL_METRIC_IDS,
+  EVAL_RECOVERY_CLASSES,
   EVAL_RUN_STATUSES,
+  EVAL_STAGES,
   type EvalAttemptJsonlLine,
   type EvalCaseJsonlLine,
+  type EvalCaseKind,
+  type EvalExecutionTerminalStatus,
   type EvalJsonlLine,
-  type EvalLlmStage,
   type EvalMetricId,
   type EvalMetricJsonlLine,
+  type EvalRecoveryClass,
   type EvalRunJsonlLine,
+  type EvalStage,
 } from "../data/contracts/index.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../domain/invariants.js";
 import { redactLocalDiagnosticJsonText } from "./local-log-redaction.js";
@@ -22,6 +28,9 @@ const REDACTED_API_KEY = "<redacted>" as const;
 export function createEvalCaseJsonlLine(input: Omit<EvalCaseJsonlLine, "schema_version" | "kind">) {
   assertNonEmptyString(input.case_id, "case_id");
   assertEvalStage(input.stage);
+  if (input.case_kind !== undefined) {
+    assertEvalCaseKind(input.case_kind);
+  }
   assertNonEmptyString(input.input.message_id, "input.message_id");
 
   return cloneReadonlyValue({
@@ -57,10 +66,28 @@ export function createEvalAttemptJsonlLine(
   assertNonEmptyString(input.run_id, "run_id");
   assertNonEmptyString(input.case_id, "case_id");
   assertEvalStage(input.stage);
+  if (input.case_kind !== undefined) {
+    assertEvalCaseKind(input.case_kind);
+  }
   assertEvalAttemptStatus(input.status);
   assertNonNegativeNumber(input.latency_ms, "latency_ms");
   assertNonNegativeInteger(input.input_tokens, "input_tokens");
   assertNonNegativeInteger(input.output_tokens, "output_tokens");
+  if (input.terminal_status !== undefined) {
+    assertExecutionTerminalStatus(input.terminal_status);
+  }
+  if (input.step_count !== undefined) {
+    assertNonNegativeInteger(input.step_count, "step_count");
+  }
+  if (input.duration_ms !== undefined) {
+    assertNonNegativeNumber(input.duration_ms, "duration_ms");
+  }
+  if (input.recovery_class !== undefined) {
+    assertRecoveryClass(input.recovery_class);
+  }
+  if (input.replan_count !== undefined) {
+    assertNonNegativeInteger(input.replan_count, "replan_count");
+  }
 
   if (input.token_saving !== undefined) {
     assertNonNegativeInteger(
@@ -152,6 +179,7 @@ function parseEvalCaseJsonlLine(line: string, lineNumber: number): EvalCaseJsonl
     case_id: record.case_id,
     stage: record.stage,
     ...(record.tags === undefined ? {} : { tags: record.tags }),
+    ...(record.case_kind === undefined ? {} : { case_kind: record.case_kind }),
     input: record.input,
     ...(record.expect === undefined ? {} : { expect: record.expect }),
     ...(record.token_saving_probe === undefined
@@ -160,14 +188,20 @@ function parseEvalCaseJsonlLine(line: string, lineNumber: number): EvalCaseJsonl
   });
 }
 
-function assertEvalStage(value: EvalLlmStage): void {
+function assertEvalStage(value: EvalStage): void {
   if (!isEvalStage(value)) {
     throw new Error(`unsupported eval stage: ${value}`);
   }
 }
 
-function isEvalStage(value: string): value is EvalLlmStage {
-  return (EVAL_LLM_STAGES as readonly string[]).includes(value);
+function isEvalStage(value: string): value is EvalStage {
+  return (EVAL_STAGES as readonly string[]).includes(value);
+}
+
+function assertEvalCaseKind(value: EvalCaseKind): void {
+  if (!(EVAL_CASE_KINDS as readonly string[]).includes(value)) {
+    throw new Error(`unsupported eval case kind: ${value}`);
+  }
 }
 
 function assertEvalRunStatus(value: string): void {
@@ -185,6 +219,18 @@ function assertEvalAttemptStatus(value: string): void {
 function assertEvalMetricId(value: EvalMetricId): void {
   if (!(EVAL_METRIC_IDS as readonly string[]).includes(value)) {
     throw new Error(`unsupported eval metric id: ${value}`);
+  }
+}
+
+function assertExecutionTerminalStatus(value: EvalExecutionTerminalStatus): void {
+  if (!(EVAL_EXECUTION_TERMINAL_STATUSES as readonly string[]).includes(value)) {
+    throw new Error(`unsupported eval terminal status: ${value}`);
+  }
+}
+
+function assertRecoveryClass(value: EvalRecoveryClass): void {
+  if (!(EVAL_RECOVERY_CLASSES as readonly string[]).includes(value)) {
+    throw new Error(`unsupported eval recovery class: ${value}`);
   }
 }
 

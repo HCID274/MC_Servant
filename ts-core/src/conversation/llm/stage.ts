@@ -164,6 +164,7 @@ export async function executeStage<TResult>(
     const metrics = createLlmCallMetrics({
       input,
       payload,
+      messages: input.messages,
       request_total_ms: toolExecution.requestTotalMs,
       response_parse_ms: latestResponseParseMs,
       tool_round_ms: toolExecution.toolRoundMs,
@@ -182,8 +183,8 @@ export async function executeStage<TResult>(
         createLlmLogLine({
           t: createUnixSeconds(finishedAt),
           meta: {
-            input_tokens: payload.usage?.prompt_tokens ?? 0,
-            output_tokens: payload.usage?.completion_tokens ?? 0,
+            input_tokens: metrics.input_tokens,
+            output_tokens: metrics.output_tokens,
             ms: Math.max(0, finishedAt.getTime() - startedAtMs),
             ok: true,
             metrics,
@@ -210,6 +211,7 @@ export async function executeStage<TResult>(
     const metrics = createLlmCallMetrics({
       input,
       ...(latestPayload === undefined ? {} : { payload: latestPayload }),
+      messages: input.messages,
       request_total_ms:
         latestRequestTotalMs > 0 ? latestRequestTotalMs : elapsedMs(monotonicNow, stageStartedAt),
       response_parse_ms: latestResponseParseMs,
@@ -230,8 +232,8 @@ export async function executeStage<TResult>(
         createLlmLogLine({
           t: createUnixSeconds(finishedAt),
           meta: {
-            input_tokens: 0,
-            output_tokens: 0,
+            input_tokens: metrics.input_tokens,
+            output_tokens: metrics.output_tokens,
             ms: Math.max(0, finishedAt.getTime() - startedAtMs),
             ok: false,
             metrics,
@@ -412,11 +414,16 @@ function createStageInputWithoutSearch<TResult>(
 function createLlmCallMetrics(input: {
   readonly input: Pick<ConversationLlmStageInput<unknown>, "queue_wait_ms" | "prompt_build_ms">;
   readonly payload?: Awaited<ReturnType<typeof requestChatCompletionPayload>>;
+  readonly messages: readonly ConversationLlmMessage[];
   readonly request_total_ms: number;
   readonly response_parse_ms: number;
   readonly tool_round_ms: readonly number[];
 }): LlmCallMetrics {
-  const inputTokens = input.payload?.usage?.prompt_tokens ?? 0;
+  const promptTokens = input.payload?.usage?.prompt_tokens;
+  const inputTokens =
+    promptTokens !== undefined && promptTokens > 0
+      ? promptTokens
+      : estimateLocalInputTokens(input.messages);
   const outputTokens = input.payload?.usage?.completion_tokens ?? 0;
   const denominatorSeconds = Math.max(0.001, input.request_total_ms / 1000);
 
@@ -434,6 +441,12 @@ function createLlmCallMetrics(input: {
     ttft_ms: null,
     ttft_unavailable: "non_streaming",
   });
+}
+
+function estimateLocalInputTokens(messages: readonly ConversationLlmMessage[]): number {
+  const text = messages.map((message) => `${message.role}:${message.content}`).join("\n");
+
+  return Math.max(1, Math.ceil(text.length / 4));
 }
 
 function createDefaultMonotonicNow(): number {

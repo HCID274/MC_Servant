@@ -21,6 +21,7 @@ import type { RuntimeEventType } from "../core-ports/events.js";
 import { createBotActorStateProjection } from "../core-ports/index.js";
 import type { EnvironmentSnapshot, SnapshotPosition } from "../core-ports/observation.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
+import type { ProductionMetricEventJsonlLine } from "../data/contracts/index.js";
 import {
   type IntentEpochStore,
   type PostgresBrainSearchStore,
@@ -40,6 +41,7 @@ import {
   createLocalBrainDiagnosticLogSink,
   createLocalConversationReplyLogSink,
   createLocalLlmDiagnosticLogSink,
+  createLocalProductionMetricLogSink,
   createLocalTaskLogExcerptReader,
 } from "../diagnostics/index.js";
 import {
@@ -73,6 +75,8 @@ import {
   createConversationWorkerRuntime,
   createOpenAiCompatibleBrainWorkerLlmClient,
   createOpenAiCompatibleEmbeddingGenerator,
+  createProductionMetricEventFromBotWorkerAction,
+  createProductionMetricEventFromLlmDiagnostic,
   createTaskResultReporter,
   persistAcceptedTaskHistory,
   persistTaskHistoryLifecycleAction,
@@ -435,11 +439,28 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     input.bootstrap,
     input.dependencies?.llm,
   );
+  const onlineProductionMetricSink = createOnlineProductionMetricAsyncSink(
+    input.bootstrap,
+    input.dependencies?.llm,
+  );
+  const productionMetricSink =
+    onlineProductionMetricSink === undefined
+      ? undefined
+      : async (line: ProductionMetricEventJsonlLine): Promise<void> => {
+          onlineProductionMetricSink.enqueue(line);
+        };
   const onlineLlmClient = createOnlineConversationLlmClient(
     input.bootstrap,
     input.dependencies?.llm,
     onlineLlmDiagnosticSink,
     (record, diagnosticSinkStats) => {
+      enqueueProductionMetric(
+        onlineProductionMetricSink,
+        createProductionMetricEventFromLlmDiagnostic({
+          bot_id: input.bootstrap.bot_id,
+          diagnostic: record,
+        }),
+      );
       const summary = createLlmDiagnosticSummary(
         {
           stage: record.stage,
@@ -785,6 +806,14 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
             ...(taskHistoryStore === undefined ? {} : { taskHistoryStore }),
             now: () => new Date(),
           });
+          const actionCreatedAt = new Date().toISOString();
+          enqueueProductionMetric(
+            onlineProductionMetricSink,
+            createProductionMetricEventFromBotWorkerAction({
+              action,
+              created_at: actionCreatedAt,
+            }),
+          );
 
           if (action.type === "enqueue_brain") {
             const addBrainTask = onlineServices.workers.brain.queue.add;
@@ -800,7 +829,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
 
           const realtimeEvent = createRealtimeEventFromBotWorkerAction({
             action,
-            createdAt: new Date().toISOString(),
+            createdAt: actionCreatedAt,
           });
           await conversationBotWorkerActionSink(action);
 
@@ -926,6 +955,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
           }),
         brainDiagnosticSink:
           input.dependencies?.conversationWorker?.brainDiagnosticSink ?? brainDiagnosticSink,
+        ...(productionMetricSink === undefined ? {} : { productionMetricSink }),
       },
     });
     await conversationWorker.start();
@@ -953,6 +983,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
         await closeOnlineRuntimeInOrder({
           runtime: createdRuntime,
           llmDiagnosticSink: onlineLlmDiagnosticSink,
+          productionMetricSink: onlineProductionMetricSink,
           resourceEventSubscription,
           botWorker: createdBotWorker,
           brainWorker: createdBrainWorker,
@@ -966,6 +997,7 @@ export async function startAppOnlineRuntime<TBotId extends string>(input: {
     await closeOnlineRuntimeInOrder({
       runtime,
       llmDiagnosticSink: onlineLlmDiagnosticSink,
+      productionMetricSink: onlineProductionMetricSink,
       resourceEventSubscription,
       botWorker,
       brainWorker,
@@ -1501,6 +1533,36 @@ function createOnlineLlmDiagnosticAsyncSink<TBotId extends string>(
   });
 }
 
+function createOnlineProductionMetricAsyncSink<TBotId extends string>(
+  bootstrap: AppBootstrapContract<TBotId>,
+  dependencies: AppOnlineLlmDependencies | undefined,
+): AsyncDiagnosticSink<ProductionMetricEventJsonlLine> {
+  const write = createLocalProductionMetricLogSink({
+    baseDir: bootstrap.config.logs.baseDir,
+    sensitiveValues: dependencies?.api_key === undefined ? [] : [dependencies.api_key],
+  });
+
+  return createAsyncDiagnosticSink<ProductionMetricEventJsonlLine>({
+    maxQueueSize: 512,
+    write,
+  });
+}
+
+function enqueueProductionMetric(
+  sink: AsyncDiagnosticSink<ProductionMetricEventJsonlLine> | undefined,
+  line: ProductionMetricEventJsonlLine | null,
+): void {
+  if (sink === undefined || line === null) {
+    return;
+  }
+
+  try {
+    sink.enqueue(line);
+  } catch {
+    // 生产指标是旁路诊断，不能反向影响线上调用。
+  }
+}
+
 function runDetachedLlmDiagnosticCallback(
   callback: ConversationLlmDependencies["onDiagnostic"] | undefined,
   record: ConversationLlmDiagnosticRecord,
@@ -1933,6 +1995,7 @@ async function appendServerBridgeEnvelope<TBotId extends string>(input: {
 async function closeOnlineRuntimeInOrder(input: {
   runtime: AppRuntimeCoreResources | undefined;
   llmDiagnosticSink: AsyncDiagnosticSink<ConversationLlmDiagnosticRecord> | undefined;
+  productionMetricSink: AsyncDiagnosticSink<ProductionMetricEventJsonlLine> | undefined;
   resourceEventSubscription: ObservationEventSubscription | undefined;
   botWorker: BotWorkerRuntime | undefined;
   brainWorker: BrainWorkerRuntime | undefined;
@@ -1946,6 +2009,7 @@ async function closeOnlineRuntimeInOrder(input: {
     () => input.conversationWorker?.close(),
     () => input.botWorker?.close(),
     () => input.brainWorker?.close(),
+    () => input.productionMetricSink?.flush(),
     () => input.llmDiagnosticSink?.flush(),
     () => input.resourceEventSubscription?.close(),
     () => input.runtime?.close(),

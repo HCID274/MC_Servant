@@ -51,6 +51,14 @@
 - 关键决策: 选择把 A1/D1/D2/D3/E2 作为 metric id（指标编号） 而不是 case id（样本编号）,固定样本采用 `case_*` 命名;A2 因缺少早期 baseline 数据本阶段不输出;D3 通过 `case_triage_chat` 的 `token_saving_probe`（token 节省探针） 做离线路由节省估算;runner 只复用现有 LLM client（客户端） 和 sandbox static precheck（沙箱静态预检）,不执行 sandbox 代码,不进入 PG/API/event_log 链路
 - 架构冲突: 无
 
+## T-074R | 2026-05-07 | 生产指标事件契约与自动落盘
+
+- 涉及模块: data contracts（数据契约） production-metrics,diagnostics（诊断） production-metrics,conversation/llm（对话大语言模型） diagnostics,ConversationWorker（对话工作线程）,BotWorker（机器人工作线程）生命周期动作,app entrypoint（应用入口）,Docs/07_EVAL_SPEC.md（评测与生产指标规格）
+- A 拆解依据: 用户明确暂停 T-074/T-075 旧的主动 eval 进程自拉 BotActor/Mineflayer runtime 路线,要求改为"每次真实运行自动记录"的生产指标 JSONL 通道;边界限定 diagnostics、data contracts、conversation、workers、runtime 事件摘要,不接 PostgreSQL schema,不接 event_log,不改外部 API,先落本地 JSONL;必须记录 schema_version、event_id、event_type、message_id、task_id、bot_id、root_goal_id、recovery_chain_id、created_at、source、prompt_version、model、stage、ok、error_code、duration_ms、input_tokens、output_tokens
+- C 审查结论: 曾打回 1 次。首轮实现已停止 `eval:execution`/`eval:recovery` 主路线并新增生产指标契约,但缺少正常 TS Core + MC 实服链路自动落盘证据;返修后用户用 `/api/message` 投递 `message_id=t074r-prod-mine-stone-1778146690`、内容"请挖 1 个石头",`logs/metrics/2026-05-07/production-metrics.jsonl` 产出 6 行真实闭环: triage LLM、plan LLM、`conversation.plan_accepted`、`task.started`、`task.failed`、report LLM。Reviewer 复核字段完整无缺失,终态为 `runtime_mine_failed` 但不是 actor readiness failure,符合"真实线上调用自动落盘"验收。`git diff --check` 通过,`pnpm typecheck` 通过,`pnpm lint` 通过,定向 Vitest 2 个文件 33 passed,`bash scripts/pre_review.sh` 全绿,36 个 test file /435 passed/8 skipped;真实 `pnpm eval:llm -- --run-id eval-t074r-review-live --out logs/eval/eval-t074r-review-live.jsonl` 已跑通并记录失败 attempt 的非零 input_tokens
+- 关键决策: 选择把执行/恢复指标的主数据来源切到生产链路自动写入的 `logs/metrics/YYYY-MM-DD/production-metrics.jsonl`,而不是继续维护主动执行 eval CLI;旧 LLM 离线 runner 保留用于 triage/plan/chat/report 固定样本验证。Plan prompt 中清理 `stone -> cobblestone`、`iron_ore -> raw_iron` 掉落事实硬编码,让 mine/cutTree 等语义 API 只表达动作,掉落、工具和完成判断交给执行层与 Minecraft 事实源
+- 架构冲突: 无
+
 ## T-071D | 2026-05-07 | terrain-router 水平挖穿成本与 A* 搜索诊断修复
 
 - 涉及模块: runtime/transport（运行时传输层） terrain-router（地形路由）,runtime Mineflayer（Minecraft 协议客户端）回归测试

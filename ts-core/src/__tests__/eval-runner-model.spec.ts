@@ -1,15 +1,26 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { ConversationLlmEvalClient } from "../conversation/llm/index.js";
 import { runConversationLlmEvalCases } from "../conversation/llm/index.js";
 import type { ConversationLlmDiagnosticRecord } from "../conversation/llm/index.js";
+import { ExecPriority, TaskHistoryStatus, createCodeJob } from "../core-ports/tasking.js";
 import type { LlmCallMetrics } from "../diagnostics/contracts.js";
 import {
   createEvalCaseJsonlLine,
   createEvalRunJsonlLine,
+  createLocalProductionMetricLogSink,
+  createProductionMetricEventJsonlLine,
   parseEvalCaseJsonlLines,
   serializeEvalJsonlLine,
 } from "../diagnostics/index.js";
+import {
+  createBotWorkerActions,
+  createBotWorkerTask,
+  createProductionMetricEventFromBotWorkerAction,
+} from "../workers/index.js";
 
 describe("eval runner（离线评测执行器）契约", () => {
   it("应创建只读、脱敏且可解析的 eval JSONL 行", () => {
@@ -183,6 +194,124 @@ describe("eval runner（离线评测执行器）契约", () => {
     expect(attempt?.case_id).toBe("case_plan_timeout_zero_usage");
     expect(attempt?.input_tokens).toBeGreaterThan(0);
     expect(attempt?.input_tokens).not.toBe(0);
+  });
+
+  it("应创建生产指标事件并保持必填字段显式存在", () => {
+    const line = createProductionMetricEventJsonlLine({
+      event_id: "metric-event-1",
+      event_type: "llm.stage",
+      message_id: "msg-1",
+      task_id: null,
+      bot_id: "local-bot",
+      root_goal_id: null,
+      recovery_chain_id: null,
+      created_at: "2026-05-07T00:00:00.000Z",
+      source: "conversation_llm",
+      prompt_version: null,
+      model: "bl-auto",
+      stage: "plan",
+      ok: true,
+      error_code: null,
+      duration_ms: 120,
+      input_tokens: 30,
+      output_tokens: 10,
+    });
+
+    expect(Object.isFrozen(line)).toBe(true);
+    expect(line.schema_version).toBe("ts-core.metric.v1");
+    expect(line.root_goal_id).toBeNull();
+    expect(() =>
+      createProductionMetricEventJsonlLine({
+        ...line,
+        event_type: "bad" as typeof line.event_type,
+      }),
+    ).toThrow(/event_type/u);
+  });
+
+  it("应将 BotWorker 真实生命周期 action 映射为生产指标事件", () => {
+    const task = createBotWorkerTask({
+      bot_id: "local-bot",
+      owner_text: "执行短任务",
+      exec_job: createCodeJob({
+        message_id: "msg-exec",
+        intent_epoch: 1,
+        snapshot_ts: 1_777_766_400_000,
+        priority: ExecPriority.Normal,
+        code: 'await report("done")',
+      }),
+    });
+    const terminalAction = createBotWorkerActions({
+      task,
+      phase: "terminal",
+      status: TaskHistoryStatus.Failed,
+      duration_ms: 2500,
+      total_steps: 2,
+      error: {
+        name: "SandboxError",
+        message: "blocked",
+        error_code: "static_precheck_failed",
+      },
+      last_step: "executeCode",
+    }).find((action) => action.type === "emit_task_lifecycle");
+
+    expect(terminalAction).toBeDefined();
+    if (terminalAction === undefined) {
+      throw new Error("terminal action missing");
+    }
+    const line = createProductionMetricEventFromBotWorkerAction({
+      action: terminalAction,
+      created_at: "2026-05-07T00:00:00.000Z",
+    });
+
+    expect(line).toMatchObject({
+      event_type: "task.failed",
+      message_id: "msg-exec",
+      task_id: "msg-exec",
+      bot_id: "local-bot",
+      source: "bot_worker",
+      stage: "execution",
+      ok: false,
+      error_code: "static_precheck_failed",
+      duration_ms: 2500,
+    });
+  });
+
+  it("应把生产指标事件落到 metrics 日期分桶 JSONL", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "ts-core-metrics-"));
+    const sink = createLocalProductionMetricLogSink({
+      baseDir,
+      sensitiveValues: ["sk-local-dev"],
+    });
+    await sink(
+      createProductionMetricEventJsonlLine({
+        event_id: "metric-event-2",
+        event_type: "llm.stage",
+        message_id: "msg-2",
+        task_id: null,
+        bot_id: "local-bot",
+        root_goal_id: null,
+        recovery_chain_id: null,
+        created_at: "2026-05-07T00:00:00.000Z",
+        source: "conversation_llm",
+        prompt_version: null,
+        model: "bl-auto",
+        stage: "plan",
+        ok: false,
+        error_code: "llm_stage_failed",
+        duration_ms: 15000,
+        input_tokens: 320,
+        output_tokens: 0,
+      }),
+    );
+
+    const content = await readFile(
+      join(baseDir, "metrics", "2026-05-07", "production-metrics.jsonl"),
+      "utf8",
+    );
+
+    expect(content).toContain('"schema_version":"ts-core.metric.v1"');
+    expect(content).toContain('"event_type":"llm.stage"');
+    expect(content).not.toContain("sk-local-dev");
   });
 });
 

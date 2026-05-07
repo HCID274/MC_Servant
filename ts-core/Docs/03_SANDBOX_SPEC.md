@@ -849,12 +849,10 @@
     ✅ 正确：
     await reply("好的，我去挖 5 个石头喵")
     const task = await runGoal("挖 5 个石头", async () => {
-      await ensure(
-        async () => {
-          await mine("stone", 5)
-        },
-        until.gained("cobblestone", 5),
-      )
+      const result = await mine("stone", 5)
+      if (result.ok === false) {
+        throw new Error(result.error.code)
+      }
     })
     await report(task)
 
@@ -897,12 +895,10 @@
     )
     } catch (e) {
     await reply("附近暂时没找到钻石矿，我先换一个可行目标喵")
-    await ensure(
-      async () => {
-        await mine("iron_ore", 10)
-      },
-      until.gained("raw_iron", 10),
-    )
+    const result = await mine("iron_ore", 10)
+    if (result.ok === false) {
+      throw new Error(result.error.code)
+    }
     }
     ```
 

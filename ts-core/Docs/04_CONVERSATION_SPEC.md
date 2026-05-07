@@ -230,12 +230,10 @@ interface PlanCodeOutput {
 await reply("好的，我去挖 5 个石头喵")
 
 const task = await runGoal("挖 5 个石头", async () => {
-  await ensure(
-    async () => {
-      await mine("stone", 5)
-    },
-    until.gained("cobblestone", 5),
-  )
+  const result = await mine("stone", 5)
+  if (result.ok === false) {
+    throw new Error(result.error.code)
+  }
 })
 
 await report(task)
@@ -375,12 +373,10 @@ interface PlanCodeOutput {
 await reply("好的，我去挖 5 个石头喵")
 
 const task = await runGoal("挖 5 个石头", async () => {
-  await ensure(
-    async () => {
-      await mine("stone", 5)
-    },
-    until.gained("cobblestone", 5),
-  )
+  const result = await mine("stone", 5)
+  if (result.ok === false) {
+    throw new Error(result.error.code)
+  }
 })
 
 await report(task)
@@ -405,24 +401,9 @@ await report(task)
 await reply("好的，我去挖铁矿喵")
 
 const task = await runGoal("挖铁矿", async () => {
-  try {
-    await ensure(
-      async () => {
-        await mine("iron_ore", 1)
-      },
-      until.gained("raw_iron", 1),
-    )
-  } catch (error) {
-    if (error.code !== "resource_not_found") {
-      throw error
-    }
-
-    await ensure(
-      async () => {
-        await mine("deepslate_iron_ore", 1)
-      },
-      until.gained("raw_iron", 1),
-    )
+  const result = await mine("iron_ore", 1)
+  if (result.ok === false) {
+    throw new Error(result.error.code)
   }
 })
 
@@ -533,8 +514,8 @@ Chat 子集不含 `[装备] / [资源簇] / [附近方块] / [附近生物]`—�
 [世界] minecraft:overworld
 [主人] 位置:(115,64,205) 距离:7.1格 在线:是
 [装备] 主手:stone_pickaxe
-[背包] oak_log x12, cobblestone x34, stick x8, crafting_table x1
-[背包变化] oak_log+5, cobblestone-2
+[背包] oak_log x12, stick x8, crafting_table x1
+[背包变化] oak_log+5, stick-2
 [最近上下文]
 主人：去捡盾牌
 Bot：我去捡盾牌。
@@ -663,7 +644,7 @@ interface InventoryDiffEntry {
 }
 ```
 
-prompt 注入文本格式：`oak_log+5, cobblestone-2, iron_ingot+1`。所有 entry 的 delta 都为 0 时，整行 `[背包变化]` 省略。
+prompt 注入文本格式：`oak_log+5, stick-2, crafting_table+1`。所有 entry 的 delta 都为 0 时，整行 `[背包变化]` 省略。
 
 #### 7.5.4 边界与降级
 
@@ -769,7 +750,7 @@ Bot：<reply 原文>
 | `goal`（目标） | 主人原目标的短描述,例如 `挖 iron_ore x1` |
 | `failed_action`（失败动作） | 失败动作名,例如 `mine` |
 | `failure_code`（失败码） | 结构化失败码,例如 `resource_not_found` |
-| `progress`（目标进度） | 目标完成度,例如 `raw_iron 0/1` |
+| `progress`（目标进度） | 目标完成度,例如 `目标 0/1` |
 | `retry_guard`（重复保护） | 不得原样重复的动作,例如 `不要原样重复 mine("iron_ore", 1)` |
 | `hint`（提示） | 一个确定性短提示,例如 `可尝试 deepslate_iron_ore 或汇报附近无矿` |
 
@@ -779,7 +760,7 @@ Bot：<reply 原文>
 [上一轮失败]
 目标：挖 iron_ore x1
 失败：resource_not_found at mine
-进度：raw_iron 0/1
+进度：目标 0/1
 避免重复：不要原样重复 mine("iron_ore", 1)
 建议：可尝试 deepslate_iron_ore 或汇报附近无矿
 ```

@@ -30,6 +30,7 @@ export const workersModuleBoundary = {
     "createConversationWorkerRuntime",
     "createBotWorkerRuntime",
     "createBrainWorkerRuntime",
+    "createProductionMetricEventFromBotWorkerAction",
     "createOpenAiCompatibleEmbeddingGenerator",
     "createOpenAiCompatibleBrainWorkerLlmClient",
     "scanBrainMemoryContentSafety",
@@ -47,3 +48,4 @@ export * from "./brain-llm.js";
 export * from "./brain-memory-safety.js";
 export * from "./task-history-sink.js";
 export * from "./task-result-reporter.js";
+export * from "./production-metrics.js";

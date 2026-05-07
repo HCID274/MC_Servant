@@ -1093,15 +1093,17 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).toContain("cutTree(5)");
     expect(messages[0]?.content).toContain("不要用 ensure 包裹 cutTree");
     expect(messages[0]?.content?.split("# 反例")[0]).not.toContain("ensure(async () => cutTree(5)");
-    expect(messages[0]?.content).toContain('ensure(async () => mine(\\"stone\\", 5)');
-    expect(messages[0]?.content).toContain('until.gained(\\"cobblestone\\", 5)');
-    expect(messages[0]?.content).toContain('ensure(async () => mine(\\"iron_ore\\", 1)');
+    expect(messages[0]?.content).toContain('mine(\\"stone\\", 5)');
+    expect(messages[0]?.content).not.toContain("cobblestone");
+    expect(messages[0]?.content).not.toContain("raw_iron");
     expect(messages[0]?.content).toContain('mine(\\"iron_ore\\", 1)');
     expect(messages[0]?.content).toContain("demoMineIron");
     expect(messages[0]?.content).toContain('craft("planks", count)');
     expect(messages[0]?.content).toContain("不要手写木板、木棍、工作台、木镐、装备链路");
-    expect(messages[0]?.content).toContain("挖 stone / 石头 / 圆石必须用 ensure");
-    expect(messages[0]?.content).not.toContain('挖 stone / 石头 / 圆石 => mine("stone", count)');
+    expect(messages[0]?.content).toContain(
+      '挖 stone / 石头 / 圆石 => runGoal 内直接调用 mine("stone", count)',
+    );
+    expect(messages[0]?.content).not.toContain("挖 stone / 石头 / 圆石必须用 ensure");
     expect(messages[0]?.content).toContain("输出契约 1/3");
     expect(messages[0]?.content).toContain("输出契约 2/3");
     expect(messages[0]?.content).toContain("输出契约 3/3");
@@ -1118,14 +1120,14 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
   it("应让 mine（挖掘） / collect（捡拾） / cutTree（砍树） / equip（装备） 都进入在线代码规划结果", async () => {
     const responses = [
-      '{"code":"await reply(\\"收到，我去挖石头喵~\\"); const task = await runGoal(\\"挖石头\\", async () => { const result = await ensure(async () => mine(\\"stone\\", 2), until.gained(\\"cobblestone\\", 2)); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}',
+      '{"code":"await reply(\\"收到，我去挖石头喵~\\"); const task = await runGoal(\\"挖石头\\", async () => { const result = await mine(\\"stone\\", 2); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}',
       '{"code":"await reply(\\"收到，我去捡圆石喵~\\"); const task = await runGoal(\\"捡圆石\\", async () => { const result = await collect(\\"cobblestone\\", 32); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}',
       '{"code":"await reply(\\"收到，我去捡附近掉落物喵~\\"); const task = await runGoal(\\"捡附近掉落物\\", async () => { const result = await collect(); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}',
       '{"code":"await reply(\\"收到，我去捡附近掉落物喵~\\"); const task = await runGoal(\\"捡主人附近掉落物\\", async () => { await goTo(1,64,2); const result = await collect(undefined, 32); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}',
       '{"code":"await reply(\\"收到，我去砍 12 块木头喵~\\"); const task = await runGoal(\\"砍 12 块木头\\", async () => { const result = await cutTree(12); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}',
       '{"code":"await reply(\\"收到，我来放一个工作台喵~\\"); const task = await runGoal(\\"放工作台\\", async () => { const placed = await place(\\"crafting_table\\"); if (placed.ok === false) { throw new Error(placed.error.code); } }); await report(task);"}',
       '{"code":"await reply(\\"收到，我来你这里放工作台喵~\\"); const task = await runGoal(\\"在主人这里放工作台\\", async () => { await goTo(8,64,2); const placed = await place(\\"crafting_table\\", {x:8,y:64,z:2}); if (placed.ok === false) { throw new Error(placed.error.code); } }); await report(task);"}',
-      '{"code":"await reply(\\"收到，我去挖石头喵~\\"); const task = await runGoal(\\"挖石头\\", async () => { const mined = await ensure(async () => mine(\\"stone\\", 5), until.gained(\\"cobblestone\\", 5)); if (mined.ok === false) { throw new Error(mined.error.code); } }); await report(task);"}',
+      '{"code":"await reply(\\"收到，我去挖石头喵~\\"); const task = await runGoal(\\"挖石头\\", async () => { const mined = await mine(\\"stone\\", 5); if (mined.ok === false) { throw new Error(mined.error.code); } }); await report(task);"}',
       '{"code":"await reply(\\"收到，我先把石镐拿在手上喵~\\"); const task = await runGoal(\\"装备石镐\\", async () => { const result = await equip(\\"stone_pickaxe\\", \\"hand\\"); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}',
       '{"code":"await reply(\\"收到，我把面包装备到主手喵~\\"); const task = await runGoal(\\"装备面包\\", async () => { const result = await equip(\\"bread\\", \\"hand\\"); if (result.ok === false) { throw new Error(result.error.code); } }); await report(task);"}',
     ];
@@ -1167,7 +1169,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
         snapshot_context: "online_runtime: T-046 only; executable skills: goTo, collect",
       }),
     ).resolves.toMatchObject({
-      code: expect.stringContaining('ensure(async () => mine("stone", 2)'),
+      code: expect.stringContaining('mine("stone", 2)'),
     });
     await expect(
       client.generateCodePlan({
@@ -1233,8 +1235,8 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
       snapshot_context:
         "online_runtime: executable skills: goTo, collect, cutTree, equip, mine, place; sandbox toolchain: craft, place(crafting_table)\n[背包] oak_log x38",
     });
-    expect(stonePlan.code).toContain('ensure(async () => mine("stone", 5)');
-    expect(stonePlan.code).toContain('until.gained("cobblestone", 5)');
+    expect(stonePlan.code).toContain('mine("stone", 5)');
+    expect(stonePlan.code).not.toContain("cobblestone");
     expect(stonePlan.code).not.toContain('craft("planks"');
     expect(stonePlan.code).not.toContain('craft("stick"');
     expect(stonePlan.code).not.toContain('craft("wooden_pickaxe"');
@@ -1261,7 +1263,7 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
   it("应拒绝 code（代码） 缺少最终 report（汇报） 或调用隐藏 demo（演示）", async () => {
     const responses = [
-      '{"code":"await reply(\\"收到喵~\\"); const task = await runGoal(\\"挖铁\\", async () => { await ensure(async () => mine(\\"iron_ore\\",1), until.gained(\\"raw_iron\\",1)); });"}',
+      '{"code":"await reply(\\"收到喵~\\"); const task = await runGoal(\\"挖铁\\", async () => { const result = await mine(\\"iron_ore\\",1); if (result.ok === false) { throw new Error(result.error.code); } });"}',
       '{"code":"await demoMineIron(); await api.chat.report(\\"完成喵~\\")"}',
     ];
     const client = createConversationLlmClient(

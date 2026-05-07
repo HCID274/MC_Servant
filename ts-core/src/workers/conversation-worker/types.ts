@@ -17,7 +17,7 @@ import type { BotActorStateProjection } from "../../core-ports/runtime.js";
 import type { ExecPriority, TaskHistoryStatus } from "../../core-ports/tasking.js";
 import type { ConversationBrainContext } from "../../data/contracts/index.js";
 import type { RedisClientLike } from "../../db/index.js";
-import type { BrainDiagnosticLogSink } from "../../diagnostics/index.js";
+import type { BrainDiagnosticLogSink, ProductionMetricLogSink } from "../../diagnostics/index.js";
 import type {
   BotWorkerTask,
   BrainWorkerTask,
@@ -373,6 +373,8 @@ export interface ConversationWorkerRuntimeDependencies {
   readonly enqueueBrainFactSink?: ConversationEnqueueBrainFactSink;
   /** Brain fact（大脑事实） 旁路失败诊断汇点。 */
   readonly brainDiagnosticSink?: BrainDiagnosticLogSink;
+  /** 生产指标事件本地 JSONL 汇点。 */
+  readonly productionMetricSink?: ProductionMetricLogSink;
   /** 当前是否已有活跃任务。 */
   readonly hasActiveTask?: () => boolean;
   /** 主人消息活跃心跳；BrainWorker（大脑工作线程） 会话静默检测只读消费。 */

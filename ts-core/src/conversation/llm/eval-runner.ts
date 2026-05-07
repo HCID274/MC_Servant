@@ -180,6 +180,8 @@ async function runEvalCase(input: {
         return await runChatCase(input, startedAt, fallbackInputTokens);
       case "report":
         return await runReportCase(input, startedAt, fallbackInputTokens);
+      default:
+        throw new Error(`unsupported LLM eval stage: ${input.evalCase.stage}`);
     }
   } catch (error) {
     const diagnostics = extractDiagnostics(error);
@@ -466,6 +468,8 @@ function estimateEvalCaseInputTokens(evalCase: EvalCaseJsonlLine): number {
           tone: evalCase.input.tone ?? "自然简短",
         }),
       );
+    default:
+      throw new Error(`unsupported LLM eval stage: ${evalCase.stage}`);
   }
 }
 

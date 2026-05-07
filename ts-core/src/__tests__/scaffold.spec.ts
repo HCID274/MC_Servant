@@ -171,6 +171,7 @@ describe("TS Core 工程骨架", () => {
       "tasks",
       "sandbox",
       "llm",
+      "metrics",
     ]);
   });
 

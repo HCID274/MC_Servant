@@ -1113,6 +1113,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       "tasks",
       "sandbox",
       "llm",
+      "metrics",
     ]);
     expect(taskLogRef).toBe("tasks/2026-04-13/T-007.jsonl");
     expect(sandboxLogRef).toBe("sandbox/2026-04-13/T-007.jsonl");

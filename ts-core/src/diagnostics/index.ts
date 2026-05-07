@@ -31,6 +31,7 @@ export const diagnosticsModuleBoundary = {
     "createAsyncDiagnosticSink",
     "createLocalBrainDiagnosticLogSink",
     "createLocalTaskLogExcerptReader",
+    "createLocalProductionMetricLogSink",
   ],
 } satisfies ModuleBoundary;
 
@@ -42,3 +43,4 @@ export * from "./llm-log.js";
 export * from "./brain-log.js";
 export * from "./task-log-reader.js";
 export * from "./eval-jsonl.js";
+export * from "./production-metrics.js";

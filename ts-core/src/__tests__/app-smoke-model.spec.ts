@@ -121,7 +121,7 @@ describe("app（应用装配） 骨架", () => {
     expect(assembly.auth.entrypoint).toBe("none");
     expect(assembly.interfaces.health.service).toBe("ts-core");
     expect(assembly.sandbox.resource_limits.memory_limit_mb).toBe(128);
-    expect(assembly.diagnostics.catalog.channels).toHaveLength(3);
+    expect(assembly.diagnostics.catalog.channels).toHaveLength(4);
     expect(assembly.lifecycle.startup.map((step) => step.name)).toEqual([
       "load_config",
       "prepare_diagnostics",

@@ -9,3 +9,4 @@ export * from "./persistence.js";
 export * from "./config-types.js";
 export * from "./config.js";
 export * from "./eval.js";
+export * from "./production-metrics.js";
