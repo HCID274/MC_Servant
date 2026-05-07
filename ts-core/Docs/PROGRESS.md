@@ -43,6 +43,14 @@
 
 (从这里开始,Reviewer C 通过任务后追加)
 
+## T-071C | 2026-05-07 | terrain/mine BFS 净空语义与 digStepDown 执行契约收敛
+
+- 涉及模块: runtime/transport（运行时传输层） terrain-router（地形路由）/mine-bfs（挖掘 BFS）/terrain-action-executor（地形动作执行器）/mine-action-executor（挖掘动作执行器）,runtime Mineflayer（Minecraft 协议客户端）回归测试
+- A 拆解依据: 用户按第一性原理要求把 BFS 边定义为"bot 真实能执行的一步动作",平移只要求 2 格身体净空,阶梯/跳跃/垫高要求当前 foot 3 格与终点 foot 3 格净空;不得在动作分支里散写 `fy + 2`/`fy + 3`,mine-bfs（挖掘 BFS） 与 terrain-router（地形路由）必须保持同一动作语义,并保留"每次挖掘必须验证方块变化后才继续"的实服修正
+- C 审查结论: 曾打回 1 次。首轮返修已把 `BODY_CLEARANCE=2` 与 `JUMP_CLEARANCE=3` 抽成 helper（辅助函数）,修正 walk/digWalk/drop1/jumpUp/digStepDown/digStepUp/placeUp1（行走/挖通/下落/跳上/阶梯下挖/阶梯上挖/垫高） 净空语义,但 `mine-action-executor`（挖掘动作执行器） 的 `digStepDown`（阶梯下挖）仍按 `jump:false` 执行,与 planner（规划器） 和 terrain executor（地形执行器） 的"跳跃阶梯"语义不一致;返修后 `mine-action-executor` 同步为 `jump:true`,并补最小回归断言 jump 控制按下与释放。当前 `pnpm typecheck`（类型检查）通过,`git diff --check`（差异空白检查）通过,定向 Vitest（测试框架）`mine-action digStepDown` 1 个 test（测试）通过,`bash scripts/pre_review.sh`（评审前预检脚本）全绿,35 个 test file（测试文件）/426 passed（通过）/8 skipped（跳过）
+- 关键决策: 选择把净空规则抽成 `clearancePositions`/`hasClearance`/`collectClearanceDigs`（净空位置/净空判断/净空挖掘收集）,而不是继续在每个动作里复制坐标偏移;选择让 `placeUp1`（垫高一格）携带 `digs`（预清理方块）并在 executor（执行器） 里先挖再垫,不新增并行动作类型;选择同步 mine 与 terrain 两套 planner/executor（规划器/执行器） 契约,避免"测试绿但实服假动作"再次出现
+- 架构冲突: 无
+
 ## T-071B | 2026-05-07 | ReportLLM（汇报大语言模型）终态润色与 terrain goTo/mine（地形移动/挖掘）实服返修
 
 - 涉及模块: workers（工作线程） TaskResultReporter（任务结果汇报器）/TaskResultSummary（任务结果摘要）,conversation/llm（对话大语言模型） report stage（汇报阶段）/prompt（提示词）/diagnostics（诊断）,app entrypoint（应用入口）,runtime/transport（运行时传输层） mine（挖掘）/goTo（移动）/terrain router（地形路由）/terrain action executor（地形动作执行器）/mine fact reader（挖掘事实读取器）,相关回归测试

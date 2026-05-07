@@ -28,6 +28,7 @@ export type TerrainRouteAction =
       readonly dir: TerrainRouteDirection;
       readonly placeAt: TerrainBlockPos;
       readonly support: TerrainBlockPos;
+      readonly digs: readonly TerrainBlockPos[];
     }
   | {
       readonly kind: "digWalk";
@@ -86,13 +87,18 @@ const COST_TURN_PENALTY = 2;
 
 const DEFAULT_MAX_EXPANDED = 14_000;
 const DEFAULT_MAX_ACTION_DEPTH = 80;
-const DEFAULT_MAX_PLANNED_CHANGES = 24;
+const DEFAULT_MAX_PLANNED_AIR = 48;
+const DEFAULT_MAX_PLANNED_SOLID = 160;
+const DEFAULT_MAX_TOTAL_PLANNED_CHANGES = 192;
+const BODY_CLEARANCE = 2;
+const JUMP_CLEARANCE = 3;
 
 interface SearchNode {
   readonly foot: TerrainBlockPos;
   readonly plannedAir: ReadonlySet<string>;
   readonly plannedSolid: ReadonlySet<string>;
   readonly cost: number;
+  readonly priority: number;
   readonly parent: SearchNode | null;
   readonly action: TerrainRouteAction | null;
   readonly lastDir: TerrainRouteDirection | null;
@@ -112,7 +118,15 @@ export function planTerrainRoute(input: {
 }): TerrainRoutePlanResult {
   const diagnostics: string[] = [];
   const maxExpanded = input.maxExpandedStates ?? DEFAULT_MAX_EXPANDED;
-  const maxDepth = input.maxActionDepth ?? DEFAULT_MAX_ACTION_DEPTH;
+  const minActionDepth =
+    Math.ceil(
+      Math.hypot(input.targetFoot.x - input.startFoot.x, input.targetFoot.z - input.startFoot.z),
+    ) +
+    Math.abs(input.targetFoot.y - input.startFoot.y) +
+    24;
+  const maxDepth = input.maxActionDepth ?? Math.max(DEFAULT_MAX_ACTION_DEPTH, minActionDepth);
+  const minVerticalBudget = Math.abs(input.targetFoot.y - input.startFoot.y) + 16;
+  const maxPlannedSolid = Math.max(DEFAULT_MAX_PLANNED_SOLID, minVerticalBudget);
   const goalRange = input.goalRange ?? 1.5;
 
   const startNode: SearchNode = {
@@ -120,6 +134,7 @@ export function planTerrainRoute(input: {
     plannedAir: new Set<string>(),
     plannedSolid: new Set<string>(),
     cost: 0,
+    priority: routeHeuristic(input.startFoot, input.targetFoot, goalRange),
     parent: null,
     action: null,
     lastDir: null,
@@ -139,16 +154,25 @@ export function planTerrainRoute(input: {
     };
   }
 
-  const open = new MinHeap<SearchNode>((left, right) => left.cost - right.cost);
+  const open = new MinHeap<SearchNode>((left, right) =>
+    left.priority === right.priority ? left.cost - right.cost : left.priority - right.priority,
+  );
   open.push(startNode);
   const visited = new Map<string, number>();
   visited.set(stateKey(startNode), 0);
 
   let expanded = 0;
+  let bestNode = startNode;
+  let bestScore = goalDistanceScore(startNode.foot, input.targetFoot, goalRange);
   while (!open.isEmpty() && expanded < maxExpanded) {
     const node = open.pop();
     if (node === undefined) break;
     expanded += 1;
+    const nodeScore = goalDistanceScore(node.foot, input.targetFoot, goalRange);
+    if (nodeScore < bestScore || (nodeScore === bestScore && node.cost < bestNode.cost)) {
+      bestNode = node;
+      bestScore = nodeScore;
+    }
 
     if (isGoal(node.foot, input.targetFoot, goalRange)) {
       const actions = reconstructActions(node);
@@ -168,9 +192,13 @@ export function planTerrainRoute(input: {
     }
 
     if (node.depth >= maxDepth) continue;
-    if (node.plannedAir.size + node.plannedSolid.size >= DEFAULT_MAX_PLANNED_CHANGES) continue;
+    if (node.plannedAir.size >= DEFAULT_MAX_PLANNED_AIR) continue;
+    if (node.plannedSolid.size >= maxPlannedSolid) continue;
+    if (node.plannedAir.size + node.plannedSolid.size >= DEFAULT_MAX_TOTAL_PLANNED_CHANGES) {
+      continue;
+    }
 
-    for (const successor of expandSuccessors(input, node)) {
+    for (const successor of expandSuccessors(input, node, goalRange)) {
       const key = stateKey(successor);
       const seen = visited.get(key);
       if (seen !== undefined && seen <= successor.cost) continue;
@@ -179,7 +207,9 @@ export function planTerrainRoute(input: {
     }
   }
 
-  diagnostics.push(`terrain_bfs_no_path:expanded=${expanded}`);
+  diagnostics.push(
+    `terrain_bfs_no_path:expanded=${expanded};max_expanded=${maxExpanded};open=${open.size()};best=${posLabel(bestNode.foot)};best_score=${bestScore};best_cost=${bestNode.cost};max_depth=${maxDepth};max_air=${DEFAULT_MAX_PLANNED_AIR};max_solid=${maxPlannedSolid};max_total=${DEFAULT_MAX_TOTAL_PLANNED_CHANGES}`,
+  );
   return {
     plan: null,
     diagnostics: Object.freeze(diagnostics),
@@ -191,10 +221,12 @@ function expandSuccessors(
   input: {
     readonly bot: MineflayerMiningPort & MineflayerPlacementPort;
     readonly facts: MineBlockFactReader;
+    readonly targetFoot: TerrainBlockPos;
     readonly allowPlaceUp?: boolean;
     readonly allowDig?: boolean;
   },
   node: SearchNode,
+  goalRange: number,
 ): SearchNode[] {
   const out: SearchNode[] = [];
   const fy = node.foot.y;
@@ -207,106 +239,131 @@ function expandSuccessors(
     const fx = node.foot.x + vec.dx;
     const fz = node.foot.z + vec.dz;
 
+    const walkFoot = freezePos({ x: fx, y: fy, z: fz });
     if (
       isWalkableSupport(input.bot, input.facts, { x: fx, y: fy - 1, z: fz }, node) &&
-      isPassable(input.bot, input.facts, { x: fx, y: fy, z: fz }, node) &&
-      isPassable(input.bot, input.facts, { x: fx, y: fy + 1, z: fz }, node) &&
-      isPassable(input.bot, input.facts, { x: fx, y: fy + 2, z: fz }, node)
+      hasClearance(input.bot, input.facts, walkFoot, BODY_CLEARANCE, node)
     ) {
       pushSuccessor(
         out,
         node,
-        { kind: "walk", toFoot: freezePos({ x: fx, y: fy, z: fz }), dir },
+        { kind: "walk", toFoot: walkFoot, dir },
         COST_WALK + turn,
+        input.targetFoot,
+        goalRange,
       );
     }
 
+    const dropFoot = freezePos({ x: fx, y: fy - 1, z: fz });
     if (
-      isPassable(input.bot, input.facts, { x: fx, y: fy, z: fz }, node) &&
-      isPassable(input.bot, input.facts, { x: fx, y: fy + 1, z: fz }, node) &&
-      isPassable(input.bot, input.facts, { x: fx, y: fy + 2, z: fz }, node) &&
-      isPassable(input.bot, input.facts, { x: fx, y: fy - 1, z: fz }, node) &&
+      hasClearance(input.bot, input.facts, node.foot, JUMP_CLEARANCE, node) &&
+      hasClearance(input.bot, input.facts, dropFoot, JUMP_CLEARANCE, node) &&
       isWalkableSupport(input.bot, input.facts, { x: fx, y: fy - 2, z: fz }, node)
     ) {
       pushSuccessor(
         out,
         node,
-        { kind: "drop1", toFoot: freezePos({ x: fx, y: fy - 1, z: fz }), dir },
+        { kind: "drop1", toFoot: dropFoot, dir },
         COST_DROP1 + turn,
+        input.targetFoot,
+        goalRange,
       );
     }
 
+    const upFoot = freezePos({ x: fx, y: fy + 1, z: fz });
     if (
-      isPassable(input.bot, input.facts, { x: node.foot.x, y: fy + 2, z: node.foot.z }, node) &&
+      hasClearance(input.bot, input.facts, node.foot, JUMP_CLEARANCE, node) &&
       isWalkableSupport(input.bot, input.facts, { x: fx, y: fy, z: fz }, node) &&
-      isPassable(input.bot, input.facts, { x: fx, y: fy + 1, z: fz }, node) &&
-      isPassable(input.bot, input.facts, { x: fx, y: fy + 2, z: fz }, node) &&
-      isPassable(input.bot, input.facts, { x: fx, y: fy + 3, z: fz }, node)
+      hasClearance(input.bot, input.facts, upFoot, JUMP_CLEARANCE, node)
     ) {
       pushSuccessor(
         out,
         node,
-        { kind: "jumpUp", toFoot: freezePos({ x: fx, y: fy + 1, z: fz }), dir },
+        { kind: "jumpUp", toFoot: upFoot, dir },
         COST_JUMP_UP + turn,
+        input.targetFoot,
+        goalRange,
       );
     }
 
-    if (
-      allowPlaceUp &&
-      isPassable(input.bot, input.facts, { x: node.foot.x, y: fy + 2, z: node.foot.z }, node) &&
-      isPassable(input.bot, input.facts, { x: node.foot.x, y: fy, z: node.foot.z }, node) &&
-      isWalkableSupport(input.bot, input.facts, { x: node.foot.x, y: fy - 1, z: node.foot.z }, node)
-    ) {
-      pushSuccessor(
-        out,
-        node,
-        {
-          kind: "placeUp1",
-          toFoot: freezePos({ x: node.foot.x, y: fy + 1, z: node.foot.z }),
-          dir,
-          placeAt: freezePos({ x: node.foot.x, y: fy, z: node.foot.z }),
-          support: freezePos({ x: node.foot.x, y: fy - 1, z: node.foot.z }),
-        },
-        COST_PLACE_UP + turn,
-      );
+    const placeAt = freezePos({ x: node.foot.x, y: fy, z: node.foot.z });
+    const placeSupport = freezePos({ x: node.foot.x, y: fy - 1, z: node.foot.z });
+    const placeTargetFoot = freezePos({ x: node.foot.x, y: fy + 1, z: node.foot.z });
+    if (allowPlaceUp && isWalkableSupport(input.bot, input.facts, placeSupport, node)) {
+      const placeDigs = allowDig
+        ? collectClearanceDigs(
+            input.bot,
+            input.facts,
+            [
+              ...clearancePositions(node.foot, JUMP_CLEARANCE),
+              ...clearancePositions(placeTargetFoot, JUMP_CLEARANCE),
+            ],
+            node,
+          )
+        : hasClearance(input.bot, input.facts, node.foot, JUMP_CLEARANCE, node) &&
+            hasClearance(input.bot, input.facts, placeTargetFoot, JUMP_CLEARANCE, node)
+          ? Object.freeze([])
+          : null;
+
+      if (
+        placeDigs !== null &&
+        hasClearance(input.bot, input.facts, node.foot, BODY_CLEARANCE, node)
+      ) {
+        pushSuccessor(
+          out,
+          node,
+          {
+            kind: "placeUp1",
+            toFoot: placeTargetFoot,
+            dir,
+            placeAt,
+            support: placeSupport,
+            digs: placeDigs,
+          },
+          COST_PLACE_UP + COST_DIG_PER_BLOCK * placeDigs.length + turn,
+          input.targetFoot,
+          goalRange,
+        );
+      }
     }
 
     if (!allowDig) continue;
 
-    const bodyPos = { x: fx, y: fy, z: fz };
-    const headPos = { x: fx, y: fy + 1, z: fz };
-    const topPos = { x: fx, y: fy + 2, z: fz };
-    const supportPos = { x: fx, y: fy - 1, z: fz };
+    const bodyPos = freezePos({ x: fx, y: fy, z: fz });
+    const headPos = freezePos({ x: fx, y: fy + 1, z: fz });
+    const supportPos = freezePos({ x: fx, y: fy - 1, z: fz });
     if (isWalkableSupport(input.bot, input.facts, supportPos, node)) {
-      const digs = collectBodySpaceDigs(input.bot, input.facts, [bodyPos, headPos, topPos], node);
+      const digs = collectClearanceDigs(input.bot, input.facts, [bodyPos, headPos], node);
       if (digs !== null && digs.length > 0) {
         pushSuccessor(
           out,
           node,
           {
             kind: "digWalk",
-            toFoot: freezePos({ x: fx, y: fy, z: fz }),
+            toFoot: bodyPos,
             dir,
             digs,
           },
           COST_DIG_WALK_BASE + COST_DIG_PER_BLOCK * digs.length + turn,
+          input.targetFoot,
+          goalRange,
         );
       }
     }
 
-    const stepDownFoot = { x: fx, y: fy - 1, z: fz };
-    const stepDownHead = { x: fx, y: fy, z: fz };
-    const stepDownTop = { x: fx, y: fy + 1, z: fz };
-    const stepDownSupport = { x: fx, y: fy - 2, z: fz };
-    const stepDownDigs = collectBodySpaceDigs(
+    const currentTop = freezePos({ x: node.foot.x, y: fy + 2, z: node.foot.z });
+    const stepDownFoot = freezePos({ x: fx, y: fy - 1, z: fz });
+    const stepDownSupport = freezePos({ x: fx, y: fy - 2, z: fz });
+    const stepDownDigs = collectClearanceDigs(
       input.bot,
       input.facts,
-      [stepDownFoot, stepDownHead, stepDownTop],
+      [currentTop, ...clearancePositions(stepDownFoot, JUMP_CLEARANCE)],
       node,
     );
     if (
       stepDownDigs !== null &&
       stepDownDigs.length > 0 &&
+      hasClearance(input.bot, input.facts, node.foot, BODY_CLEARANCE, node) &&
       isWalkableSupport(input.bot, input.facts, stepDownSupport, node)
     ) {
       pushSuccessor(
@@ -314,28 +371,28 @@ function expandSuccessors(
         node,
         {
           kind: "digStepDown",
-          toFoot: freezePos(stepDownFoot),
+          toFoot: stepDownFoot,
           dir,
           digs: stepDownDigs,
         },
         COST_DIG_STEP_BASE + COST_DIG_PER_BLOCK * stepDownDigs.length + turn,
+        input.targetFoot,
+        goalRange,
       );
     }
 
-    const stepUpFoot = { x: fx, y: fy + 1, z: fz };
-    const stepUpHead = { x: fx, y: fy + 2, z: fz };
-    const stepUpTop = { x: fx, y: fy + 3, z: fz };
-    const stepUpSupport = { x: fx, y: fy, z: fz };
-    const stepUpDigs = collectBodySpaceDigs(
+    const stepUpFoot = freezePos({ x: fx, y: fy + 1, z: fz });
+    const stepUpSupport = freezePos({ x: fx, y: fy, z: fz });
+    const stepUpDigs = collectClearanceDigs(
       input.bot,
       input.facts,
-      [stepUpFoot, stepUpHead, stepUpTop],
+      [currentTop, ...clearancePositions(stepUpFoot, JUMP_CLEARANCE)],
       node,
     );
     if (
       stepUpDigs !== null &&
       stepUpDigs.length > 0 &&
-      isPassable(input.bot, input.facts, { x: node.foot.x, y: fy + 2, z: node.foot.z }, node) &&
+      hasClearance(input.bot, input.facts, node.foot, BODY_CLEARANCE, node) &&
       isWalkableSupport(input.bot, input.facts, stepUpSupport, node)
     ) {
       pushSuccessor(
@@ -343,11 +400,13 @@ function expandSuccessors(
         node,
         {
           kind: "digStepUp",
-          toFoot: freezePos(stepUpFoot),
+          toFoot: stepUpFoot,
           dir,
           digs: stepUpDigs,
         },
         COST_DIG_STEP_BASE + COST_DIG_PER_BLOCK * stepUpDigs.length + COST_JUMP_UP + turn,
+        input.targetFoot,
+        goalRange,
       );
     }
   }
@@ -360,6 +419,8 @@ function pushSuccessor(
   parent: SearchNode,
   action: TerrainRouteAction,
   cost: number,
+  targetFoot: TerrainBlockPos,
+  goalRange: number,
 ): void {
   const digs = "digs" in action ? action.digs : [];
   let plannedAir: ReadonlySet<string> = parent.plannedAir;
@@ -371,16 +432,23 @@ function pushSuccessor(
 
   let plannedSolid: ReadonlySet<string> = parent.plannedSolid;
   if (action.kind === "placeUp1") {
+    const placeKey = positionKey(action.placeAt);
+    const nextAir = new Set(plannedAir);
+    nextAir.delete(placeKey);
+    plannedAir = nextAir;
+
     const next = new Set(parent.plannedSolid);
-    next.add(positionKey(action.placeAt));
+    next.add(placeKey);
     plannedSolid = next;
   }
 
+  const nextCost = parent.cost + cost;
   out.push({
     foot: action.toFoot,
     plannedAir,
     plannedSolid,
-    cost: parent.cost + cost,
+    cost: nextCost,
+    priority: nextCost + routeHeuristic(action.toFoot, targetFoot, goalRange),
     parent,
     action,
     lastDir: action.dir,
@@ -412,6 +480,28 @@ function isGoal(current: TerrainBlockPos, target: TerrainBlockPos, range: number
   return Math.hypot(current.x - target.x, current.z - target.z) <= range && current.y === target.y;
 }
 
+function routeHeuristic(current: TerrainBlockPos, target: TerrainBlockPos, range: number): number {
+  const horizontalSteps = Math.max(
+    0,
+    Math.ceil(Math.hypot(current.x - target.x, current.z - target.z) - range),
+  );
+  const dy = target.y - current.y;
+  const verticalCost = dy > 0 ? dy * COST_PLACE_UP : Math.abs(dy) * COST_DROP1;
+  return horizontalSteps * COST_WALK + verticalCost;
+}
+
+function goalDistanceScore(
+  current: TerrainBlockPos,
+  target: TerrainBlockPos,
+  range: number,
+): number {
+  const horizontalMiss = Math.max(
+    0,
+    Math.hypot(current.x - target.x, current.z - target.z) - range,
+  );
+  return Math.abs(current.y - target.y) * 1000 + horizontalMiss;
+}
+
 function stateKey(node: SearchNode): string {
   const foot = positionKey(node.foot);
   const air = node.plannedAir.size === 0 ? "" : `a=${Array.from(node.plannedAir).sort().join("|")}`;
@@ -435,8 +525,8 @@ function isPassable(
   node: SearchNode,
 ): boolean {
   const key = positionKey(pos);
-  if (node.plannedAir.has(key)) return true;
   if (node.plannedSolid.has(key)) return false;
+  if (node.plannedAir.has(key)) return true;
   const block = readMineflayerBlockAt(bot, pos);
   if (block === null || block === undefined) return false;
   return facts.isAirBlock(block);
@@ -449,21 +539,41 @@ function isWalkableSupport(
   node: SearchNode,
 ): boolean {
   const key = positionKey(pos);
-  if (node.plannedAir.has(key)) return false;
   if (node.plannedSolid.has(key)) return true;
+  if (node.plannedAir.has(key)) return false;
   const block = readMineflayerBlockAt(bot, pos);
   if (block === null || block === undefined) return false;
   return facts.isSupportBlock(block);
 }
 
-function collectBodySpaceDigs(
+function clearancePositions(foot: TerrainBlockPos, height: number): readonly TerrainBlockPos[] {
+  return Object.freeze(
+    Array.from({ length: height }, (_, dy) => freezePos({ x: foot.x, y: foot.y + dy, z: foot.z })),
+  );
+}
+
+function hasClearance(
+  bot: MineflayerMiningPort,
+  facts: MineBlockFactReader,
+  foot: TerrainBlockPos,
+  height: number,
+  node: SearchNode,
+): boolean {
+  return clearancePositions(foot, height).every((pos) => isPassable(bot, facts, pos, node));
+}
+
+function collectClearanceDigs(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
   positions: readonly TerrainBlockPos[],
   node: SearchNode,
 ): readonly TerrainBlockPos[] | null {
   const digs: TerrainBlockPos[] = [];
+  const seen = new Set<string>();
   for (const pos of positions) {
+    const key = positionKey(pos);
+    if (seen.has(key)) continue;
+    seen.add(key);
     if (isPassable(bot, facts, pos, node)) continue;
     if (!canDigBlock(bot, facts, pos, node)) return null;
     digs.push(freezePos(pos));
@@ -494,6 +604,10 @@ class MinHeap<T> {
 
   isEmpty(): boolean {
     return this.data.length === 0;
+  }
+
+  size(): number {
+    return this.data.length;
   }
 
   push(item: T): void {

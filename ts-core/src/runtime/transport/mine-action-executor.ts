@@ -57,7 +57,7 @@ export async function executeMineRouteAction(input: {
       for (const dig of input.action.digs) {
         await digSingleBlock(input.bot, input.facts, dig, input.diagnostics);
       }
-      await stepForward(input.bot, input.action.toFoot, { jump: false }, DROP_TIMEOUT_MS);
+      await stepForward(input.bot, input.action.toFoot, { jump: true }, DROP_TIMEOUT_MS);
       return;
     case "digStepUp":
       for (const dig of input.action.digs) {

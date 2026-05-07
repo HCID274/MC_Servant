@@ -62,8 +62,12 @@ import type {
   MineflayerItemHandle,
   MineflayerRecipeHandle,
 } from "../runtime/transport.js";
+import { executeMineRouteAction } from "../runtime/transport/mine-action-executor.js";
+import { planMineRoute } from "../runtime/transport/mine-bfs.js";
 import { createMineBlockFactReader } from "../runtime/transport/mine-block-facts.js";
 import { planMineQueue, planMineQueueWithDiagnostics } from "../runtime/transport/mine-queue.js";
+import { isTerrainBotAtFoot } from "../runtime/transport/terrain-action-executor.js";
+import { planTerrainRoute } from "../runtime/transport/terrain-router.js";
 
 class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-mc";
@@ -639,6 +643,15 @@ function setFakeBlock(
   position: { readonly x: number; readonly y: number; readonly z: number },
   blockName: "air" | "dirt" | "stone" | "iron_ore",
 ): void {
+  setFakeBlockWithDiggable(bot, position, blockName, blockName !== "air");
+}
+
+function setFakeBlockWithDiggable(
+  bot: FakeMineflayerBot,
+  position: { readonly x: number; readonly y: number; readonly z: number },
+  blockName: "air" | "dirt" | "stone" | "iron_ore",
+  diggable: boolean,
+): void {
   const type = bot.registry.blocksByName[blockName].id;
   const existingIndex = bot.resourceBlocks.findIndex(
     (block) =>
@@ -650,7 +663,7 @@ function setFakeBlock(
     name: blockName,
     type,
     position,
-    diggable: blockName !== "air",
+    diggable,
   };
   if (existingIndex < 0) {
     bot.resourceBlocks.push(block);
@@ -1616,6 +1629,350 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await expect(transport.refreshAroundBot("tree", 16)).resolves.toMatchObject({
       status: "runtime_unavailable",
       diagnostics: ["runtime_unavailable", "mineflayer_transport_not_connected"],
+    });
+  });
+
+  it("terrain-router 平移应允许 2 格高通道，不要求目标 top 为空", () => {
+    const bot = new FakeMineflayerBot();
+    for (const x of [0, 1]) {
+      setFakeBlock(bot, { x, y: 63, z: 0 }, "dirt");
+      setFakeBlock(bot, { x, y: 64, z: 0 }, "air");
+      setFakeBlock(bot, { x, y: 65, z: 0 }, "air");
+      setFakeBlock(bot, { x, y: 66, z: 0 }, "dirt");
+    }
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 1, y: 64, z: 0 },
+      goalRange: 0,
+      allowDig: false,
+      allowPlaceUp: false,
+    });
+
+    expect(result.plan?.actions).toEqual([
+      { kind: "walk", toFoot: { x: 1, y: 64, z: 0 }, dir: "east" },
+    ]);
+  });
+
+  it("terrain-router digWalk 只清 foot/head，不应因为 top 被挡而拒绝 2 格高平洞", () => {
+    const bot = new FakeMineflayerBot();
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 1, y: 65, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 66, z: 0 }, "dirt");
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 1, y: 64, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: false,
+    });
+
+    expect(result.plan?.actions).toEqual([
+      {
+        kind: "digWalk",
+        toFoot: { x: 1, y: 64, z: 0 },
+        dir: "east",
+        digs: [{ x: 1, y: 65, z: 0 }],
+      },
+    ]);
+  });
+
+  it("terrain-router digStepDown 应在当前 top 被挡时纳入 digs，并拒绝终点只有 2 格净空", () => {
+    const bot = new FakeMineflayerBot();
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 62, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 1, y: 65, z: 0 }, "air");
+
+    const solved = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 1, y: 63, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: false,
+    });
+
+    expect(solved.plan?.actions[0]).toEqual({
+      kind: "digStepDown",
+      toFoot: { x: 1, y: 63, z: 0 },
+      dir: "east",
+      digs: [
+        { x: 0, y: 66, z: 0 },
+        { x: 1, y: 63, z: 0 },
+      ],
+    });
+
+    setFakeBlock(bot, { x: 1, y: 65, z: 0 }, "dirt");
+    const rejected = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 1, y: 63, z: 0 },
+      goalRange: 0,
+      allowDig: false,
+      allowPlaceUp: false,
+    });
+
+    expect(rejected.plan).toBeNull();
+  });
+
+  it("terrain-router digStepUp 应允许清当前 top 且 digs 不重复", () => {
+    const bot = new FakeMineflayerBot();
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 64, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 65, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 66, z: 0 }, "air");
+    setFakeBlock(bot, { x: 1, y: 67, z: 0 }, "air");
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 1, y: 65, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: false,
+    });
+
+    const action = result.plan?.actions[0];
+    expect(action).toMatchObject({
+      kind: "digStepUp",
+      toFoot: { x: 1, y: 65, z: 0 },
+      dir: "east",
+    });
+    const digKeys = "digs" in (action ?? {}) ? action.digs.map(formatPositionKey) : [];
+    expect(new Set(digKeys).size).toBe(digKeys.length);
+    expect(digKeys).toContain("0:66:0");
+  });
+
+  it("terrain-router placeUp1 应在 2 格高坑道内先清顶再垫高", () => {
+    const bot = new FakeMineflayerBot();
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 67, z: 0 }, "air");
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 0, y: 65, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: true,
+    });
+
+    expect(result.plan?.actions).toEqual([
+      {
+        kind: "placeUp1",
+        toFoot: { x: 0, y: 65, z: 0 },
+        dir: "north",
+        placeAt: { x: 0, y: 64, z: 0 },
+        support: { x: 0, y: 63, z: 0 },
+        digs: [{ x: 0, y: 66, z: 0 }],
+      },
+    ]);
+  });
+
+  it("terrain-action foot 判定应以离散脚下格为准，不被跳跃余波 raw y 误杀", () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = {
+      x: -17.04,
+      y: 112.753,
+      z: -209.53,
+    };
+
+    expect(isTerrainBotAtFoot(bot, { x: -18, y: 112, z: -210 })).toBe(true);
+    expect(isTerrainBotAtFoot(bot, { x: -18, y: 112, z: -209 })).toBe(false);
+  });
+
+  it("mine-action digStepDown 应按跳跃阶梯动作执行", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = {
+      x: 0.5,
+      y: 64,
+      z: 0.5,
+    };
+
+    await executeMineRouteAction({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      action: {
+        kind: "digStepDown",
+        toFoot: { x: 1, y: 63, z: 0 },
+        dir: "east",
+        digs: [],
+      },
+      diagnostics: [],
+    });
+
+    expect(bot.controlStateCalls).toContainEqual({ control: "jump", state: true });
+    expect(bot.controlStateCalls).toContainEqual({ control: "jump", state: false });
+  });
+
+  it("terrain-router 深坑 30 格纯垫高不得被 24 格 plannedSolid 旧预算剪掉", () => {
+    const bot = new FakeMineflayerBot();
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    for (let y = 64; y <= 97; y += 1) {
+      setFakeBlock(bot, { x: 0, y, z: 0 }, "air");
+    }
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 0, y: 94, z: 0 },
+      goalRange: 0,
+      allowDig: false,
+      allowPlaceUp: true,
+    });
+
+    expect(result.plan).not.toBeNull();
+    expect(result.plan?.actions.filter((action) => action.kind === "placeUp1")).toHaveLength(30);
+  });
+
+  it("terrain-router 应优先向目标高度收敛，避免深坑返回被水平旁支耗尽 expanded 预算", () => {
+    const bot = new FakeMineflayerBot();
+    populateMiningBox(bot, {
+      minX: -12,
+      maxX: 12,
+      minY: 63,
+      maxY: 63,
+      minZ: -12,
+      maxZ: 12,
+      blockName: "dirt",
+    });
+    populateMiningBox(bot, {
+      minX: -12,
+      maxX: 12,
+      minY: 64,
+      maxY: 76,
+      minZ: -12,
+      maxZ: 12,
+      blockName: "air",
+    });
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 0, y: 74, z: 0 },
+      goalRange: 0,
+      allowDig: false,
+      allowPlaceUp: true,
+      maxExpandedStates: 80,
+    });
+
+    expect(result.plan).not.toBeNull();
+    expect(result.plan?.actions.filter((action) => action.kind === "placeUp1")).toHaveLength(10);
+    expect(result.expandedStates).toBeLessThan(80);
+  });
+
+  it("terrain-router placeUp1 应让放置覆盖之前 digWalk 产生的 plannedAir", () => {
+    const bot = new FakeMineflayerBot();
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlockWithDiggable(bot, { x: 0, y: 66, z: 0 }, "dirt", false);
+    setFakeBlock(bot, { x: 1, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 64, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 1, y: 66, z: 0 }, "air");
+    setFakeBlock(bot, { x: 1, y: 67, z: 0 }, "air");
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 1, y: 65, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: true,
+    });
+
+    expect(result.plan?.actions).toEqual([
+      {
+        kind: "digWalk",
+        toFoot: { x: 1, y: 64, z: 0 },
+        dir: "east",
+        digs: [{ x: 1, y: 64, z: 0 }],
+      },
+      {
+        kind: "placeUp1",
+        toFoot: { x: 1, y: 65, z: 0 },
+        dir: "east",
+        placeAt: { x: 1, y: 64, z: 0 },
+        support: { x: 1, y: 63, z: 0 },
+        digs: [],
+      },
+    ]);
+  });
+
+  it("terrain-router placeUp1 应拒绝垫高后目标 foot 三格净空不足且不可挖", () => {
+    const bot = new FakeMineflayerBot();
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+    setFakeBlockWithDiggable(bot, { x: 0, y: 67, z: 0 }, "dirt", false);
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 0, y: 65, z: 0 },
+      goalRange: 0,
+      allowDig: false,
+      allowPlaceUp: true,
+    });
+
+    expect(result.plan).toBeNull();
+  });
+
+  it("mine-bfs 应允许 2 格高矿道，并支持只挖 head 的 digWalk", () => {
+    const bot = new FakeMineflayerBot();
+    for (const x of [0, 1, 2]) {
+      setFakeBlock(bot, { x, y: 63, z: 0 }, "dirt");
+      setFakeBlock(bot, { x, y: 64, z: 0 }, "air");
+      setFakeBlock(bot, { x, y: 65, z: 0 }, "air");
+      setFakeBlock(bot, { x, y: 66, z: 0 }, "dirt");
+    }
+    setFakeBlock(bot, { x: 1, y: 65, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 2, y: 64, z: 0 }, "stone");
+
+    const result = planMineRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      blockName: "stone",
+      startFoot: { x: 0, y: 64, z: 0 },
+      targets: [{ blockName: "stone", position: { x: 2, y: 64, z: 0 } }],
+    });
+
+    expect(result.plan?.actions[0]).toEqual({
+      kind: "digWalk",
+      toFoot: { x: 1, y: 64, z: 0 },
+      dir: "east",
+      digs: [{ x: 1, y: 65, z: 0 }],
     });
   });
 

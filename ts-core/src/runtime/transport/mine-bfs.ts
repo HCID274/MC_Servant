@@ -88,6 +88,8 @@ const EYE_OFFSET_Y = 1.62;
 const DEFAULT_MAX_EXPANDED = 12_000;
 const DEFAULT_MAX_ACTION_DEPTH = 60;
 const DEFAULT_MAX_PLANNED_AIR = 16;
+const BODY_CLEARANCE = 2;
+const JUMP_CLEARANCE = 3;
 
 interface SearchNode {
   readonly foot: MineBlockPos;
@@ -267,103 +269,65 @@ function expandSuccessors(
     const fx = node.foot.x + vec.dx;
     const fz = node.foot.z + vec.dz;
 
-    // walk: foot/head/top 空，下方 (fy-1) 可站
+    const walkFoot = freezePos({ x: fx, y: fy, z: fz });
     if (
       isWalkableSupport(bot, facts, { x: fx, y: fy - 1, z: fz }, node.plannedAir) &&
-      isPassable(bot, facts, { x: fx, y: fy, z: fz }, node.plannedAir) &&
-      isPassable(bot, facts, { x: fx, y: fy + 1, z: fz }, node.plannedAir) &&
-      isPassable(bot, facts, { x: fx, y: fy + 2, z: fz }, node.plannedAir)
+      hasClearance(bot, facts, walkFoot, BODY_CLEARANCE, node.plannedAir)
     ) {
-      pushSuccessor(
-        out,
-        node,
-        { kind: "walk", toFoot: freezePos({ x: fx, y: fy, z: fz }), dir },
-        COST_WALK + turn,
-      );
+      pushSuccessor(out, node, { kind: "walk", toFoot: walkFoot, dir }, COST_WALK + turn);
     }
 
-    // drop1: 走出 ledge 下落 1 格
+    const dropFoot = freezePos({ x: fx, y: fy - 1, z: fz });
     if (
-      isPassable(bot, facts, { x: fx, y: fy, z: fz }, node.plannedAir) &&
-      isPassable(bot, facts, { x: fx, y: fy + 1, z: fz }, node.plannedAir) &&
-      isPassable(bot, facts, { x: fx, y: fy + 2, z: fz }, node.plannedAir) &&
-      isPassable(bot, facts, { x: fx, y: fy - 1, z: fz }, node.plannedAir) &&
+      hasClearance(bot, facts, node.foot, JUMP_CLEARANCE, node.plannedAir) &&
+      hasClearance(bot, facts, dropFoot, JUMP_CLEARANCE, node.plannedAir) &&
       isWalkableSupport(bot, facts, { x: fx, y: fy - 2, z: fz }, node.plannedAir)
     ) {
-      pushSuccessor(
-        out,
-        node,
-        { kind: "drop1", toFoot: freezePos({ x: fx, y: fy - 1, z: fz }), dir },
-        COST_DROP1 + turn,
-      );
+      pushSuccessor(out, node, { kind: "drop1", toFoot: dropFoot, dir }, COST_DROP1 + turn);
     }
 
-    // jumpUp: 跳上一格台阶
+    const upFoot = freezePos({ x: fx, y: fy + 1, z: fz });
     if (
-      isPassable(bot, facts, { x: node.foot.x, y: fy + 2, z: node.foot.z }, node.plannedAir) &&
+      hasClearance(bot, facts, node.foot, JUMP_CLEARANCE, node.plannedAir) &&
       isWalkableSupport(bot, facts, { x: fx, y: fy, z: fz }, node.plannedAir) &&
-      isPassable(bot, facts, { x: fx, y: fy + 1, z: fz }, node.plannedAir) &&
-      isPassable(bot, facts, { x: fx, y: fy + 2, z: fz }, node.plannedAir) &&
-      isPassable(bot, facts, { x: fx, y: fy + 3, z: fz }, node.plannedAir)
+      hasClearance(bot, facts, upFoot, JUMP_CLEARANCE, node.plannedAir)
     ) {
-      pushSuccessor(
-        out,
-        node,
-        { kind: "jumpUp", toFoot: freezePos({ x: fx, y: fy + 1, z: fz }), dir },
-        COST_JUMP_UP + turn,
-      );
+      pushSuccessor(out, node, { kind: "jumpUp", toFoot: upFoot, dir }, COST_JUMP_UP + turn);
     }
 
-    // digWalk: 挖前方头/身两格之后走过去
-    const bodyPos = { x: fx, y: fy, z: fz };
-    const headPos = { x: fx, y: fy + 1, z: fz };
-    const topPos = { x: fx, y: fy + 2, z: fz };
-    const supportPos = { x: fx, y: fy - 1, z: fz };
-    if (
-      isWalkableSupport(bot, facts, supportPos, node.plannedAir) &&
-      canDigBlock(bot, facts, bodyPos, node.plannedAir)
-    ) {
-      const digs: MineBlockPos[] = [freezePos(bodyPos)];
-      let canHead = isPassable(bot, facts, headPos, node.plannedAir);
-      if (!canHead && canDigBlock(bot, facts, headPos, node.plannedAir)) {
-        digs.push(freezePos(headPos));
-        canHead = true;
-      }
-      let canTop = isPassable(bot, facts, topPos, node.plannedAir);
-      if (!canTop && canDigBlock(bot, facts, topPos, node.plannedAir)) {
-        digs.push(freezePos(topPos));
-        canTop = true;
-      }
-      if (canHead && canTop) {
-        const cost = COST_DIG_WALK_BASE + COST_DIG_PER_BLOCK * digs.length + turn;
+    const bodyPos = freezePos({ x: fx, y: fy, z: fz });
+    const headPos = freezePos({ x: fx, y: fy + 1, z: fz });
+    const supportPos = freezePos({ x: fx, y: fy - 1, z: fz });
+    if (isWalkableSupport(bot, facts, supportPos, node.plannedAir)) {
+      const digs = collectClearanceDigs(bot, facts, [bodyPos, headPos], node.plannedAir);
+      if (digs !== null && digs.length > 0) {
         pushSuccessor(
           out,
           node,
           {
             kind: "digWalk",
-            toFoot: freezePos({ x: fx, y: fy, z: fz }),
+            toFoot: bodyPos,
             dir,
-            digs: Object.freeze(digs),
+            digs,
           },
-          cost,
+          COST_DIG_WALK_BASE + COST_DIG_PER_BLOCK * digs.length + turn,
         );
       }
     }
 
-    // digStepDown: 挖出相邻低一格的脚/头/顶三格空间，走过去自然下降一格形成阶梯。
-    const stepDownFoot = { x: fx, y: fy - 1, z: fz };
-    const stepDownHead = { x: fx, y: fy, z: fz };
-    const stepDownTop = { x: fx, y: fy + 1, z: fz };
-    const stepDownSupport = { x: fx, y: fy - 2, z: fz };
-    const stepDownDigs = collectBodySpaceDigs(
+    const currentTop = freezePos({ x: node.foot.x, y: fy + 2, z: node.foot.z });
+    const stepDownFoot = freezePos({ x: fx, y: fy - 1, z: fz });
+    const stepDownSupport = freezePos({ x: fx, y: fy - 2, z: fz });
+    const stepDownDigs = collectClearanceDigs(
       bot,
       facts,
-      [stepDownFoot, stepDownHead, stepDownTop],
+      [currentTop, ...clearancePositions(stepDownFoot, JUMP_CLEARANCE)],
       node.plannedAir,
     );
     if (
       stepDownDigs !== null &&
       stepDownDigs.length > 0 &&
+      hasClearance(bot, facts, node.foot, BODY_CLEARANCE, node.plannedAir) &&
       isWalkableSupport(bot, facts, stepDownSupport, node.plannedAir)
     ) {
       pushSuccessor(
@@ -371,29 +335,26 @@ function expandSuccessors(
         node,
         {
           kind: "digStepDown",
-          toFoot: freezePos(stepDownFoot),
+          toFoot: stepDownFoot,
           dir,
-          digs: Object.freeze(stepDownDigs),
+          digs: stepDownDigs,
         },
         COST_DIG_STEP_BASE + COST_DIG_PER_BLOCK * stepDownDigs.length + turn,
       );
     }
 
-    // digStepUp: 挖出相邻高一格的脚/头/顶三格空间，跳上一格台阶。
-    const stepUpFoot = { x: fx, y: fy + 1, z: fz };
-    const stepUpHead = { x: fx, y: fy + 2, z: fz };
-    const stepUpTop = { x: fx, y: fy + 3, z: fz };
-    const stepUpSupport = { x: fx, y: fy, z: fz };
-    const stepUpDigs = collectBodySpaceDigs(
+    const stepUpFoot = freezePos({ x: fx, y: fy + 1, z: fz });
+    const stepUpSupport = freezePos({ x: fx, y: fy, z: fz });
+    const stepUpDigs = collectClearanceDigs(
       bot,
       facts,
-      [stepUpFoot, stepUpHead, stepUpTop],
+      [currentTop, ...clearancePositions(stepUpFoot, JUMP_CLEARANCE)],
       node.plannedAir,
     );
     if (
       stepUpDigs !== null &&
       stepUpDigs.length > 0 &&
-      isPassable(bot, facts, { x: node.foot.x, y: fy + 2, z: node.foot.z }, node.plannedAir) &&
+      hasClearance(bot, facts, node.foot, BODY_CLEARANCE, node.plannedAir) &&
       isWalkableSupport(bot, facts, stepUpSupport, node.plannedAir)
     ) {
       pushSuccessor(
@@ -401,9 +362,9 @@ function expandSuccessors(
         node,
         {
           kind: "digStepUp",
-          toFoot: freezePos(stepUpFoot),
+          toFoot: stepUpFoot,
           dir,
-          digs: Object.freeze(stepUpDigs),
+          digs: stepUpDigs,
         },
         COST_DIG_STEP_BASE + COST_DIG_PER_BLOCK * stepUpDigs.length + COST_JUMP_UP + turn,
       );
@@ -588,14 +549,34 @@ function isWalkableSupport(
   return facts.isSupportBlock(block);
 }
 
-function collectBodySpaceDigs(
+function clearancePositions(foot: MineBlockPos, height: number): readonly MineBlockPos[] {
+  return Object.freeze(
+    Array.from({ length: height }, (_, dy) => freezePos({ x: foot.x, y: foot.y + dy, z: foot.z })),
+  );
+}
+
+function hasClearance(
+  bot: MineflayerMiningPort,
+  facts: MineBlockFactReader,
+  foot: MineBlockPos,
+  height: number,
+  plannedAir: ReadonlySet<string>,
+): boolean {
+  return clearancePositions(foot, height).every((pos) => isPassable(bot, facts, pos, plannedAir));
+}
+
+function collectClearanceDigs(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
   positions: readonly MineBlockPos[],
   plannedAir: ReadonlySet<string>,
 ): readonly MineBlockPos[] | null {
   const digs: MineBlockPos[] = [];
+  const seen = new Set<string>();
   for (const pos of positions) {
+    const key = positionKey(pos);
+    if (seen.has(key)) continue;
+    seen.add(key);
     if (isPassable(bot, facts, pos, plannedAir)) continue;
     if (!canDigBlock(bot, facts, pos, plannedAir)) return null;
     digs.push(freezePos(pos));
