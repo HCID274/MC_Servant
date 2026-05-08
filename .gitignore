@@ -58,5 +58,6 @@ backend/runtime/
 *.cache
 LLMRouter_MigrationBundle
 qwen35_cli_test
-00_简历.md
-10_简历评判标准.md
+
+# 个人文档(本地保留,不入仓)
+00_简历相关/
