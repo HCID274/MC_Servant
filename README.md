@@ -280,12 +280,3 @@ mod 端文档见 `plugin/README.md` 与 `plugin/BUILD.md`。
 | `world_ready=false` | MC 服务端是否允许该用户名进入世界 |
 | 启动期 PG / Redis 失败 | 端口、密码、容器健康状态 |
 | Bot 不动但日志正常 | 检查是否被 `intent_epoch` 校验丢弃(新意图覆盖了旧计划) |
-
----
-
-## 安全与机密
-
-- 密钥**不入仓**;`.env.example` 仅作字段样例
-- `access token` 只进入 `Authorization` 请求头,不进消息体、不进普通日志
-- `/login <secret>` 在公开状态显示为 `/login <redacted>`
-- 沙箱内代码无文件系统 / 网络 / 进程访问权,只能通过 Facade API 调用 BotActor
