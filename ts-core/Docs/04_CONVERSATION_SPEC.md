@@ -230,10 +230,12 @@ interface PlanCodeOutput {
 await reply("好的，我去挖 5 个石头喵")
 
 const task = await runGoal("挖 5 个石头", async () => {
-  const result = await mine("stone", 5)
-  if (result.ok === false) {
-    throw new Error(result.error.code)
-  }
+  await ensure(
+    async () => {
+      await mine("stone", 5)
+    },
+    until.gainedDropOf("stone", 5),
+  )
 })
 
 await report(task)
@@ -264,19 +266,21 @@ await report(task)
 # 可编程 TS（TypeScript） 结构
 - 每个任务先 reply("开场回复喵")
 - 每个任务用 runGoal("目标名", async () => { ... }) 包裹主体
-- 需要达成资源 / 装备 / 放置目标时,用 ensure(async () => { ... }, until.xxx(...))
+- 需要达成资源 / 装备 / 放置 / 合成目标时,用 ensure(async () => { ... }, until.xxx(...))
 - 每个任务最后 await report(task)
 - 不手写依赖链细节；依赖补齐由 ensure（确保语义） 根据结构化失败和 Minecraft（我的世界）事实源处理
 
 # ensure（确保语义）
-- ensure 不是一组具体函数,而是通用语义：尝试动作 → 检查 until 条件 → 捕获结构化失败 → 解析依赖 → 补前置 → 回到原动作
+- ensure 不是一组具体函数,而是通用语义：记录 baseline → 执行动作 → 读取真实状态 → 检查 until 条件 → 条件不满足时构造结构化失败 → 解析依赖或补缺口 → 恢复后复查真实状态
+- `result.ok === false` 只能用于处理结构化失败,不是完成判断；最终成功必须以 ensure 的 until 条件为准
 - ensure 可以从 not_equipped（未装备）、missing_materials（缺材料）、missing_crafting_table（无工作台）、resource_not_found（找不到资源）、unsafe_path（路径不安全） 等失败码恢复
 - ensure 的依赖事实只能来自 mineflayer（Minecraft 客户端库）、minecraft-data（Minecraft 数据库）、runtime（运行时） 与实时快照
 - LLM（大语言模型） 不得输出任何具体 ensure（确保）函数名；只能使用通用 `ensure(action, condition)`（确保语义）
+- Plan（规划） 默认给资源、装备、放置、合成等有真实完成条件的动作套 ensure,避免简单动作绕过依赖恢复。
 
 # 动作边界
-- mine(blockName, count) 自带移动、挖掘、掉落物 collect（捡拾）,成功标准看背包增量
-- cutTree(count) 自带树簇选择、移动、连锁砍树触发、掉落物 collect（捡拾）,成功标准看原木背包增量
+- mine(blockName, count) 自带移动、挖掘、掉落物 collect（捡拾）,执行层成功标准看背包增量；Plan 默认仍用 ensure + until.gainedDropOf 包裹
+- cutTree(count) 自带树簇选择、移动、连锁砍树触发、掉落物 collect（捡拾）,执行层成功标准看原木背包增量；Plan 默认仍用 ensure + until.gainedTag 包裹
 - craft(itemName, count)、place(blockName)、equip(itemName, "hand") 不补完整资源链；缺前置时返回结构化失败,交给 ensure 处理
 - collect(itemName?) 只处理地面掉落物捡拾
 
@@ -321,6 +325,7 @@ declare function ensure(action: () => Promise<void>, condition: UntilCondition):
 
 declare const until: {
   gained(itemName: string, count: number): UntilCondition
+  gainedDropOf(blockName: string, count: number): UntilCondition
   gainedTag(tagName: string, count: number): UntilCondition
   has(itemName: string, count: number): UntilCondition
   equipped(itemName: string): UntilCondition
@@ -346,7 +351,7 @@ declare const owner: {
 
 底层动作失败必须抛出结构化 `ActionError`（动作错误）,不得只抛字符串。`ActionError.code`（错误码） 必须覆盖 `missing_materials`（缺材料）、`missing_crafting_table`（无工作台）、`missing_crafting_table_item`（背包无工作台物品）、`no_placeable_position`（附近无可放位置）、`place_failed`（放置失败）、`cached_position_invalid`（缓存位置失效）、`cannot_place`（无法放置）、`missing_item`（缺目标物品）、`runtime_equip_failed`（运行时装备失败）、`not_equipped`（未装备）、`resource_not_found`（找不到资源）、`unsafe_path`（路径不安全） 等可恢复原因。完整详情进入 diagnostics（诊断）/ JSONL（结构化日志） 与 step result（步骤结果）,下一轮 prompt（提示词） 只注入 §7.6.5 的短 Failure Capsule（失败胶囊）。
 
-`mine`（挖掘） 与 `cutTree`（砍树） 是少数自带 `collect`（捡拾） 的动作：它们的完成标准必须来自背包增量,不是“方块破坏动作已发出”。`craft`（合成）、`place`（放置）、`equip`（装备） 不主动展开完整依赖链；它们只返回结构化失败,由 `ensure`（确保语义） 的依赖解析器补前置。
+`mine`（挖掘） 与 `cutTree`（砍树） 是少数自带 `collect`（捡拾） 的动作：它们的执行层完成标准必须来自背包增量,不是“方块破坏动作已发出”。Plan（规划） 仍默认用 `ensure`（确保语义） 包裹这类资源目标,让前置依赖恢复、最终条件复查和失败摘要走同一条链路。`craft`（合成）、`place`（放置）、`equip`（装备） 不主动展开完整依赖链；它们只返回结构化失败,由 `ensure` 的依赖解析器补前置。
 
 所有资源、坐标和维度上下文必须通过 existing world tag（既有世界标签）、`currentWorld`（当前世界） 或 ResourceService（资源服务） 接口读取；TS（TypeScript） 计划不得自行拼接 `world_key`（世界键）。
 
@@ -373,10 +378,12 @@ interface PlanCodeOutput {
 await reply("好的，我去挖 5 个石头喵")
 
 const task = await runGoal("挖 5 个石头", async () => {
-  const result = await mine("stone", 5)
-  if (result.ok === false) {
-    throw new Error(result.error.code)
-  }
+  await ensure(
+    async () => {
+      await mine("stone", 5)
+    },
+    until.gainedDropOf("stone", 5),
+  )
 })
 
 await report(task)
@@ -398,13 +405,15 @@ await report(task)
 ```
 
 ```typescript
-await reply("好的，我去挖铁矿喵")
+await reply("好的，我去获得铁矿掉落物喵")
 
-const task = await runGoal("挖铁矿", async () => {
-  const result = await mine("iron_ore", 1)
-  if (result.ok === false) {
-    throw new Error(result.error.code)
-  }
+const task = await runGoal("获得铁矿掉落物", async () => {
+  await ensure(
+    async () => {
+      await mine("iron_ore", 1)
+    },
+    until.gainedDropOf("iron_ore", 1),
+  )
 })
 
 await report(task)
@@ -414,7 +423,9 @@ await report(task)
 
 - `demoMineIron()`：隐藏一键 demo（演示）脚本。
 - `const world_key = "minecraft:overworld"`：手写世界键。
-- `await mine("iron_ore", 1)`：缺少 `ensure(..., until.gained(...))` 完成条件与失败恢复语义。
+- `if (result.ok !== false) return`：把结构化失败检查误当完成判断。
+- `await mine("stone", 5)` / `await cutTree(12)` 作为资源目标的完整主体：绕过 ensure 的依赖恢复与最终复查。
+- `until.gained("raw_iron", 1)`：手写铁矿掉落事实；应使用 `until.gainedDropOf("iron_ore", 1)`。
 - `await craft("oak_planks", 4)`：木板应该请求 `craft("planks", count)`。
 - `await 具体Ensure函数()`：暴露具体 ensure（确保）函数,破坏通用可编程语义。
 - 代码没有 `report(task)`：终态不闭环。
@@ -574,7 +585,7 @@ Bot：去砍橡木。
 | 可挖语义 | `is_diggable` 表示方块 / 工具 / 世界规则下可挖，不包含 Mineflayer `canDigBlock` 的当前 5.1 格手边距离限制 |
 | 树木选择 | `cutTree(count)` 先找单个 `log_count >= count` 的最近足量簇；没有单簇足量时再按推荐目标距离升序累计多个小簇；每簇默认选最低合法原木作为推荐目标；缓存不足时复用 16→32→64 阶梯刷新 |
 | 砍树完成标准 | 执行层只挖每个选中簇的一个推荐原木，由 plugin 连锁掉落；等待 1 秒后以最低原木位置为中心、半径 8 强制 collect 可见掉落物，collect 失败则任务失败；collect 只清理与 bot 高度差 3 格以内的可见掉落物，避免树冠滞留掉落物拖死任务；随后以 dig+collect 前后的背包原木增量判断是否达到 `count`，不足则继续下一簇 |
-| 挖掘资源路径 | `mine('stone', count)` 不写入 ResourceService，直接由 runtime scan 最近可挖 stone 并用 StairBFSPlanner 执行安全短段；`mine('iron_ore'/'deepslate_iron_ore', count)` 先按具体方块名刷新/读取 ResourceService 矿石簇，再由 runtime 执行 StairBFSPlanner 路线 |
+| 挖掘资源路径 | `mine('stone', count)` 不写入 ResourceService，直接由 runtime scan 最近可挖 stone 并用 mine-bfs 执行安全动作路线；`mine('iron_ore'/'deepslate_iron_ore', count)` 先按具体方块名刷新/读取 ResourceService 矿石簇，再由 runtime 执行同一套 mine-bfs 路线 |
 | 挖掘完成标准 | runtime 根据 registry / Mineflayer 执行结果计算目标掉落物背包增量；增量不足时返回 `drop_not_obtained`，不得假设挖掉方块就等于获得物品 |
 | 资源 key 集合 | Phase 1 锁定 `tree`、`ore` 两个 key，并行刷新 |
 | 资源 key 解析 | `tree` 是 TS Core 公共资源键；runtime/transport 负责把它解析到 Mineflayer / minecraft-data 的原木 tag 事实，refresh 返回仍保留 `resource_keys=["tree"]` |

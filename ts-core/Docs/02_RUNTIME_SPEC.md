@@ -321,8 +321,9 @@ BotActor.executeTask(job, signal)
   └─ sandbox.run(code, facadeAPI, signal)
        └─ facadeAPI.bot.mine(target, count, signal)
             └─ skill/mine.execute(target, count, signal)
-                 └─ mineflayer.bot.dig(block, signal)
-                      └─ pathfinder.goto(goal, { signal })
+                 └─ runtime/transport mine-bfs / terrain-router
+                      ├─ mineflayer.bot.dig(block, signal)
+                      └─ foot-step 控制键脉冲移动
 ```
 
 每一层的函数签名都必须接受 `signal: AbortSignal` 参数。这是强制约定，SKILL_CATALOG.md 中所有 skill 的签名都将包含此参数。

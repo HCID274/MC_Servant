@@ -17,9 +17,11 @@ import type {
   MineSkillAdapter,
   MineSkillExecutionResult,
   SkillCallInput,
+  SkillExecutionControl,
   SkillExecutionDependencies,
   SkillExecutionResult,
 } from "../core-ports/skills.js";
+import { NOOP_SKILL_EXECUTION_CONTROL } from "../core-ports/skills.js";
 import { SKILL_DIRECTORY, type SkillParamsByName } from "./contracts.js";
 
 export type {
@@ -55,21 +57,25 @@ export async function executeSkillInvocation(input: {
   readonly invocation: SkillCallInput;
   /** 执行依赖。 */
   readonly dependencies: SkillExecutionDependencies;
+  /** 中断控制。 */
+  readonly control: SkillExecutionControl;
 }): Promise<SkillExecutionResult> {
+  const control = input.control ?? NOOP_SKILL_EXECUTION_CONTROL;
+
   switch (input.invocation.skill) {
     case SKILL_DIRECTORY.goTo:
-      return input.dependencies.goToMovement.goTo(input.invocation.params);
+      return input.dependencies.goToMovement.goTo(input.invocation.params, control);
     case SKILL_DIRECTORY.mine:
-      return input.dependencies.mine(input.invocation.params);
+      return input.dependencies.mine(input.invocation.params, control);
     case SKILL_DIRECTORY.collect:
-      return input.dependencies.collect(input.invocation.params);
+      return input.dependencies.collect(input.invocation.params, control);
     case SKILL_DIRECTORY.cutTree:
       if (input.dependencies.cutTree === undefined) {
         throw new Error("Skill cutTree execution dependency is not configured");
       }
 
-      return input.dependencies.cutTree(input.invocation.params);
+      return input.dependencies.cutTree(input.invocation.params, control);
     case SKILL_DIRECTORY.equip:
-      return input.dependencies.equip(input.invocation.params);
+      return input.dependencies.equip(input.invocation.params, control);
   }
 }

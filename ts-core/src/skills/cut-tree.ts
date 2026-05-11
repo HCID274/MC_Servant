@@ -4,6 +4,8 @@ import {
   type CutTreeSkillClusterExecution,
   type CutTreeSkillExecutionResult,
   type CutTreeSkillParams,
+  NOOP_SKILL_EXECUTION_CONTROL,
+  type SkillExecutionControl,
   createCutTreeSkillExecutionResult,
 } from "../core-ports/skills.js";
 import type {
@@ -13,15 +15,15 @@ import type {
 } from "../world-model/contracts.js";
 
 const DEFAULT_CUT_TREE_SETTLE_MS = 1_000;
-const CUT_TREE_COLLECT_RADIUS = 8;
+const CUT_TREE_DROP_COLLECT_RADIUS = 8;
 
-/** cutTree（砍树） 坐标挖掘端口；真实实现由 BotActor（机器人执行代理） 持有的 transport（传输层） 提供。 */
+/** cutTree（砍树） 坐标挖掘端口；真实实现由 transport（传输层） 提供。 */
 export interface CutTreeDigTargetAdapter {
   /** 挖掘指定坐标上的单个方块。 */
-  digBlockAt(position: Readonly<SnapshotPosition>): Promise<void>;
+  digBlockAt(position: Readonly<SnapshotPosition>, control: SkillExecutionControl): Promise<void>;
 }
 
-/** cutTree（砍树） 背包只读端口，用于跨 dig（挖掘）+ collect（捡拾） 计算真实增量。 */
+/** cutTree（砍树） 背包只读端口，用于跨 dig（挖掘）+ collect（捡拾）计算真实原木增量。 */
 export interface CutTreeInventoryReader {
   /** 读取当前背包物品快照。 */
   readInventoryItems(): readonly Readonly<{ readonly item_name: string; readonly count: number }>[];
@@ -34,10 +36,14 @@ export function createCutTreeSkillExecutor(input: {
   readonly collector: CollectSkillAdapter;
   readonly inventory: CutTreeInventoryReader;
   readonly settleMs?: number;
-}): (params: Readonly<CutTreeSkillParams>) => Promise<CutTreeSkillExecutionResult> {
+}): (
+  params: Readonly<CutTreeSkillParams>,
+  control: SkillExecutionControl,
+) => Promise<CutTreeSkillExecutionResult> {
   const settleMs = input.settleMs ?? DEFAULT_CUT_TREE_SETTLE_MS;
 
-  return async (params) => {
+  return async (params, control = NOOP_SKILL_EXECUTION_CONTROL) => {
+    control.throwIfAborted();
     const attemptedClusterIds = new Set<string>();
     const clusters: CutTreeSkillClusterExecution[] = [];
     const diagnostics: string[] = [];
@@ -46,6 +52,7 @@ export function createCutTreeSkillExecutor(input: {
     let worldKey: string | null = null;
 
     while (collectedCount < params.count) {
+      control.throwIfAborted();
       const remaining = params.count - collectedCount;
       const selection = await input.resourceService.selectTreeClusters(remaining);
       worldKey = selection.world_key;
@@ -68,19 +75,41 @@ export function createCutTreeSkillExecutor(input: {
         input.inventory.readInventoryItems(),
         cluster.log_block_name,
       );
-      await input.digger.digBlockAt(cluster.recommended_target.position);
-      totalSteps += 1;
-      applyClusterRemoval(input.resourceService, cluster);
+
+      try {
+        await input.digger.digBlockAt(cluster.recommended_target.position, control);
+        totalSteps += 1;
+        applyClusterRemoval(input.resourceService, cluster);
+      } catch (error) {
+        throw createCutTreeStructuredError({
+          code: readErrorCode(error) ?? "unreachable_target",
+          message: getErrorMessage(error),
+          params,
+          worldKey,
+          completedCount: collectedCount,
+          diagnostics: [
+            ...diagnostics,
+            `cut_tree_dig_failed:${sanitizeDiagnostic(getErrorMessage(error))}`,
+          ],
+          selection,
+          cause: error,
+        });
+      }
 
       if (settleMs > 0) {
         await delay(settleMs);
+        control.throwIfAborted();
       }
-
-      const collectResult = await input.collector.collect({
+      totalSteps += await collectTreeDrops({
+        collector: input.collector,
         center: calculateLowestLogCollectCenter(cluster),
-        radius: CUT_TREE_COLLECT_RADIUS,
+        params,
+        worldKey,
+        completedCount: collectedCount,
+        diagnostics,
+        selection,
+        control,
       });
-      totalSteps += collectResult.total_steps;
 
       const after = countInventoryItem(
         input.inventory.readInventoryItems(),
@@ -121,13 +150,61 @@ export function createCutTreeSkillExecutor(input: {
     });
 
     if (!result.completed) {
-      throw new Error(
-        `附近木头不足：已获得 ${result.collected_count}/${result.requested_count} 个原木`,
-      );
+      throw createCutTreeStructuredError({
+        code: clusters.length === 0 ? "resource_not_found" : "drop_not_obtained",
+        message: `附近木头不足：已获得 ${result.collected_count}/${result.requested_count} 个原木`,
+        params,
+        worldKey,
+        completedCount: collectedCount,
+        diagnostics: result.diagnostics,
+        clusters,
+      });
     }
 
     return result;
   };
+}
+
+async function collectTreeDrops(input: {
+  readonly collector: CollectSkillAdapter;
+  readonly center: Readonly<SnapshotPosition>;
+  readonly params: Readonly<CutTreeSkillParams>;
+  readonly worldKey: string | null;
+  readonly completedCount: number;
+  readonly diagnostics: string[];
+  readonly control: SkillExecutionControl;
+  readonly selection?: Awaited<ReturnType<ResourceServiceBoundary["selectTreeClusters"]>>;
+}): Promise<number> {
+  try {
+    input.control.throwIfAborted();
+    const result = await input.collector.collect(
+      {
+        center: input.center,
+        radius: CUT_TREE_DROP_COLLECT_RADIUS,
+      },
+      input.control,
+    );
+    input.diagnostics.push(
+      `cut_tree_collect_result:${result.collected
+        .map((item) => `${item.name}:${item.count}`)
+        .join("|")}`,
+    );
+    return result.total_steps;
+  } catch (error) {
+    throw createCutTreeStructuredError({
+      code: readErrorCode(error) ?? "drop_not_obtained",
+      message: getErrorMessage(error),
+      params: input.params,
+      worldKey: input.worldKey,
+      completedCount: input.completedCount,
+      diagnostics: [
+        ...input.diagnostics,
+        `cut_tree_collect_failed:${sanitizeDiagnostic(getErrorMessage(error))}`,
+      ],
+      ...(input.selection === undefined ? {} : { selection: input.selection }),
+      cause: error,
+    });
+  }
 }
 
 function calculateLowestLogCollectCenter(cluster: AcceptedTreeCluster): Readonly<SnapshotPosition> {
@@ -137,14 +214,8 @@ function calculateLowestLogCollectCenter(cluster: AcceptedTreeCluster): Readonly
 
   const recommended = cluster.recommended_target.position;
   const lowest = cluster.logs.reduce((currentLowest, position) => {
-    if (position.y < currentLowest.y) {
-      return position;
-    }
-
-    if (position.y > currentLowest.y) {
-      return currentLowest;
-    }
-
+    if (position.y < currentLowest.y) return position;
+    if (position.y > currentLowest.y) return currentLowest;
     return squaredDistance(position, recommended) < squaredDistance(currentLowest, recommended)
       ? position
       : currentLowest;
@@ -180,6 +251,66 @@ function applyClusterRemoval(
   );
 
   resourceService.applyBlockChanges(changes);
+}
+
+function createCutTreeStructuredError(input: {
+  readonly code: string;
+  readonly message: string;
+  readonly params: Readonly<CutTreeSkillParams>;
+  readonly worldKey: string | null;
+  readonly completedCount: number;
+  readonly diagnostics: readonly string[];
+  readonly selection?: Awaited<ReturnType<ResourceServiceBoundary["selectTreeClusters"]>>;
+  readonly clusters?: readonly CutTreeSkillClusterExecution[];
+  readonly cause?: unknown;
+}): Error {
+  const error = new Error(input.message) as Error & {
+    error_code?: string;
+    details?: Readonly<Record<string, unknown>>;
+    cause?: unknown;
+  };
+  error.error_code = input.code;
+  error.cause = input.cause;
+  error.details = Object.freeze({
+    failure_stage: "cutTree",
+    target_kind: "cut_tree_log",
+    requested_count: input.params.count,
+    completed_count: input.completedCount,
+    target_count: input.params.count,
+    world_key: input.worldKey,
+    diagnostics: Object.freeze([...input.diagnostics]),
+    ...(input.selection === undefined
+      ? {}
+      : {
+          selection_status: input.selection.status,
+          selected_log_count: input.selection.selected_log_count,
+          rejected_reasons: Object.freeze(
+            input.selection.rejected.map((rejected) => rejected.reason),
+          ),
+          refresh_statuses: Object.freeze(
+            input.selection.refresh_attempts.map((attempt) => attempt.status),
+          ),
+        }),
+    ...(input.clusters === undefined ? {} : { clusters: input.clusters }),
+  });
+  return error;
+}
+
+function readErrorCode(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) {
+    return null;
+  }
+
+  const code = (error as { readonly error_code?: unknown }).error_code;
+  return typeof code === "string" && code.trim().length > 0 ? code : null;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function sanitizeDiagnostic(value: string): string {
+  return value.replace(/\s+/gu, "_").slice(0, 240);
 }
 
 function countInventoryItem(

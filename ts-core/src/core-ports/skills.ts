@@ -129,6 +129,26 @@ export interface SkillParamsByName {
   readonly equip: EquipSkillParams;
 }
 
+/** 技能执行控制信号；所有真实执行适配器必须显式接收，避免取消链路只停在入口层。 */
+export interface SkillExecutionControl {
+  /** 当前执行任务的中断信号。 */
+  readonly signal: AbortSignal;
+  /** 在技能循环、等待与真实副作用前主动检查中断。 */
+  throwIfAborted(): void;
+}
+
+const noopSkillAbortController = new AbortController();
+
+/** 无中断控制；仅用于测试或非 sandbox 直接调用，生产沙箱必须透传真实 signal。 */
+export const NOOP_SKILL_EXECUTION_CONTROL: SkillExecutionControl = Object.freeze({
+  signal: noopSkillAbortController.signal,
+  throwIfAborted(): void {
+    if (noopSkillAbortController.signal.aborted) {
+      throw noopSkillAbortController.signal.reason;
+    }
+  },
+});
+
 /** 单技能调用的只读桥接结构。 */
 export interface SkillCall<TName extends SkillName = SkillName> {
   /** 技能名。 */
@@ -167,6 +187,7 @@ export const TOOLCHAIN_FAILURE_CODES = Object.freeze([
   "unreachable_target",
   "inventory_full",
   "world_mismatch",
+  "condition_not_met",
   "unsupported_capability",
 ] as const);
 
@@ -237,6 +258,13 @@ export interface ToolchainEnsureFacts {
   canCraft(input: { readonly itemName: string }): boolean;
   /** 读取工作台方块名；缺失时 ensure（确保） 不自行猜测。 */
   resolveCraftingTableBlockName(): string | null;
+  /** 读取方块真实掉落物名；事实必须来自 runtime（运行时） / minecraft-data（Minecraft 数据库）。 */
+  resolveBlockDropItemNames(input: { readonly blockName: string }): readonly string[];
+  /** 按 Minecraft tag（标签） 事实统计背包物品数量；缺失事实时返回 0。 */
+  countInventoryItemsByTag(input: {
+    readonly tagName: string;
+    readonly inventory: readonly ToolchainEnsureInventoryItem[];
+  }): number;
 }
 
 /** 工具链 ensure（确保） 内部执行过的可审计动作摘要。 */
@@ -335,6 +363,14 @@ export type EnsureCondition =
       readonly count: number;
     }>
   | Readonly<{
+      /** 背包较任务起点获得指定方块的真实掉落物。 */
+      readonly kind: "gainedDropOf";
+      /** 目标方块标准名称。 */
+      readonly blockName: string;
+      /** 目标获得数量。 */
+      readonly count: number;
+    }>
+  | Readonly<{
       /** 背包当前持有指定物品。 */
       readonly kind: "has";
       /** 目标物品标准名称。 */
@@ -375,6 +411,38 @@ export interface EnsureDependencyParams {
   readonly failure: EnsureActionFailureSnapshot;
   /** 原始动作完成条件。 */
   readonly condition: EnsureCondition;
+}
+
+/** ensure（确保） 条件检查所需的真实状态快照。 */
+export interface EnsureConditionStateSnapshot {
+  /** 当前世界键；必须来自 currentWorld（当前世界）/runtime transport（运行时传输层）。 */
+  readonly world_key: string | null;
+  /** 背包物品快照。 */
+  readonly inventory: readonly ToolchainEnsureInventoryItem[];
+  /** 当前主手装备物品名。 */
+  readonly main_hand_item_name?: string | null;
+  /** 观察快照中可见的真实方块名。 */
+  readonly nearby_block_names?: readonly string[];
+}
+
+/** ensure（确保） 条件检查结果。 */
+export interface EnsureConditionEvaluation {
+  /** 条件是否已满足。 */
+  readonly ok: boolean;
+  /** 条件目标。 */
+  readonly condition: EnsureCondition;
+  /** 已完成数量。 */
+  readonly completed_count: number;
+  /** 目标数量。 */
+  readonly target_count: number;
+  /** 缺口数量。 */
+  readonly missing_count: number;
+  /** 条件解析出的真实目标物品名或方块名。 */
+  readonly resolved_targets: readonly string[];
+  /** 检查起点状态摘要。 */
+  readonly baseline: EnsureConditionStateSnapshot;
+  /** 当前状态摘要。 */
+  readonly current: EnsureConditionStateSnapshot;
 }
 
 /** 工具链能力参数映射。 */
@@ -605,6 +673,12 @@ export function isEnsureCondition(value: unknown): value is EnsureCondition {
       return (
         hasOnlyAllowedKeys(value, ["kind", "tagName", "count"]) &&
         isNonEmptyString(value.tagName) &&
+        isPositiveInteger(value.count)
+      );
+    case "gainedDropOf":
+      return (
+        hasOnlyAllowedKeys(value, ["kind", "blockName", "count"]) &&
+        isNonEmptyString(value.blockName) &&
         isPositiveInteger(value.count)
       );
     case "equipped":
@@ -842,31 +916,46 @@ export type SkillExecutionResult =
 /** `goTo`（前往坐标） 移动适配器，真实路径由 Mineflayer（Minecraft 协议客户端） transport（传输） 实现。 */
 export interface GoToMovementAdapter {
   /** 移动到指定坐标；失败必须抛错，不允许静默成功。 */
-  goTo(params: Readonly<SkillParamsByName["goTo"]>): Promise<GoToSkillExecutionResult>;
+  goTo(
+    params: Readonly<SkillParamsByName["goTo"]>,
+    control: SkillExecutionControl,
+  ): Promise<GoToSkillExecutionResult>;
 }
 
 /** `mine`（挖掘） 技能执行适配器。 */
 export interface MineSkillAdapter {
   /** 按方块标准名称执行最小真实挖掘。 */
-  mine(params: Readonly<MineSkillExecutionRequest>): Promise<MineSkillExecutionResult>;
+  mine(
+    params: Readonly<MineSkillExecutionRequest>,
+    control: SkillExecutionControl,
+  ): Promise<MineSkillExecutionResult>;
 }
 
 /** `collect`（捡拾） 技能执行适配器。 */
 export interface CollectSkillAdapter {
   /** 按物品标准名称执行最小真实捡拾。 */
-  collect(params: Readonly<SkillParamsByName["collect"]>): Promise<CollectSkillExecutionResult>;
+  collect(
+    params: Readonly<SkillParamsByName["collect"]>,
+    control: SkillExecutionControl,
+  ): Promise<CollectSkillExecutionResult>;
 }
 
 /** `cutTree`（砍树） 技能执行适配器。 */
 export interface CutTreeSkillAdapter {
   /** 按背包增量执行确定性树木资源簇消费。 */
-  cutTree(params: Readonly<SkillParamsByName["cutTree"]>): Promise<CutTreeSkillExecutionResult>;
+  cutTree(
+    params: Readonly<SkillParamsByName["cutTree"]>,
+    control: SkillExecutionControl,
+  ): Promise<CutTreeSkillExecutionResult>;
 }
 
 /** `equip`（装备） 技能执行适配器。 */
 export interface EquipSkillAdapter {
   /** 将指定物品装备到目标槽位；失败必须显式抛错。 */
-  equip(params: Readonly<SkillParamsByName["equip"]>): Promise<EquipSkillExecutionResult>;
+  equip(
+    params: Readonly<SkillParamsByName["equip"]>,
+    control: SkillExecutionControl,
+  ): Promise<EquipSkillExecutionResult>;
 }
 
 /** `craft`（合成） 工具链执行适配器。 */
@@ -874,6 +963,7 @@ export interface CraftToolchainAdapter {
   /** 合成当前阶段允许的工具链物品。 */
   craft(
     params: Readonly<CraftCapabilityParams>,
+    control: SkillExecutionControl,
   ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
 }
 
@@ -882,6 +972,7 @@ export interface PlaceToolchainAdapter {
   /** 放置当前阶段允许的工具链方块。 */
   place(
     params: Readonly<PlaceCapabilityParams>,
+    control: SkillExecutionControl,
   ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
 }
 
@@ -890,7 +981,16 @@ export interface ToolchainEnsureAdapter {
   /** 根据结构化失败码补齐局部依赖，然后让 sandbox（沙箱） 回到原动作。 */
   ensureDependency?(
     params: Readonly<EnsureDependencyParams>,
+    control: SkillExecutionControl,
   ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
+  /** 基于真实状态快照和事实端口评估 ensure（确保） 条件。 */
+  evaluateCondition?(
+    input: Readonly<{
+      readonly condition: EnsureCondition;
+      readonly baseline: EnsureConditionStateSnapshot;
+      readonly current: EnsureConditionStateSnapshot;
+    }>,
+  ): Promise<EnsureConditionEvaluation> | EnsureConditionEvaluation;
 }
 
 /** 技能执行器依赖集合。 */

@@ -295,7 +295,7 @@ describe("app（应用装配） 骨架", () => {
         intent_epoch: 1,
         snapshot_ts: Date.parse("2026-05-05T00:00:00.000Z"),
         priority: ExecPriority.Normal,
-        code: "await ensure(async () => ({ done: true }), until.gained('oak_log', 4)); await report('done')",
+        code: "await ensure(async () => ({ done: true }), until.has('oak_log', 4)); await report('done')",
       }),
     );
 

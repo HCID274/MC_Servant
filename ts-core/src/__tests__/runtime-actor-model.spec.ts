@@ -850,7 +850,7 @@ describe("BotActor（机器人执行代理） 脊髓反射入口", () => {
     expect(actor.getSnapshot().emitted_events).not.toContain("task.completed");
   });
 
-  it.skip("triage cancel（分诊取消） 应立即停止当前 Mineflayer（Minecraft 协议客户端） 动作", async () => {
+  it("triage cancel（分诊取消） 应立即停止当前 Mineflayer（Minecraft 协议客户端） 动作", async () => {
     let releaseMove: (() => void) | undefined;
     let stopCalls = 0;
     const externalAuth = createExternalAuthState({ status: "not_required" });

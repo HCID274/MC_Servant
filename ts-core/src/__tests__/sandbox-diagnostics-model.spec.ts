@@ -79,6 +79,77 @@ const validCraftParams: SandboxToolchainCapabilityParamsByName["craft"] = {
   itemName: "stone_pickaxe",
   count: 1,
 };
+
+function createSatisfiedConditionFacade() {
+  const state = Object.freeze({
+    world_key: "minecraft:overworld",
+    inventory: Object.freeze([]),
+    main_hand_item_name: null,
+    nearby_block_names: Object.freeze(["crafting_table"]),
+  });
+
+  return Object.freeze({
+    captureConditionState() {
+      return state;
+    },
+    evaluateCondition(input: {
+      readonly condition: Readonly<Record<string, unknown>>;
+      readonly baseline: typeof state;
+      readonly current: typeof state;
+    }) {
+      const targetCount = typeof input.condition.count === "number" ? input.condition.count : 1;
+      const resolvedTarget =
+        readTestConditionTarget(input.condition) ??
+        readTestConditionBlock(input.condition) ??
+        "target";
+      return Object.freeze({
+        ok: true,
+        condition: input.condition,
+        completed_count: targetCount,
+        target_count: targetCount,
+        missing_count: 0,
+        resolved_targets: Object.freeze([resolvedTarget]),
+        baseline: input.baseline,
+        current: input.current,
+      });
+    },
+  });
+}
+
+function readTestConditionTarget(condition: Readonly<Record<string, unknown>>): string | null {
+  return typeof condition.itemName === "string"
+    ? condition.itemName
+    : typeof condition.tagName === "string"
+      ? condition.tagName
+      : null;
+}
+
+function readTestConditionBlock(condition: Readonly<Record<string, unknown>>): string | null {
+  return typeof condition.blockName === "string" ? condition.blockName : null;
+}
+
+function createTestConditionEvaluation(
+  input: {
+    readonly condition: Readonly<Record<string, unknown>>;
+    readonly baseline: Readonly<Record<string, unknown>>;
+    readonly current: Readonly<Record<string, unknown>>;
+  },
+  completed: number,
+  target: number,
+) {
+  const resolvedTarget =
+    readTestConditionTarget(input.condition) ?? readTestConditionBlock(input.condition) ?? "target";
+  return Object.freeze({
+    ok: completed >= target,
+    condition: input.condition,
+    completed_count: completed,
+    target_count: target,
+    missing_count: Math.max(0, target - completed),
+    resolved_targets: Object.freeze([resolvedTarget]),
+    baseline: input.baseline,
+    current: input.current,
+  });
+}
 void validCraftParams;
 
 // @ts-expect-error `craft`（合成） 参数不接受坐标；放置坐标属于 `place`（放置） 能力。
@@ -353,6 +424,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         },
       },
       facade: {
+        ...createSatisfiedConditionFacade(),
         async executeBotSkill(skill, params) {
           botCalls.push({ skill, params });
 
@@ -422,6 +494,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         messageId: "T-070-goal-report",
       }),
       facade: {
+        ...createSatisfiedConditionFacade(),
         async executeBotSkill(skill, params) {
           return {
             skill,
@@ -517,6 +590,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         },
       },
       facade: {
+        ...createSatisfiedConditionFacade(),
         async executeBotSkill(skill, params) {
           if (skill === "cutTree") {
             return {
@@ -612,6 +686,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         messageId: "T-070-goal-failed",
       }),
       facade: {
+        ...createSatisfiedConditionFacade(),
         async executeBotSkill() {
           const error = new Error("not_equipped");
           throw Object.assign(error, {
@@ -820,6 +895,20 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         messageId: "T-060-ensure",
       }),
       facade: {
+        captureConditionState: createSatisfiedConditionFacade().captureConditionState,
+        evaluateCondition(input) {
+          const targetCount = typeof input.condition.count === "number" ? input.condition.count : 1;
+          return {
+            ok: mineCalls > 1,
+            condition: input.condition,
+            completed_count: mineCalls > 1 ? targetCount : 0,
+            target_count: targetCount,
+            missing_count: mineCalls > 1 ? 0 : targetCount,
+            resolved_targets: ["raw_iron"],
+            baseline: input.baseline,
+            current: input.current,
+          };
+        },
         async executeBotSkill() {
           mineCalls += 1;
           if (mineCalls === 1) {
@@ -877,6 +966,196 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         status: "ok",
       },
     ]);
+  });
+
+  it("ensure（确保） 应在 gainedDropOf action 前先触发采掘工具预检", async () => {
+    const calls: string[] = [];
+    const result = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: `
+          const task = await runGoal('预检后挖石头', async () => {
+            await ensure(async () => { await mine('stone', 5); }, until.gainedDropOf('stone', 5));
+          });
+          await report(task);
+        `,
+        messageId: "T-081-preflight-mine-equipment",
+      }),
+      facade: {
+        captureConditionState: createSatisfiedConditionFacade().captureConditionState,
+        evaluateCondition: createSatisfiedConditionFacade().evaluateCondition,
+        async executeBotSkill(skill) {
+          calls.push(`skill:${skill}`);
+          return { skill, total_steps: 1, collected_count: 5 };
+        },
+        async executeToolchainCapability(capability, params) {
+          calls.push(`toolchain:${capability}`);
+          return {
+            ok: true,
+            data: {
+              item_name: "wooden_pickaxe",
+              completed_count: 1,
+              target_count: 1,
+              world_key: "minecraft:overworld",
+              params,
+              actions: [],
+            },
+          };
+        },
+        async writeChat() {
+          throw new Error("goal report should not chat");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Completed);
+    expect(calls).toEqual(["toolchain:ensure", "skill:mine"]);
+    expect(result.step_results.slice(0, 2)).toMatchObject([
+      {
+        action: "ensure",
+        params: {
+          failure: expect.objectContaining({
+            code: "preflight_mine_equipment",
+            params: { blockName: "stone", count: 5 },
+          }),
+          condition: { kind: "gainedDropOf", blockName: "stone", count: 5 },
+        },
+        status: "ok",
+      },
+      {
+        action: "mine",
+        status: "ok",
+      },
+    ]);
+  });
+
+  it("ensure（确保） 应在 action 成功但 condition 不满足时返回结构化失败", async () => {
+    const result = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: `
+          const task = await runGoal('检查条件', async () => {
+            await ensure(async () => { await collect(); }, until.has('cobblestone', 1));
+          });
+          await report(task);
+        `,
+        messageId: "T-081-condition-not-met",
+      }),
+      facade: {
+        captureConditionState: createSatisfiedConditionFacade().captureConditionState,
+        evaluateCondition(input) {
+          return createTestConditionEvaluation(input, 0, 1);
+        },
+        async executeBotSkill() {
+          return { skill: "collect", collected: [], skipped: [], total_steps: 1 };
+        },
+        async executeToolchainCapability() {
+          return {
+            ok: false,
+            error: {
+              code: "condition_not_met",
+              message: "condition_not_met",
+              world_key: "minecraft:overworld",
+            },
+          };
+        },
+        async writeChat() {
+          throw new Error("goal report should not chat");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Failed);
+    expect(result.step_results.at(-1)).toMatchObject({
+      action: "report",
+      params: {
+        goal_result: {
+          ok: false,
+          failure: {
+            failure_code: "condition_not_met",
+          },
+        },
+      },
+    });
+  });
+
+  it("ensure（确保） 应在恢复后重新检查 condition 并成功", async () => {
+    const calls: unknown[] = [];
+    let evaluations = 0;
+    const result = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "const task = await runGoal('恢复后满足', async () => { await ensure(async () => { await collect(); }, until.has('cobblestone', 1)); }); await report(task);",
+        messageId: "T-081-condition-recovered",
+      }),
+      facade: {
+        captureConditionState: createSatisfiedConditionFacade().captureConditionState,
+        evaluateCondition(input) {
+          evaluations += 1;
+          return createTestConditionEvaluation(input, evaluations >= 2 ? 1 : 0, 1);
+        },
+        async executeBotSkill() {
+          return { skill: "collect", collected: [], skipped: [], total_steps: 1 };
+        },
+        async executeToolchainCapability(capability, params) {
+          calls.push({ capability, params });
+          return {
+            ok: true,
+            data: { completed_count: 1, world_key: "minecraft:overworld", actions: [] },
+          };
+        },
+        async writeChat() {
+          throw new Error("goal report should not chat");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Completed);
+    expect(calls).toEqual([
+      {
+        capability: "ensure",
+        params: expect.objectContaining({
+          failure: expect.objectContaining({ code: "condition_not_met" }),
+        }),
+      },
+    ]);
+  });
+
+  it("ensure（确保） 应在恢复后仍不满足 condition 时保留 condition_not_met 失败", async () => {
+    const result = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "const task = await runGoal('恢复后仍不满足', async () => { await ensure(async () => { await collect(); }, until.has('cobblestone', 1)); }); await report(task);",
+        messageId: "T-081-condition-still-missing",
+      }),
+      facade: {
+        captureConditionState: createSatisfiedConditionFacade().captureConditionState,
+        evaluateCondition(input) {
+          return createTestConditionEvaluation(input, 0, 1);
+        },
+        async executeBotSkill() {
+          return { skill: "collect", collected: [], skipped: [], total_steps: 1 };
+        },
+        async executeToolchainCapability() {
+          return {
+            ok: true,
+            data: { completed_count: 1, world_key: "minecraft:overworld", actions: [] },
+          };
+        },
+        async writeChat() {
+          throw new Error("goal report should not chat");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Failed);
+    expect(result.step_results.at(-1)).toMatchObject({
+      action: "report",
+      params: {
+        goal_result: {
+          ok: false,
+          failure: {
+            failure_code: "condition_not_met",
+          },
+        },
+      },
+    });
   });
 
   it("应把 place（放置） 工具链结构化失败升级为沙箱失败", async () => {

@@ -840,7 +840,7 @@ describe("observation 与 world-model 契约", () => {
       world_key: "multiworld:resource",
       log_block_name: "modded_trunk",
       log_count: 2,
-      reason: "reachable_diggable_cut_tree_log",
+      reason: "diggable_cut_tree_log",
       recommended_target: {
         block_name: "modded_trunk",
         position: { x: 4, y: 64, z: 0 },
@@ -860,7 +860,7 @@ describe("observation 与 world-model 契约", () => {
     expect(Object.isFrozen(classification.accepted[0]?.recommended_target.position)).toBe(true);
   });
 
-  it("ResourceService（世界感知资源服务） 应结构化拒绝不可达或不可挖的树木候选", () => {
+  it("ResourceService（世界感知资源服务） 应把视线遮挡树木交给执行层判定", () => {
     const resourceService = createResourceService({
       worldKeyPort: {
         getCurrentWorldKey: () => "multiworld:resource",
@@ -888,7 +888,7 @@ describe("observation 与 world-model 契约", () => {
             semantic_roles: ["cut_tree_log"],
             is_diggable: true,
             is_reachable: false,
-            target_diagnostics: ["can_see_block_false"],
+            target_diagnostics: ["line_of_sight_blocked", "reachability_deferred_to_skill"],
           },
           candidates: [
             {
@@ -900,7 +900,7 @@ describe("observation 与 world-model 契约", () => {
               semantic_roles: ["cut_tree_log"],
               is_diggable: true,
               is_reachable: false,
-              target_diagnostics: ["can_see_block_false"],
+              target_diagnostics: ["line_of_sight_blocked", "reachability_deferred_to_skill"],
             },
           ],
         },
@@ -908,13 +908,13 @@ describe("observation 与 world-model 契约", () => {
     });
     const classification = resourceService.classifyTreeClusters();
 
-    expect(classification.accepted).toEqual([]);
-    expect(classification.rejected).toEqual([
+    expect(classification.rejected).toEqual([]);
+    expect(classification.accepted).toEqual([
       expect.objectContaining({
         cluster_id: "tree-missing-target",
-        block_name: "oak_log",
-        candidate_count: 1,
-        reason: "unreachable",
+        log_block_name: "oak_log",
+        log_count: 1,
+        reason: "diggable_cut_tree_log",
       }),
     ]);
   });

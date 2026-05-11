@@ -2,10 +2,10 @@
  * mine（挖掘） 路径规划：基于真实方块快照与真实 bot 动作集（walk / drop1 / jumpUp /
  * digWalk / digStepDown / digStepUp）的 Dijkstra 搜索。
  *
- * 与旧 StairBFS 的本质区别：
+ * 当前实现的核心边界：
  * - 状态空间是 bot 真实物理可执行的动作集合，而非"楼梯形状"约束；
  * - 目标函数是"是否能从当前 foot 直接挖到任意候选 stone"，而非"y 下降一格"；
- * - 不做 fill / 垫高（项目级共识：垫高 timing 抓不住，禁止使用）。
+ * - 不做 fill / 垫高，远距离接近由 terrain-router 兜底；本模块只负责挖掘动作附近的可达性。
  */
 import type { MineBlockFactReader } from "./mine-block-facts.js";
 import type { MineflayerMiningPort } from "./types.js";
@@ -85,9 +85,10 @@ const COST_TURN_PENALTY = 2;
 const MAX_REACH = 3.5;
 const EYE_OFFSET_Y = 1.62;
 
-const DEFAULT_MAX_EXPANDED = 12_000;
+const DEFAULT_MAX_EXPANDED = 24_000;
 const DEFAULT_MAX_ACTION_DEPTH = 60;
 const DEFAULT_MAX_PLANNED_AIR = 16;
+const MAX_DYNAMIC_PLANNED_AIR = 96;
 const BODY_CLEARANCE = 2;
 const JUMP_CLEARANCE = 3;
 
@@ -111,6 +112,7 @@ export function planMineRoute(input: {
   readonly targets: readonly MineRouteTarget[];
   readonly maxExpandedStates?: number;
   readonly maxActionDepth?: number;
+  readonly maxPlannedAir?: number;
 }): MineRoutePlanResult {
   const diagnostics: string[] = [];
   const verifiedTargets = input.targets
@@ -130,6 +132,11 @@ export function planMineRoute(input: {
 
   const maxExpanded = input.maxExpandedStates ?? DEFAULT_MAX_EXPANDED;
   const maxDepth = input.maxActionDepth ?? DEFAULT_MAX_ACTION_DEPTH;
+  const maxPlannedAir =
+    input.maxPlannedAir ?? deriveMineMaxPlannedAir(input.startFoot, verifiedTargets);
+  diagnostics.push(
+    `mine_bfs_budget:max_expanded=${maxExpanded};max_depth=${maxDepth};max_air=${maxPlannedAir};heuristic=target_aware`,
+  );
 
   const startNode: SearchNode = {
     foot: freezePos(input.startFoot),
@@ -165,7 +172,11 @@ export function planMineRoute(input: {
     };
   }
 
-  const open = new MinHeap<SearchNode>((left, right) => left.cost - right.cost);
+  const open = new MinHeap<SearchNode>((left, right) => {
+    const leftPriority = left.cost + mineRouteHeuristic(left.foot, verifiedTargets);
+    const rightPriority = right.cost + mineRouteHeuristic(right.foot, verifiedTargets);
+    return leftPriority === rightPriority ? left.cost - right.cost : leftPriority - rightPriority;
+  });
   open.push(startNode);
   const visited = new Map<string, number>();
   visited.set(stateKey(startNode), 0);
@@ -235,7 +246,7 @@ export function planMineRoute(input: {
     }
 
     if (node.depth >= maxDepth) continue;
-    if (node.plannedAir.size >= DEFAULT_MAX_PLANNED_AIR) continue;
+    if (node.plannedAir.size >= maxPlannedAir) continue;
 
     for (const successor of expandSuccessors(input.bot, input.facts, input.blockName, node)) {
       const key = stateKey(successor);
@@ -254,6 +265,40 @@ export function planMineRoute(input: {
   };
 }
 
+function deriveMineMaxPlannedAir(
+  startFoot: MineBlockPos,
+  targets: readonly MineRouteTarget[],
+): number {
+  const deepestTargetY = targets.reduce(
+    (lowest, target) => Math.min(lowest, target.position.y),
+    startFoot.y,
+  );
+  const verticalDrop = Math.max(0, startFoot.y - deepestTargetY);
+  const estimatedStepDownDigBudget = verticalDrop * (JUMP_CLEARANCE + 1) + 8;
+  return Math.min(
+    MAX_DYNAMIC_PLANNED_AIR,
+    Math.max(DEFAULT_MAX_PLANNED_AIR, estimatedStepDownDigBudget),
+  );
+}
+
+function mineRouteHeuristic(foot: MineBlockPos, targets: readonly MineRouteTarget[]): number {
+  let best = Number.POSITIVE_INFINITY;
+  const eyeY = foot.y + EYE_OFFSET_Y;
+  for (const target of targets) {
+    const horizontalMiss = Math.max(
+      0,
+      Math.hypot(foot.x - target.position.x, foot.z - target.position.z) - MAX_REACH,
+    );
+    const targetCenterY = target.position.y + 0.5;
+    const verticalMiss = Math.max(0, Math.abs(eyeY - targetCenterY) - MAX_REACH);
+    const rawDy = target.position.y - foot.y;
+    const verticalCost = rawDy < 0 ? Math.abs(rawDy) * COST_DIG_STEP_BASE : rawDy * COST_JUMP_UP;
+    const score = horizontalMiss * COST_WALK + verticalMiss * COST_DROP1 + verticalCost;
+    best = Math.min(best, score);
+  }
+  return Number.isFinite(best) ? best : 0;
+}
+
 function expandSuccessors(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -264,9 +309,6 @@ function expandSuccessors(
   const fy = node.foot.y;
 
   for (const dir of DIRECTIONS) {
-    if (node.lastDir !== null && isOppositeDirection(node.lastDir, dir)) {
-      continue;
-    }
     const vec = DIR_VEC[dir];
     const turn = node.lastDir !== null && node.lastDir !== dir ? COST_TURN_PENALTY : 0;
     const fx = node.foot.x + vec.dx;
@@ -331,7 +373,8 @@ function expandSuccessors(
       stepDownDigs !== null &&
       stepDownDigs.length > 0 &&
       hasClearance(bot, facts, node.foot, BODY_CLEARANCE, node.plannedAir) &&
-      isWalkableSupport(bot, facts, stepDownSupport, node.plannedAir)
+      isWalkableSupport(bot, facts, stepDownSupport, node.plannedAir) &&
+      !isImmediateReverseVerticalExcavation(node, "digStepDown", dir)
     ) {
       pushSuccessor(
         out,
@@ -358,7 +401,8 @@ function expandSuccessors(
       stepUpDigs !== null &&
       stepUpDigs.length > 0 &&
       hasClearance(bot, facts, node.foot, BODY_CLEARANCE, node.plannedAir) &&
-      isWalkableSupport(bot, facts, stepUpSupport, node.plannedAir)
+      isWalkableSupport(bot, facts, stepUpSupport, node.plannedAir) &&
+      !isImmediateReverseVerticalExcavation(node, "digStepUp", dir)
     ) {
       pushSuccessor(
         out,
@@ -544,6 +588,21 @@ function isOppositeDirection(left: MineRouteDirection, right: MineRouteDirection
     (left === "east" && right === "west") ||
     (left === "west" && right === "east")
   );
+}
+
+function isImmediateReverseVerticalExcavation(
+  node: SearchNode,
+  nextKind: "digStepDown" | "digStepUp",
+  nextDir: MineRouteDirection,
+): boolean {
+  const previous = node.action;
+  if (previous === null) return false;
+  if (!isVerticalExcavation(previous.kind) || !isVerticalExcavation(nextKind)) return false;
+  return isOppositeDirection(previous.dir, nextDir);
+}
+
+function isVerticalExcavation(kind: MineRouteAction["kind"]): kind is "digStepDown" | "digStepUp" {
+  return kind === "digStepDown" || kind === "digStepUp";
 }
 
 function posLabel(pos: MineBlockPos): string {

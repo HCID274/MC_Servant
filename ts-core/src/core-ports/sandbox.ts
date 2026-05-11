@@ -7,6 +7,9 @@
 
 import type { ExecutionTaskKind } from "./foundation.js";
 import type {
+  EnsureCondition,
+  EnsureConditionEvaluation,
+  EnsureConditionStateSnapshot,
   SkillName,
   SkillParamsByName,
   ToolchainCapabilityName,
@@ -72,6 +75,19 @@ export interface SandboxFacadeExecutionAdapter {
     input: SandboxSearchInput,
     control?: SandboxFacadeCallControl,
   ): Promise<Readonly<Record<string, unknown>>>;
+  /** 读取 ensure（确保） 条件检查的真实状态快照。 */
+  captureConditionState?(
+    control?: SandboxFacadeCallControl,
+  ): Promise<EnsureConditionStateSnapshot> | EnsureConditionStateSnapshot;
+  /** 用 runtime/minecraft-data（运行时/Minecraft 数据库）事实评估 ensure 条件。 */
+  evaluateCondition?(
+    input: Readonly<{
+      readonly condition: EnsureCondition;
+      readonly baseline: EnsureConditionStateSnapshot;
+      readonly current: EnsureConditionStateSnapshot;
+    }>,
+    control?: SandboxFacadeCallControl,
+  ): Promise<EnsureConditionEvaluation> | EnsureConditionEvaluation;
 }
 
 /** BotActor（机器人执行代理） 侧需要的沙箱执行请求最小结构。 */
@@ -178,6 +194,7 @@ export interface RuntimeSandboxExecutionDependencies {
   executeRequest(input: {
     request: RuntimeSandboxExecutionRequest;
     facade: SandboxFacadeExecutionAdapter;
+    signal: AbortSignal;
     task: {
       readonly id: string;
       readonly userMessage: string;

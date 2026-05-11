@@ -2,10 +2,14 @@ import type {
   CollectSkillAdapter,
   CraftToolchainAdapter,
   CutTreeSkillAdapter,
+  EnsureCondition,
+  EnsureConditionEvaluation,
+  EnsureConditionStateSnapshot,
   EnsureDependencyParams,
   EquipSkillAdapter,
   MineSkillAdapter,
   PlaceToolchainAdapter,
+  SkillExecutionControl,
   ToolchainActionSummary,
   ToolchainCapabilityData,
   ToolchainCapabilityResult,
@@ -15,6 +19,7 @@ import type {
   ToolchainFailureCode,
   ToolchainMaterialSource,
 } from "../core-ports/skills.js";
+import { NOOP_SKILL_EXECUTION_CONTROL } from "../core-ports/skills.js";
 
 const DEPENDENCY_COLLECT_RADIUS = 8;
 const DEPENDENCY_RETRY_LIMIT = 3;
@@ -47,17 +52,22 @@ export interface ToolchainEnsureDependencies {
 
 /** 通用 ensure（确保） 依赖解析器。 */
 export interface ToolchainEnsureExecutor {
-  readonly ensureDependency: (params: Readonly<EnsureDependencyParams>) => Promise<EnsureResult>;
+  readonly ensureDependency: (
+    params: Readonly<EnsureDependencyParams>,
+    control: SkillExecutionControl,
+  ) => Promise<EnsureResult>;
 }
 
 /** 创建工具链 ensure（确保） 解析器；只根据结构化失败补局部依赖，不直接操作 runtime（运行时）。 */
 export function createToolchainEnsureExecutor(
   dependencies: ToolchainEnsureDependencies,
 ): ToolchainEnsureExecutor {
-  const context: ResolverContext = { dependencies };
-
   return Object.freeze({
-    async ensureDependency(params: Readonly<EnsureDependencyParams>) {
+    async ensureDependency(
+      params: Readonly<EnsureDependencyParams>,
+      control: SkillExecutionControl = NOOP_SKILL_EXECUTION_CONTROL,
+    ) {
+      const context: ResolverContext = { dependencies, control };
       return resolveDependency(context, params);
     },
   });
@@ -65,13 +75,19 @@ export function createToolchainEnsureExecutor(
 
 interface ResolverContext {
   readonly dependencies: ToolchainEnsureDependencies;
+  readonly control: SkillExecutionControl;
 }
 
 async function resolveDependency(
   context: ResolverContext,
   params: Readonly<EnsureDependencyParams>,
 ): Promise<EnsureResult> {
+  context.control.throwIfAborted();
   const actions: ToolchainActionSummary[] = [];
+
+  if (params.failure.code === "preflight_mine_equipment") {
+    return ensureMineEquipmentBeforeAction(context, params, actions);
+  }
 
   if (params.failure.code === "not_equipped") {
     const tool = context.dependencies.facts.resolveRequiredEquipment({
@@ -100,6 +116,13 @@ async function resolveDependency(
     }
   }
 
+  if (params.failure.code === "condition_not_met") {
+    const recovered = await recoverConditionGap(context, params, actions);
+    if (recovered !== null) {
+      return recovered;
+    }
+  }
+
   return createEnsureFailure({
     code: normalizeFailureCode(params.failure.code),
     message: `ensure cannot recover failure: ${params.failure.message}`,
@@ -107,6 +130,205 @@ async function resolveDependency(
     actions,
     details: { failure: params.failure, condition: params.condition },
   });
+}
+
+/** 用真实快照和 facts（事实端口） 评估 ensure（确保） 条件。 */
+export function evaluateEnsureCondition(input: {
+  readonly condition: EnsureCondition;
+  readonly baseline: EnsureConditionStateSnapshot;
+  readonly current: EnsureConditionStateSnapshot;
+  readonly facts: Pick<
+    ToolchainEnsureFacts,
+    "resolveBlockDropItemNames" | "countInventoryItemsByTag"
+  >;
+}): EnsureConditionEvaluation {
+  const baseline = normalizeConditionSnapshot(input.baseline);
+  const current = normalizeConditionSnapshot(input.current);
+  const condition = input.condition;
+
+  if (condition.kind === "gained") {
+    const itemName = normalizeMinecraftName(condition.itemName);
+    const completed = Math.max(
+      0,
+      countInventoryItem(current.inventory, itemName) -
+        countInventoryItem(baseline.inventory, itemName),
+    );
+    return createConditionEvaluation({
+      condition,
+      baseline,
+      current,
+      completed,
+      target: condition.count,
+      resolvedTargets: [itemName],
+    });
+  }
+
+  if (condition.kind === "has") {
+    const itemName = normalizeMinecraftName(condition.itemName);
+    const completed = countInventoryItem(current.inventory, itemName);
+    return createConditionEvaluation({
+      condition,
+      baseline,
+      current,
+      completed,
+      target: condition.count,
+      resolvedTargets: [itemName],
+    });
+  }
+
+  if (condition.kind === "equipped") {
+    const itemName = normalizeMinecraftName(condition.itemName);
+    const completed = normalizeOptionalName(current.main_hand_item_name) === itemName ? 1 : 0;
+    return createConditionEvaluation({
+      condition,
+      baseline,
+      current,
+      completed,
+      target: 1,
+      resolvedTargets: [itemName],
+    });
+  }
+
+  if (condition.kind === "placed") {
+    const blockName = normalizeMinecraftName(condition.blockName);
+    const completed = (current.nearby_block_names ?? []).some(
+      (candidate) => normalizeMinecraftName(candidate) === blockName,
+    )
+      ? 1
+      : 0;
+    return createConditionEvaluation({
+      condition,
+      baseline,
+      current,
+      completed,
+      target: 1,
+      resolvedTargets: [blockName],
+    });
+  }
+
+  if (condition.kind === "gainedDropOf") {
+    const dropNames = input.facts
+      .resolveBlockDropItemNames({ blockName: condition.blockName })
+      .map(normalizeMinecraftName);
+    const targets =
+      dropNames.length > 0 ? dropNames : [normalizeMinecraftName(condition.blockName)];
+    const completed = Math.max(
+      0,
+      countInventoryItemsByNames(current.inventory, targets) -
+        countInventoryItemsByNames(baseline.inventory, targets),
+    );
+    return createConditionEvaluation({
+      condition,
+      baseline,
+      current,
+      completed,
+      target: condition.count,
+      resolvedTargets: targets,
+    });
+  }
+
+  const completed = Math.max(
+    0,
+    input.facts.countInventoryItemsByTag({
+      tagName: condition.tagName,
+      inventory: current.inventory,
+    }) -
+      input.facts.countInventoryItemsByTag({
+        tagName: condition.tagName,
+        inventory: baseline.inventory,
+      }),
+  );
+  return createConditionEvaluation({
+    condition,
+    baseline,
+    current,
+    completed,
+    target: condition.count,
+    resolvedTargets: [normalizeMinecraftName(condition.tagName)],
+  });
+}
+
+async function ensureMineEquipmentBeforeAction(
+  context: ResolverContext,
+  params: Readonly<EnsureDependencyParams>,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult> {
+  if (params.condition.kind !== "gainedDropOf") {
+    return createEnsureSuccess({
+      completedCount: 0,
+      targetCount: 0,
+      actions,
+      worldKey: readCurrentWorldKey(context.dependencies),
+    });
+  }
+
+  const blockName = normalizeMinecraftName(params.condition.blockName);
+  const count =
+    readPositiveInteger(params.failure.params.count) ??
+    readPositiveInteger(params.condition.count) ??
+    1;
+  const tool = context.dependencies.facts.resolveRequiredEquipment({
+    failure: {
+      action: "mine",
+      params: { blockName, count },
+      code: "not_equipped",
+      message: "ensure preflight mine equipment",
+    },
+    inventory: readInventoryItems(context),
+  });
+
+  return tool === null
+    ? createEnsureSuccess({
+        blockName,
+        completedCount: 0,
+        targetCount: 0,
+        actions,
+        worldKey: readCurrentWorldKey(context.dependencies),
+      })
+    : equipItemWithLocalRecovery(context, tool, actions);
+}
+
+async function recoverConditionGap(
+  context: ResolverContext,
+  params: Readonly<EnsureDependencyParams>,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult | null> {
+  const missing = readPositiveInteger(params.failure.details?.missing_count) ?? 1;
+
+  if (params.condition.kind === "gained" || params.condition.kind === "has") {
+    const itemName = normalizeMinecraftName(params.condition.itemName);
+    const current = countInventoryItem(readInventoryItems(context), itemName);
+    const targetCount =
+      params.condition.kind === "has" ? params.condition.count : current + missing;
+    return provideMaterial(context, itemName, targetCount, actions);
+  }
+
+  if (params.condition.kind === "gainedDropOf") {
+    const blockName = normalizeMinecraftName(params.condition.blockName);
+    return provideBlockDropByMining(context, blockName, missing, actions);
+  }
+
+  if (params.condition.kind === "equipped") {
+    return equipItemWithLocalRecovery(
+      context,
+      normalizeMinecraftName(params.condition.itemName),
+      actions,
+    );
+  }
+
+  if (params.condition.kind === "placed") {
+    const blockName = normalizeMinecraftName(params.condition.blockName);
+    const placed = await callToolchain({
+      action: "place",
+      target: blockName,
+      requestedCount: 1,
+      actions,
+      run: () => context.dependencies.place({ blockName }, context.control),
+    });
+    return placed.ok ? placed.result : placed.failure;
+  }
+
+  return null;
 }
 
 async function recoverMissingMaterials(
@@ -150,7 +372,7 @@ async function equipItemWithLocalRecovery(
     target: itemName,
     requestedCount: 1,
     actions,
-    run: () => context.dependencies.equip({ itemName, destination: "hand" }),
+    run: () => context.dependencies.equip({ itemName, destination: "hand" }, context.control),
   });
 
   return equipped.ok
@@ -175,7 +397,7 @@ async function craftWithLocalRecovery(
       target,
       requestedCount: 1,
       actions,
-      run: () => context.dependencies.craft({ itemName: target, count: 1 }),
+      run: () => context.dependencies.craft({ itemName: target, count: 1 }, context.control),
     });
     if (crafted.ok) {
       return { ok: true as const };
@@ -235,7 +457,7 @@ async function placeCraftingTable(
     target: blockName,
     requestedCount: 1,
     actions,
-    run: () => context.dependencies.place({ blockName }),
+    run: () => context.dependencies.place({ blockName }, context.control),
   });
 
   return placed.ok
@@ -369,7 +591,8 @@ async function provideMaterialByMining(
     target: source.blockName,
     requestedCount: missing,
     actions,
-    run: () => context.dependencies.mine({ blockName: source.blockName, count: missing }),
+    run: () =>
+      context.dependencies.mine({ blockName: source.blockName, count: missing }, context.control),
   });
   if (!mined.ok) {
     return mined.failure;
@@ -398,6 +621,48 @@ async function provideMaterialByMining(
       });
 }
 
+async function provideBlockDropByMining(
+  context: ResolverContext,
+  blockName: string,
+  missingCount: number,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult> {
+  const requiredEquipment = context.dependencies.facts.resolveRequiredEquipment({
+    failure: {
+      action: "mine",
+      params: { blockName, count: Math.max(1, missingCount) },
+      code: "not_equipped",
+      message: "not_equipped",
+    },
+    inventory: readInventoryItems(context),
+  });
+  if (requiredEquipment !== null) {
+    const equipped = await equipItemWithLocalRecovery(context, requiredEquipment, actions);
+    if (!equipped.ok) {
+      return equipped;
+    }
+  }
+
+  const mined = await callSkill({
+    action: "mine",
+    target: blockName,
+    requestedCount: Math.max(1, missingCount),
+    actions,
+    run: () =>
+      context.dependencies.mine({ blockName, count: Math.max(1, missingCount) }, context.control),
+  });
+
+  return mined.ok
+    ? createEnsureSuccess({
+        blockName,
+        completedCount: readSkillCompletedCount(mined.result),
+        targetCount: Math.max(1, missingCount),
+        actions,
+        worldKey: readWorldKeyFromActions(actions) ?? readCurrentWorldKey(context.dependencies),
+      })
+    : mined.failure;
+}
+
 async function provideMaterialByCutTree(
   context: ResolverContext,
   source: Extract<ToolchainMaterialSource, { readonly action: "cutTree" }>,
@@ -421,7 +686,8 @@ async function provideMaterialByCutTree(
     target: source.blockName ?? source.itemName,
     requestedCount: missing,
     actions,
-    run: () => context.dependencies.cutTree?.({ count: missing }) ?? Promise.reject(),
+    run: () =>
+      context.dependencies.cutTree?.({ count: missing }, context.control) ?? Promise.reject(),
   });
   if (!cut.ok) {
     return cut.failure;
@@ -432,7 +698,7 @@ async function provideMaterialByCutTree(
     target: source.itemName,
     requestedCount: missing,
     actions,
-    run: () => context.dependencies.collect({ radius: DEPENDENCY_COLLECT_RADIUS }),
+    run: () => context.dependencies.collect({ radius: DEPENDENCY_COLLECT_RADIUS }, context.control),
   });
   if (!collected.ok) {
     return collected.failure;
@@ -639,6 +905,32 @@ function readInventoryItems(context: ResolverContext): readonly ToolchainEnsureI
   );
 }
 
+function normalizeConditionSnapshot(
+  snapshot: EnsureConditionStateSnapshot,
+): EnsureConditionStateSnapshot {
+  return Object.freeze({
+    world_key: snapshot.world_key ?? null,
+    inventory: Object.freeze(
+      snapshot.inventory.map((item) =>
+        Object.freeze({
+          item_name: normalizeMinecraftName(item.item_name),
+          count: Math.max(0, Math.trunc(item.count)),
+        }),
+      ),
+    ),
+    ...(snapshot.main_hand_item_name === undefined
+      ? {}
+      : { main_hand_item_name: normalizeOptionalName(snapshot.main_hand_item_name) }),
+    ...(snapshot.nearby_block_names === undefined
+      ? {}
+      : {
+          nearby_block_names: Object.freeze(
+            snapshot.nearby_block_names.map(normalizeMinecraftName),
+          ),
+        }),
+  });
+}
+
 function countInventoryItem(
   items: readonly Readonly<{ readonly item_name: string; readonly count: number }>[],
   itemName: string,
@@ -648,6 +940,39 @@ function countInventoryItem(
     (sum, item) => (normalizeMinecraftName(item.item_name) === expected ? sum + item.count : sum),
     0,
   );
+}
+
+function countInventoryItemsByNames(
+  items: readonly Readonly<{ readonly item_name: string; readonly count: number }>[],
+  itemNames: readonly string[],
+): number {
+  const targets = new Set(itemNames.map(normalizeMinecraftName));
+  return items.reduce(
+    (sum, item) => (targets.has(normalizeMinecraftName(item.item_name)) ? sum + item.count : sum),
+    0,
+  );
+}
+
+function createConditionEvaluation(input: {
+  readonly condition: EnsureCondition;
+  readonly baseline: EnsureConditionStateSnapshot;
+  readonly current: EnsureConditionStateSnapshot;
+  readonly completed: number;
+  readonly target: number;
+  readonly resolvedTargets: readonly string[];
+}): EnsureConditionEvaluation {
+  const completed = Math.max(0, Math.trunc(input.completed));
+  const target = Math.max(1, Math.trunc(input.target));
+  return Object.freeze({
+    ok: completed >= target,
+    condition: input.condition,
+    completed_count: completed,
+    target_count: target,
+    missing_count: Math.max(0, target - completed),
+    resolved_targets: Object.freeze(input.resolvedTargets.map(normalizeMinecraftName)),
+    baseline: input.baseline,
+    current: input.current,
+  });
 }
 
 function readMissingMaterialRequests(
@@ -689,9 +1014,11 @@ function collectMissingMaterialRequests(value: unknown, output: Map<string, numb
   }
 }
 
-function readSkillCompletedCount(
-  result: { readonly total_steps: number } & Record<string, unknown>,
-): number {
+function readSkillCompletedCount(result: {
+  readonly total_steps: number;
+  readonly collected_count?: unknown;
+  readonly mined_count?: unknown;
+}): number {
   if (typeof result.collected_count === "number") {
     return result.collected_count;
   }
@@ -763,6 +1090,7 @@ function normalizeFailureCode(code: string): ToolchainFailureCode {
     case "unreachable_target":
     case "inventory_full":
     case "world_mismatch":
+    case "condition_not_met":
     case "unsupported_capability":
       return code;
     default:
@@ -779,8 +1107,18 @@ function normalizeMinecraftName(value: string): string {
     .replaceAll("-", "_");
 }
 
+function normalizeOptionalName(value: string | null | undefined): string | null {
+  return typeof value === "string" && value.trim().length > 0
+    ? normalizeMinecraftName(value)
+    : null;
+}
+
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.ceil(value) : null;
 }
 
 function getErrorMessage(error: unknown): string {

@@ -6,6 +6,8 @@ import {
   type MineSkillExecutionResult,
   type MineSkillParams,
   type MineSkillTargetCandidate,
+  NOOP_SKILL_EXECUTION_CONTROL,
+  type SkillExecutionControl,
   createMineSkillExecutionResult,
 } from "../core-ports/skills.js";
 import type {
@@ -21,14 +23,18 @@ interface MineInventoryReader {
   readInventoryItems(): readonly Readonly<{ readonly item_name: string; readonly count: number }>[];
 }
 
-/** 创建接入 ResourceService（资源服务） 与 StairBFSPlanner（阶梯规划器） runtime（运行时） 的 mine（挖掘） 技能执行器。 */
+/** 创建接入 ResourceService（资源服务） 与自研 runtime mine-bfs（挖掘寻路） 的 mine（挖掘） 技能执行器。 */
 export function createMineSkillExecutor(input: {
   readonly resourceService: ResourceServiceBoundary;
   readonly miner: MineSkillAdapter;
   readonly collector?: CollectSkillAdapter;
   readonly inventory?: MineInventoryReader;
-}): (params: Readonly<MineSkillParams>) => Promise<MineSkillExecutionResult> {
-  return async (params) => {
+}): (
+  params: Readonly<MineSkillParams>,
+  control: SkillExecutionControl,
+) => Promise<MineSkillExecutionResult> {
+  return async (params, control = NOOP_SKILL_EXECUTION_CONTROL) => {
+    control.throwIfAborted();
     const blockName = normalizeMinecraftName(params.blockName);
     const diagnostics: string[] = [];
 
@@ -39,6 +45,7 @@ export function createMineSkillExecutor(input: {
       blockName,
       input,
       diagnostics,
+      control,
     });
   };
 }
@@ -53,6 +60,7 @@ async function executeMineUntilCollected(input: {
     readonly inventory?: MineInventoryReader;
   };
   readonly diagnostics: string[];
+  readonly control: SkillExecutionControl;
 }): Promise<MineSkillExecutionResult> {
   const progress = createMineDropProgressTracker(input.input.inventory);
   let totalMined = 0;
@@ -64,6 +72,7 @@ async function executeMineUntilCollected(input: {
   let lastError: unknown = null;
 
   while (collectedCount < input.params.count && attempts < MINE_DROP_RECOVERY_MAX_ATTEMPTS) {
+    input.control.throwIfAborted();
     attempts += 1;
     const remaining = input.params.count - collectedCount;
     const request = await createMineRuntimeRequest({
@@ -74,7 +83,7 @@ async function executeMineUntilCollected(input: {
 
     let minedResult: MineSkillExecutionResult;
     try {
-      minedResult = await input.input.miner.mine(request);
+      minedResult = await input.input.miner.mine(request, input.control);
     } catch (error) {
       lastError = error;
       const recovery = await tryRecoverMissingMineDrop({
@@ -83,6 +92,7 @@ async function executeMineUntilCollected(input: {
         collector: input.input.collector,
         progress,
         diagnostics: input.diagnostics,
+        control: input.control,
       });
       if (!recovery.recovered) {
         throw createRuntimeMineFailureError(error, input.blockName, input.params.count);
@@ -118,6 +128,7 @@ async function executeMineUntilCollected(input: {
       collector: input.input.collector,
       progress,
       diagnostics: input.diagnostics,
+      control: input.control,
     });
     if (!recovery.recovered) {
       throw lastError;
@@ -169,6 +180,7 @@ async function tryRecoverMissingMineDrop(input: {
   readonly collector: CollectSkillAdapter | undefined;
   readonly progress: MineDropProgressTracker;
   readonly diagnostics: string[];
+  readonly control: SkillExecutionControl;
 }): Promise<
   Readonly<{
     readonly recovered: boolean;
@@ -196,11 +208,15 @@ async function tryRecoverMissingMineDrop(input: {
   );
 
   try {
-    const collectResult = await input.collector.collect({
-      itemName: recovery.expectedDropName,
-      radius: MINE_DROP_COLLECT_RADIUS,
-      ...(recovery.currentPosition === undefined ? {} : { center: recovery.currentPosition }),
-    });
+    input.control.throwIfAborted();
+    const collectResult = await input.collector.collect(
+      {
+        itemName: recovery.expectedDropName,
+        radius: MINE_DROP_COLLECT_RADIUS,
+        ...(recovery.currentPosition === undefined ? {} : { center: recovery.currentPosition }),
+      },
+      input.control,
+    );
     const collectSteps = collectResult.total_steps;
     input.diagnostics.push(
       `mine_drop_collect_recovery_result:${collectResult.collected

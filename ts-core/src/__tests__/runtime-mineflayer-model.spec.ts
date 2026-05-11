@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { Vec3 } from "vec3";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("mineflayer-pathfinder", () => ({
   pathfinder: Symbol("mock-pathfinder-plugin"),
@@ -38,6 +38,7 @@ vi.mock("mineflayer-pathfinder", () => ({
 
 import {
   BotStatus,
+  NOOP_SKILL_EXECUTION_CONTROL,
   createBotActorRuntime,
   createExternalAuthExecutionPlan,
   createExternalAuthSecretBinding,
@@ -49,9 +50,6 @@ import {
   executeMineflayerEquip,
   executeMineflayerPlaceCraftingTable,
   readMineflayerBlockAt,
-  resolveGoalBlockConstructor,
-  resolveGoalNearConstructor,
-  resolveGoalNearXZConstructor,
 } from "../index.js";
 import type {
   CraftingTablePlacementCache,
@@ -66,9 +64,19 @@ import { stepToFoot } from "../runtime/transport/foot-step.js";
 import { executeMineRouteAction } from "../runtime/transport/mine-action-executor.js";
 import { planMineRoute } from "../runtime/transport/mine-bfs.js";
 import { createMineBlockFactReader } from "../runtime/transport/mine-block-facts.js";
-import { planMineQueue, planMineQueueWithDiagnostics } from "../runtime/transport/mine-queue.js";
-import { isTerrainBotAtFoot } from "../runtime/transport/terrain-action-executor.js";
+import {
+  createProgressWatchdog,
+  waitForPromiseOrCondition,
+} from "../runtime/transport/progress-watchdog.js";
+import {
+  executeTerrainRouteAction,
+  isTerrainBotAtFoot,
+} from "../runtime/transport/terrain-action-executor.js";
 import { planTerrainRoute } from "../runtime/transport/terrain-router.js";
+import {
+  clearSelfPlacedTerrainMemoryForTests,
+  recordSelfPlacedTerrainBlock,
+} from "../runtime/transport/terrain-self-placed-memory.js";
 
 class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-mc";
@@ -117,6 +125,9 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
       raw_iron: {
         id: 10,
       },
+      shield: {
+        id: 1155,
+      },
     },
     items: {
       "1": {
@@ -158,6 +169,10 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
       "10": {
         id: 10,
         name: "raw_iron",
+      },
+      "1155": {
+        id: 1155,
+        name: "shield",
       },
     },
     blocksByName: {
@@ -236,6 +251,9 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     readonly faceVector: { readonly x: number; readonly y: number; readonly z: number };
   }[] = [];
   readonly placeBlockFailureTargets = new Set<string>();
+  readonly placeBlockFailureCounts = new Map<string, number>();
+  readonly placeBlockTransientFailureCounts = new Map<string, number>();
+  readonly placeBlockPostPlaceFailureCounts = new Map<string, number>();
   readonly inventory = {
     items: (): readonly MineflayerItemHandle[] => this.inventoryItems,
   };
@@ -278,6 +296,10 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   findBlocksCalls = 0;
   heldItem: MineflayerItemHandle | null = null;
   onGoto?: (goal?: unknown) => void | Promise<void>;
+  onAfterStep?: () => void;
+  autoPickupEnabled = true;
+  rejectPlaceIntoCurrentFoot = false;
+  rejectNonCraftingTablePlacement = false;
 
   chat(text: string): void {
     this.chatWrites.push(text);
@@ -305,6 +327,8 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
       y: Math.floor(target.y - 1),
       z: Math.floor(target.z) + 0.5,
     };
+    this.onAfterStep?.();
+    this.collectNearbyDrops();
   }
 
   findBlocks(input: {
@@ -337,7 +361,7 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     }
 
     return (
-      this.resourceBlocks.find(
+      this.resourceBlocks.findLast(
         (block) =>
           block.position?.x === position.x &&
           block.position.y === position.y &&
@@ -496,6 +520,12 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
     faceVector: { readonly x: number; readonly y: number; readonly z: number },
   ): Promise<void> {
     this.placeBlockCalls.push({ referenceBlock, faceVector });
+    if (this.heldItem === null) {
+      throw new Error("must be holding an item to place");
+    }
+    if (this.rejectNonCraftingTablePlacement && this.heldItem.name !== "crafting_table") {
+      throw new Error(`wrong held item: ${this.heldItem.name ?? "unknown"}`);
+    }
     const referencePosition = referenceBlock.position;
 
     if (referencePosition === undefined) {
@@ -507,6 +537,36 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
       y: referencePosition.y + faceVector.y,
       z: referencePosition.z + faceVector.z,
     };
+    const targetKey = formatPositionKey(target);
+    const currentFoot = this.entity.position
+      ? {
+          x: Math.floor(this.entity.position.x),
+          y: Math.floor(this.entity.position.y),
+          z: Math.floor(this.entity.position.z),
+        }
+      : null;
+    if (
+      this.rejectPlaceIntoCurrentFoot &&
+      faceVector.y === 1 &&
+      currentFoot !== null &&
+      currentFoot.x === target.x &&
+      currentFoot.y === target.y &&
+      currentFoot.z === target.z
+    ) {
+      throw new Error("target occupied by bot");
+    }
+
+    const remainingTransientFailureCount =
+      this.placeBlockTransientFailureCounts.get(targetKey) ?? 0;
+    if (remainingTransientFailureCount > 0) {
+      this.placeBlockTransientFailureCounts.set(targetKey, remainingTransientFailureCount - 1);
+      throw new Error("transient place failure");
+    }
+    const remainingFailureCount = this.placeBlockFailureCounts.get(targetKey) ?? 0;
+    if (remainingFailureCount > 0) {
+      this.placeBlockFailureCounts.set(targetKey, remainingFailureCount - 1);
+      throw new Error("target blocked");
+    }
     if (this.placeBlockFailureTargets.has(formatPositionKey(target))) {
       throw new Error("target blocked");
     }
@@ -527,6 +587,28 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
         position: target,
       },
     );
+    this.dugAirPositions.delete(targetKey);
+    const remainingPostPlaceFailureCount =
+      this.placeBlockPostPlaceFailureCounts.get(targetKey) ?? 0;
+    if (remainingPostPlaceFailureCount > 0) {
+      this.placeBlockPostPlaceFailureCounts.set(targetKey, remainingPostPlaceFailureCount - 1);
+      throw new Error(
+        `Event blockUpdate:(${target.x}, ${target.y}, ${target.z}) did not fire within timeout of 5000ms`,
+      );
+    }
+    if (
+      faceVector.y === 1 &&
+      currentFoot !== null &&
+      currentFoot.x === target.x &&
+      currentFoot.y === target.y &&
+      currentFoot.z === target.z
+    ) {
+      this.entity.position = {
+        x: target.x + 0.5,
+        y: target.y + 1,
+        z: target.z + 0.5,
+      };
+    }
   }
 
   nearestEntity(
@@ -578,6 +660,39 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
       0,
     );
   }
+
+  private collectNearbyDrops(): void {
+    if (!this.autoPickupEnabled) return;
+    const botPosition = this.entity.position;
+    if (botPosition === undefined) return;
+
+    for (const [key, entity] of Object.entries(this.entities)) {
+      if (entity?.position === undefined) continue;
+      if (
+        Math.hypot(
+          entity.position.x - botPosition.x,
+          entity.position.y - botPosition.y,
+          entity.position.z - botPosition.z,
+        ) > 1.2
+      ) {
+        continue;
+      }
+
+      const item = readFakeDroppedItem(this.registry, entity);
+      if (item === null) continue;
+      const stack = this.inventoryItems.find((candidate) => candidate.name === item.name);
+      if (stack === undefined) {
+        this.inventoryItems.push({ type: item.type, name: item.name, count: item.count });
+      } else {
+        this.inventoryItems.splice(this.inventoryItems.indexOf(stack), 1, {
+          ...stack,
+          count: (stack.count ?? 0) + item.count,
+        });
+      }
+      this.entities[key] = undefined;
+      this.emit("playerCollect", this.entity, entity);
+    }
+  }
 }
 
 class NonMovingMineflayerBot extends FakeMineflayerBot {
@@ -607,6 +722,101 @@ class HorizontalOnlyMineflayerBot extends FakeMineflayerBot {
   }
 }
 
+class DriftAfterDigDropMineflayerBot extends FakeMineflayerBot {
+  override dig(block: MineflayerBlockHandle): void {
+    super.dig(block);
+    const dug = block.position;
+    const current = this.entity.position;
+    if (dug === undefined || current === undefined) return;
+    if (Math.floor(current.y) !== dug.y) return;
+    this.entity.position = {
+      x: current.x,
+      y: current.y,
+      z: dug.z - 0.2,
+    };
+  }
+}
+
+class DriftAfterDropMineflayerBot extends FakeMineflayerBot {
+  private didDriftDrop = false;
+
+  override setControlState(control: MineflayerControlState, state: boolean): void {
+    const target = this.lookAtCalls.at(-1)?.position;
+    const current = this.entity.position;
+    if (
+      control === "forward" &&
+      state &&
+      !this.didDriftDrop &&
+      target !== undefined &&
+      current !== undefined &&
+      Math.floor(target.y - 1) < Math.floor(current.y)
+    ) {
+      this.controlStateCalls.push({ control, state });
+      this.didDriftDrop = true;
+      this.entity.position = {
+        x: Math.floor(target.x) + 2.2,
+        y: Math.floor(target.y - 1),
+        z: Math.floor(target.z) + 1.85,
+      };
+      return;
+    }
+
+    super.setControlState(control, state);
+  }
+}
+
+class DriftAfterPlaceUpMineflayerBot extends FakeMineflayerBot {
+  override async placeBlock(
+    referenceBlock: MineflayerBlockHandle,
+    faceVector: { readonly x: number; readonly y: number; readonly z: number },
+  ): Promise<void> {
+    await super.placeBlock(referenceBlock, faceVector);
+    const referencePosition = referenceBlock.position;
+    if (referencePosition === undefined || faceVector.y !== 1) return;
+
+    const placedAt = {
+      x: referencePosition.x + faceVector.x,
+      y: referencePosition.y + faceVector.y,
+      z: referencePosition.z + faceVector.z,
+    };
+    this.entity.position = {
+      x: placedAt.x + 0.5,
+      y: placedAt.y + 1,
+      z: placedAt.z - 0.04,
+    };
+  }
+}
+
+class FirstCenterPulseOvershootMineflayerBot extends FakeMineflayerBot {
+  private didOvershootCenterPulse = false;
+
+  override setControlState(control: MineflayerControlState, state: boolean): void {
+    const target = this.lookAtCalls.at(-1)?.position;
+    const current = this.entity.position;
+    if (
+      control === "forward" &&
+      state &&
+      !this.didOvershootCenterPulse &&
+      target !== undefined &&
+      current !== undefined &&
+      Math.floor(target.x) === Math.floor(current.x) &&
+      Math.floor(target.y - 1) === Math.floor(current.y) &&
+      Math.floor(target.z) === Math.floor(current.z)
+    ) {
+      this.controlStateCalls.push({ control, state });
+      this.didOvershootCenterPulse = true;
+      this.entity.position = {
+        x: current.x,
+        y: current.y,
+        z: Math.floor(current.z) - 0.1,
+      };
+      return;
+    }
+
+    super.setControlState(control, state);
+  }
+}
+
 function readFakeBlockDrops(
   registry: FakeMineflayerBot["registry"],
   blockName: string | undefined,
@@ -620,6 +830,55 @@ function readFakeBlockDrops(
   const drops = fact === undefined || !("drops" in fact) ? [] : fact.drops;
 
   return Array.isArray(drops) ? drops : [];
+}
+
+function readFakeDroppedItem(
+  registry: FakeMineflayerBot["registry"],
+  entity: MineflayerEntityHandle,
+): { readonly type: number | undefined; readonly name: string; readonly count: number } | null {
+  const explicitName = [
+    entity.item?.name,
+    entity.droppedItem?.name,
+    ...(entity.metadata ?? [])
+      .map((entry) =>
+        typeof entry === "object" && entry !== null && "name" in entry
+          ? (entry as { readonly name?: unknown }).name
+          : undefined,
+      )
+      .filter((name): name is string => typeof name === "string"),
+  ].find((name): name is string => typeof name === "string");
+  const metadataItem = (entity.metadata ?? [])
+    .map((entry) =>
+      typeof entry === "object" && entry !== null && "itemId" in entry
+        ? (entry as { readonly itemId?: unknown; readonly itemCount?: unknown })
+        : null,
+    )
+    .find(
+      (entry): entry is { readonly itemId?: unknown; readonly itemCount?: unknown } =>
+        entry !== null && typeof entry.itemId === "number",
+    );
+  const metadataCount = (entity.metadata ?? [])
+    .map((entry) =>
+      typeof entry === "object" && entry !== null && "itemCount" in entry
+        ? (entry as { readonly itemCount?: unknown })
+        : null,
+    )
+    .find(
+      (entry): entry is { readonly itemCount?: unknown } =>
+        entry !== null && typeof entry.itemCount === "number",
+    );
+  const itemId = typeof metadataItem?.itemId === "number" ? metadataItem.itemId : undefined;
+  const name =
+    explicitName ?? (itemId === undefined ? undefined : registry.items[String(itemId)]?.name);
+  if (name === undefined) return null;
+  const type =
+    registry.itemsByName[name as keyof FakeMineflayerBot["registry"]["itemsByName"]]?.id ?? itemId;
+  const count =
+    typeof metadataCount?.itemCount === "number" && metadataCount.itemCount > 0
+      ? metadataCount.itemCount
+      : 1;
+
+  return Object.freeze({ type, name, count });
 }
 
 function populateFlatMiningFixture(
@@ -662,6 +921,28 @@ function populateMiningBox(
       for (let z = input.minZ; z <= input.maxZ; z += 1) {
         setFakeBlock(bot, { x, y, z }, input.blockName);
       }
+    }
+  }
+}
+
+function populateFlatWalkway(
+  bot: FakeMineflayerBot,
+  input: {
+    readonly minX: number;
+    readonly maxX: number;
+    readonly y: number;
+    readonly minZ?: number;
+    readonly maxZ?: number;
+  },
+): void {
+  const minZ = input.minZ ?? 0;
+  const maxZ = input.maxZ ?? 0;
+  for (let x = input.minX; x <= input.maxX; x += 1) {
+    for (let z = minZ; z <= maxZ; z += 1) {
+      setFakeBlockWithDiggable(bot, { x, y: input.y - 1, z }, "dirt", false);
+      setFakeBlockWithDiggable(bot, { x, y: input.y, z }, "air", false);
+      setFakeBlockWithDiggable(bot, { x, y: input.y + 1, z }, "air", false);
+      setFakeBlockWithDiggable(bot, { x, y: input.y + 2, z }, "air", false);
     }
   }
 }
@@ -755,33 +1036,9 @@ const fakePathfinderModule = {
   },
 };
 
-const fakeDefaultOnlyPathfinderModule = {
-  pathfinder: fakePathfinderModule.pathfinder,
-  Movements: fakePathfinderModule.Movements,
-  default: {
-    goals: fakePathfinderModule.goals,
-  },
-} as unknown as typeof fakePathfinderModule;
-
 describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () => {
-  it("pathfinder goals（寻路目标） 应集中兼容 direct/default/module.exports 导出形态", () => {
-    expect(resolveGoalBlockConstructor(fakeDefaultOnlyPathfinderModule)).toBe(
-      fakePathfinderModule.goals.GoalBlock,
-    );
-    expect(resolveGoalNearConstructor(fakeDefaultOnlyPathfinderModule)).toBe(
-      fakePathfinderModule.goals.GoalNear,
-    );
-    const moduleExportsOnlyPathfinderModule = {
-      pathfinder: fakePathfinderModule.pathfinder,
-      Movements: fakePathfinderModule.Movements,
-      "module.exports": {
-        goals: fakePathfinderModule.goals,
-      },
-    };
-    expect(resolveGoalNearConstructor(moduleExportsOnlyPathfinderModule)).toBe(
-      fakePathfinderModule.goals.GoalNear,
-    );
-    expect(resolveGoalNearXZConstructor(moduleExportsOnlyPathfinderModule)).toBeUndefined();
+  beforeEach(() => {
+    clearSelfPlacedTerrainMemoryForTests();
   });
 
   it("WorldReader（世界读取器） 应集中封装单点方块读取", () => {
@@ -820,15 +1077,20 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         hot_liquid: { id: 2, name: "hot_liquid", material: "lava" },
         bedrock: { id: 3, name: "bedrock", hardness: -1 },
         stone: { id: 4, name: "stone", diggable: true },
+        pink_petals: { id: 5, name: "pink_petals", boundingBox: "empty", diggable: true },
       },
     });
 
+    expect(facts.isLiteralAirBlock({ name: "air" })).toBe(true);
+    expect(facts.isLiteralAirBlock({ name: "pink_petals" })).toBe(false);
     expect(facts.isAirBlock({ name: "air" })).toBe(true);
     expect(facts.isAirBlock({ name: "cave_air" })).toBe(true);
+    expect(facts.isAirBlock({ name: "pink_petals" })).toBe(true);
     expect(facts.isHazardBlock({ name: "hot_liquid" })).toBe(true);
     expect(facts.isSupportBlock({ name: "stone", diggable: true })).toBe(true);
     expect(facts.isSupportBlock({ name: "hot_liquid" })).toBe(false);
     expect(facts.isDiggableBlock({ name: "stone", diggable: true })).toBe(true);
+    expect(facts.isDiggableBlock({ name: "pink_petals", diggable: true })).toBe(true);
     expect(facts.isDiggableBlock({ name: "air", diggable: false })).toBe(false);
     expect(facts.isDiggableBlock({ name: "bedrock", diggable: true })).toBe(false);
   });
@@ -1469,11 +1731,94 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     });
   });
 
-  it("place（放置） 应兼容真实 mineflayer-pathfinder（寻路插件） default.goals 导出形态", async () => {
+  it("place（放置） 应走到邻近站位而不是站进目标放置格", async () => {
+    const bot = new FakeMineflayerBot();
+    const cache: CraftingTablePlacementCache = { position: null };
+    bot.rejectPlaceIntoCurrentFoot = true;
+    bot.entity.position = { x: 0.5, y: 64, z: 0.5 };
+    bot.inventoryItems.push({ type: 7, name: "crafting_table", count: 1 });
+    for (let x = 1; x <= 5; x += 1) {
+      bot.resourceBlocks.push(
+        { type: 2, name: "grass_block", position: { x, y: 63, z: 0 } },
+        { type: 0, name: "air", position: { x, y: 64, z: 0 } },
+        { type: 0, name: "air", position: { x, y: 65, z: 0 } },
+      );
+    }
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot,
+        pathfinder: bot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+        params: { blockName: "crafting_table", near: { x: 5, y: 64, z: 0 } },
+        worldKey: "minecraft:overworld",
+        cache,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        block_name: "crafting_table",
+        position: { x: 5, y: 64, z: 0 },
+      },
+    });
+    expect(bot.placeBlockCalls).toHaveLength(1);
+    expect(bot.entity.position).toMatchObject({ x: 4.5, y: 64, z: 0.5 });
+    expect(cache.position).toEqual({ x: 5, y: 64, z: 0 });
+  });
+
+  it("place（放置） 应在 approach（接近）改掉主手后重新装备工作台", async () => {
+    const bot = new FakeMineflayerBot();
+    const cache: CraftingTablePlacementCache = { position: null };
+    bot.rejectNonCraftingTablePlacement = true;
+    bot.entity.position = { x: 0.5, y: 64, z: 0.5 };
+    bot.inventoryItems.push(
+      { type: 7, name: "crafting_table", count: 1 },
+      { type: 2, name: "dirt", count: 16 },
+    );
+    bot.onAfterStep = () => {
+      bot.heldItem = { type: 2, name: "dirt", count: 1 };
+      bot.onAfterStep = undefined;
+    };
+    for (let x = 1; x <= 5; x += 1) {
+      bot.resourceBlocks.push(
+        { type: 2, name: "grass_block", position: { x, y: 63, z: 0 } },
+        { type: 0, name: "air", position: { x, y: 64, z: 0 } },
+        { type: 0, name: "air", position: { x, y: 65, z: 0 } },
+      );
+    }
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot,
+        pathfinder: bot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+        params: { blockName: "crafting_table", near: { x: 5, y: 64, z: 0 } },
+        worldKey: "minecraft:overworld",
+        cache,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        block_name: "crafting_table",
+        position: { x: 5, y: 64, z: 0 },
+      },
+    });
+    expect(bot.placeBlockCalls).toHaveLength(1);
+    expect(bot.equipCalls.at(-1)).toEqual({
+      item: { type: 7, name: "crafting_table", count: 1 },
+      destination: "hand",
+    });
+    expect(readMineflayerBlockAt(bot, { x: 5, y: 64, z: 0 })).toMatchObject({
+      name: "crafting_table",
+    });
+  });
+
+  it("place（放置） 应在 Mineflayer 放置事件超时后复查真实方块并判定成功", async () => {
     const bot = new FakeMineflayerBot();
     const cache: CraftingTablePlacementCache = { position: null };
     bot.entity.position = { x: 0, y: 64, z: 0 };
     bot.inventoryItems.push({ type: 7, name: "crafting_table", count: 1 });
+    bot.placeBlockPostPlaceFailureCounts.set("2:64:0", 1);
     bot.resourceBlocks.push(
       { type: 2, name: "grass_block", position: { x: 2, y: 63, z: 0 } },
       { type: 0, name: "air", position: { x: 2, y: 64, z: 0 } },
@@ -1483,7 +1828,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       executeMineflayerPlaceCraftingTable({
         bot,
         pathfinder: bot.pathfinder,
-        pathfinderModule: fakeDefaultOnlyPathfinderModule,
+        pathfinderModule: fakePathfinderModule,
         params: { blockName: "crafting_table", near: { x: 2, y: 64, z: 0 } },
         worldKey: "minecraft:overworld",
         cache,
@@ -1496,6 +1841,38 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       },
     });
     expect(bot.placeBlockCalls).toHaveLength(1);
+    expect(cache.position).toEqual({ x: 2, y: 64, z: 0 });
+  });
+
+  it("place（放置） 应在放置未生效时重试同一候选点", async () => {
+    const bot = new FakeMineflayerBot();
+    const cache: CraftingTablePlacementCache = { position: null };
+    bot.entity.position = { x: 0, y: 64, z: 0 };
+    bot.inventoryItems.push({ type: 7, name: "crafting_table", count: 1 });
+    bot.placeBlockTransientFailureCounts.set("2:64:0", 2);
+    bot.resourceBlocks.push(
+      { type: 2, name: "grass_block", position: { x: 2, y: 63, z: 0 } },
+      { type: 0, name: "air", position: { x: 2, y: 64, z: 0 } },
+    );
+
+    await expect(
+      executeMineflayerPlaceCraftingTable({
+        bot,
+        pathfinder: bot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+        params: { blockName: "crafting_table", near: { x: 2, y: 64, z: 0 } },
+        worldKey: "minecraft:overworld",
+        cache,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        block_name: "crafting_table",
+        position: { x: 2, y: 64, z: 0 },
+      },
+    });
+    expect(bot.placeBlockCalls).toHaveLength(3);
+    expect(cache.position).toEqual({ x: 2, y: 64, z: 0 });
   });
 
   it("place（放置） 应预选 3 个候选位置并在第一个被挡住时顺延", async () => {
@@ -1722,6 +2099,9 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         digs: [{ x: 1, y: 65, z: 0 }],
       },
     ]);
+    expect(result.diagnostics.some((entry) => entry.startsWith("terrain_phase2_solved"))).toBe(
+      true,
+    );
   });
 
   it("terrain-router 同水平被障碍封住时应优先规划水平挖穿，不应耗尽 expanded 预算", () => {
@@ -1753,6 +2133,9 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(result.plan).not.toBeNull();
     expect(result.expandedStates).toBeLessThan(80);
     expect(result.plan?.actions.filter((action) => action.kind === "digWalk")).toHaveLength(3);
+    expect(result.diagnostics.some((entry) => entry.startsWith("terrain_phase4_solved"))).toBe(
+      true,
+    );
   });
 
   it("terrain-router 短距离可绕行时不应为了直线距离挖穿障碍", () => {
@@ -1801,6 +2184,263 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(result.plan).not.toBeNull();
     expect(result.plan?.actions).toHaveLength(5);
     expect(result.plan?.actions.every((action) => action.kind === "walk")).toBe(true);
+    expect(result.diagnostics.some((entry) => entry.startsWith("terrain_phase1_solved"))).toBe(
+      true,
+    );
+  });
+
+  it("terrain-router 应按预算剪掉连续不接近目标的分支并输出诊断", () => {
+    const bot = new FakeMineflayerBot();
+    populateMiningBox(bot, {
+      minX: 0,
+      maxX: 3,
+      minY: 63,
+      maxY: 63,
+      minZ: 0,
+      maxZ: 1,
+      blockName: "dirt",
+    });
+    populateMiningBox(bot, {
+      minX: 0,
+      maxX: 3,
+      minY: 64,
+      maxY: 65,
+      minZ: 0,
+      maxZ: 1,
+      blockName: "air",
+    });
+    setFakeBlock(bot, { x: 1, y: 64, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 1, y: 65, z: 0 }, "dirt");
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 3, y: 64, z: 0 },
+      goalRange: 0,
+      allowDig: false,
+      allowPlaceUp: false,
+      routeBudget: {
+        noProgressStepLimit: 0,
+      },
+    });
+
+    expect(result.plan).toBeNull();
+    expect(result.diagnostics.some((entry) => entry.startsWith("terrain_pruned_no_progress"))).toBe(
+      true,
+    );
+  });
+
+  it("terrain-router 自然阶段应允许 5 格以内连续下落且不挖不垫", () => {
+    const bot = new FakeMineflayerBot();
+    for (let x = 0; x <= 5; x += 1) {
+      const footY = 64 - x;
+      setFakeBlock(bot, { x, y: footY - 1, z: 0 }, "dirt");
+      setFakeBlock(bot, { x, y: footY, z: 0 }, "air");
+      setFakeBlock(bot, { x, y: footY + 1, z: 0 }, "air");
+      setFakeBlock(bot, { x, y: footY + 2, z: 0 }, "air");
+    }
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 5, y: 59, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: true,
+    });
+
+    expect(result.plan?.actions).toHaveLength(5);
+    expect(result.plan?.actions.every((action) => action.kind === "drop1")).toBe(true);
+    expect(result.diagnostics.some((entry) => entry.startsWith("terrain_phase1_solved"))).toBe(
+      true,
+    );
+  });
+
+  it("terrain-router 超过 5 格连续下落时应离开自然阶段再求解", () => {
+    const bot = new FakeMineflayerBot();
+    for (let x = 0; x <= 6; x += 1) {
+      const footY = 64 - x;
+      setFakeBlock(bot, { x, y: footY - 1, z: 0 }, "dirt");
+      setFakeBlock(bot, { x, y: footY, z: 0 }, "air");
+      setFakeBlock(bot, { x, y: footY + 1, z: 0 }, "air");
+      setFakeBlock(bot, { x, y: footY + 2, z: 0 }, "air");
+    }
+
+    const result = planTerrainRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      startFoot: { x: 0, y: 64, z: 0 },
+      targetFoot: { x: 6, y: 58, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: true,
+    });
+
+    expect(result.plan?.actions).toHaveLength(6);
+    expect(result.plan?.actions.every((action) => action.kind === "drop1")).toBe(true);
+    expect(
+      result.diagnostics.some((entry) => entry.startsWith("terrain_phase1_no_natural_path")),
+    ).toBe(true);
+    expect(result.diagnostics.some((entry) => entry.startsWith("terrain_phase2_solved"))).toBe(
+      true,
+    );
+  });
+
+  it("terrain-router 只允许把 Bot 自己垫的脚下方块作为直下挖通路", () => {
+    const createStuckOnSupportBot = () => {
+      const bot = new FakeMineflayerBot();
+      bot.entity.position = { x: 0.5, y: 65, z: 0.5 };
+      setFakeBlock(bot, { x: 0, y: 62, z: 0 }, "dirt");
+      setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+      setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "dirt");
+      setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+      setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+      return bot;
+    };
+
+    const naturalBlockBot = createStuckOnSupportBot();
+    const rejected = planTerrainRoute({
+      bot: naturalBlockBot,
+      facts: createMineBlockFactReader(naturalBlockBot.registry),
+      startFoot: { x: 0, y: 65, z: 0 },
+      targetFoot: { x: 0, y: 64, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: false,
+      maxExpandedStates: 80,
+    });
+
+    expect(rejected.plan).toBeNull();
+
+    const selfPlacedBot = createStuckOnSupportBot();
+    recordSelfPlacedTerrainBlock(selfPlacedBot, { x: 0, y: 64, z: 0 });
+    recordSelfPlacedTerrainBlock(selfPlacedBot, { x: 0, y: 63, z: 0 });
+    const solved = planTerrainRoute({
+      bot: selfPlacedBot,
+      facts: createMineBlockFactReader(selfPlacedBot.registry),
+      startFoot: { x: 0, y: 65, z: 0 },
+      targetFoot: { x: 0, y: 63, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: false,
+      maxExpandedStates: 80,
+    });
+
+    expect(solved.plan?.actions).toEqual([
+      {
+        kind: "digDropSelfPlaced",
+        toFoot: { x: 0, y: 64, z: 0 },
+        dir: "north",
+        digs: [{ x: 0, y: 64, z: 0 }],
+      },
+      {
+        kind: "digDropSelfPlaced",
+        toFoot: { x: 0, y: 63, z: 0 },
+        dir: "north",
+        digs: [{ x: 0, y: 63, z: 0 }],
+      },
+    ]);
+  });
+
+  it("terrain-action digDropSelfPlaced 应挖掉自放置脚手架并直下落地", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = { x: 0.5, y: 65, z: 0.5 };
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+    recordSelfPlacedTerrainBlock(bot, { x: 0, y: 64, z: 0 });
+    const diagnostics: string[] = [];
+
+    await executeTerrainRouteAction({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      action: {
+        kind: "digDropSelfPlaced",
+        toFoot: { x: 0, y: 64, z: 0 },
+        dir: "north",
+        digs: [{ x: 0, y: 64, z: 0 }],
+      },
+      diagnostics,
+      control: NOOP_SKILL_EXECUTION_CONTROL,
+    });
+
+    expect(bot.digCalls.map((block) => block.name)).toEqual(["dirt"]);
+    expect(isTerrainBotAtFoot(bot, { x: 0, y: 64, z: 0 })).toBe(true);
+    expect(diagnostics).toContain("terrain_dig_verified:dirt:0,64,0");
+  });
+
+  it("terrain-action drop1 下落后若横向漂移，应按 Y 到达先停止再纠偏", async () => {
+    const bot = new DriftAfterDropMineflayerBot();
+    bot.entity.position = { x: 0.5, y: 65, z: 0.5 };
+    const diagnostics: string[] = [];
+
+    await executeTerrainRouteAction({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      action: {
+        kind: "drop1",
+        toFoot: { x: 0, y: 64, z: 0 },
+        dir: "north",
+      },
+      diagnostics,
+      control: NOOP_SKILL_EXECUTION_CONTROL,
+    });
+
+    expect(isTerrainBotAtFoot(bot, { x: 0, y: 64, z: 0 })).toBe(true);
+    expect(diagnostics).toContain(
+      "terrain_drop_recover_foot:drop1:target=0,64,0;current=2.20,64.00,1.85",
+    );
+    expect(
+      diagnostics.some((entry) =>
+        entry.startsWith("terrain_move_reached:drop1_drop_recover:target=0,64,0;"),
+      ),
+    ).toBe(true);
+  });
+
+  it("terrain-action digDropSelfPlaced 下落后若漂到边缘，应纠偏并继续后续自放置脚手架", async () => {
+    const bot = new DriftAfterDigDropMineflayerBot();
+    bot.entity.position = { x: 0.5, y: 65, z: 0.5 };
+    setFakeBlock(bot, { x: 0, y: 62, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+    recordSelfPlacedTerrainBlock(bot, { x: 0, y: 64, z: 0 });
+    recordSelfPlacedTerrainBlock(bot, { x: 0, y: 63, z: 0 });
+    const diagnostics: string[] = [];
+
+    for (const action of [
+      {
+        kind: "digDropSelfPlaced" as const,
+        toFoot: { x: 0, y: 64, z: 0 },
+        dir: "north" as const,
+        digs: [{ x: 0, y: 64, z: 0 }],
+      },
+      {
+        kind: "digDropSelfPlaced" as const,
+        toFoot: { x: 0, y: 63, z: 0 },
+        dir: "north" as const,
+        digs: [{ x: 0, y: 63, z: 0 }],
+      },
+    ]) {
+      await executeTerrainRouteAction({
+        bot,
+        facts: createMineBlockFactReader(bot.registry),
+        action,
+        diagnostics,
+        control: NOOP_SKILL_EXECUTION_CONTROL,
+      });
+    }
+
+    expect(bot.digCalls.map((block) => block.position?.y)).toEqual([64, 63]);
+    expect(isTerrainBotAtFoot(bot, { x: 0, y: 63, z: 0 })).toBe(true);
+    expect(diagnostics).toContain(
+      "terrain_drop_recover_foot:digDropSelfPlaced:target=0,64,0;current=0.50,64.00,-0.20",
+    );
+    expect(diagnostics).toContain("terrain_dig_verified:dirt:0,63,0");
   });
 
   it("terrain-router digStepDown 应在当前 top 被挡时纳入 digs，并拒绝终点只有 2 格净空", () => {
@@ -1908,6 +2548,281 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         digs: [{ x: 0, y: 66, z: 0 }],
       },
     ]);
+    expect(result.diagnostics.some((entry) => entry.startsWith("terrain_phase3_solved"))).toBe(
+      true,
+    );
+  });
+
+  it("terrain-action placeUp1 应在单动作内跨轮重试直到成功", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = { x: 0.5, y: 64, z: 0.5 };
+    bot.inventoryItems.push({ type: 21, name: "dirt", count: 8 });
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+    bot.placeBlockFailureCounts.set("0:64:0", 4);
+    const diagnostics: string[] = [];
+
+    await executeTerrainRouteAction({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      action: {
+        kind: "placeUp1",
+        toFoot: { x: 0, y: 65, z: 0 },
+        dir: "north",
+        placeAt: { x: 0, y: 64, z: 0 },
+        support: { x: 0, y: 63, z: 0 },
+        digs: [],
+      },
+      diagnostics,
+      control: NOOP_SKILL_EXECUTION_CONTROL,
+    });
+
+    expect(bot.placeBlockCalls).toHaveLength(5);
+    expect(isTerrainBotAtFoot(bot, { x: 0, y: 65, z: 0 })).toBe(true);
+    expect(diagnostics).toContain("terrain_place_up_round_start:round=3/3");
+    expect(
+      diagnostics.some((entry) =>
+        entry.startsWith("terrain_place_up_attempt:round=3;delay=320;status=success"),
+      ),
+    ).toBe(true);
+  });
+
+  it("terrain-action placeUp1 居中脉冲离开 foot 后应回退再垫高", async () => {
+    const bot = new FirstCenterPulseOvershootMineflayerBot();
+    bot.entity.position = { x: 0.5, y: 64, z: 0.85 };
+    bot.inventoryItems.push({ type: 21, name: "dirt", count: 8 });
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+    const diagnostics: string[] = [];
+
+    await executeTerrainRouteAction({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      action: {
+        kind: "placeUp1",
+        toFoot: { x: 0, y: 65, z: 0 },
+        dir: "north",
+        placeAt: { x: 0, y: 64, z: 0 },
+        support: { x: 0, y: 63, z: 0 },
+        digs: [],
+      },
+      diagnostics,
+      control: NOOP_SKILL_EXECUTION_CONTROL,
+    });
+
+    expect(bot.placeBlockCalls).toHaveLength(1);
+    expect(isTerrainBotAtFoot(bot, { x: 0, y: 65, z: 0 })).toBe(true);
+    expect(
+      diagnostics.some((entry) => entry.startsWith("terrain_center_recover_foot:placeUp1")),
+    ).toBe(true);
+    expect(diagnostics.some((entry) => entry.startsWith("terrain_place_up_centered"))).toBe(true);
+  });
+
+  it("terrain-action placeUp1 垫高后若横向漂出 foot，应按 Y 到达先停止再纠偏", async () => {
+    const bot = new DriftAfterPlaceUpMineflayerBot();
+    bot.entity.position = { x: 0.5, y: 64, z: 0.5 };
+    bot.inventoryItems.push({ type: 21, name: "dirt", count: 8 });
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+    const diagnostics: string[] = [];
+
+    await executeTerrainRouteAction({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      action: {
+        kind: "placeUp1",
+        toFoot: { x: 0, y: 65, z: 0 },
+        dir: "north",
+        placeAt: { x: 0, y: 64, z: 0 },
+        support: { x: 0, y: 63, z: 0 },
+        digs: [],
+      },
+      diagnostics,
+      control: NOOP_SKILL_EXECUTION_CONTROL,
+    });
+
+    expect(bot.placeBlockCalls).toHaveLength(1);
+    expect(isTerrainBotAtFoot(bot, { x: 0, y: 65, z: 0 })).toBe(true);
+    expect(
+      diagnostics.some((entry) =>
+        entry.startsWith("terrain_place_up_y_reached:placeUp1:target=0,65,0"),
+      ),
+    ).toBe(true);
+    expect(diagnostics).toContain(
+      "terrain_place_up_recover_foot:placeUp1:target=0,65,0;current=0.50,65.00,-0.04",
+    );
+    expect(
+      diagnostics.some((entry) =>
+        entry.startsWith("terrain_move_reached:placeUp1_place_up_recover:target=0,65,0"),
+      ),
+    ).toBe(true);
+  });
+
+  it("terrain-action placeUp1 应在目标格有非替换薄方块时先清理再垫高", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = { x: 0.5, y: 64, z: 0.5 };
+    bot.inventoryItems.push({ type: 21, name: "dirt", count: 8 });
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    bot.resourceBlocks.push({
+      name: "torch",
+      type: 171,
+      position: { x: 0, y: 64, z: 0 },
+      diggable: true,
+      shapes: [Object.freeze({})],
+    });
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+    const diagnostics: string[] = [];
+
+    await executeTerrainRouteAction({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      action: {
+        kind: "placeUp1",
+        toFoot: { x: 0, y: 65, z: 0 },
+        dir: "north",
+        placeAt: { x: 0, y: 64, z: 0 },
+        support: { x: 0, y: 63, z: 0 },
+        digs: [],
+      },
+      diagnostics,
+      control: NOOP_SKILL_EXECUTION_CONTROL,
+    });
+
+    expect(bot.digCalls.map((block) => block.name)).toContain("torch");
+    expect(bot.placeBlockCalls).toHaveLength(1);
+    expect(diagnostics).toContain("terrain_place_target_clear_start:torch:0,64,0");
+    expect(diagnostics).toContain("terrain_place_target_clear_done:torch:0,64,0");
+  });
+
+  it("terrain-action placeUp1 应允许无碰撞可替换植物由服务端直接覆盖", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = { x: 0.5, y: 64, z: 0.5 };
+    bot.inventoryItems.push({ type: 21, name: "dirt", count: 8 });
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    bot.resourceBlocks.push({
+      name: "short_grass",
+      type: 172,
+      position: { x: 0, y: 64, z: 0 },
+      diggable: true,
+      shapes: [],
+    });
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+    const diagnostics: string[] = [];
+
+    await executeTerrainRouteAction({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      action: {
+        kind: "placeUp1",
+        toFoot: { x: 0, y: 65, z: 0 },
+        dir: "north",
+        placeAt: { x: 0, y: 64, z: 0 },
+        support: { x: 0, y: 63, z: 0 },
+        digs: [],
+      },
+      diagnostics,
+      control: NOOP_SKILL_EXECUTION_CONTROL,
+    });
+
+    expect(bot.digCalls).toEqual([]);
+    expect(bot.placeBlockCalls).toHaveLength(1);
+    expect(diagnostics).toContain("terrain_place_target_replaceable:short_grass:0,64,0");
+  });
+
+  it("terrain-action placeUp1 应在可通行薄方块拒绝直接覆盖后清理再垫高", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = { x: 0.5, y: 64, z: 0.5 };
+    bot.inventoryItems.push({ type: 21, name: "dirt", count: 8 });
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    bot.resourceBlocks.push({
+      name: "pink_petals",
+      type: 173,
+      position: { x: 0, y: 64, z: 0 },
+      diggable: true,
+      shapes: [],
+      boundingBox: "empty",
+    });
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+    bot.placeBlockFailureCounts.set("0:64:0", 1);
+    const diagnostics: string[] = [];
+
+    await executeTerrainRouteAction({
+      bot,
+      facts: createMineBlockFactReader({
+        ...bot.registry,
+        blocksByName: {
+          ...bot.registry.blocksByName,
+          pink_petals: {
+            id: 173,
+            name: "pink_petals",
+            boundingBox: "empty",
+            diggable: true,
+            material: "plant",
+            hardness: 0,
+          },
+        },
+      }),
+      action: {
+        kind: "placeUp1",
+        toFoot: { x: 0, y: 65, z: 0 },
+        dir: "north",
+        placeAt: { x: 0, y: 64, z: 0 },
+        support: { x: 0, y: 63, z: 0 },
+        digs: [],
+      },
+      diagnostics,
+      control: NOOP_SKILL_EXECUTION_CONTROL,
+    });
+
+    expect(bot.digCalls.map((block) => block.name)).toContain("pink_petals");
+    expect(bot.placeBlockCalls).toHaveLength(2);
+    expect(bot.unequipCalls).toEqual(["hand"]);
+    expect(bot.equipCalls.map((call) => call.item.name)).toEqual(["dirt", "dirt"]);
+    expect(isTerrainBotAtFoot(bot, { x: 0, y: 65, z: 0 })).toBe(true);
+    expect(diagnostics).toContain("terrain_place_target_replaceable:pink_petals:0,64,0");
+    expect(diagnostics).toContain("terrain_place_target_clear_start:pink_petals:0,64,0");
+    expect(diagnostics).toContain("terrain_place_target_clear_done:pink_petals:0,64,0");
+  });
+
+  it("terrain-action placeUp1 应在三轮 delay 队列全失败后返回结构化动作失败", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = { x: 0.5, y: 64, z: 0.5 };
+    bot.inventoryItems.push({ type: 21, name: "dirt", count: 8 });
+    setFakeBlock(bot, { x: 0, y: 63, z: 0 }, "dirt");
+    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
+    bot.placeBlockFailureCounts.set("0:64:0", 6);
+    const diagnostics: string[] = [];
+
+    await expect(
+      executeTerrainRouteAction({
+        bot,
+        facts: createMineBlockFactReader(bot.registry),
+        action: {
+          kind: "placeUp1",
+          toFoot: { x: 0, y: 65, z: 0 },
+          dir: "north",
+          placeAt: { x: 0, y: 64, z: 0 },
+          support: { x: 0, y: 63, z: 0 },
+          digs: [],
+        },
+        diagnostics,
+        control: NOOP_SKILL_EXECUTION_CONTROL,
+      }),
+    ).rejects.toThrow("terrain_place_up_failed:target blocked");
+
+    expect(bot.placeBlockCalls).toHaveLength(6);
+    expect(diagnostics).toContain("terrain_place_up_round_failed:round=3/3");
   });
 
   it("terrain-action foot 判定应以离散脚下格为准，不被跳跃余波 raw y 误杀", () => {
@@ -1922,7 +2837,55 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(isTerrainBotAtFoot(bot, { x: -18, y: 112, z: -209 })).toBe(false);
   });
 
-  it("foot-step 移动超时时应松开控制键并带当前位置诊断", async () => {
+  it("progress watchdog 应在有真实进展时刷新 idle 计时", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      let progress = { x: 0 };
+      const watchdog = createProgressWatchdog({
+        idleTimeoutMs: 15_000,
+        readProgress: () => progress,
+        isProgressAdvanced: (previous, current) => current.x !== previous.x,
+        describeProgress: (value) => `x=${value.x}`,
+        createTimeoutMessage: ({ idleMs }) => `stuck:${idleMs}`,
+      });
+
+      vi.setSystemTime(14_000);
+      watchdog.assertAlive();
+      progress = { x: 1 };
+      watchdog.assertAlive();
+      vi.setSystemTime(28_000);
+      watchdog.assertAlive();
+      vi.setSystemTime(30_100);
+      expect(() => watchdog.assertAlive()).toThrow("stuck:16100");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("progress watchdog 等待 dig/place 原语时应优先响应取消信号", async () => {
+    const neverSettled = new Promise<void>(() => {});
+    let conditionChecks = 0;
+
+    await expect(
+      waitForPromiseOrCondition({
+        promise: neverSettled,
+        condition: () => {
+          conditionChecks += 1;
+          return false;
+        },
+        idleTimeoutMs: 15_000,
+        pollMs: 50,
+        timeoutMessage: () => "should_not_timeout",
+        throwIfAborted: () => {
+          throw new Error("skill_aborted");
+        },
+      }),
+    ).rejects.toThrow("skill_aborted");
+    expect(conditionChecks).toBe(0);
+  });
+
+  it("foot-step 移动卡死时应松开控制键并带当前位置诊断", async () => {
     const bot = new NonMovingMineflayerBot();
     bot.entity.position = {
       x: 0.5,
@@ -1942,7 +2905,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         actionKind: "walk",
         diagnostics,
       }),
-    ).rejects.toThrow(/mine_step_timeout:2,64,0:current=0\.50,64\.00,0\.50;best_horizontal=/u);
+    ).rejects.toThrow(/mine_step_stuck_timeout:2,64,0:current=0\.50,64\.00,0\.50;idle_ms=/u);
 
     expect(bot.controlStateCalls).toContainEqual({ control: "forward", state: true });
     expect(bot.controlStateCalls).toContainEqual({ control: "forward", state: false });
@@ -1971,7 +2934,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         actionKind: "digStepDown",
       }),
     ).rejects.toThrow(
-      /mine_step_timeout:-31,111,-236:current=-30\.50,112\.00,-235\.50;best_horizontal=0\.00;target_y=111;current_y=112;y_matched=false/u,
+      /mine_step_stuck_timeout:-31,111,-236:current=-30\.50,112\.00,-235\.50;idle_ms=.*best_horizontal=0\.00;target_y=111;current_y=112;y_matched=false/u,
     );
 
     const forwardStarts = bot.controlStateCalls.filter(
@@ -2061,7 +3024,9 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     expect(result.plan).not.toBeNull();
     expect(result.plan?.actions.filter((action) => action.kind === "placeUp1")).toHaveLength(10);
-    expect(result.expandedStates).toBeLessThan(80);
+    expect(result.diagnostics.some((entry) => entry.startsWith("terrain_phase4_solved"))).toBe(
+      true,
+    );
   });
 
   it("terrain-router placeUp1 应让放置覆盖之前 digWalk 产生的 plannedAir", () => {
@@ -2182,11 +3147,53 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     });
 
     expect(result.plan).not.toBeNull();
-    const dirs = result.plan?.actions.map((action) => action.dir) ?? [];
-    expect(dirs.length).toBeGreaterThan(1);
-    for (let index = 1; index < dirs.length; index += 1) {
-      expect(isOppositeRouteDirection(dirs[index - 1] ?? "", dirs[index] ?? "")).toBe(false);
+    const verticalExcavations =
+      result.plan?.actions.filter(
+        (action) => action.kind === "digStepDown" || action.kind === "digStepUp",
+      ) ?? [];
+    expect(verticalExcavations.length).toBeGreaterThan(1);
+    for (let index = 1; index < verticalExcavations.length; index += 1) {
+      expect(
+        isOppositeRouteDirection(
+          verticalExcavations[index - 1]?.dir ?? "",
+          verticalExcavations[index]?.dir ?? "",
+        ),
+      ).toBe(false);
     }
+  });
+
+  it("mine-bfs 深层矿物应使用目标启发和动态 plannedAir 预算规划下挖路线", () => {
+    const bot = new FakeMineflayerBot();
+    for (let x = -7; x <= 7; x += 1) {
+      for (let y = 104; y <= 116; y += 1) {
+        for (let z = -7; z <= 7; z += 1) {
+          setFakeBlock(bot, { x, y, z }, "stone");
+        }
+      }
+    }
+    setFakeBlock(bot, { x: 0, y: 112, z: 0 }, "air");
+    setFakeBlock(bot, { x: 0, y: 113, z: 0 }, "air");
+
+    const targets = [
+      { blockName: "stone", position: { x: -2, y: 106, z: 0 } },
+      { blockName: "stone", position: { x: 0, y: 106, z: -2 } },
+      { blockName: "stone", position: { x: 2, y: 106, z: 0 } },
+    ];
+
+    const result = planMineRoute({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      blockName: "stone",
+      startFoot: { x: 0, y: 112, z: 0 },
+      targets,
+    });
+
+    expect(result.plan).not.toBeNull();
+    expect(result.expandedStates).toBeLessThan(12_000);
+    expect(result.diagnostics).toContain(
+      "mine_bfs_budget:max_expanded=24000;max_depth=60;max_air=32;heuristic=target_aware",
+    );
+    expect(result.plan?.actions.some((action) => action.kind === "digStepDown")).toBe(true);
   });
 
   it("mine（挖掘） 应通过 mine-bfs（自研动作 BFS） 挖到附近 stone（石头） 并按背包增量返回", async () => {
@@ -2281,148 +3288,6 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await transport.disconnect("test shutdown");
   });
 
-  it("mine（挖掘） 队列规划应按总 walking distance（行走距离）丢弃超过 32 步的已有洞候选", () => {
-    const bot = new FakeMineflayerBot();
-    bot.entity.position = { x: 0, y: 70, z: 0 };
-    bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
-    populateMiningBox(bot, {
-      minX: -3,
-      maxX: 42,
-      minY: 24,
-      maxY: 73,
-      minZ: -3,
-      maxZ: 3,
-      blockName: "stone",
-    });
-    setFakeBlock(bot, { x: 0, y: 70, z: 0 }, "air");
-    setFakeBlock(bot, { x: 0, y: 71, z: 0 }, "air");
-    setFakeBlock(bot, { x: 0, y: 72, z: 0 }, "air");
-    for (let step = 1; step <= 40; step += 1) {
-      const foot = { x: step, y: 70 - step, z: 0 };
-      setFakeBlock(bot, foot, "air");
-      setFakeBlock(bot, { x: foot.x, y: foot.y + 1, z: foot.z }, "air");
-      setFakeBlock(bot, { x: foot.x, y: foot.y + 2, z: foot.z }, "air");
-    }
-    for (const step of [10, 20, 30]) {
-      const foot = { x: step, y: 70 - step, z: 0 };
-      setFakeBlock(bot, foot, "dirt");
-      setFakeBlock(bot, { x: foot.x, y: foot.y + 1, z: foot.z }, "dirt");
-      setFakeBlock(bot, { x: foot.x, y: foot.y + 2, z: foot.z }, "dirt");
-    }
-
-    const queue = planMineQueue({
-      bot,
-      facts: createMineBlockFactReader(bot.registry),
-      blockName: "stone",
-      requiredTargetCount: 1,
-    });
-
-    expect(queue).not.toBeNull();
-    const firstDig = queue?.actions.find((action) => action.kind === "dig");
-    expect(firstDig?.pos.x).toBeLessThanOrEqual(0);
-    expect(queue?.actions.some((action) => action.pos.x > 32)).toBe(false);
-  });
-
-  it("mine（挖掘） 起点在方块边界且 floored 列不可站立时应改用相邻可站立列继续规划", () => {
-    const bot = new FakeMineflayerBot();
-    bot.entity.position = { x: 0.02, y: 64, z: 0.5 };
-    bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
-    populateMiningBox(bot, {
-      minX: -4,
-      maxX: 4,
-      minY: 58,
-      maxY: 67,
-      minZ: -4,
-      maxZ: 4,
-      blockName: "stone",
-    });
-    setFakeBlock(bot, { x: -1, y: 64, z: 0 }, "air");
-    setFakeBlock(bot, { x: -1, y: 65, z: 0 }, "air");
-    setFakeBlock(bot, { x: -1, y: 66, z: 0 }, "air");
-    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "dirt");
-    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "dirt");
-    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "dirt");
-
-    const queue = planMineQueue({
-      bot,
-      facts: createMineBlockFactReader(bot.registry),
-      blockName: "stone",
-      requiredTargetCount: 1,
-    });
-
-    expect(queue).not.toBeNull();
-    expect(queue?.targetDigCount).toBeGreaterThanOrEqual(1);
-    expect(queue?.actions[0]).toMatchObject({
-      kind: "move",
-      pos: { x: -1, y: 64, z: 0 },
-    });
-  });
-
-  it("mine（挖掘） 起点 Y 为小数且 floor 层不可站立时应尝试相邻高度", () => {
-    const bot = new FakeMineflayerBot();
-    bot.entity.position = { x: 0.5, y: 64.23, z: 0.5 };
-    bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
-    populateMiningBox(bot, {
-      minX: -4,
-      maxX: 4,
-      minY: 58,
-      maxY: 68,
-      minZ: -4,
-      maxZ: 4,
-      blockName: "stone",
-    });
-    setFakeBlock(bot, { x: 0, y: 64, z: 0 }, "dirt");
-    setFakeBlock(bot, { x: 0, y: 65, z: 0 }, "air");
-    setFakeBlock(bot, { x: 0, y: 66, z: 0 }, "air");
-    setFakeBlock(bot, { x: 0, y: 67, z: 0 }, "air");
-
-    const queue = planMineQueue({
-      bot,
-      facts: createMineBlockFactReader(bot.registry),
-      blockName: "stone",
-      requiredTargetCount: 1,
-    });
-
-    expect(queue).not.toBeNull();
-    expect(queue?.targetDigCount).toBeGreaterThanOrEqual(1);
-    expect(queue?.actions[0]).toMatchObject({
-      kind: "move",
-      pos: { x: 0, y: 65, z: 0 },
-    });
-  });
-
-  it("mine（挖掘） 队列规划失败时应保留起点候选和 BFS 拒绝原因", () => {
-    const bot = new FakeMineflayerBot();
-    bot.entity.position = { x: 0, y: 70, z: 0 };
-    populateMiningBox(bot, {
-      minX: -1,
-      maxX: 2,
-      minY: 66,
-      maxY: 73,
-      minZ: -1,
-      maxZ: 1,
-      blockName: "dirt",
-    });
-    setFakeBlock(bot, { x: 0, y: 70, z: 0 }, "air");
-    setFakeBlock(bot, { x: 0, y: 71, z: 0 }, "air");
-    setFakeBlock(bot, { x: 0, y: 72, z: 0 }, "air");
-
-    const result = planMineQueueWithDiagnostics({
-      bot,
-      facts: createMineBlockFactReader(bot.registry),
-      blockName: "stone",
-      requiredTargetCount: 1,
-    });
-
-    expect(result.queue).toBeNull();
-    expect(
-      result.diagnostics.some((entry) => entry.startsWith("mine_queue_start_candidates:")),
-    ).toBe(true);
-    expect(result.diagnostics.some((entry) => entry.includes("mine_queue_plan_rejected:"))).toBe(
-      true,
-    );
-  });
-
   it("mine（挖掘） ore（矿石） 应只执行 ResourceService（资源服务） 传入候选，不调用 findBlocks（查找方块）重扫", async () => {
     const createdBots: FakeMineflayerBot[] = [];
     const transport = createMineflayerRuntimeTransport(
@@ -2488,6 +3353,117 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         (targetDig?.bot?.z ?? 99) - 0.5,
       ),
     ).toBeLessThanOrEqual(5.1);
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("mine（挖掘） supplied target 的 mine-bfs 无路时应借 terrain-router 接近高处目标", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-mine-supplied-terrain-fallback",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 1.5, y: 64, z: 0.5 };
+          bot.heldItem = { type: 8, name: "stone_pickaxe", count: 1 };
+          bot.inventoryItems.push({ type: 8, name: "stone_pickaxe", count: 1 });
+          bot.inventoryItems.push({ type: 7, name: "crafting_table", count: 8 });
+          setFakeBlockWithDiggable(bot, { x: 1, y: 63, z: 0 }, "dirt", false);
+          for (let y = 64; y <= 71; y += 1) {
+            setFakeBlock(bot, { x: 1, y, z: 0 }, "air");
+          }
+          setFakeBlock(bot, { x: 0, y: 69, z: 0 }, "iron_ore");
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(
+      transport.mine({
+        blockName: "iron_ore",
+        count: 1,
+        targets: [
+          {
+            block_name: "iron_ore",
+            position: { x: 0, y: 69, z: 0 },
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      block_name: "iron_ore",
+      collected_item_name: "raw_iron",
+      collected_count: 1,
+      mined_count: 1,
+    });
+    expect(createdBots[0]?.findBlocksCalls).toBe(0);
+    expect(createdBots[0]?.placeBlockCalls.length).toBeGreaterThan(0);
+    expect(
+      createdBots[0]?.digPositions.some(
+        (entry) => entry.block?.x === 0 && entry.block.y === 69 && entry.block.z === 0,
+      ),
+    ).toBe(true);
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("mine（挖掘） 动态扫描目标的 mine-bfs 无路时应借 terrain-router 接近后重扫", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-mine-dynamic-terrain-fallback",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 1.5, y: 64, z: 0.5 };
+          bot.heldItem = { type: 2, name: "wooden_pickaxe", count: 1 };
+          bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
+          bot.inventoryItems.push({ type: 7, name: "crafting_table", count: 8 });
+          setFakeBlockWithDiggable(bot, { x: 1, y: 63, z: 0 }, "dirt", false);
+          for (let y = 64; y <= 71; y += 1) {
+            setFakeBlock(bot, { x: 1, y, z: 0 }, "air");
+          }
+          setFakeBlock(bot, { x: 0, y: 69, z: 0 }, "stone");
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    const result = await transport.mine({ blockName: "stone", count: 1 });
+    expect(result).toMatchObject({
+      block_name: "stone",
+      collected_item_name: "cobblestone",
+      collected_count: 1,
+      mined_count: 1,
+    });
+    expect(
+      result.diagnostics.some((entry) =>
+        entry.startsWith("mine_dynamic_fallback_budget:approach_feet="),
+      ),
+    ).toBe(true);
+    expect(createdBots[0]?.findBlocksCalls).toBeGreaterThan(1);
+    expect(createdBots[0]?.placeBlockCalls.length).toBeGreaterThan(0);
+    expect(
+      createdBots[0]?.digPositions.some(
+        (entry) => entry.block?.x === 0 && entry.block.y === 69 && entry.block.z === 0,
+      ),
+    ).toBe(true);
 
     await transport.disconnect("test shutdown");
   });
@@ -2674,7 +3650,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await connectPromise;
 
     await expect(transport.mine({ blockName: "stone", count: 2 })).rejects.toThrow(
-      "drop_not_obtained:cobblestone:0/2:planned queue completed without enough inventory diff",
+      "drop_not_obtained:cobblestone:0/2:mine route completed without enough inventory diff",
     );
     expect(
       createdBots[0]?.digCalls.filter((block) => block.name === "stone").length ?? 0,
@@ -3160,6 +4136,57 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await transport.disconnect("test shutdown");
   });
 
+  it("资源刷新不应把 canSeeBlock（视线可见性） 当成 tree（树木） 可达硬门禁", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-resource-line-of-sight",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          Object.assign(bot.registry, {
+            blockTags: {
+              logs: [7],
+            },
+          });
+          bot.resourceBlocks.push({
+            name: "blocked_log",
+            type: 7,
+            position: { x: 8, y: 64, z: 0 },
+            tags: ["logs"],
+            diggable: true,
+          });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(transport.refreshAroundBot("tree", 16)).resolves.toMatchObject({
+      status: "found",
+      resource_key: "tree",
+      blocks: [
+        {
+          block_name: "blocked_log",
+          semantic_roles: ["cut_tree_log"],
+          is_diggable: true,
+          is_reachable: true,
+          target_diagnostics: ["line_of_sight_blocked", "reachability_deferred_to_skill"],
+        },
+      ],
+    });
+
+    await transport.disconnect("test shutdown");
+  });
+
   it("资源刷新应在 registry（注册表） 缺少 blockTags（方块标签） 时用 minecraft-data（Minecraft 数据库） 方块事实识别可砍原木", async () => {
     const createdBots: FakeMineflayerBot[] = [];
     const transport = createMineflayerRuntimeTransport(
@@ -3226,6 +4253,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         createBot: () => {
           const bot = new FakeMineflayerBot();
           bot.entity.position = { x: 0, y: 64, z: 0 };
+          populateFlatWalkway(bot, { minX: 0, maxX: 8, y: 64 });
           bot.resourceBlocks.push(
             {
               name: "oak_log",
@@ -3254,10 +4282,13 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     await transport.digBlockAt({ x: 8, y: 64, z: 0 });
 
-    expect(createdBots[0]?.resourceBlocks.map((block) => block.position)).toEqual([
-      { x: 9, y: 64, z: 0 },
-    ]);
-    expect(createdBots[0]?.receivedMovements).toHaveLength(1);
+    expect(
+      createdBots[0]?.resourceBlocks
+        .filter((block) => block.name === "oak_log")
+        .map((block) => block.position),
+    ).toEqual([{ x: 9, y: 64, z: 0 }]);
+    expect(createdBots[0]?.receivedMovements).toEqual([]);
+    expect(createdBots[0]?.gotoCalls).toEqual([]);
 
     await transport.disconnect("test shutdown");
   });
@@ -3272,6 +4303,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         createBot: () => {
           const bot = new FakeMineflayerBot();
           bot.entity.position = { x: 0, y: 64, z: 0 };
+          populateFlatWalkway(bot, { minX: 0, maxX: 2, y: 64 });
           bot.resourceBlocks.push({
             name: "oak_log",
             type: 7,
@@ -3295,7 +4327,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(createdBots[0]?.receivedMovements).toEqual([]);
     expect(createdBots[0]?.gotoCalls).toEqual([]);
     expect(createdBots[0]?.digPositions[0]?.bot).toEqual({ x: 0, y: 64, z: 0 });
-    expect(createdBots[0]?.resourceBlocks).toEqual([]);
+    expect(createdBots[0]?.resourceBlocks.some((block) => block.name === "oak_log")).toBe(false);
 
     await transport.disconnect("test shutdown");
   });
@@ -3310,6 +4342,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         createBot: () => {
           const bot = new FakeMineflayerBot();
           bot.entity.position = { x: 0, y: 64, z: 0 };
+          populateFlatWalkway(bot, { minX: 0, maxX: 8, y: 64 });
           bot.resourceBlocks.push({
             name: "oak_log",
             type: 7,
@@ -3330,35 +4363,25 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     await transport.digBlockAt({ x: 8, y: 66, z: 0 });
 
-    expect(createdBots[0]?.receivedMovements).toHaveLength(1);
-    expect(createdBots[0]?.receivedMovements[0]).toMatchObject({
-      canDig: true,
-      digCost: 100,
-      placeCost: 100,
-      allow1by1towers: false,
-    });
-    expect(createdBots[0]?.gotoCalls[0]).toMatchObject({
-      x: 8,
-      y: 66,
-      z: 0,
-      range: 2,
-    });
-    expect(createdBots[0]?.digPositions[0]?.bot).toEqual({ x: 8, y: 66, z: 0 });
-    expect(createdBots[0]?.resourceBlocks).toEqual([]);
+    expect(createdBots[0]?.receivedMovements).toEqual([]);
+    expect(createdBots[0]?.gotoCalls).toEqual([]);
+    expect(createdBots[0]?.digPositions[0]?.bot).toEqual({ x: 6.5, y: 64, z: 0.5 });
+    expect(createdBots[0]?.resourceBlocks.some((block) => block.name === "oak_log")).toBe(false);
 
     await transport.disconnect("test shutdown");
   });
 
-  it("digBlockAt（按坐标挖掘） 不得因出发高度高于树根而启用一格塔", async () => {
+  it("digBlockAt（按坐标挖掘） 靠近树根时允许站在相邻高度的可挖位置", async () => {
     const createdBots: FakeMineflayerBot[] = [];
     const transport = createMineflayerRuntimeTransport(
       createMineflayerTransportDescriptor({
-        botId: "bot-dig-block-downhill-tree",
+        botId: "bot-dig-block-near-y-tolerant",
       }),
       {
         createBot: () => {
           const bot = new FakeMineflayerBot();
-          bot.entity.position = { x: 0, y: 70, z: 0 };
+          bot.entity.position = { x: 0, y: 65, z: 0 };
+          populateFlatWalkway(bot, { minX: 0, maxX: 6, y: 65 });
           bot.resourceBlocks.push({
             name: "oak_log",
             type: 7,
@@ -3379,21 +4402,52 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     await transport.digBlockAt({ x: 8, y: 64, z: 0 });
 
-    expect(createdBots[0]?.receivedMovements).toHaveLength(1);
-    expect(createdBots[0]?.receivedMovements[0]).toMatchObject({
-      canDig: true,
-      digCost: 100,
-      placeCost: 100,
-      allow1by1towers: false,
-    });
-    expect(createdBots[0]?.gotoCalls[0]).toMatchObject({
-      x: 8,
-      y: 64,
-      z: 0,
-      range: 2,
-    });
-    expect(createdBots[0]?.digPositions[0]?.bot).toEqual({ x: 8, y: 64, z: 0 });
-    expect(createdBots[0]?.resourceBlocks).toEqual([]);
+    expect(createdBots[0]?.receivedMovements).toEqual([]);
+    expect(createdBots[0]?.gotoCalls).toEqual([]);
+    expect(createdBots[0]?.digPositions[0]?.bot).toEqual({ x: 6.5, y: 65, z: 0.5 });
+    expect(createdBots[0]?.resourceBlocks.some((block) => block.name === "oak_log")).toBe(false);
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("digBlockAt（按坐标挖掘） 不得因出发高度高于树根而启用一格塔", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-dig-block-downhill-tree",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 70, z: 0 };
+          for (let step = 0; step <= 6; step += 1) {
+            populateFlatWalkway(bot, { minX: step, maxX: step, y: 70 - step });
+          }
+          populateFlatWalkway(bot, { minX: 6, maxX: 8, y: 64 });
+          bot.resourceBlocks.push({
+            name: "oak_log",
+            type: 7,
+            position: { x: 8, y: 64, z: 0 },
+            diggable: true,
+          });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await transport.digBlockAt({ x: 8, y: 64, z: 0 });
+
+    expect(createdBots[0]?.receivedMovements).toEqual([]);
+    expect(createdBots[0]?.gotoCalls).toEqual([]);
+    expect(createdBots[0]?.digPositions[0]?.bot).toEqual({ x: 6.5, y: 64, z: 0.5 });
+    expect(createdBots[0]?.resourceBlocks.some((block) => block.name === "oak_log")).toBe(false);
 
     await transport.disconnect("test shutdown");
   });
@@ -3432,6 +4486,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
   it("collect（捡拾） 应以背包目标物品总数量增加为成功条件，即使只是同一物品栈 count（数量） 增加", async () => {
     const collectBot = new FakeMineflayerBot();
     collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    populateFlatWalkway(collectBot, { minX: 0, maxX: 2, y: 64 });
     collectBot.inventoryItems.push({
       name: "cobblestone",
       count: 4,
@@ -3442,16 +4497,6 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       item: {
         name: "cobblestone",
       },
-    };
-    collectBot.onGoto = () => {
-      const stack = collectBot.inventoryItems[0];
-
-      if (stack !== undefined) {
-        Object.assign(stack, {
-          count: 5,
-        });
-      }
-      collectBot.entities.collectible = undefined;
     };
 
     const transport = createMineflayerRuntimeTransport(
@@ -3479,17 +4524,15 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       world_key: "multiworld:resource",
       radius: 32,
     });
-    expect(collectBot.receivedMovements[0]).toMatchObject({
-      canDig: true,
-      digCost: 20,
-      placeCost: 20,
-      allow1by1towers: false,
-    });
+    expect(collectBot.inventoryItems.find((item) => item.name === "cobblestone")?.count).toBe(5);
+    expect(collectBot.receivedMovements).toEqual([]);
+    expect(collectBot.gotoCalls).toEqual([]);
   });
 
   it("collect（捡拾） 执行层应允许 cutTree（砍树） 使用半径 8 的小范围收集", async () => {
     const collectBot = new FakeMineflayerBot();
     collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    populateFlatWalkway(collectBot, { minX: 0, maxX: 2, y: 64 });
     collectBot.entities.logDrop = {
       id: 17,
       name: "item",
@@ -3498,13 +4541,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       item: {
         name: "oak_log",
       },
-    };
-    collectBot.onGoto = () => {
-      collectBot.inventoryItems.push({
-        name: "oak_log",
-        count: 3,
-      });
-      collectBot.entities.logDrop = undefined;
+      metadata: [{ itemCount: 3 }],
     };
 
     const transport = createMineflayerRuntimeTransport(
@@ -3536,7 +4573,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
   it("collect（捡拾） 范围内仍有可见掉落物时不得因已捡到一部分而提前成功", async () => {
     const collectBot = new FakeMineflayerBot();
     collectBot.entity.position = { x: 0, y: 64, z: 0 };
-    let gotoCalls = 0;
+    populateFlatWalkway(collectBot, { minX: 0, maxX: 2, y: 64 });
     collectBot.entities.firstLogDrop = {
       id: 18,
       name: "item",
@@ -3550,24 +4587,10 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       id: 19,
       name: "item",
       displayName: "Item",
-      position: { x: 3, y: 64, z: 0 },
+      position: { x: 4, y: 64, z: 0 },
       item: {
         name: "oak_log",
       },
-    };
-    collectBot.onGoto = () => {
-      gotoCalls += 1;
-
-      if (gotoCalls === 1) {
-        collectBot.inventoryItems.push({
-          name: "oak_log",
-          count: 1,
-        });
-        collectBot.entities.firstLogDrop = undefined;
-        return;
-      }
-
-      throw new Error("second drop is still unreachable");
     };
 
     const transport = createMineflayerRuntimeTransport(
@@ -3591,13 +4614,14 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         timeoutMs: 350,
       }),
     ).rejects.toThrow("unreachable");
-    expect(gotoCalls).toBeGreaterThan(1);
+    expect(collectBot.inventoryItems.find((item) => item.name === "oak_log")?.count).toBe(1);
+    expect(collectBot.gotoCalls).toEqual([]);
   });
 
   it("collect（捡拾） 应忽略与 Bot（机器人） 高度差超过 3 格的树叶滞留掉落物", async () => {
     const collectBot = new FakeMineflayerBot();
     collectBot.entity.position = { x: 0, y: 64, z: 0 };
-    let gotoCalls = 0;
+    populateFlatWalkway(collectBot, { minX: 0, maxX: 2, y: 64 });
     collectBot.entities.groundLogDrop = {
       id: 20,
       name: "item",
@@ -3611,18 +4635,10 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       id: 21,
       name: "item",
       displayName: "Item",
-      position: { x: 2, y: 69, z: 0 },
+      position: { x: 2, y: 68, z: 0 },
       item: {
         name: "oak_sapling",
       },
-    };
-    collectBot.onGoto = () => {
-      gotoCalls += 1;
-      collectBot.inventoryItems.push({
-        name: "oak_log",
-        count: 1,
-      });
-      collectBot.entities.groundLogDrop = undefined;
     };
 
     const transport = createMineflayerRuntimeTransport(
@@ -3648,7 +4664,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     ).resolves.toMatchObject({
       collected: [{ name: "oak_log", count: 1 }],
     });
-    expect(gotoCalls).toBe(1);
+    expect(collectBot.gotoCalls).toEqual([]);
   });
 
   it("collect（捡拾） 不得把登录后的旧背包同步误判为本次捡拾成功", async () => {
@@ -3686,6 +4702,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
   it("collect（捡拾） 未显式 center（中心点） 时应使用实时 Bot（机器人） 坐标扫描", async () => {
     const collectBot = new FakeMineflayerBot();
     collectBot.entity.position = { x: 0, y: 0, z: 0 };
+    populateFlatWalkway(collectBot, { minX: -11, maxX: -9, y: 104, minZ: -14, maxZ: -12 });
     collectBot.entities.shieldDrop = {
       id: 10,
       name: "item",
@@ -3696,13 +4713,6 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     setTimeout(() => {
       collectBot.entity.position = { x: -9, y: 104, z: -12 };
     }, 50);
-    collectBot.onGoto = () => {
-      collectBot.inventoryItems.push({
-        name: "shield",
-        count: 1,
-      });
-      collectBot.entities.shieldDrop = undefined;
-    };
 
     const transport = createMineflayerRuntimeTransport(
       createMineflayerTransportDescriptor({
@@ -3725,28 +4735,20 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       }),
     ).resolves.toMatchObject({
       collected: [{ name: "shield", count: 1 }],
-      center: { x: -9, y: 104, z: -12 },
+      center: { x: -9.5, y: 104, z: -13.5 },
     });
   });
 
   it("collect（捡拾） 应优先用 XZ 平面靠近掉落物", async () => {
     const collectBot = new FakeMineflayerBot();
     collectBot.entity.position = { x: -9, y: 104, z: -12 };
+    populateFlatWalkway(collectBot, { minX: -11, maxX: -9, y: 104, minZ: -14, maxZ: -12 });
     collectBot.entities.shieldDrop = {
       id: 11,
       name: "item",
       displayName: "Item",
       position: { x: -11, y: 104, z: -14 },
       metadata: [{ itemId: 1155, itemCount: 1 }],
-    };
-    const goalNames: string[] = [];
-    collectBot.onGoto = (goal) => {
-      goalNames.push(goal?.constructor?.name ?? "unknown");
-      collectBot.inventoryItems.push({
-        name: "shield",
-        count: 1,
-      });
-      collectBot.entities.shieldDrop = undefined;
     };
 
     const transport = createMineflayerRuntimeTransport(
@@ -3771,13 +4773,13 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     ).resolves.toMatchObject({
       collected: [{ name: "shield", count: 1 }],
     });
-    expect(goalNames).toEqual(["MockGoalNearXZ"]);
+    expect(collectBot.gotoCalls).toEqual([]);
   });
 
   it("collect（捡拾） 应贴近掉落物到拾取碰撞范围内", async () => {
     const collectBot = new FakeMineflayerBot();
     collectBot.entity.position = { x: 0, y: 64, z: 0 };
-    const goalRanges: number[] = [];
+    populateFlatWalkway(collectBot, { minX: 0, maxX: 2, y: 64 });
     collectBot.entities.logDrop = {
       id: 22,
       name: "item",
@@ -3786,21 +4788,6 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       item: {
         name: "oak_log",
       },
-    };
-    collectBot.onGoto = (goal) => {
-      const range =
-        typeof (goal as { readonly range?: unknown } | undefined)?.range === "number"
-          ? (goal as { readonly range: number }).range
-          : Number.POSITIVE_INFINITY;
-      goalRanges.push(range);
-
-      if (range <= 0.75) {
-        collectBot.inventoryItems.push({
-          name: "oak_log",
-          count: 1,
-        });
-        collectBot.entities.logDrop = undefined;
-      }
     };
 
     const transport = createMineflayerRuntimeTransport(
@@ -3826,12 +4813,15 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     ).resolves.toMatchObject({
       collected: [{ name: "oak_log", count: 1 }],
     });
-    expect(goalRanges).toEqual([0.75]);
+    expect(collectBot.gotoCalls).toEqual([]);
+    expect(collectBot.entity.position).toEqual({ x: 2.5, y: 64, z: 0.5 });
   });
 
   it("collect（捡拾） 目标实体消失但背包数量未增加时必须显式失败", async () => {
     const collectBot = new FakeMineflayerBot();
     collectBot.entity.position = { x: 0, y: 64, z: 0 };
+    populateFlatWalkway(collectBot, { minX: 0, maxX: 2, y: 64 });
+    collectBot.autoPickupEnabled = false;
     collectBot.inventoryItems.push({
       name: "cobblestone",
       count: 4,
@@ -3843,7 +4833,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         name: "cobblestone",
       },
     };
-    collectBot.onGoto = () => {
+    collectBot.onAfterStep = () => {
       collectBot.entities.collectible = undefined;
     };
 
@@ -3914,21 +4904,13 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
   it("collect（捡拾） 应在 32 格未命中时自动扩到 64 格搜索", async () => {
     const collectBot = new FakeMineflayerBot();
     collectBot.entity.position = { x: 0, y: 64, z: 0 };
-    let gotoCalls = 0;
+    populateFlatWalkway(collectBot, { minX: 0, maxX: 40, y: 64 });
     collectBot.entities.collectible = {
       id: 9,
       position: { x: 40, y: 64, z: 0 },
       item: {
         name: "cobblestone",
       },
-    };
-    collectBot.onGoto = () => {
-      gotoCalls += 1;
-      collectBot.inventoryItems.push({
-        name: "cobblestone",
-        count: 1,
-      });
-      collectBot.entities.collectible = undefined;
     };
 
     const transport = createMineflayerRuntimeTransport(
@@ -3955,7 +4937,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
       radius: 64,
       collected: [{ name: "cobblestone", count: 1 }],
     });
-    expect(gotoCalls).toBe(1);
+    expect(collectBot.gotoCalls).toEqual([]);
   });
 
   it("collect（捡拾） 只能选择最大 radius（搜索半径） 内的掉落物目标", async () => {

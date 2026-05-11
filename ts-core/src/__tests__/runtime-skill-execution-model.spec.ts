@@ -461,6 +461,7 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
           inventory.set(itemName, (inventory.get(itemName) ?? 0) + 2);
 
           return createCollectSkillExecutionResult(params, {
+            world_key: "multiworld:resource",
             collected: [{ name: itemName, count: 2 }],
             total_steps: 1,
           });
@@ -567,9 +568,86 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
     });
 
     await expect(cutTree({ count: 5 })).rejects.toThrow("附近木头不足：已获得 0/5 个原木");
+    await expect(cutTree({ count: 5 })).rejects.toMatchObject({
+      error_code: "resource_not_found",
+    });
   });
 
-  it("cutTree（砍树） 强制 collect（捡拾） 失败时应让任务失败", async () => {
+  it("cutTree（砍树） 每轮挖完后必须全量 collect（捡拾） 再按原木背包增量验收", async () => {
+    const collectRequests: Array<{
+      center?: { x: number; y: number; z: number };
+      itemName?: string;
+      radius?: number;
+    }> = [];
+    const inventory = new Map<string, number>();
+    const resourceService = createResourceService({
+      worldKeyPort: {
+        getCurrentWorldKey: () => "multiworld:resource",
+      },
+      refreshPort: {
+        async refreshAroundBot(resourceKey, radius) {
+          return {
+            resource_key: resourceKey,
+            radius,
+            status: "found",
+            world_key: "multiworld:resource",
+            snapshot_version: `cut-tree-collect-all-${radius}`,
+            scanned_at: 1_712_001_150,
+            origin: { x: 0, y: 64, z: 0 },
+            blocks: [
+              {
+                block_name: "oak_log",
+                position: { x: 2, y: 64, z: 0 },
+                distance: 2,
+                resource_keys: [resourceKey],
+                semantic_roles: ["cut_tree_log"],
+                is_diggable: true,
+                is_reachable: true,
+              },
+            ],
+            diagnostics: [],
+          };
+        },
+      },
+    });
+    const cutTree = createCutTreeSkillExecutor({
+      resourceService,
+      settleMs: 0,
+      digger: {
+        async digBlockAt() {
+          return undefined;
+        },
+      },
+      collector: {
+        async collect(params) {
+          collectRequests.push({ ...params });
+          inventory.set("oak_log", 1);
+          inventory.set("oak_sapling", 1);
+          return createCollectSkillExecutionResult(params, {
+            world_key: "multiworld:resource",
+            collected: [
+              { name: "oak_log", count: 1 },
+              { name: "oak_sapling", count: 1 },
+            ],
+            skipped: [],
+            total_steps: 1,
+          });
+        },
+      },
+      inventory: {
+        readInventoryItems: () =>
+          [...inventory.entries()].map(([item_name, count]) => ({ item_name, count })),
+      },
+    });
+
+    await expect(cutTree({ count: 1 })).resolves.toMatchObject({
+      collected_count: 1,
+      completed: true,
+    });
+    expect(collectRequests).toEqual([{ center: { x: 2, y: 64, z: 0 }, radius: 8 }]);
+  });
+
+  it("cutTree（砍树） 底层 digBlockAt 失败时应透出结构化失败码", async () => {
     const resourceService = createResourceService({
       worldKeyPort: {
         getCurrentWorldKey: () => "multiworld:resource",
@@ -605,12 +683,14 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
       settleMs: 0,
       digger: {
         async digBlockAt() {
-          return undefined;
+          const error = new Error("forced dig failed") as Error & { error_code?: string };
+          error.error_code = "unreachable_target";
+          throw error;
         },
       },
       collector: {
         async collect() {
-          throw new Error("forced collect failed");
+          throw new Error("collect should not run");
         },
       },
       inventory: {
@@ -618,12 +698,15 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
       },
     });
 
-    await expect(cutTree({ count: 1 })).rejects.toThrow("forced collect failed");
+    await expect(cutTree({ count: 1 })).rejects.toMatchObject({
+      error_code: "unreachable_target",
+    });
   });
 
   it("cutTree（砍树） 默认应等待 1 秒再从最低原木位置 collect（捡拾）", async () => {
     vi.useFakeTimers();
     const inventory = new Map<string, number>();
+    const digs: Array<{ x: number; y: number; z: number }> = [];
     const collects: Array<{ center: { x: number; y: number; z: number } | undefined }> = [];
     const resourceService = createResourceService({
       worldKeyPort: {
@@ -667,8 +750,8 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
     const cutTree = createCutTreeSkillExecutor({
       resourceService,
       digger: {
-        async digBlockAt() {
-          return undefined;
+        async digBlockAt(position) {
+          digs.push({ ...position });
         },
       },
       collector: {
@@ -679,6 +762,7 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
           inventory.set("cherry_log", 2);
 
           return createCollectSkillExecutionResult(params, {
+            world_key: "multiworld:resource",
             collected: [{ name: "cherry_log", count: 2 }],
             total_steps: 1,
           });
@@ -693,6 +777,7 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
     try {
       const promise = cutTree({ count: 1 });
       await vi.advanceTimersByTimeAsync(999);
+      expect(digs).toEqual([{ x: 10, y: 104, z: 10 }]);
       expect(collects).toEqual([]);
 
       await vi.advanceTimersByTimeAsync(1);

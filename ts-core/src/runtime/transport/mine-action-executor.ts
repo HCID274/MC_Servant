@@ -1,13 +1,16 @@
 /**
  * mine（挖掘） 单步动作执行器：把 BFS 输出的 walk / drop / jumpUp / digWalk / digStep
- * 翻译成 Mineflayer 的 setControlState + lookAt + dig 调用。每个 handler 自带 timeout，
- * 超时直接抛错，由外层 mine.ts 处理。
+ * 翻译成 Mineflayer 的 setControlState + lookAt + dig 调用。移动使用坐标进展心跳，
+ * 挖掘使用方块变化心跳，避免还在推进的长动作被固定 wall-clock timeout 误杀。
  */
 import { Vec3 } from "vec3";
-import { isFootStepBotAtFoot, stepToFoot } from "./foot-step.js";
+import type { SkillExecutionControl } from "../../core-ports/skills.js";
+import { NOOP_SKILL_EXECUTION_CONTROL } from "../../core-ports/skills.js";
+import { dropToFoot, isFootStepBotAtFoot, stepToFoot } from "./foot-step.js";
 import type { MineBlockPos, MineRouteAction } from "./mine-bfs.js";
 import type { MineBlockFactReader } from "./mine-block-facts.js";
 import { prepareHandForMineDig } from "./mine-tool-policy.js";
+import { waitForPromiseOrCondition } from "./progress-watchdog.js";
 import type {
   MineflayerBlockHandle,
   MineflayerInventoryPort,
@@ -22,9 +25,9 @@ type MineActionBot = MineflayerMovementPort &
   MineflayerPlacementPort &
   MineflayerInventoryPort;
 
-const MOVE_TIMEOUT_MS = 5_000;
-const DROP_TIMEOUT_MS = 6_000;
-const DIG_TIMEOUT_MS = 10_000;
+const MOVE_IDLE_TIMEOUT_MS = 15_000;
+const DROP_IDLE_TIMEOUT_MS = 15_000;
+const DIG_IDLE_TIMEOUT_MS = 15_000;
 const LOOK_TIMEOUT_MS = 3_000;
 const POLL_MS = 50;
 const POST_DIG_SETTLE_MS = 120;
@@ -36,70 +39,85 @@ export async function executeMineRouteAction(input: {
   readonly facts: MineBlockFactReader;
   readonly action: MineRouteAction;
   readonly diagnostics: string[];
+  readonly control: SkillExecutionControl;
 }): Promise<void> {
+  const control = input.control ?? NOOP_SKILL_EXECUTION_CONTROL;
+  control.throwIfAborted();
   switch (input.action.kind) {
     case "walk":
       await stepForward(
         input.bot,
         input.action.toFoot,
         { jump: false, kind: input.action.kind },
-        MOVE_TIMEOUT_MS,
+        MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
       );
+      control.throwIfAborted();
       return;
     case "drop1":
-      await stepForward(
-        input.bot,
-        input.action.toFoot,
-        { jump: false, kind: input.action.kind },
-        DROP_TIMEOUT_MS,
-        input.diagnostics,
-      );
+      await dropToFoot({
+        bot: input.bot,
+        target: input.action.toFoot,
+        timeoutMs: DROP_IDLE_TIMEOUT_MS,
+        lookTimeoutMs: LOOK_TIMEOUT_MS,
+        diagnosticPrefix: "mine",
+        actionKind: input.action.kind,
+        diagnostics: input.diagnostics,
+        throwIfAborted: () => control.throwIfAborted(),
+      });
+      control.throwIfAborted();
       return;
     case "jumpUp":
       await stepForward(
         input.bot,
         input.action.toFoot,
         { jump: true, kind: input.action.kind },
-        MOVE_TIMEOUT_MS,
+        MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
       );
+      control.throwIfAborted();
       return;
     case "digWalk":
       for (const dig of input.action.digs) {
-        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics);
+        control.throwIfAborted();
+        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics, control);
       }
       await stepForward(
         input.bot,
         input.action.toFoot,
         { jump: false, kind: input.action.kind },
-        MOVE_TIMEOUT_MS,
+        MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
       );
+      control.throwIfAborted();
       return;
     case "digStepDown":
       for (const dig of input.action.digs) {
-        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics);
+        control.throwIfAborted();
+        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics, control);
       }
       await stepForward(
         input.bot,
         input.action.toFoot,
         { jump: true, kind: input.action.kind },
-        DROP_TIMEOUT_MS,
+        DROP_IDLE_TIMEOUT_MS,
         input.diagnostics,
       );
+      control.throwIfAborted();
       return;
     case "digStepUp":
       for (const dig of input.action.digs) {
-        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics);
+        control.throwIfAborted();
+        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics, control);
       }
       await stepForward(
         input.bot,
         input.action.toFoot,
         { jump: true, kind: input.action.kind },
-        MOVE_TIMEOUT_MS,
+        MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
       );
+      control.throwIfAborted();
       return;
   }
 }
@@ -114,6 +132,7 @@ async function digSingleBlock(
   facts: MineBlockFactReader,
   pos: MineBlockPos,
   diagnostics: string[],
+  control: SkillExecutionControl,
 ): Promise<void> {
   const block = readMineflayerBlockAt(bot, pos);
   if (block === null || block === undefined) return;
@@ -135,11 +154,16 @@ async function digSingleBlock(
     LOOK_TIMEOUT_MS,
     `mine_look_timeout:dig:${posLabel(pos)}`,
   );
-  await withMineActionTimeout(
-    Promise.resolve(bot.dig?.(block)),
-    DIG_TIMEOUT_MS,
-    `mine_dig_timeout:${name}:${posLabel(pos)}`,
-  );
+  await waitForPromiseOrCondition({
+    promise: Promise.resolve(bot.dig?.(block)),
+    condition: () => isBlockChanged(facts, readMineflayerBlockAt(bot, pos), name),
+    idleTimeoutMs: DIG_IDLE_TIMEOUT_MS,
+    pollMs: POLL_MS,
+    timeoutMessage: () => `mine_dig_timeout:${name}:${posLabel(pos)}`,
+    throwIfAborted: () => control.throwIfAborted(),
+    diagnostics,
+    diagnosticPrefix: `mine_dig:${name}:${posLabel(pos)}`,
+  });
   await waitUntilBlockChanged(bot, facts, pos, name);
   diagnostics.push(`mine_dig_verified:${name}:${posLabel(pos)}`);
 }

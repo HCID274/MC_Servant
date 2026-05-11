@@ -1,8 +1,20 @@
 import { Vec3 } from "vec3";
-import { isFootStepBotAtFoot, stepToFoot, waitUntilFootReached } from "./foot-step.js";
+import type { SkillExecutionControl } from "../../core-ports/skills.js";
+import {
+  centerOnFoot,
+  dropToFoot,
+  isFootStepBotAtFoot,
+  stepToFoot,
+  waitUntilFootYReachedThenRecover,
+} from "./foot-step.js";
 import type { MineBlockFactReader } from "./mine-block-facts.js";
 import { prepareHandForMineDig } from "./mine-tool-policy.js";
+import { waitForPromiseOrCondition } from "./progress-watchdog.js";
 import type { TerrainBlockPos, TerrainRouteAction } from "./terrain-router.js";
+import {
+  forgetSelfPlacedTerrainBlock,
+  recordSelfPlacedTerrainBlock,
+} from "./terrain-self-placed-memory.js";
 import type {
   MineflayerBlockHandle,
   MineflayerInventoryPort,
@@ -19,124 +31,143 @@ type TerrainActionBot = MineflayerMovementPort &
   MineflayerPlacementPort &
   MineflayerInventoryPort;
 
-const MOVE_TIMEOUT_MS = 5_000;
-const DROP_TIMEOUT_MS = 6_000;
-const DIG_TIMEOUT_MS = 10_000;
+const MOVE_IDLE_TIMEOUT_MS = 15_000;
+const DROP_IDLE_TIMEOUT_MS = 15_000;
+const DIG_IDLE_TIMEOUT_MS = 15_000;
 const LOOK_TIMEOUT_MS = 3_000;
 const PLACE_TIMEOUT_MS = 3_000;
 const PLACE_LOOK_TIMEOUT_MS = 250;
 const PLACE_JUMP_TAP_MS = 50;
 const PLACE_CENTER_TIMEOUT_MS = 1_500;
-const PLACE_CENTER_TOLERANCE = 0.28;
 const POLL_MS = 50;
 const POST_DIG_SETTLE_MS = 120;
 const POST_DIG_VERIFY_TIMEOUT_MS = 1_000;
 const POST_PLACE_VERIFY_TIMEOUT_MS = 1_500;
-const DEFAULT_PLACE_UP_DELAYS_MS = Object.freeze([110, 115, 120, 125] as const);
+const DEFAULT_PLACE_UP_DELAYS_MS = Object.freeze([320, 340] as const);
+const PLACE_UP_MAX_ROUNDS = 3;
 const PLACE_UP_DELAYS_MS = readPlaceUpDelayQueue(process.env.TERRAIN_PLACE_UP_DELAYS_MS);
 const PLACE_UP_DELAY_STATS = new Map<number, { successes: number; failures: number }>();
-const CENTER_PULSE_MS = 90;
 
 export async function executeTerrainRouteAction(input: {
   readonly bot: TerrainActionBot;
   readonly facts: MineBlockFactReader;
   readonly action: TerrainRouteAction;
   readonly diagnostics: string[];
+  readonly control: SkillExecutionControl;
 }): Promise<void> {
+  input.control.throwIfAborted();
   switch (input.action.kind) {
     case "walk":
       await stepForward(
         input.bot,
         input.action.toFoot,
         { jump: false, kind: input.action.kind },
-        MOVE_TIMEOUT_MS,
+        MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
       );
+      input.control.throwIfAborted();
       return;
     case "drop1":
-      await stepForward(
-        input.bot,
-        input.action.toFoot,
-        { jump: false, kind: input.action.kind },
-        DROP_TIMEOUT_MS,
-        input.diagnostics,
-      );
+      await dropToFoot({
+        bot: input.bot,
+        target: input.action.toFoot,
+        timeoutMs: DROP_IDLE_TIMEOUT_MS,
+        lookTimeoutMs: LOOK_TIMEOUT_MS,
+        diagnosticPrefix: "terrain",
+        actionKind: input.action.kind,
+        diagnostics: input.diagnostics,
+        throwIfAborted: () => input.control.throwIfAborted(),
+      });
+      input.control.throwIfAborted();
       return;
     case "jumpUp":
       await stepForward(
         input.bot,
         input.action.toFoot,
         { jump: true, kind: input.action.kind },
-        MOVE_TIMEOUT_MS,
+        MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
       );
+      input.control.throwIfAborted();
       return;
     case "placeUp1":
       for (const dig of input.action.digs) {
-        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics);
+        input.control.throwIfAborted();
+        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics, input.control);
       }
-      await placeUpOneBlock(input.bot, input.facts, input.action, input.diagnostics);
+      await placeUpOneBlock(input.bot, input.facts, input.action, input.diagnostics, input.control);
+      input.control.throwIfAborted();
       return;
     case "digWalk":
       for (const dig of input.action.digs) {
-        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics);
+        input.control.throwIfAborted();
+        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics, input.control);
       }
       await stepForward(
         input.bot,
         input.action.toFoot,
         { jump: false, kind: input.action.kind },
-        MOVE_TIMEOUT_MS,
+        MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
       );
+      input.control.throwIfAborted();
       return;
     case "digStepDown":
       for (const dig of input.action.digs) {
-        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics);
+        input.control.throwIfAborted();
+        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics, input.control);
       }
       await stepForward(
         input.bot,
         input.action.toFoot,
         { jump: true, kind: input.action.kind },
-        DROP_TIMEOUT_MS,
+        DROP_IDLE_TIMEOUT_MS,
         input.diagnostics,
       );
+      input.control.throwIfAborted();
       return;
     case "digStepUp":
       for (const dig of input.action.digs) {
-        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics);
+        input.control.throwIfAborted();
+        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics, input.control);
       }
       await stepForward(
         input.bot,
         input.action.toFoot,
         { jump: true, kind: input.action.kind },
-        MOVE_TIMEOUT_MS,
+        MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
       );
+      input.control.throwIfAborted();
+      return;
+    case "digDropSelfPlaced":
+      await centerOnFootBeforeDigDrop(
+        input.bot,
+        readBotFoot(input.bot),
+        input.diagnostics,
+        input.control,
+      );
+      for (const dig of input.action.digs) {
+        input.control.throwIfAborted();
+        await digSingleBlock(input.bot, input.facts, dig, input.diagnostics, input.control);
+      }
+      await waitUntilFootYReachedThenRecover({
+        bot: input.bot,
+        target: input.action.toFoot,
+        timeoutMs: DROP_IDLE_TIMEOUT_MS,
+        lookTimeoutMs: LOOK_TIMEOUT_MS,
+        diagnosticPrefix: "terrain",
+        actionKind: input.action.kind,
+        diagnostics: input.diagnostics,
+        throwIfAborted: () => input.control.throwIfAborted(),
+      });
+      input.control.throwIfAborted();
       return;
   }
 }
 
 export function isTerrainBotAtFoot(bot: TerrainActionBot, target: TerrainBlockPos): boolean {
   return isFootStepBotAtFoot(bot, target);
-}
-
-function isTerrainBotAtFootCenter(bot: TerrainActionBot, target: TerrainBlockPos): boolean {
-  const pos = bot.entity?.position;
-  if (pos === undefined) return false;
-  return (
-    isSameFootCell(bot, target) &&
-    Math.hypot(pos.x - (target.x + 0.5), pos.z - (target.z + 0.5)) <= PLACE_CENTER_TOLERANCE
-  );
-}
-
-function isSameFootCell(bot: TerrainActionBot, target: TerrainBlockPos): boolean {
-  const pos = bot.entity?.position;
-  if (pos === undefined) return false;
-  return (
-    Math.floor(pos.x) === target.x &&
-    Math.floor(pos.y) === target.y &&
-    Math.floor(pos.z) === target.z
-  );
 }
 
 function readBotFoot(bot: TerrainActionBot): TerrainBlockPos {
@@ -153,9 +184,12 @@ async function placeUpOneBlock(
   facts: MineBlockFactReader,
   action: Extract<TerrainRouteAction, { readonly kind: "placeUp1" }>,
   diagnostics: string[],
+  control: SkillExecutionControl,
 ): Promise<void> {
+  control.throwIfAborted();
   const plannedLivePlaceAt = readBotFoot(bot);
-  await centerOnFootBeforePlaceUp(bot, plannedLivePlaceAt, diagnostics);
+  await centerOnFootBeforePlaceUp(bot, plannedLivePlaceAt, diagnostics, control);
+  control.throwIfAborted();
 
   const livePlaceAt = readBotFoot(bot);
   const liveSupport = freezePos({ x: livePlaceAt.x, y: livePlaceAt.y - 1, z: livePlaceAt.z });
@@ -172,14 +206,25 @@ async function placeUpOneBlock(
   }
 
   const placeAtBlock = readMineflayerBlockAt(bot, livePlaceAt);
+  const directReplaceTargetName =
+    placeAtBlock === null || placeAtBlock === undefined || isEmptyBlock(facts, placeAtBlock)
+      ? null
+      : facts.normalizeName(placeAtBlock.name);
   if (!isEmptyBlock(facts, placeAtBlock)) {
-    throw new Error(`terrain_place_target_occupied:${posLabel(livePlaceAt)}`);
+    if (placeAtBlock === null || placeAtBlock === undefined) {
+      throw new Error(`terrain_place_target_unknown:${posLabel(livePlaceAt)}`);
+    }
+    await clearPlaceUpTargetBlock({
+      bot,
+      facts,
+      pos: livePlaceAt,
+      block: placeAtBlock,
+      diagnostics,
+      control,
+      allowDirectReplace: true,
+    });
   }
 
-  const item = selectPlaceUpItem(bot);
-  if (item === null) {
-    throw new Error("terrain_place_item_missing");
-  }
   if (typeof bot.equip !== "function") {
     throw new Error("terrain_place_equip_unavailable");
   }
@@ -188,71 +233,110 @@ async function placeUpOneBlock(
   }
 
   await withTerrainActionTimeout(
-    Promise.resolve(bot.equip(item, "hand")),
-    PLACE_TIMEOUT_MS,
-    `terrain_place_equip_timeout:${item.name ?? item.type ?? "unknown"}`,
-  );
-  await withTerrainActionTimeout(
     Promise.resolve(bot.lookAt?.(centerOfBlock(liveSupport), true)),
     LOOK_TIMEOUT_MS,
     `terrain_place_look_timeout:${posLabel(liveSupport)}`,
   );
 
   let lastError: unknown = null;
-  for (const delayMs of createPlaceUpDelayQueue()) {
-    const attemptStartedAt = Date.now();
-    try {
-      await tapJump(bot, delayMs);
-      await withTerrainActionTimeout(
-        Promise.resolve(bot.lookAt?.(centerOfBlock(liveSupport), true)),
-        PLACE_LOOK_TIMEOUT_MS,
-        `terrain_place_relook_timeout:${posLabel(liveSupport)}:${delayMs}`,
-      );
-      const placeAttempt = withTerrainActionTimeout(
-        placeUpWithMineflayer(bot, supportBlock),
-        PLACE_TIMEOUT_MS,
-        `terrain_place_timeout:${posLabel(livePlaceAt)}:${delayMs}`,
-      );
-      await placeAttempt;
-      await waitUntilPlaced(bot, facts, livePlaceAt);
-      await waitUntilFootReached({
-        bot,
-        target: liveTargetFoot,
-        timeoutMs: DROP_TIMEOUT_MS,
-        diagnosticPrefix: "terrain",
-      });
-      recordPlaceUpDelay(delayMs, "success");
-      diagnostics.push(
-        `terrain_place_up_attempt:delay=${delayMs};status=success;elapsed_ms=${Date.now() - attemptStartedAt};item=${facts.normalizeName(item.name)};pos=${posLabel(livePlaceAt)}`,
-      );
-      return;
-    } catch (error) {
-      lastError = error;
-      recordPlaceUpDelay(delayMs, "failure");
-      diagnostics.push(
-        `terrain_place_up_attempt:delay=${delayMs};status=failed;elapsed_ms=${Date.now() - attemptStartedAt};reason=${sanitizeDiagnostic(getErrorMessage(error))};pos=${posLabel(livePlaceAt)}`,
-      );
-      bot.setControlState?.("jump", false);
-      await delay(120);
-      if (!isEmptyBlock(facts, readMineflayerBlockAt(bot, livePlaceAt))) {
-        await waitUntilFootReached({
+  for (let round = 1; round <= PLACE_UP_MAX_ROUNDS; round += 1) {
+    control.throwIfAborted();
+    diagnostics.push(`terrain_place_up_round_start:round=${round}/${PLACE_UP_MAX_ROUNDS}`);
+    for (const delayMs of createPlaceUpDelayQueue()) {
+      control.throwIfAborted();
+      const attemptStartedAt = Date.now();
+      try {
+        const item = await ensurePlaceUpItemEquipped(bot, facts, diagnostics);
+        await tapJump(bot, delayMs);
+        await withTerrainActionTimeout(
+          Promise.resolve(bot.lookAt?.(centerOfBlock(liveSupport), true)),
+          PLACE_LOOK_TIMEOUT_MS,
+          `terrain_place_relook_timeout:${posLabel(liveSupport)}:${delayMs}`,
+        );
+        const placeAttempt = withTerrainActionTimeout(
+          placeUpWithMineflayer(bot, supportBlock),
+          PLACE_TIMEOUT_MS,
+          `terrain_place_timeout:${posLabel(livePlaceAt)}:${delayMs}`,
+        );
+        await placeAttempt;
+        await waitUntilPlaced(bot, facts, livePlaceAt);
+        await waitUntilPlaceUpFootReached({
           bot,
           target: liveTargetFoot,
-          timeoutMs: DROP_TIMEOUT_MS,
-          diagnosticPrefix: "terrain",
+          diagnostics,
+          control,
         });
         recordPlaceUpDelay(delayMs, "success");
+        recordSelfPlacedTerrainBlock(bot, livePlaceAt);
         diagnostics.push(
-          `terrain_place_up_attempt:delay=${delayMs};status=verified_after_error;elapsed_ms=${Date.now() - attemptStartedAt};pos=${posLabel(livePlaceAt)}`,
+          `terrain_place_up_attempt:round=${round};delay=${delayMs};status=success;elapsed_ms=${Date.now() - attemptStartedAt};item=${facts.normalizeName(item.name)};pos=${posLabel(livePlaceAt)}`,
         );
         return;
+      } catch (error) {
+        lastError = error;
+        recordPlaceUpDelay(delayMs, "failure");
+        diagnostics.push(
+          `terrain_place_up_attempt:round=${round};delay=${delayMs};status=failed;elapsed_ms=${Date.now() - attemptStartedAt};reason=${sanitizeDiagnostic(getErrorMessage(error))};pos=${posLabel(livePlaceAt)}`,
+        );
+        bot.setControlState?.("jump", false);
+        await delay(120);
+        const currentPlaceAtBlock = readMineflayerBlockAt(bot, livePlaceAt);
+        if (isPlacedAfterFailedAttempt(facts, currentPlaceAtBlock, directReplaceTargetName)) {
+          await waitUntilPlaceUpFootReached({
+            bot,
+            target: liveTargetFoot,
+            diagnostics,
+            control,
+          });
+          recordPlaceUpDelay(delayMs, "success");
+          recordSelfPlacedTerrainBlock(bot, livePlaceAt);
+          diagnostics.push(
+            `terrain_place_up_attempt:round=${round};delay=${delayMs};status=verified_after_error;elapsed_ms=${Date.now() - attemptStartedAt};pos=${posLabel(livePlaceAt)}`,
+          );
+          return;
+        }
+        if (
+          currentPlaceAtBlock !== null &&
+          currentPlaceAtBlock !== undefined &&
+          !isEmptyBlock(facts, currentPlaceAtBlock)
+        ) {
+          await clearPlaceUpTargetBlock({
+            bot,
+            facts,
+            pos: livePlaceAt,
+            block: currentPlaceAtBlock,
+            diagnostics,
+            control,
+            allowDirectReplace: false,
+          });
+        }
+      } finally {
+        bot.setControlState?.("jump", false);
       }
-    } finally {
-      bot.setControlState?.("jump", false);
     }
+    diagnostics.push(`terrain_place_up_round_failed:round=${round}/${PLACE_UP_MAX_ROUNDS}`);
   }
 
   throw new Error(`terrain_place_up_failed:${getErrorMessage(lastError)}`);
+}
+
+async function waitUntilPlaceUpFootReached(input: {
+  readonly bot: TerrainActionBot;
+  readonly target: TerrainBlockPos;
+  readonly diagnostics: string[];
+  readonly control: SkillExecutionControl;
+}): Promise<void> {
+  await waitUntilFootYReachedThenRecover({
+    bot: input.bot,
+    target: input.target,
+    timeoutMs: DROP_IDLE_TIMEOUT_MS,
+    lookTimeoutMs: LOOK_TIMEOUT_MS,
+    diagnosticPrefix: "terrain",
+    actionKind: "placeUp1",
+    transitionLabel: "place_up",
+    diagnostics: input.diagnostics,
+    throwIfAborted: () => input.control.throwIfAborted(),
+  });
 }
 
 async function tapJump(bot: TerrainActionBot, placeDelayMs: number): Promise<void> {
@@ -269,41 +353,44 @@ async function centerOnFootBeforePlaceUp(
   bot: TerrainActionBot,
   foot: TerrainBlockPos,
   diagnostics: string[],
+  control: SkillExecutionControl,
 ): Promise<void> {
-  if (isTerrainBotAtFootCenter(bot, foot)) return;
-  if (typeof bot.setControlState !== "function") {
-    throw new Error("terrain_control_unavailable:setControlState");
-  }
-
   const startedAt = Date.now();
-  try {
-    while (!isTerrainBotAtFootCenter(bot, foot)) {
-      if (!isSameFootCell(bot, foot)) {
-        throw new Error(
-          `terrain_center_left_foot:${posLabel(foot)}:current=${positionLabel(bot.entity?.position)}`,
-        );
-      }
-      if (Date.now() - startedAt >= PLACE_CENTER_TIMEOUT_MS) {
-        throw new Error(
-          `terrain_center_timeout:${posLabel(foot)}:current=${positionLabel(bot.entity?.position)}`,
-        );
-      }
-      await withTerrainActionTimeout(
-        Promise.resolve(bot.lookAt?.(centerOfFootTarget(foot), true)),
-        LOOK_TIMEOUT_MS,
-        `terrain_look_timeout:center:${posLabel(foot)}`,
-      );
-      bot.setControlState("forward", true);
-      await delay(CENTER_PULSE_MS);
-      bot.setControlState("forward", false);
-      await delay(POLL_MS);
-    }
-    diagnostics.push(
-      `terrain_place_up_centered:foot=${posLabel(foot)};elapsed_ms=${Date.now() - startedAt}`,
-    );
-  } finally {
-    bot.setControlState("forward", false);
-  }
+  await centerOnFoot({
+    bot,
+    target: foot,
+    timeoutMs: PLACE_CENTER_TIMEOUT_MS,
+    lookTimeoutMs: LOOK_TIMEOUT_MS,
+    diagnosticPrefix: "terrain",
+    actionKind: "placeUp1",
+    diagnostics,
+    throwIfAborted: () => control.throwIfAborted(),
+  });
+  diagnostics.push(
+    `terrain_place_up_centered:foot=${posLabel(foot)};elapsed_ms=${Date.now() - startedAt}`,
+  );
+}
+
+async function centerOnFootBeforeDigDrop(
+  bot: TerrainActionBot,
+  foot: TerrainBlockPos,
+  diagnostics: string[],
+  control: SkillExecutionControl,
+): Promise<void> {
+  const startedAt = Date.now();
+  await centerOnFoot({
+    bot,
+    target: foot,
+    timeoutMs: PLACE_CENTER_TIMEOUT_MS,
+    lookTimeoutMs: LOOK_TIMEOUT_MS,
+    diagnosticPrefix: "terrain",
+    actionKind: "digDropSelfPlaced",
+    diagnostics,
+    throwIfAborted: () => control.throwIfAborted(),
+  });
+  diagnostics.push(
+    `terrain_dig_drop_centered:foot=${posLabel(foot)};elapsed_ms=${Date.now() - startedAt}`,
+  );
 }
 
 function placeUpWithMineflayer(
@@ -328,11 +415,12 @@ async function digSingleBlock(
   facts: MineBlockFactReader,
   pos: TerrainBlockPos,
   diagnostics: string[],
+  control: SkillExecutionControl,
 ): Promise<void> {
   const block = readMineflayerBlockAt(bot, pos);
   if (block === null || block === undefined) return;
   const name = facts.normalizeName(block.name);
-  if (facts.isAirBlock(block)) return;
+  if (facts.isLiteralAirBlock(block)) return;
   if (typeof bot.canDigBlock === "function" && !bot.canDigBlock(block)) {
     throw new Error(`terrain_dig_out_of_reach:${name}:${posLabel(pos)}`);
   }
@@ -349,12 +437,18 @@ async function digSingleBlock(
     LOOK_TIMEOUT_MS,
     `terrain_look_timeout:dig:${posLabel(pos)}`,
   );
-  await withTerrainActionTimeout(
-    Promise.resolve(bot.dig?.(block)),
-    DIG_TIMEOUT_MS,
-    `terrain_dig_timeout:${name}:${posLabel(pos)}`,
-  );
+  await waitForPromiseOrCondition({
+    promise: Promise.resolve(bot.dig?.(block)),
+    condition: () => isBlockChanged(facts, readMineflayerBlockAt(bot, pos), name),
+    idleTimeoutMs: DIG_IDLE_TIMEOUT_MS,
+    pollMs: POLL_MS,
+    timeoutMessage: () => `terrain_dig_timeout:${name}:${posLabel(pos)}`,
+    throwIfAborted: () => control.throwIfAborted(),
+    diagnostics,
+    diagnosticPrefix: `terrain_dig:${name}:${posLabel(pos)}`,
+  });
   await waitUntilBlockChanged(bot, facts, pos, name);
+  forgetSelfPlacedTerrainBlock(bot, pos);
   diagnostics.push(`terrain_dig_verified:${name}:${posLabel(pos)}`);
 }
 
@@ -377,19 +471,6 @@ async function stepForward(
   });
 }
 
-function positionLabel(
-  pos:
-    | {
-        readonly x: number;
-        readonly y: number;
-        readonly z: number;
-      }
-    | undefined,
-): string {
-  if (pos === undefined) return "unknown";
-  return `${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)}`;
-}
-
 function selectPlaceUpItem(bot: TerrainActionBot): MineflayerItemHandle | null {
   const registry = bot.registry as MineflayerRegistryFacts | undefined;
   const blocksByName = registry?.blocksByName;
@@ -404,6 +485,95 @@ function selectPlaceUpItem(bot: TerrainActionBot): MineflayerItemHandle | null {
   });
   candidates.sort((left, right) => comparePlaceUpCandidates(left, right));
   return candidates[0]?.item ?? null;
+}
+
+async function ensurePlaceUpItemEquipped(
+  bot: TerrainActionBot,
+  facts: MineBlockFactReader,
+  diagnostics: string[],
+): Promise<MineflayerItemHandle> {
+  if (isPlaceUpItem(bot, bot.heldItem)) {
+    return bot.heldItem;
+  }
+
+  const item = selectPlaceUpItem(bot);
+  if (item === null) {
+    throw new Error("terrain_place_item_missing");
+  }
+  if (typeof bot.equip !== "function") {
+    throw new Error("terrain_place_equip_unavailable");
+  }
+
+  await withTerrainActionTimeout(
+    Promise.resolve(bot.equip(item, "hand")),
+    PLACE_TIMEOUT_MS,
+    `terrain_place_equip_timeout:${item.name ?? item.type ?? "unknown"}`,
+  );
+  diagnostics.push(`terrain_place_item_equipped:${facts.normalizeName(item.name)}`);
+  return item;
+}
+
+function isPlaceUpItem(
+  bot: TerrainActionBot,
+  item: MineflayerItemHandle | null | undefined,
+): item is MineflayerItemHandle {
+  if (item === null || item === undefined || item.name === undefined || (item.count ?? 0) <= 0) {
+    return false;
+  }
+  const registry = bot.registry as MineflayerRegistryFacts | undefined;
+  const block = registry?.blocksByName?.[normalizeName(item.name)];
+  if (block === undefined) return false;
+  if (block.falling === true) return false;
+  return block.boundingBox === undefined || block.boundingBox === "block";
+}
+
+async function clearPlaceUpTargetBlock(input: {
+  readonly bot: TerrainActionBot;
+  readonly facts: MineBlockFactReader;
+  readonly pos: TerrainBlockPos;
+  readonly block: MineflayerBlockHandle;
+  readonly diagnostics: string[];
+  readonly control: SkillExecutionControl;
+  readonly allowDirectReplace: boolean;
+}): Promise<void> {
+  const blockName = input.facts.normalizeName(input.block.name);
+  if (input.allowDirectReplace && isReplaceablePlaceTarget(input.block)) {
+    input.diagnostics.push(`terrain_place_target_replaceable:${blockName}:${posLabel(input.pos)}`);
+    return;
+  }
+
+  if (!input.facts.isDiggableBlock(input.block)) {
+    throw new Error(`terrain_place_target_occupied:${posLabel(input.pos)}:${blockName}`);
+  }
+
+  input.diagnostics.push(`terrain_place_target_clear_start:${blockName}:${posLabel(input.pos)}`);
+  input.control.throwIfAborted();
+  await digSingleBlock(input.bot, input.facts, input.pos, input.diagnostics, input.control);
+  input.control.throwIfAborted();
+
+  const current = readMineflayerBlockAt(input.bot, input.pos);
+  if (isEmptyBlock(input.facts, current) || isReplaceablePlaceTarget(current)) {
+    input.diagnostics.push(`terrain_place_target_clear_done:${blockName}:${posLabel(input.pos)}`);
+    return;
+  }
+
+  throw new Error(`terrain_place_target_clear_failed:${posLabel(input.pos)}:${blockName}`);
+}
+
+function isReplaceablePlaceTarget(block: MineflayerBlockHandle | null | undefined): boolean {
+  if (block === null || block === undefined) return false;
+  if (Array.isArray(block.shapes)) return block.shapes.length === 0;
+  return false;
+}
+
+function isPlacedAfterFailedAttempt(
+  facts: MineBlockFactReader,
+  block: MineflayerBlockHandle | null | undefined,
+  previousTargetName: string | null,
+): boolean {
+  if (block === null || block === undefined || isEmptyBlock(facts, block)) return false;
+  const currentName = facts.normalizeName(block.name);
+  return previousTargetName === null || currentName !== previousTargetName;
 }
 
 function comparePlaceUpCandidates(
@@ -470,7 +640,8 @@ async function waitUntilPlaced(
 ): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt <= POST_PLACE_VERIFY_TIMEOUT_MS) {
-    if (!isEmptyBlock(facts, readMineflayerBlockAt(bot, pos))) return;
+    const block = readMineflayerBlockAt(bot, pos);
+    if (!isEmptyBlock(facts, block) && !isReplaceablePlaceTarget(block)) return;
     await delay(POLL_MS);
   }
   throw new Error(`terrain_place_no_effect:${posLabel(pos)}`);
@@ -483,7 +654,7 @@ function isBlockChanged(
 ): boolean {
   if (block === null || block === undefined) return true;
   const currentName = facts.normalizeName(block.name);
-  return facts.isAirBlock(block) || currentName !== originalName;
+  return facts.isLiteralAirBlock(block) || currentName !== originalName;
 }
 
 function isEmptyBlock(
@@ -491,15 +662,11 @@ function isEmptyBlock(
   block: MineflayerBlockHandle | null | undefined,
 ): boolean {
   if (block === null || block === undefined) return false;
-  return facts.isAirBlock(block);
+  return facts.isLiteralAirBlock(block);
 }
 
 function centerOfBlock(pos: TerrainBlockPos): Vec3 {
   return new Vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5);
-}
-
-function centerOfFootTarget(pos: TerrainBlockPos): Vec3 {
-  return new Vec3(pos.x + 0.5, pos.y + 1, pos.z + 0.5);
 }
 
 function posLabel(pos: TerrainBlockPos): string {

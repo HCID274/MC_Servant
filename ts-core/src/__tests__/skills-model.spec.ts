@@ -25,6 +25,7 @@ import {
   createSkillCall,
   createSkillRegistry,
   createToolchainEnsureExecutor,
+  evaluateEnsureCondition,
   getSkillDefinition,
   hasSkillDefinition,
   isCollectSkillParams,
@@ -244,6 +245,71 @@ describe("skills 模块契约", () => {
       "stone_pickaxe",
     ]);
     expect(calls).toEqual([{ itemName: "stick", count: 2 }]);
+  });
+
+  it("ensure condition checker（条件检查器） 应区分 gained baseline diff 与 has 当前总量", () => {
+    const facts = createFakeEnsureFacts();
+    const baseline = createConditionState([{ item_name: "cobblestone", count: 10 }]);
+    const current = createConditionState([{ item_name: "cobblestone", count: 12 }]);
+
+    expect(
+      evaluateEnsureCondition({
+        facts,
+        baseline,
+        current,
+        condition: { kind: "gained", itemName: "cobblestone", count: 5 },
+      }),
+    ).toMatchObject({
+      ok: false,
+      completed_count: 2,
+      target_count: 5,
+      missing_count: 3,
+    });
+    expect(
+      evaluateEnsureCondition({
+        facts,
+        baseline,
+        current,
+        condition: { kind: "has", itemName: "cobblestone", count: 10 },
+      }),
+    ).toMatchObject({
+      ok: true,
+      completed_count: 12,
+      target_count: 10,
+      missing_count: 0,
+    });
+  });
+
+  it("ensure condition checker（条件检查器） 应通过 facts 解析 gainedDropOf 和 tag 数量", () => {
+    const facts = createFakeEnsureFacts();
+    const current = createConditionState([
+      { item_name: "cobblestone", count: 6 },
+      { item_name: "oak_log", count: 3 },
+    ]);
+
+    expect(
+      evaluateEnsureCondition({
+        facts,
+        baseline: createConditionState([{ item_name: "cobblestone", count: 1 }]),
+        current,
+        condition: { kind: "gainedDropOf", blockName: "stone", count: 5 },
+      }),
+    ).toMatchObject({
+      ok: true,
+      completed_count: 5,
+      resolved_targets: ["cobblestone"],
+    });
+    expect(
+      evaluateEnsureCondition({
+        facts,
+        baseline: createConditionState([]),
+        current,
+        condition: { kind: "gainedTag", tagName: "logs", count: 3 },
+      }),
+    ).toMatchObject({
+      ok: true,
+      completed_count: 3,
+    });
   });
 
   it("ToolchainEnsure（工具链确保） 应能从空手编排到石镐装备", async () => {
@@ -479,6 +545,100 @@ describe("skills 模块契约", () => {
       expect.arrayContaining(["cutTree:1", "craft:wooden_pickaxe", "equip:wooden_pickaxe"]),
     );
     expect(actions).not.toContain("craft:stone_pickaxe");
+  });
+
+  it("ToolchainEnsure（工具链确保） 应在 mine action 前预检并补齐采掘工具", async () => {
+    const inventory: { item_name: string; count: number }[] = [{ item_name: "oak_log", count: 4 }];
+    const actions: string[] = [];
+    let tablePlaced = false;
+    const ensure = createToolchainEnsureExecutor({
+      facts: createFakeEnsureFacts(),
+      inventory: {
+        readInventoryItems: () => inventory,
+        countLogs: (items) =>
+          items.reduce((sum, item) => sum + (item.item_name === "oak_log" ? item.count : 0), 0),
+      },
+      async cutTree() {
+        throw new Error("preflight should use current materials before cutting trees");
+      },
+      async collect() {
+        throw new Error("preflight should not collect");
+      },
+      async place(params) {
+        actions.push(`place:${params.blockName}`);
+        tablePlaced = true;
+        return {
+          ok: true,
+          data: {
+            block_name: params.blockName,
+            completed_count: 1,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async craft(params) {
+        actions.push(`craft:${params.itemName}`);
+        if (params.itemName === "wooden_pickaxe" && !tablePlaced) {
+          return {
+            ok: false,
+            error: {
+              code: "missing_crafting_table",
+              message: "Craft target requires a nearby crafting table",
+              world_key: "minecraft:overworld",
+            },
+          };
+        }
+        addInventory(inventory, params.itemName, params.count);
+        return {
+          ok: true,
+          data: {
+            item_name: params.itemName,
+            completed_count: params.count,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async equip(params) {
+        actions.push(`equip:${params.itemName}`);
+        if (countInventory(inventory, params.itemName) <= 0) {
+          throw new Error(`missing_item:${params.itemName}`);
+        }
+        return {
+          skill: "equip",
+          item_name: params.itemName,
+          destination: "hand",
+          status: "equipped",
+          total_steps: 1,
+        };
+      },
+      async mine() {
+        throw new Error("preflight must not start mining");
+      },
+    });
+
+    const result = await ensure.ensureDependency({
+      failure: {
+        action: "mine",
+        params: { blockName: "stone", count: 5 },
+        code: "preflight_mine_equipment",
+        message: "ensure preflight mine equipment",
+      },
+      condition: { kind: "gainedDropOf", blockName: "stone", count: 5 },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        item_name: "wooden_pickaxe",
+        completed_count: 1,
+      },
+    });
+    expect(actions).toEqual([
+      "craft:wooden_pickaxe",
+      "place:crafting_table",
+      "craft:wooden_pickaxe",
+      "equip:wooden_pickaxe",
+    ]);
   });
 
   it("ToolchainEnsure（工具链确保） 应保留底层失败原因与动作摘要", async () => {
@@ -736,6 +896,17 @@ function countInventory(
   return inventory.reduce((sum, item) => sum + (item.item_name === itemName ? item.count : 0), 0);
 }
 
+function createConditionState(
+  inventory: readonly { readonly item_name: string; readonly count: number }[],
+) {
+  return Object.freeze({
+    world_key: "minecraft:overworld",
+    inventory: Object.freeze(inventory.map((item) => Object.freeze({ ...item }))),
+    main_hand_item_name: null,
+    nearby_block_names: Object.freeze(["crafting_table"]),
+  });
+}
+
 function createFakeEnsureFacts(): ToolchainEnsureFacts {
   return Object.freeze({
     resolveRequiredEquipment({ failure, inventory }) {
@@ -767,6 +938,17 @@ function createFakeEnsureFacts(): ToolchainEnsureFacts {
     },
     resolveCraftingTableBlockName() {
       return "crafting_table";
+    },
+    resolveBlockDropItemNames({ blockName }) {
+      return blockName === "stone" ? ["cobblestone"] : [blockName];
+    },
+    countInventoryItemsByTag({ tagName, inventory }) {
+      if (tagName !== "logs") {
+        return 0;
+      }
+      return inventory
+        .filter((item) => item.item_name.endsWith("_log"))
+        .reduce((sum, item) => sum + item.count, 0);
     },
   });
 }

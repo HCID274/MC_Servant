@@ -196,6 +196,7 @@ export function classifyFailureCode(code: string | undefined): FailureRecoveryCl
     case "unsafe_path":
     case "unreachable_target":
     case "drop_not_obtained":
+    case "condition_not_met":
       return "recoverable";
     case "unsupported_capability":
     case "runtime_adapter_error":
@@ -294,6 +295,8 @@ function createFailureCapsuleHint(input: {
       return "换安全路线或选择其他目标";
     case "drop_not_obtained":
       return "检查掉落与捡拾结果后换目标重试";
+    case "condition_not_met":
+      return "根据真实进度补齐缺口后复查完成条件";
     default:
       return "查看 diagnostics（诊断） 后决定是否换策略";
   }

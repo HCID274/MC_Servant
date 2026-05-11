@@ -5,18 +5,21 @@ import {
   type CollectSkillExecutionResult,
   type CollectSkillParams,
   type CollectSkillSkippedItem,
+  type SkillExecutionControl,
   createCollectSkillExecutionResult,
 } from "../../core-ports/skills.js";
-import { TERRAIN_ACTION_COST, configureTerrainAwareMovements } from "./movement-policy.js";
+import { createMineBlockFactReader } from "./mine-block-facts.js";
 import { matchesMinecraftItemName, normalizeMinecraftName } from "./naming.js";
-import { resolveGoalNearConstructor, resolveGoalNearXZConstructor } from "./pathfinder-goals.js";
+import { navigateTerrainToFoot, vec3LikeToTerrainFoot } from "./terrain-navigation.js";
 import type {
   MineflayerEntityHandle,
   MineflayerEntityPort,
   MineflayerInventoryPort,
+  MineflayerMiningPort,
   MineflayerMovementPort,
   MineflayerPathfinderApi,
   MineflayerPathfinderModule,
+  MineflayerPlacementPort,
   MineflayerVec3Like,
 } from "./types.js";
 
@@ -30,7 +33,9 @@ const COLLECT_PICKUP_GOAL_RANGE = 0.75;
 /** collect（捡拾） 技能需要的 Mineflayer（Minecraft 协议客户端） 能力端口。 */
 export type MineflayerCollectPort = MineflayerMovementPort &
   MineflayerEntityPort &
-  MineflayerInventoryPort;
+  MineflayerInventoryPort &
+  MineflayerMiningPort &
+  MineflayerPlacementPort;
 
 /** pickup（单实体捡拾） 的终态原因。 */
 type PickupOutcome =
@@ -59,54 +64,41 @@ export async function executeMineflayerCollect(input: {
   readonly pathfinderModule: MineflayerPathfinderModule;
   readonly params: Readonly<CollectSkillParams>;
   readonly worldKey: string | null;
+  readonly control: SkillExecutionControl;
 }): Promise<CollectSkillExecutionResult> {
+  input.control.throwIfAborted();
   const options = normalizeCollectDropsOptions(input.bot, input.params);
-  const movements = new input.pathfinderModule.Movements(input.bot, input.bot.registry);
-  configureCollectMovements(movements);
-  input.pathfinder.setMovements?.(movements);
+  input.pathfinder.stop?.();
+  input.pathfinder.setGoal?.(null);
+  void input.pathfinderModule;
 
   return collectDrops({
     bot: input.bot,
-    pathfinder: input.pathfinder,
-    pathfinderModule: input.pathfinderModule,
     worldKey: input.worldKey,
     options,
-  });
-}
-
-/** 配置 collect（捡拾） 移动策略：允许高成本地形处理，但禁止不稳定的一格塔垫高。 */
-function configureCollectMovements(movements: unknown): void {
-  configureTerrainAwareMovements(movements, {
-    canDig: true,
-    digCost: TERRAIN_ACTION_COST,
-    placeCost: TERRAIN_ACTION_COST,
+    control: input.control,
   });
 }
 
 /** 按锚点范围收集掉落物；对外仍承载 collect（捡拾） 技能语义。 */
 async function collectDrops(input: {
   readonly bot: MineflayerCollectPort;
-  readonly pathfinder: MineflayerPathfinderApi;
-  readonly pathfinderModule: MineflayerPathfinderModule;
   readonly worldKey: string | null;
   readonly options: CollectDropsOptions;
+  readonly control: SkillExecutionControl;
 }): Promise<CollectSkillExecutionResult> {
   const startedAt = Date.now();
   const inventoryBefore = countInventoryByName(input.bot);
   let totalSteps = 0;
   const skipped: CollectSkillSkippedItem[] = [];
+  const diagnostics: string[] = [];
   let options = input.options;
   let sawTargetEntity = findCollectTargetEntities(input.bot, options).length > 0;
 
-  await moveToCollectCenterIfNeeded({
-    bot: input.bot,
-    pathfinder: input.pathfinder,
-    pathfinderModule: input.pathfinderModule,
-    options,
-  });
-  totalSteps += 1;
+  totalSteps += await moveToCollectCenterIfNeeded(input.bot, options, diagnostics, input.control);
 
   await delay(AUTO_COLLECT_SETTLE_MS);
+  input.control.throwIfAborted();
   let settledTargets = findCollectTargetEntities(input.bot, options);
   sawTargetEntity ||= settledTargets.length > 0;
   const autoCollected = createCollectedDiff(options.itemName, inventoryBefore, input.bot);
@@ -128,6 +120,7 @@ async function collectDrops(input: {
   }
 
   while (Date.now() - startedAt < options.timeoutMs) {
+    input.control.throwIfAborted();
     const targets = findCollectTargetEntities(input.bot, options);
     sawTargetEntity ||= targets.length > 0;
 
@@ -157,11 +150,11 @@ async function collectDrops(input: {
       const beforeAttempt = countInventoryByName(input.bot);
       const outcome = await pickupEntity({
         bot: input.bot,
-        pathfinder: input.pathfinder,
-        pathfinderModule: input.pathfinderModule,
         ...(options.itemName === undefined ? {} : { itemName: options.itemName }),
         target,
         deadlineMs: startedAt + options.timeoutMs,
+        diagnostics,
+        control: input.control,
       });
       totalSteps += 1;
 
@@ -207,19 +200,20 @@ async function collectDrops(input: {
   throw new Error(
     `Mineflayer did not collect ${options.itemName ?? "any item"}; skipped=${formatSkippedItems(
       skipped,
-    )}`,
+    )}; diagnostics=${diagnostics.slice(-12).join("|")}`,
   );
 }
 
 /** 执行 pickup（单实体捡拾），只处理明确实体，不扫描周围其他掉落物。 */
 async function pickupEntity(input: {
   readonly bot: MineflayerCollectPort;
-  readonly pathfinder: MineflayerPathfinderApi;
-  readonly pathfinderModule: MineflayerPathfinderModule;
   readonly itemName?: string;
   readonly target: MineflayerEntityHandle;
   readonly deadlineMs: number;
+  readonly diagnostics: string[];
+  readonly control: SkillExecutionControl;
 }): Promise<PickupOutcome> {
+  input.control.throwIfAborted();
   const entityId = input.target.id;
   const currentTarget = findEntityById(input.bot, entityId);
 
@@ -232,7 +226,9 @@ async function pickupEntity(input: {
 
   const inventoryBefore = countInventoryByName(input.bot);
 
-  if (!(await goToPickupTarget(input.pathfinder, input.pathfinderModule, currentTarget.position))) {
+  if (
+    !(await goToPickupTarget(input.bot, currentTarget.position, input.diagnostics, input.control))
+  ) {
     return {
       status: "skipped",
       skipped: createSkippedItem(entityId, "unreachable"),
@@ -246,6 +242,7 @@ async function pickupEntity(input: {
 
   try {
     while (Date.now() < input.deadlineMs) {
+      input.control.throwIfAborted();
       const collected = createCollectedDiff(input.itemName, inventoryBefore, input.bot);
 
       if (collected.length > 0) {
@@ -297,25 +294,27 @@ async function pickupEntity(input: {
 }
 
 async function goToPickupTarget(
-  pathfinder: MineflayerPathfinderApi,
-  pathfinderModule: MineflayerPathfinderModule,
+  bot: MineflayerCollectPort,
   position: MineflayerVec3Like,
+  diagnostics: string[],
+  control: SkillExecutionControl,
 ): Promise<boolean> {
-  const GoalNearXZ = resolveGoalNearXZConstructor(pathfinderModule);
-  if (GoalNearXZ !== undefined) {
-    try {
-      await pathfinder.goto(new GoalNearXZ(position.x, position.z, COLLECT_PICKUP_GOAL_RANGE));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  const GoalNear = resolveGoalNearConstructor(pathfinderModule);
   try {
-    await pathfinder.goto(new GoalNear(position.x, position.y, position.z, 1));
+    const facts = createMineBlockFactReader(bot.registry);
+    await navigateTerrainToFoot({
+      bot,
+      facts,
+      targetFoot: vec3LikeToTerrainFoot(position),
+      goalRange: COLLECT_PICKUP_GOAL_RANGE,
+      allowPlaceUp: true,
+      allowDig: true,
+      diagnostics,
+      diagnosticPrefix: "collect_pickup",
+      control,
+    });
     return true;
-  } catch {
+  } catch (error) {
+    diagnostics.push(`collect_pickup_route_failed:${getErrorMessage(error)}`);
     return false;
   }
 }
@@ -367,33 +366,38 @@ function expandCollectDropsOptions(options: CollectDropsOptions): CollectDropsOp
 }
 
 /** 当传入 center（中心点） 时先靠近锚点，再执行范围扫描。 */
-async function moveToCollectCenterIfNeeded(input: {
-  readonly bot: MineflayerCollectPort;
-  readonly pathfinder: MineflayerPathfinderApi;
-  readonly pathfinderModule: MineflayerPathfinderModule;
-  readonly options: CollectDropsOptions;
-}): Promise<void> {
-  const botPosition = input.bot.entity?.position;
-  if (input.options.useLiveBotCenter) {
-    return;
+async function moveToCollectCenterIfNeeded(
+  bot: MineflayerCollectPort,
+  options: CollectDropsOptions,
+  diagnostics: string[],
+  control: SkillExecutionControl,
+): Promise<number> {
+  control.throwIfAborted();
+  const botPosition = bot.entity?.position;
+  if (options.useLiveBotCenter) {
+    return 0;
   }
 
   if (
     botPosition !== undefined &&
-    calculateDistanceSquared(botPosition, input.options.center) <= input.options.radius ** 2
+    calculateDistanceSquared(botPosition, options.center) <= options.radius ** 2
   ) {
-    return;
+    return 0;
   }
 
-  const GoalNear = resolveGoalNearConstructor(input.pathfinderModule);
-  await input.pathfinder.goto(
-    new GoalNear(
-      input.options.center.x,
-      input.options.center.y,
-      input.options.center.z,
-      Math.min(1, input.options.radius),
-    ),
-  );
+  const facts = createMineBlockFactReader(bot.registry);
+  const navigation = await navigateTerrainToFoot({
+    bot,
+    facts,
+    targetFoot: vec3LikeToTerrainFoot(options.center),
+    goalRange: Math.max(1, Math.min(options.radius, 3)),
+    allowPlaceUp: true,
+    allowDig: true,
+    diagnostics,
+    diagnosticPrefix: "collect_center",
+    control,
+  });
+  return navigation.totalSteps;
 }
 
 /** 判断未知值是否为普通对象。 */
@@ -736,6 +740,10 @@ function resolveCollectCenter(
 /** 格式化跳过记录，作为失败诊断的一部分。 */
 function formatSkippedItems(skipped: readonly CollectSkillSkippedItem[]): string {
   return skipped.map((item) => `${String(item.entityId)}:${item.reason}`).join(",");
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** 等待指定毫秒数。 */

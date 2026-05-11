@@ -1434,16 +1434,26 @@ async function refreshResourceServiceByRadiusLadder(
   resourceService: ResourceServiceBoundary,
   resourceKey: string,
 ): Promise<void> {
-  const cached = resourceService.query(resourceKey, 1);
+  if (resourceKey === "tree" && resourceService.classifyTreeClusters().accepted.length > 0) {
+    return;
+  }
 
-  if (cached.status === "found") {
+  if (resourceKey !== "tree" && resourceService.query(resourceKey, 1).status === "found") {
     return;
   }
 
   for (const radius of [16, 32, 64] as const) {
     const refreshed = await resourceService.refresh(resourceKey, radius);
 
-    if (refreshed.status === "found" || refreshed.status === "unsupported_resource_key") {
+    if (resourceKey === "tree" && resourceService.classifyTreeClusters().accepted.length > 0) {
+      return;
+    }
+
+    if (resourceKey !== "tree" && refreshed.status === "found") {
+      return;
+    }
+
+    if (refreshed.status === "unsupported_resource_key") {
       return;
     }
   }

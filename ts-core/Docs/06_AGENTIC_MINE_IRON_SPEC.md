@@ -246,7 +246,7 @@ Phase 1（第一阶段）可以使用 recipe allowlist（配方白名单）限�
 
 stone（石头） 太常见,不得进入 ResourceService（资源服务）资源簇,避免缓存被低价值高频方块污染。采集圆石时直接在 runtime（运行时） 读取附近最近可挖 `stone`（石头）/等价石头目标,成功标准看库存 `cobblestone`（圆石） 是否增加。
 
-T-059（任务） 的最小执行链保持这条边界：stone（石头） 只走 runtime scan（运行时扫描）；iron_ore（铁矿） / deepslate_iron_ore（深层铁矿） 先走 ResourceService（资源服务） 具体方块名簇。两类目标最终都由 runtime（运行时） 用 StairBFSPlanner（阶梯广度优先规划器） 生成 8 到 16 步安全短段并按背包增量确认。
+T-059（任务） 的最小执行链保持这条边界：stone（石头） 只走 runtime scan（运行时扫描）；iron_ore（铁矿） / deepslate_iron_ore（深层铁矿） 先走 ResourceService（资源服务） 具体方块名簇。当前路线已统一到 runtime/transport 的 mine-bfs / terrain-router：由执行层根据实时方块事实生成安全动作路线，并按背包增量确认。
 
 ### 5.4 完成标准
 
@@ -421,7 +421,7 @@ if scanNearbyOre(current):
 |------|------|
 | WorldScanner（世界扫描器） | 读取方块、液体、矿石、洞穴 |
 | SafetyChecker（安全检查器） | 判断能否站、能否挖、是否危险 |
-| StairBFSPlanner（阶梯广度优先规划器） | 生成阶梯路线 |
+| mine-bfs / terrain-router（自研动作路由） | 生成挖掘、平移、下落、跳上一格、垫高等安全动作路线 |
 | OreHandler（矿石处理器） | 处理路线附近矿石 |
 | Executor（执行器） | 挖掘、移动、必要时放方块 |
 

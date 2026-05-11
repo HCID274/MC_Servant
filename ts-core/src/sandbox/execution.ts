@@ -17,6 +17,8 @@ import type {
   SandboxOwnerContext,
 } from "../core-ports/sandbox.js";
 import type {
+  EnsureConditionEvaluation,
+  EnsureConditionStateSnapshot,
   SkillName,
   SkillParamsByName,
   ToolchainCapabilityName,
@@ -65,6 +67,8 @@ type SandboxHostCallResult = Readonly<Record<string, unknown>>;
 
 type SandboxReadonlyHostCallResult =
   | Readonly<Record<string, unknown>>
+  | EnsureConditionStateSnapshot
+  | EnsureConditionEvaluation
   | readonly Readonly<Record<string, unknown>>[]
   | string
   | number
@@ -523,6 +527,7 @@ export async function executeSandboxCodeRequest(input: {
   request: SandboxExecutionRequest;
   facade: SandboxFacadeExecutionAdapter;
   task?: Partial<SandboxExecutionTaskContext>;
+  signal?: AbortSignal;
   now?: () => number;
 }): Promise<SandboxExecutionResult> {
   const now = input.now ?? Date.now;
@@ -556,6 +561,24 @@ export async function executeSandboxCodeRequest(input: {
       },
       error,
     });
+
+  const finishInterrupted = (error: AbortError): SandboxExecutionInterrupted =>
+    createSandboxExecutionInterrupted({
+      job_id: input.request.job_id,
+      bot_id: input.request.bot_id,
+      intent_epoch: input.request.intent_epoch,
+      log_ref: input.request.log_ref,
+      ...(input.request.code_ref !== undefined ? { code_ref: input.request.code_ref } : {}),
+      phase_logs: phaseLogs,
+      step_results: stepResults,
+      summary: {
+        total_steps: stepResults.length,
+        duration_ms: Math.max(0, now() - startedAt),
+      },
+      error,
+    });
+
+  const removeExternalAbortListener = attachExternalAbortSignal(input.signal, controlState);
 
   const staticCheckError = checkSandboxSourceStaticPolicy(input.request.code);
   pushPhaseLog({
@@ -713,8 +736,13 @@ export async function executeSandboxCodeRequest(input: {
       ms: Math.max(0, now() - startedAt),
     });
 
+    if (sandboxError.name === "AbortError") {
+      return finishInterrupted(sandboxError);
+    }
+
     return finishFailure(sandboxError);
   } finally {
+    removeExternalAbortListener();
     isolate?.dispose();
   }
 }
@@ -788,7 +816,7 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
       if (condition === null || typeof condition !== "object") {
         throw new Error("ensure condition must be an until.* condition");
       }
-      if (!["gained", "gainedTag", "has", "equipped", "placed"].includes(condition.kind)) {
+      if (!["gained", "gainedTag", "gainedDropOf", "has", "equipped", "placed"].includes(condition.kind)) {
         throw new Error("unsupported ensure condition: " + String(condition.kind));
       }
       if (condition.kind === "gained" || condition.kind === "has") {
@@ -806,6 +834,14 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
           throw new Error("invalid until.gainedTag condition");
         }
         return { kind: "gainedTag", tagName, count };
+      }
+      if (condition.kind === "gainedDropOf") {
+        const blockName = String(condition.blockName ?? condition.block_name ?? "").trim();
+        const count = Number(condition.count);
+        if (blockName.length === 0 || !Number.isInteger(count) || count <= 0) {
+          throw new Error("invalid until.gainedDropOf condition");
+        }
+        return { kind: "gainedDropOf", blockName, count };
       }
       if (condition.kind === "equipped") {
         const itemName = String(condition.itemName ?? condition.item_name ?? "").trim();
@@ -844,6 +880,7 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
     const __readTarget = (data, condition) => {
       if (condition?.kind === "gained" || condition?.kind === "has" || condition?.kind === "equipped") return condition.itemName;
       if (condition?.kind === "gainedTag") return condition.tagName;
+      if (condition?.kind === "gainedDropOf") return data?.item_name ?? data?.resolved_targets?.[0] ?? condition.blockName;
       if (condition?.kind === "placed") return condition.blockName;
       if (data !== null && typeof data === "object") {
         return data.item_name ?? data.block_name ?? data.collected_item_name ?? data.log_block_name;
@@ -986,15 +1023,69 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
     };
     until.gained = (itemName, count) => Object.freeze({ kind: "gained", itemName, count });
     until.gainedTag = (tagName, count) => Object.freeze({ kind: "gainedTag", tagName, count });
+    until.gainedDropOf = (blockName, count) => Object.freeze({ kind: "gainedDropOf", blockName, count });
     until.has = (itemName, count) => Object.freeze({ kind: "has", itemName, count });
     until.equipped = (itemName) => Object.freeze({ kind: "equipped", itemName });
     until.placed = (blockName) => Object.freeze({ kind: "placed", blockName });
+    const __captureConditionState = () => __sandboxRead("system.captureConditionState", []);
+    const __evaluateCondition = (condition, baseline, current) =>
+      __sandboxRead("system.evaluateCondition", [condition, baseline, current]);
+    const __createConditionFailure = (condition, evaluation) => Object.freeze({
+      action: "ensure",
+      params: { condition },
+      code: "condition_not_met",
+      message: "ensure condition not met",
+      details: {
+        condition,
+        baseline: evaluation.baseline,
+        current: evaluation.current,
+        completed_count: evaluation.completed_count,
+        target_count: evaluation.target_count,
+        missing_count: evaluation.missing_count,
+        resolved_targets: evaluation.resolved_targets,
+        evaluation
+      }
+    });
+    const __createEnsureConditionSuccess = (evaluation, actionResult, recovered) => Object.freeze({
+      ok: true,
+      data: {
+        skill: "ensure",
+        completed_count: evaluation.completed_count,
+        target_count: evaluation.target_count,
+        item_name: evaluation.resolved_targets?.[0],
+        resolved_targets: evaluation.resolved_targets,
+        condition: evaluation.condition,
+        condition_evaluation: evaluation,
+        action_result: actionResult,
+        ...(recovered === undefined ? {} : { recovery: recovered })
+      }
+    });
+    const __runEnsurePreflight = async (condition) => {
+      if (condition.kind !== "gainedDropOf") {
+        return null;
+      }
+      return __sandboxTryCall("bot.ensure", [{
+        failure: {
+          action: "mine",
+          params: { blockName: condition.blockName, count: condition.count },
+          code: "preflight_mine_equipment",
+          message: "ensure preflight mine equipment"
+        },
+        condition
+      }]);
+    };
     const ensure = async (action, condition) => {
       if (typeof action !== "function") {
         throw new Error("ensure first argument must be an async action function");
       }
       const normalizedCondition = __normalizeEnsureCondition(condition);
       __lastEnsureCondition = normalizedCondition;
+      const preflight = await __runEnsurePreflight(normalizedCondition);
+      if (__isFailedResult(preflight)) {
+        __lastActionResult = preflight;
+        return preflight;
+      }
+      const baseline = await __captureConditionState();
       let lastResult = null;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         __ensureDepth += 1;
@@ -1008,7 +1099,15 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
         }
         __lastActionResult = lastResult;
         if (!__isFailedResult(lastResult)) {
-          return lastResult;
+          const current = await __captureConditionState();
+          const evaluation = await __evaluateCondition(normalizedCondition, baseline, current);
+          if (evaluation.ok === true) {
+            const success = __createEnsureConditionSuccess(evaluation, lastResult, undefined);
+            __lastActionResult = success;
+            return success;
+          }
+          lastResult = { ok: false, error: __createConditionFailure(normalizedCondition, evaluation) };
+          __lastActionResult = lastResult;
         }
         const recovered = await __sandboxTryCall("bot.ensure", [{
           failure: lastResult.error,
@@ -1018,12 +1117,21 @@ function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string
           __lastActionResult = recovered;
           return recovered;
         }
+        const current = await __captureConditionState();
+        const evaluation = await __evaluateCondition(normalizedCondition, baseline, current);
+        if (evaluation.ok === true) {
+          const success = __createEnsureConditionSuccess(evaluation, lastResult, recovered);
+          __lastActionResult = success;
+          return success;
+        }
+        lastResult = { ok: false, error: __createConditionFailure(normalizedCondition, evaluation) };
+        __lastActionResult = lastResult;
       }
-      lastResult = {
+      lastResult = __isFailedResult(lastResult) ? lastResult : {
         ok: false,
         error: {
-          code: "unsupported_capability",
-          message: "ensure retry limit reached",
+          code: "condition_not_met",
+          message: "ensure condition not met after retry limit",
           world_key: null,
           details: { last_result: lastResult, condition: normalizedCondition }
         }
@@ -1450,6 +1558,37 @@ async function handleSandboxHostRead(input: {
     return Object.freeze({ slept_ms: ms });
   }
 
+  if (input.method === "system.captureConditionState") {
+    if (typeof input.facade.captureConditionState !== "function") {
+      throw new Error("ensure condition state reader is not configured in current sandbox");
+    }
+
+    return trackSandboxFacadeCall(
+      input.controlState,
+      Promise.resolve(input.facade.captureConditionState(control)),
+    );
+  }
+
+  if (input.method === "system.evaluateCondition") {
+    if (typeof input.facade.evaluateCondition !== "function") {
+      throw new Error("ensure condition evaluator is not configured in current sandbox");
+    }
+
+    return trackSandboxFacadeCall(
+      input.controlState,
+      Promise.resolve(
+        input.facade.evaluateCondition(
+          {
+            condition: cloneReadonlyValue(input.args[0] ?? {}) as never,
+            baseline: cloneReadonlyValue(input.args[1] ?? {}) as never,
+            current: cloneReadonlyValue(input.args[2] ?? {}) as never,
+          },
+          control,
+        ),
+      ),
+    ) as Promise<SandboxReadonlyHostCallResult>;
+  }
+
   throw new Error(`Unsupported readonly Facade method: ${input.method}`);
 }
 
@@ -1762,6 +1901,29 @@ function abortSandboxFacadeCalls(
   }
 }
 
+function attachExternalAbortSignal(
+  signal: AbortSignal | undefined,
+  state: SandboxExecutionControlState,
+): () => void {
+  if (signal === undefined) {
+    return () => undefined;
+  }
+
+  const abort = (): void => {
+    markSandboxTerminalError(state, createSandboxAbortError(signal.reason));
+  };
+
+  if (signal.aborted) {
+    abort();
+    return () => undefined;
+  }
+
+  signal.addEventListener("abort", abort, { once: true });
+  return () => {
+    signal.removeEventListener("abort", abort);
+  };
+}
+
 async function trackSandboxFacadeCall<TValue>(
   state: SandboxExecutionControlState,
   call: Promise<TValue>,
@@ -1773,10 +1935,25 @@ async function trackSandboxFacadeCall<TValue>(
   state.activeFacadeCalls.add(trackedCall);
 
   try {
-    return await call;
+    return await Promise.race([call, waitForSandboxAbort(state)]);
   } finally {
     state.activeFacadeCalls.delete(trackedCall);
   }
+}
+
+function waitForSandboxAbort(state: SandboxExecutionControlState): Promise<never> {
+  const signal = state.abortController.signal;
+  if (signal.aborted) {
+    return Promise.reject(readAbortReason(signal.reason));
+  }
+
+  return new Promise<never>((_, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      reject(readAbortReason(signal.reason));
+    };
+    signal.addEventListener("abort", onAbort);
+  });
 }
 
 async function waitForActiveFacadeCalls(
@@ -1894,6 +2071,10 @@ function createRuntimeSandboxError(
   error: unknown,
   limits: SandboxExecutionResourceLimits,
 ): SandboxExecutionError {
+  if (isAbortError(error)) {
+    return createSandboxAbortError(error.reason ?? error.message);
+  }
+
   if (error instanceof Error && /timed out|timeout/i.test(error.message)) {
     return createSandboxTimeoutError(limits);
   }
@@ -1924,6 +2105,33 @@ function createSandboxTimeoutError(limits: SandboxExecutionResourceLimits): Sand
     recoverable: false,
     timeout_ms: limits.timeout_ms,
   });
+}
+
+function createSandboxAbortError(reason: unknown): AbortError {
+  const message =
+    reason instanceof Error
+      ? reason.message
+      : typeof reason === "string" && reason.trim().length > 0
+        ? reason
+        : "Sandbox execution aborted";
+  return createSandboxError({
+    name: "AbortError",
+    message,
+    recoverable: false,
+    reason: message,
+  });
+}
+
+function readAbortReason(reason: unknown): SandboxExecutionError {
+  return isSandboxExecutionError(reason) ? reason : createSandboxAbortError(reason);
+}
+
+function isAbortError(error: unknown): error is AbortError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { readonly name?: unknown }).name === "AbortError"
+  );
 }
 
 function isSandboxExecutionError(value: unknown): value is SandboxExecutionError {

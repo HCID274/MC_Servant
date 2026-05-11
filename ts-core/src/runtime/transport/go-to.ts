@@ -1,12 +1,12 @@
 import {
   type GoToSkillExecutionResult,
   type GoToSkillParams,
+  type SkillExecutionControl,
   createGoToSkillExecutionResult,
 } from "../../core-ports/skills.js";
 import { createMineBlockFactReader } from "./mine-block-facts.js";
-import { TERRAIN_ACTION_COST, configureTerrainAwareMovements } from "./movement-policy.js";
-import { executeTerrainRouteAction, isTerrainBotAtFoot } from "./terrain-action-executor.js";
-import { type TerrainBlockPos, planTerrainRoute } from "./terrain-router.js";
+import { navigateTerrainToFoot, vec3LikeToTerrainFoot } from "./terrain-navigation.js";
+import type { TerrainBlockPos } from "./terrain-router.js";
 import type {
   MineflayerInventoryPort,
   MineflayerMiningPort,
@@ -30,7 +30,9 @@ export async function executeMineflayerGoTo(input: {
   readonly pathfinderModule: MineflayerPathfinderModule;
   readonly params: Readonly<GoToSkillParams>;
   readonly worldKey: string | null;
+  readonly control: SkillExecutionControl;
 }): Promise<GoToSkillExecutionResult> {
+  input.control.throwIfAborted();
   input.pathfinder.stop?.();
   input.pathfinder.setGoal?.(null);
   void input.pathfinderModule;
@@ -38,42 +40,21 @@ export async function executeMineflayerGoTo(input: {
   const facts = createMineBlockFactReader(input.bot.registry);
   const diagnostics: string[] = [];
   const targetFoot = readTargetFoot(input.params);
-  const startFoot = readBotFoot(input.bot);
-
-  const planResult = planTerrainRoute({
-    bot: input.bot,
-    facts,
-    startFoot,
-    targetFoot,
-    goalRange: GOTO_GOAL_RANGE,
-    allowPlaceUp: true,
-    allowDig: true,
-  });
-  diagnostics.push(...planResult.diagnostics);
-
-  if (planResult.plan === null) {
-    throw createGoToFailure({
-      code: "terrain_route_not_found",
-      params: input.params,
-      diagnostics,
-      position: input.bot.entity?.position,
-    });
-  }
 
   let totalSteps = 0;
   try {
-    for (const action of planResult.plan.actions) {
-      await executeTerrainRouteAction({
-        bot: input.bot,
-        facts,
-        action,
-        diagnostics,
-      });
-      totalSteps += 1;
-    }
-    if (!isTerrainBotAtFoot(input.bot, planResult.plan.finalFoot)) {
-      throw new Error(`terrain_final_foot_mismatch:${posLabel(planResult.plan.finalFoot)}`);
-    }
+    const navigation = await navigateTerrainToFoot({
+      bot: input.bot,
+      facts,
+      targetFoot,
+      goalRange: GOTO_GOAL_RANGE,
+      allowPlaceUp: true,
+      allowDig: true,
+      diagnostics,
+      diagnosticPrefix: "go_to",
+      control: input.control,
+    });
+    totalSteps = navigation.totalSteps;
   } catch (error) {
     throw createGoToFailure({
       code: getErrorMessage(error).split(":")[0] ?? "terrain_route_execution_failed",
@@ -84,7 +65,7 @@ export async function executeMineflayerGoTo(input: {
     });
   }
 
-  diagnostics.push(`terrain_go_to_completed:steps=${totalSteps};cost=${planResult.plan.cost}`);
+  diagnostics.push(`terrain_go_to_completed:steps=${totalSteps}`);
   return createGoToSkillExecutionResult(input.params, {
     world_key: input.worldKey,
     total_steps: totalSteps,
@@ -92,30 +73,8 @@ export async function executeMineflayerGoTo(input: {
   });
 }
 
-/** 旧 digBlockAt 仍复用该移动策略；在线 goTo 默认不再走 pathfinder。 */
-export function configureGoToMovements(movements: unknown): void {
-  configureTerrainAwareMovements(movements, {
-    canDig: true,
-    digCost: TERRAIN_ACTION_COST,
-    placeCost: TERRAIN_ACTION_COST,
-  });
-}
-
 function readTargetFoot(params: Readonly<GoToSkillParams>): TerrainBlockPos {
-  return Object.freeze({
-    x: Math.floor(params.x),
-    y: Math.floor(params.y),
-    z: Math.floor(params.z),
-  });
-}
-
-function readBotFoot(bot: GoToBot): TerrainBlockPos {
-  const position = bot.entity?.position ?? { x: 0, y: 0, z: 0 };
-  return Object.freeze({
-    x: Math.floor(position.x),
-    y: Math.floor(position.y),
-    z: Math.floor(position.z),
-  });
+  return vec3LikeToTerrainFoot(params);
 }
 
 function createGoToFailure(input: {
@@ -147,10 +106,6 @@ function createGoToFailure(input: {
       diagnostics: input.diagnostics,
     },
   });
-}
-
-function posLabel(pos: TerrainBlockPos): string {
-  return `${pos.x},${pos.y},${pos.z}`;
 }
 
 function getErrorMessage(error: unknown): string {

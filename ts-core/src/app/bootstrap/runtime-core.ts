@@ -21,6 +21,7 @@ import {
   createCutTreeSkillExecutor,
   createMineSkillExecutor,
   createToolchainEnsureExecutor,
+  evaluateEnsureCondition,
 } from "../../skills/index.js";
 import { formatSkillRecentEventLine } from "../../skills/recent-event.js";
 import { createResourceService } from "../../world-model/index.js";
@@ -63,9 +64,10 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
       bootstrap.runtime_resources.mineflayer_transport.descriptor,
       dependencies.transport,
     );
+    const runtimeTransport = created.transport;
     created.resourceService = createResourceService({
-      refreshPort: created.transport,
-      worldKeyPort: created.transport,
+      refreshPort: runtimeTransport,
+      worldKeyPort: runtimeTransport,
     });
     const externalAuth = createAppRuntimeCoreExternalAuth(bootstrap, dependencies);
     const externalAuthPlan =
@@ -118,6 +120,11 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
         place: created.transport.place.bind(created.transport),
         cutTree: cutTreeSkill,
         ensureDependency: ensureToolchain.ensureDependency,
+        evaluateCondition: (input) =>
+          evaluateEnsureCondition({
+            ...input,
+            facts: runtimeTransport.createToolchainEnsureFacts(),
+          }),
       },
       externalAuth,
       externalAuthPlan,
@@ -129,6 +136,7 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
             request: sandboxInput.request,
             facade: sandboxInput.facade,
             task: sandboxInput.task,
+            signal: sandboxInput.signal,
           }),
       },
       recentEventFormatter: createOnlineRuntimeRecentEventFormatter(),

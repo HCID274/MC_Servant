@@ -459,6 +459,14 @@
 - 关键决策: 用统一 `LlmCallMetrics`（LLM 调用指标） 契约挂在诊断记录和 JSONL meta（元信息） 上,而不是在 triage（分诊）/chat（闲聊）/plan（规划）/brain（大脑） 各自维护私有字段;非 streaming（非流式）链路明确 `ttft_ms:null` 且带 `ttft_unavailable:"non_streaming"`（首字延迟不可得原因）,不以总耗时伪造首字延迟;`diagnostics_write_ms`（诊断写入耗时） 在 app（应用装配）本地日志写入后回填到摘要和 JSONL meta（元信息）,同时保持完整 transcript（原始对话记录） 只写入脱敏后的 llm JSONL（LLM 结构化日志）,状态接口只读摘要
 - 架构冲突: 无
 
+## T-081R | 2026-05-11 | ensure 默认验收后的 runtime/transport 实服返修
+
+- 涉及模块: conversation/llm（对话大语言模型） Plan prompt（规划提示词）,sandbox（沙箱） ensure/until（确保/完成条件）执行语义,skills（技能） mine/cutTree（挖掘/砍树）,runtime/transport（运行时传输层） terrain-router/terrain-navigation/foot-step/mine/place/collect/dig-block/progress-watchdog（地形路由/导航/脚位移动/挖掘/放置/捡拾/按坐标挖掘/进展看门狗）,BotActor（机器人执行代理）中断控制,相关回归测试
+- A 拆解依据: 用户要求 T-081 把 `ensure(action, condition)` 升级为真实条件检查器,Plan 默认对资源/装备/放置类目标使用 ensure + until 做最终验收,并在后续实服中连续发现 cutTree 旧寻路、资源可达预筛、Mineflayer pathfinder（Minecraft 寻路库）遗留、collect（捡拾）停住、terrain-router（地形路由）预算与权重、取消不生效、垫高薄方块/自放置脚手架、普通 place（放置工作台）站进目标格与放置超时等问题;边界限定 conversation/llm、sandbox、skills、runtime/transport、core-ports 与 diagnostics/test,不改 PG schema（数据库结构）、外部 API、event_log（事件日志）,不把 MC（Minecraft）事实硬编码进 prompt 或业务代码
+- C 审查结论: 曾打回 1 次。首轮返修总体方向符合架构,但普通 `place("crafting_table")`（放置工作台） 在 approach（接近）期间可能被垫高/挖掘改掉主手后仍直接 `placeBlock`（放方块）,`waitForPromiseOrCondition`（等待 promise 或条件） 在 dig/place（挖掘/放置）底层 promise 未结束时不能优先响应取消;同时 Reviewer 曾误把 cutTree（砍树）整簇删除和 collect（捡拾）高度 3 作为问题,用户确认原木连锁掉落要求删除整簇、collect 高度口径就是 3 后撤回这两项。返修后普通 place 每次 `placeBlock` 前重新 resolve/equip（解析/装备） crafting table,watchdog 等待接入 `throwIfAborted`,mine/terrain dig 等路径透传取消,collect 源码与测试保持 3 格高度口径。当前 `git diff --check` 通过,`pnpm typecheck` 通过,`pnpm lint` 通过,定向 Vitest 3 个文件 148 passed,`bash scripts/pre_review.sh` 全绿,36 个 test file /468 passed/7 skipped;未发现单写者、聊天驱动、双端同步或本地执行闭环被破坏
+- 关键决策: 选择保留 `mine`/`goTo`/`cutTree`/`collect`/`place` 等对外高内聚能力接口,在 runtime/transport 内统一自研 terrain navigation（地形导航）与 foot-step（脚位移动）底层,删除旧 mine-queue/StairBFS/pathfinder goal（旧挖掘队列/阶梯 BFS/寻路目标）主路径;取消能力通过 `SkillExecutionControl`（技能执行控制） 标准化到 skill/transport 契约并由 BotActor 的 AbortController（中止控制器） 触发;自放置脚手架只用进程内内存记录,不落库、不跨进程恢复;普通 place 拆分 target（放置目标格） 与 approachFoot（站位格）,并通过真实方块复查处理 Mineflayer blockUpdate（方块更新）超时
+- 架构冲突: 无
+
 ## T-065 | 2026-05-05 | AsyncDiagnosticSink（异步诊断汇点）旁路写入
 
 - 涉及模块: diagnostics（诊断） AsyncDiagnosticSink（异步诊断汇点）/contracts（契约）/JSONL（结构化日志）摘要工厂,app entrypoint（应用入口）在线 LLM（大语言模型）诊断装配,conversation/llm（对话大语言模型） 与 BrainWorker（大脑工作线程） LLM（大语言模型）诊断回调路径,`/api/status`（状态接口） LLM（大语言模型）摘要,Docs/04_CONVERSATION_SPEC.md（对话规格文档）/Docs/05_DATA_SPEC.md（数据规格文档）,相关测试

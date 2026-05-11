@@ -3,14 +3,21 @@ import {
   type MineSkillExecutionRequest,
   type MineSkillExecutionResult,
   type MineSkillTargetCandidate,
+  type SkillExecutionControl,
   createMineSkillExecutionResult,
 } from "../../core-ports/skills.js";
-import { stepToFoot } from "./foot-step.js";
 import { executeMineRouteAction, isBotAtFoot } from "./mine-action-executor.js";
-import { type MineBlockPos, type MineRouteTarget, planMineRoute } from "./mine-bfs.js";
+import {
+  type MineBlockPos,
+  type MineRouteAction,
+  type MineRouteTarget,
+  planMineRoute,
+} from "./mine-bfs.js";
 import { type MineBlockFactReader, createMineBlockFactReader } from "./mine-block-facts.js";
-import { type PlannedMineAction, planMineQueueWithDiagnostics } from "./mine-queue.js";
 import { prepareHandForMineDig } from "./mine-tool-policy.js";
+import { waitForPromiseOrCondition } from "./progress-watchdog.js";
+import { navigateTerrainToFoot } from "./terrain-navigation.js";
+import type { TerrainRouteBudget } from "./terrain-router.js";
 import type {
   MineflayerBlockHandle,
   MineflayerInventoryPort,
@@ -30,13 +37,34 @@ export type MineflayerMinePort = MineflayerMovementPort &
 type MineflayerMineInventoryPort = MineflayerMinePort & MineflayerInventoryPort;
 
 const MINE_SETTLE_MS = 250;
-const MINE_DIG_TIMEOUT_MS = 10_000;
+const MINE_DIG_IDLE_TIMEOUT_MS = 15_000;
 const MINE_LOOK_TIMEOUT_MS = 3_000;
-const MINE_LEGACY_STEP_TIMEOUT_MS = 5_000;
 const MINE_POLL_MS = 50;
 const SCAN_RADIUS = 16;
 const SCAN_COUNT = 32;
 const POST_DIG_VERIFY_TIMEOUT_MS = 1_000;
+const MINE_DYNAMIC_FALLBACK_APPROACH_LIMIT = 8;
+const MINE_SUPPLIED_FALLBACK_APPROACH_LIMIT = 16;
+const MINE_DYNAMIC_FALLBACK_ROUTE_BUDGET: TerrainRouteBudget = Object.freeze({
+  maxTotalExpandedStates: 24_000,
+  maxPlanningMs: 400,
+  phaseNoProgressStepLimits: Object.freeze({
+    natural: 2,
+    light_dig: 3,
+    light_place: 3,
+    relaxed: 4,
+  }),
+});
+const MINE_SUPPLIED_FALLBACK_ROUTE_BUDGET: TerrainRouteBudget = Object.freeze({
+  maxTotalExpandedStates: 32_000,
+  maxPlanningMs: 400,
+  phaseNoProgressStepLimits: Object.freeze({
+    natural: 3,
+    light_dig: 5,
+    light_place: 5,
+    relaxed: 8,
+  }),
+});
 
 /** 执行 mine（挖掘） 技能的 Mineflayer 适配器入口。 */
 export async function executeMineflayerMine(input: {
@@ -44,7 +72,9 @@ export async function executeMineflayerMine(input: {
   readonly pathfinder: MineflayerPathfinderApi;
   readonly pathfinderModule: MineflayerPathfinderModule;
   readonly params: Readonly<MineSkillExecutionRequest>;
+  readonly control: SkillExecutionControl;
 }): Promise<MineSkillExecutionResult> {
+  input.control.throwIfAborted();
   assertMineflayerMinePort(input.bot);
 
   const facts = createMineBlockFactReader(input.bot.registry);
@@ -62,6 +92,7 @@ export async function executeMineflayerMine(input: {
     blockName,
     expectedDropName,
     inventoryBefore,
+    control: input.control,
   };
 
   if (input.params.targets !== undefined) {
@@ -77,6 +108,7 @@ interface ExecutionContext {
   readonly blockName: string;
   readonly expectedDropName: string;
   readonly inventoryBefore: number;
+  readonly control: SkillExecutionControl;
 }
 
 /** 非 ore 路径：扫附近候选 → BFS 规划 → 逐动作执行 → 终挖 → 检查背包 → 不够再扫。 */
@@ -92,6 +124,7 @@ async function executeWithDynamicScan(ctx: ExecutionContext): Promise<MineSkillE
   const maxStagnant = 2;
 
   while (collected < ctx.params.count && attempts < maxAttempts) {
+    ctx.control.throwIfAborted();
     attempts += 1;
 
     const candidates = scanNearbyTargets(ctx);
@@ -117,14 +150,27 @@ async function executeWithDynamicScan(ctx: ExecutionContext): Promise<MineSkillE
     });
     diagnostics.push(...planResult.diagnostics);
     if (planResult.plan === null) {
-      throw createMineUnsafePathError({
-        blockName: ctx.blockName,
-        requestedCount: ctx.params.count,
-        targetDigCount: minedCount,
+      const fallbackSteps = await navigateTowardMineTargets({
+        ctx,
+        targets: candidates,
         diagnostics,
-        position: ctx.bot.entity?.position,
-        reason: "no_safe_route",
+        diagnosticPrefix: "mine_dynamic_fallback",
+        maxApproachFeet: MINE_DYNAMIC_FALLBACK_APPROACH_LIMIT,
+        routeBudget: MINE_DYNAMIC_FALLBACK_ROUTE_BUDGET,
       });
+      if (fallbackSteps <= 0) {
+        throw createMineUnsafePathError({
+          blockName: ctx.blockName,
+          requestedCount: ctx.params.count,
+          targetDigCount: minedCount,
+          diagnostics,
+          position: ctx.bot.entity?.position,
+          reason: "no_safe_route",
+        });
+      }
+      totalSteps += fallbackSteps;
+      diagnostics.push(`mine_dynamic_fallback_steps:${fallbackSteps}`);
+      continue;
     }
     diagnostics.push(
       `mine_plan_actions:${planResult.plan.actions.length};cost:${planResult.plan.cost}`,
@@ -132,12 +178,14 @@ async function executeWithDynamicScan(ctx: ExecutionContext): Promise<MineSkillE
 
     try {
       for (const action of planResult.plan.actions) {
+        ctx.control.throwIfAborted();
         const targetDigs = countTargetDigsInAction(ctx, action);
         await executeMineRouteAction({
           bot: ctx.bot,
           facts: ctx.facts,
           action,
           diagnostics,
+          control: ctx.control,
         });
         minedCount += targetDigs;
         totalSteps += 1;
@@ -197,7 +245,7 @@ async function executeWithDynamicScan(ctx: ExecutionContext): Promise<MineSkillE
   });
 }
 
-/** ore 路径：保留 HEAD 的 targeted BFS 队列执行模型，不动。 */
+/** supplied target 路径：资源簇目标也统一走自研 mine-bfs，禁止回退旧队列规划。 */
 async function executeWithSuppliedTargets(
   ctx: ExecutionContext,
   targets: readonly MineSkillTargetCandidate[],
@@ -205,88 +253,99 @@ async function executeWithSuppliedTargets(
   const diagnostics: string[] = [];
   let minedCount = 0;
   let totalSteps = 0;
+  let collected = 0;
+  let attempts = 0;
+  const maxAttempts = Math.min(Math.max(ctx.params.count + targets.length, 4), 64);
 
-  const plan = planMineQueueWithDiagnostics({
-    bot: ctx.bot,
-    facts: ctx.facts,
-    blockName: ctx.blockName,
-    requiredTargetCount: ctx.params.count,
-    targets,
-  });
-  const queue = plan.queue;
-  if (queue === null || queue.targetDigCount < ctx.params.count) {
-    throw createMineUnsafePathError({
-      blockName: ctx.blockName,
-      requestedCount: ctx.params.count,
-      targetDigCount: queue?.targetDigCount ?? 0,
-      diagnostics: plan.diagnostics,
-      position: ctx.bot.entity?.position,
-    });
-  }
-
-  for (const action of queue.actions) {
-    if (action.kind === "move") {
-      if (isBotAtFoot(ctx.bot, action.pos)) continue;
-      await legacyMoveWithinMinedStair(ctx.bot, action.pos, diagnostics);
-      totalSteps += 1;
-      continue;
+  while (collected < ctx.params.count && attempts < maxAttempts) {
+    ctx.control.throwIfAborted();
+    attempts += 1;
+    const candidates = readRemainingSuppliedTargets(ctx, targets);
+    diagnostics.push(`mine_supplied_target_attempt:${attempts};candidates:${candidates.length}`);
+    if (candidates.length === 0) {
+      throw createMineUnsafePathError({
+        blockName: ctx.blockName,
+        requestedCount: ctx.params.count,
+        targetDigCount: minedCount,
+        diagnostics,
+        position: ctx.bot.entity?.position,
+        reason: minedCount > 0 ? "targets_exhausted" : "no_visible_target",
+      });
     }
 
-    const standingPos = action.standingPos;
-    if (standingPos !== undefined && !isBotAtFoot(ctx.bot, standingPos)) {
-      await legacyMoveWithinMinedStair(ctx.bot, standingPos, diagnostics);
-      totalSteps += 1;
-    }
-
-    const block = readMineflayerBlockAt(ctx.bot, action.pos);
-    if (block === null || block === undefined || ctx.facts.normalizeName(block.name) === "air") {
-      continue;
-    }
-
-    const currentBlockName = ctx.facts.normalizeName(block.name);
-    await prepareHandForMineDig({
+    const planResult = planMineRoute({
       bot: ctx.bot,
       facts: ctx.facts,
-      blockName: currentBlockName,
-      diagnostics,
-      withTimeout: legacyTimeout,
+      blockName: ctx.blockName,
+      startFoot: readBotFoot(ctx.bot),
+      targets: candidates,
     });
-    await legacyTimeout(
-      Promise.resolve(ctx.bot.lookAt?.(centerOfBlock(action.pos), true)),
-      MINE_LOOK_TIMEOUT_MS,
-      `mine_look_timeout:${currentBlockName}:${posLabel(action.pos)}`,
-    );
-    await legacyTimeout(
-      Promise.resolve(ctx.bot.dig?.(block)),
-      MINE_DIG_TIMEOUT_MS,
-      `mine_dig_timeout:${currentBlockName}:${posLabel(action.pos)}`,
-    );
-    await delay(120);
-    if (currentBlockName === ctx.blockName) {
-      minedCount += 1;
+    diagnostics.push(...planResult.diagnostics.map((entry) => `supplied:${entry}`));
+    if (planResult.plan === null) {
+      const fallbackSteps = await navigateTowardMineTargets({
+        ctx,
+        targets: candidates,
+        diagnostics,
+        diagnosticPrefix: "mine_supplied_fallback",
+        maxApproachFeet: MINE_SUPPLIED_FALLBACK_APPROACH_LIMIT,
+        routeBudget: MINE_SUPPLIED_FALLBACK_ROUTE_BUDGET,
+      });
+      if (fallbackSteps <= 0) {
+        throw createMineUnsafePathError({
+          blockName: ctx.blockName,
+          requestedCount: ctx.params.count,
+          targetDigCount: minedCount,
+          diagnostics,
+          position: ctx.bot.entity?.position,
+          reason: "no_safe_route",
+        });
+      }
+      totalSteps += fallbackSteps;
+      diagnostics.push(`mine_supplied_fallback_steps:${fallbackSteps}`);
+      continue;
     }
-    totalSteps += 1;
+    diagnostics.push(
+      `mine_supplied_plan_actions:${planResult.plan.actions.length};cost:${planResult.plan.cost}`,
+    );
+
+    try {
+      for (const action of planResult.plan.actions) {
+        ctx.control.throwIfAborted();
+        const targetDigs = countTargetDigsInAction(ctx, action);
+        await executeMineRouteAction({
+          bot: ctx.bot,
+          facts: ctx.facts,
+          action,
+          diagnostics,
+          control: ctx.control,
+        });
+        minedCount += targetDigs;
+        totalSteps += 1;
+      }
+      if (!isBotAtFoot(ctx.bot, planResult.plan.finalFoot)) {
+        throw new Error(`mine_final_foot_mismatch:${posLabel(planResult.plan.finalFoot)}`);
+      }
+      const minedThisRound = await digFinalTarget(ctx, planResult.plan.target, diagnostics);
+      if (minedThisRound) {
+        minedCount += 1;
+        totalSteps += 1;
+      }
+    } catch (error) {
+      throw createMineExecutionStepError({
+        cause: error,
+        blockName: ctx.blockName,
+        requestedCount: ctx.params.count,
+        diagnostics,
+        position: ctx.bot.entity?.position,
+      });
+    }
+
+    if (MINE_SETTLE_MS > 0) await delay(MINE_SETTLE_MS);
+    collected = inventoryDiff(ctx);
   }
 
-  await legacySweepDrops({
-    bot: ctx.bot,
-    targetActions: queue.actions.filter(
-      (action) => action.kind === "dig" && action.countsTowardTarget === true,
-    ),
-    expectedDropName: ctx.expectedDropName,
-    inventoryBefore: ctx.inventoryBefore,
-    requiredCount: ctx.params.count,
-    diagnostics,
-    normalizeName: ctx.facts.normalizeName,
-  });
-
-  diagnostics.push(`stair_bfs_phase:${queue.phase}`);
   if (MINE_SETTLE_MS > 0) await delay(MINE_SETTLE_MS);
-  const collected = Math.max(
-    0,
-    countInventoryItem(ctx.bot, ctx.expectedDropName, ctx.facts.normalizeName) -
-      ctx.inventoryBefore,
-  );
+  collected = inventoryDiff(ctx);
   if (collected < ctx.params.count) {
     throw createMineDropNotObtainedError({
       expectedDropName: ctx.expectedDropName,
@@ -344,10 +403,7 @@ function scanNearbyTargets(ctx: ExecutionContext): readonly MineRouteTarget[] {
   return Object.freeze(targets);
 }
 
-function countTargetDigsInAction(
-  ctx: ExecutionContext,
-  action: import("./mine-bfs.js").MineRouteAction,
-): number {
+function countTargetDigsInAction(ctx: ExecutionContext, action: MineRouteAction): number {
   if (!("digs" in action)) return 0;
   let count = 0;
   for (const dig of action.digs) {
@@ -358,11 +414,133 @@ function countTargetDigsInAction(
   return count;
 }
 
+function readRemainingSuppliedTargets(
+  ctx: ExecutionContext,
+  targets: readonly MineSkillTargetCandidate[],
+): readonly MineRouteTarget[] {
+  const out: MineRouteTarget[] = [];
+  const seen = new Set<string>();
+  for (const target of targets) {
+    if (ctx.facts.normalizeName(target.block_name) !== ctx.blockName) continue;
+    const pos: MineBlockPos = freezeMinePos(target.position);
+    const key = posLabel(pos);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const block = readMineflayerBlockAt(ctx.bot, pos);
+    if (block === null || block === undefined) continue;
+    if (!ctx.facts.isDiggableBlock(block)) continue;
+    if (ctx.facts.normalizeName(block.name) !== ctx.blockName) continue;
+    out.push(Object.freeze({ position: pos, blockName: ctx.blockName }));
+  }
+  return Object.freeze(out);
+}
+
+async function navigateTowardMineTargets(input: {
+  readonly ctx: ExecutionContext;
+  readonly targets: readonly MineRouteTarget[];
+  readonly diagnostics: string[];
+  readonly diagnosticPrefix: string;
+  readonly maxApproachFeet?: number;
+  readonly routeBudget?: TerrainRouteBudget;
+}): Promise<number> {
+  const { ctx, targets, diagnostics, diagnosticPrefix } = input;
+  const startFoot = readBotFoot(ctx.bot);
+  const allApproachFeet = createMineTargetApproachFeet(startFoot, targets);
+  const approachFeet =
+    input.maxApproachFeet === undefined
+      ? allApproachFeet
+      : allApproachFeet.slice(0, input.maxApproachFeet);
+  let lastError: unknown = null;
+  diagnostics.push(
+    `${diagnosticPrefix}_budget:approach_feet=${approachFeet.length}/${allApproachFeet.length};max_total_expanded=${input.routeBudget?.maxTotalExpandedStates ?? "default"};max_planning_ms=${input.routeBudget?.maxPlanningMs ?? "default"}`,
+  );
+
+  for (const targetFoot of approachFeet) {
+    if (sameMinePos(startFoot, targetFoot)) continue;
+    await delay(0);
+    try {
+      const result = await navigateTerrainToFoot({
+        bot: ctx.bot,
+        facts: ctx.facts,
+        targetFoot,
+        goalRange: 0,
+        allowPlaceUp: true,
+        allowDig: true,
+        routeProfile: "mining",
+        ...(input.routeBudget === undefined ? {} : { routeBudget: input.routeBudget }),
+        diagnostics,
+        diagnosticPrefix,
+        control: ctx.control,
+      });
+      return result.totalSteps;
+    } catch (error) {
+      lastError = error;
+      diagnostics.push(
+        `${diagnosticPrefix}_rejected:${posLabel(targetFoot)}:${sanitizeDiagnostic(getErrorMessage(error))}`,
+      );
+    }
+  }
+
+  if (lastError !== null) {
+    diagnostics.push(
+      `${diagnosticPrefix}_failed:${sanitizeDiagnostic(getErrorMessage(lastError))}`,
+    );
+  }
+  return 0;
+}
+
+function createMineTargetApproachFeet(
+  startFoot: MineBlockPos,
+  targets: readonly MineRouteTarget[],
+): readonly MineBlockPos[] {
+  const out: MineBlockPos[] = [];
+  const seen = new Set<string>();
+  const sortedTargets = [...targets].sort(
+    (left, right) => distance(startFoot, left.position) - distance(startFoot, right.position),
+  );
+
+  for (const target of sortedTargets.slice(0, 8)) {
+    for (const y of [target.position.y - 1, target.position.y]) {
+      for (const offset of [
+        { x: 1, z: 0 },
+        { x: -1, z: 0 },
+        { x: 0, z: 1 },
+        { x: 0, z: -1 },
+      ] as const) {
+        const foot = freezeMinePos({
+          x: target.position.x + offset.x,
+          y,
+          z: target.position.z + offset.z,
+        });
+        const key = posLabel(foot);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(foot);
+      }
+    }
+  }
+
+  return Object.freeze(
+    out.sort((left, right) => distance(startFoot, left) - distance(startFoot, right)),
+  );
+}
+
+function freezeMinePos(
+  pos: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>,
+): MineBlockPos {
+  return Object.freeze({
+    x: Math.floor(pos.x),
+    y: Math.floor(pos.y),
+    z: Math.floor(pos.z),
+  });
+}
+
 async function digFinalTarget(
   ctx: ExecutionContext,
   pos: MineBlockPos,
   diagnostics: string[],
 ): Promise<boolean> {
+  ctx.control.throwIfAborted();
   const block = readMineflayerBlockAt(ctx.bot, pos);
   if (block === null || block === undefined) return false;
   if (ctx.facts.normalizeName(block.name) !== ctx.blockName) return false;
@@ -382,11 +560,18 @@ async function digFinalTarget(
     MINE_LOOK_TIMEOUT_MS,
     `mine_look_timeout:final:${posLabel(pos)}`,
   );
-  await legacyTimeout(
-    Promise.resolve(ctx.bot.dig?.(block)),
-    MINE_DIG_TIMEOUT_MS,
-    `mine_dig_timeout:final:${posLabel(pos)}`,
-  );
+  diagnostics.push(`mine_final_dig_start:${ctx.blockName}:${posLabel(pos)}`);
+  await waitForPromiseOrCondition({
+    promise: Promise.resolve(ctx.bot.dig?.(block)),
+    condition: () => isBlockChanged(ctx.facts, readMineflayerBlockAt(ctx.bot, pos), ctx.blockName),
+    idleTimeoutMs: MINE_DIG_IDLE_TIMEOUT_MS,
+    pollMs: MINE_POLL_MS,
+    timeoutMessage: () => `mine_dig_timeout:final:${posLabel(pos)}`,
+    throwIfAborted: () => ctx.control.throwIfAborted(),
+    diagnostics,
+    diagnosticPrefix: `mine_final_dig:${ctx.blockName}:${posLabel(pos)}`,
+  });
+  ctx.control.throwIfAborted();
   await waitUntilBlockChanged(ctx.bot, ctx.facts, pos, ctx.blockName);
   diagnostics.push(`mine_final_dig_verified:${ctx.blockName}:${posLabel(pos)}`);
   return true;
@@ -429,64 +614,30 @@ function countInventoryItem(
   );
 }
 
-async function legacySweepDrops(input: {
-  readonly bot: MineflayerMineInventoryPort;
-  readonly targetActions: readonly PlannedMineAction[];
-  readonly expectedDropName: string;
-  readonly inventoryBefore: number;
-  readonly requiredCount: number;
-  readonly diagnostics: string[];
-  readonly normalizeName: (value: string | undefined) => string;
-}): Promise<void> {
-  for (const action of input.targetActions) {
-    const collected = Math.max(
-      0,
-      countInventoryItem(input.bot, input.expectedDropName, input.normalizeName) -
-        input.inventoryBefore,
-    );
-    if (collected >= input.requiredCount) return;
-
-    const pickupPos = action.standingPos ?? action.pos;
-    if (isBotAtFoot(input.bot, pickupPos)) {
-      await delay(150);
-      continue;
-    }
-
-    try {
-      await legacyMoveWithinMinedStair(input.bot, pickupPos, input.diagnostics);
-      await delay(150);
-    } catch (error) {
-      input.diagnostics.push(`pickup_sweep_failed:${getErrorMessage(error)}`);
-    }
-  }
-}
-
-async function legacyMoveWithinMinedStair(
-  bot: MineflayerMineInventoryPort,
-  target: { readonly x: number; readonly y: number; readonly z: number },
-  diagnostics: string[],
-): Promise<void> {
-  if (isBotAtFoot(bot, target)) return;
-
-  const startY = bot.entity?.position?.y ?? target.y;
-  await stepToFoot({
-    bot,
-    target,
-    jump: target.y > startY + 0.25,
-    timeoutMs: MINE_LEGACY_STEP_TIMEOUT_MS,
-    lookTimeoutMs: MINE_LOOK_TIMEOUT_MS,
-    diagnosticPrefix: "mine",
-    actionKind: "legacyMove",
-    diagnostics,
-  });
-}
-
 function centerOfBlock(pos: { readonly x: number; readonly y: number; readonly z: number }): Vec3 {
   return new Vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5);
 }
 
 function posLabel(pos: { readonly x: number; readonly y: number; readonly z: number }): string {
   return `${pos.x},${pos.y},${pos.z}`;
+}
+
+function sanitizeDiagnostic(value: string): string {
+  return value.replace(/\s+/gu, "_").slice(0, 240);
+}
+
+function sameMinePos(
+  left: { readonly x: number; readonly y: number; readonly z: number },
+  right: { readonly x: number; readonly y: number; readonly z: number },
+): boolean {
+  return left.x === right.x && left.y === right.y && left.z === right.z;
+}
+
+function distance(
+  left: { readonly x: number; readonly y: number; readonly z: number },
+  right: { readonly x: number; readonly y: number; readonly z: number },
+): number {
+  return Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z);
 }
 
 async function waitUntilBlockChanged(
@@ -556,7 +707,7 @@ function createMineDropNotObtainedError(input: {
 }): Error {
   return Object.assign(
     new Error(
-      `drop_not_obtained:${input.expectedDropName}:${input.collectedCount}/${input.requestedCount}:planned queue completed without enough inventory diff`,
+      `drop_not_obtained:${input.expectedDropName}:${input.collectedCount}/${input.requestedCount}:mine route completed without enough inventory diff`,
     ),
     {
       error_code: "drop_not_obtained",

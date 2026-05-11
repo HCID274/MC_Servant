@@ -178,6 +178,7 @@ export interface SandboxStepParamsByAction extends Pick<SkillParamsByName, Skill
 export type SandboxUntilCondition =
   | Readonly<{ readonly kind: "gained"; readonly itemName: string; readonly count: number }>
   | Readonly<{ readonly kind: "gainedTag"; readonly tagName: string; readonly count: number }>
+  | Readonly<{ readonly kind: "gainedDropOf"; readonly blockName: string; readonly count: number }>
   | Readonly<{ readonly kind: "has"; readonly itemName: string; readonly count: number }>
   | Readonly<{ readonly kind: "equipped"; readonly itemName: string }>
   | Readonly<{ readonly kind: "placed"; readonly blockName: string }>;

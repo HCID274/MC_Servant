@@ -1237,24 +1237,27 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     expect(messages[0]?.content).toContain('place("crafting_table")');
     expect(messages[0]?.content).toContain("craft(itemName,count)");
     expect(messages[0]?.content).toContain("优先读取 owner.position");
-    expect(messages[0]?.content).toContain("runGoal 内部可以检查 ToolchainResult");
+    expect(messages[0]?.content).toContain("result.ok === false 只能用于处理结构化失败");
+    expect(messages[0]?.content).toContain("until.gainedDropOf(blockName,count)");
     expect(messages[0]?.content).toContain("code 的最后一个任务终态必须 await report(task)");
     expect(messages[0]?.content).toContain("不要说“根据历史记录”");
     expect(messages[0]?.content).toContain("明确动作不要 search");
     expect(messages[0]?.content).toContain("cutTree(5)");
-    expect(messages[0]?.content).toContain("不要用 ensure 包裹 cutTree");
-    expect(messages[0]?.content?.split("# 反例")[0]).not.toContain("ensure(async () => cutTree(5)");
+    expect(messages[0]?.content).toContain("until.gainedTag");
+    expect(messages[0]?.content?.split("# 反例")[0]).toContain(
+      "ensure(async () => { await cutTree",
+    );
     expect(messages[0]?.content).toContain('mine(\\"stone\\", 5)');
     expect(messages[0]?.content).not.toContain("cobblestone");
-    expect(messages[0]?.content).not.toContain("raw_iron");
+    expect(messages[0]?.content?.split("# 反例")[0]).not.toContain("raw_iron");
     expect(messages[0]?.content).toContain('mine(\\"iron_ore\\", 1)');
     expect(messages[0]?.content).toContain("demoMineIron");
     expect(messages[0]?.content).toContain('craft("planks", count)');
     expect(messages[0]?.content).toContain("不要手写木板、木棍、工作台、木镐、装备链路");
     expect(messages[0]?.content).toContain(
-      '挖 stone / 石头 / 圆石 => runGoal 内直接调用 mine("stone", count)',
+      '挖 stone / 石头 / 圆石 => ensure(async () => { await mine("stone", count) }, until.gainedDropOf("stone", count))',
     );
-    expect(messages[0]?.content).not.toContain("挖 stone / 石头 / 圆石必须用 ensure");
+    expect(messages[0]?.content).toContain("资源、装备、放置、合成等有真实完成条件的动作");
     expect(messages[0]?.content).toContain("输出契约 1/3");
     expect(messages[0]?.content).toContain("输出契约 2/3");
     expect(messages[0]?.content).toContain("输出契约 3/3");

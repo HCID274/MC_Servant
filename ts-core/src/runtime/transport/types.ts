@@ -16,6 +16,7 @@ import type {
   MineSkillExecutionRequest,
   MineSkillExecutionResult,
   PlaceCapabilityParams,
+  SkillExecutionControl,
   ToolchainCapabilityData,
   ToolchainCapabilityResult,
   ToolchainEnsureFacts,
@@ -116,6 +117,10 @@ export interface MineflayerBlockHandle {
   readonly tags?: readonly string[] | Readonly<Record<string, unknown>>;
   /** Mineflayer / minecraft-data 提供的可挖事实。 */
   readonly diggable?: boolean;
+  /** Prismarine Block（方块对象） 的碰撞/选择盒；空数组通常代表可替换植物。 */
+  readonly shapes?: readonly unknown[];
+  /** 方块碰撞盒类型；测试与 minecraft-data 事实兼容字段。 */
+  readonly boundingBox?: string;
 }
 
 /** Mineflayer（Minecraft 协议客户端） 物品句柄最小结构。 */
@@ -496,22 +501,36 @@ export interface MineflayerRuntimeTransport<TBotId extends string = string> {
   /** 通过当前 Mineflayer（Minecraft 协议客户端） 连接发送聊天文本。 */
   chat(text: string): Promise<void>;
   /** 通过受控移动能力执行 goTo（前往坐标）。 */
-  goTo(params: Readonly<GoToSkillParams>): Promise<GoToSkillExecutionResult>;
+  goTo(
+    params: Readonly<GoToSkillParams>,
+    control: SkillExecutionControl,
+  ): Promise<GoToSkillExecutionResult>;
   /** 通过受控挖掘能力执行 mine（挖掘）。 */
-  mine(params: Readonly<MineSkillExecutionRequest>): Promise<MineSkillExecutionResult>;
+  mine(
+    params: Readonly<MineSkillExecutionRequest>,
+    control: SkillExecutionControl,
+  ): Promise<MineSkillExecutionResult>;
   /** 挖掘指定坐标的单个方块，用于资源簇推荐目标执行。 */
-  digBlockAt(position: Readonly<MineflayerVec3Like>): Promise<void>;
+  digBlockAt(position: Readonly<MineflayerVec3Like>, control: SkillExecutionControl): Promise<void>;
   /** 通过受控实体与移动能力执行 collect（捡拾）。 */
-  collect(params: Readonly<CollectSkillParams>): Promise<CollectSkillExecutionResult>;
+  collect(
+    params: Readonly<CollectSkillParams>,
+    control: SkillExecutionControl,
+  ): Promise<CollectSkillExecutionResult>;
   /** 通过受控背包能力执行 equip（装备）。 */
-  equip(params: Readonly<EquipSkillParams>): Promise<EquipSkillExecutionResult>;
+  equip(
+    params: Readonly<EquipSkillParams>,
+    control: SkillExecutionControl,
+  ): Promise<EquipSkillExecutionResult>;
   /** 通过受控背包与 Mineflayer recipe（配方）能力执行 craft（合成）。 */
   craft(
     params: Readonly<CraftCapabilityParams>,
+    control: SkillExecutionControl,
   ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
   /** 通过受控背包、移动与 Mineflayer placeBlock（放方块）能力执行 place（放置）。 */
   place(
     params: Readonly<PlaceCapabilityParams>,
+    control: SkillExecutionControl,
   ): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>;
   /** 创建 ensure 依赖解析所需的只读事实端口。 */
   createToolchainEnsureFacts(): ToolchainEnsureFacts;

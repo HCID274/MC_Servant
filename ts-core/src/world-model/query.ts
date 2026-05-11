@@ -449,11 +449,7 @@ function isCutTreeLogCandidate(candidate: ResourceBlockCandidate): boolean {
 }
 
 function isLegalCutTreeCandidate(candidate: ResourceBlockCandidate): boolean {
-  return (
-    isCutTreeLogCandidate(candidate) &&
-    candidate.is_diggable === true &&
-    candidate.is_reachable === true
-  );
+  return isCutTreeLogCandidate(candidate) && candidate.is_diggable === true;
 }
 
 function sortAcceptedTreeClusters(
@@ -527,20 +523,6 @@ function classifyTreeResourceClusters(input: {
       continue;
     }
 
-    if (!logCandidates.some((candidate) => candidate.is_reachable)) {
-      rejected.push(
-        Object.freeze({
-          cluster_id: cluster.cluster_id,
-          world_key: cluster.world_key ?? input.query.world_key,
-          snapshot_version: cluster.snapshot_version,
-          block_name: cluster.block_name,
-          candidate_count: cluster.candidates.length,
-          reason: "unreachable",
-        }),
-      );
-      continue;
-    }
-
     const recommendedTarget = selectLowestLegalTreeCandidate(
       logCandidates.filter((candidate) => isLegalCutTreeCandidate(candidate)),
     );
@@ -570,7 +552,7 @@ function classifyTreeResourceClusters(input: {
         ),
         log_count: logCandidates.length,
         recommended_target: cloneCandidate(recommendedTarget),
-        reason: "reachable_diggable_cut_tree_log",
+        reason: "diggable_cut_tree_log",
       }),
     );
   }
@@ -1197,6 +1179,31 @@ export function createResourceService(
       maxClustersPerKey = DEFAULT_RESOURCE_PLANNER_SUMMARY_LIMIT,
     ): string {
       const lines = resourceKeys.map((resourceKey) => {
+        if (resourceKey === "tree") {
+          const classification = classifyTrees();
+
+          if (classification.status !== "found") {
+            return `${resourceKey}: ${classification.status}`;
+          }
+
+          const executableClusters = classification.accepted.slice(0, maxClustersPerKey);
+          const clusterSummaries = executableClusters
+            .map(
+              (cluster) =>
+                `${cluster.cluster_id} count=${cluster.log_count} nearest=${cluster.recommended_target.distance.toFixed(1)}`,
+            )
+            .join("; ");
+
+          if (executableClusters.length === 0) {
+            const rejectedReasons = [
+              ...new Set(classification.rejected.map((entry) => entry.reason)),
+            ];
+            return `${resourceKey}: found 0 executable cluster(s)${rejectedReasons.length === 0 ? "" : ` rejected=${rejectedReasons.join(",")}`}`;
+          }
+
+          return `${resourceKey}: found ${executableClusters.length} executable cluster(s): ${clusterSummaries}`;
+        }
+
         const result = query(resourceKey, maxClustersPerKey);
 
         if (result.status !== "found") {

@@ -9,7 +9,10 @@ import type {
   SandboxSearchInput,
 } from "../core-ports/sandbox.js";
 import {
+  type EnsureConditionStateSnapshot,
+  NOOP_SKILL_EXECUTION_CONTROL,
   SKILL_DIRECTORY,
+  type SkillExecutionControl,
   type SkillExecutionDependencies,
   type SkillExecutionResult,
   type SkillName,
@@ -171,6 +174,7 @@ export interface BotActorCodeExecutionRecord {
 
 interface BotActorCurrentExecutionState {
   readonly message_id: string;
+  readonly abortController: AbortController;
   interrupted: boolean;
   interrupt_signal?: InterruptSignal;
 }
@@ -294,6 +298,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         control?: SandboxFacadeCallControl,
       ): Promise<Readonly<Record<string, unknown>>> {
         assertSandboxFacadeCallActive(control);
+        const skillControl = createSkillExecutionControl(control);
 
         try {
           switch (skill) {
@@ -302,15 +307,16 @@ export function createBotActorRuntime<TBotId extends string>(input: {
                 throw new Error("sandbox goTo params are invalid");
               }
 
-              return (await skillExecution.goToMovement.goTo(params)) as unknown as Readonly<
-                Record<string, unknown>
-              >;
+              return (await skillExecution.goToMovement.goTo(
+                params,
+                skillControl,
+              )) as unknown as Readonly<Record<string, unknown>>;
             case SKILL_DIRECTORY.collect:
               if (!isCollectSkillParams(params)) {
                 throw new Error("sandbox collect params are invalid");
               }
 
-              return (await skillExecution.collect(params)) as unknown as Readonly<
+              return (await skillExecution.collect(params, skillControl)) as unknown as Readonly<
                 Record<string, unknown>
               >;
             case SKILL_DIRECTORY.mine:
@@ -318,7 +324,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
                 throw new Error("sandbox mine params are invalid");
               }
 
-              return (await skillExecution.mine(params)) as unknown as Readonly<
+              return (await skillExecution.mine(params, skillControl)) as unknown as Readonly<
                 Record<string, unknown>
               >;
             case SKILL_DIRECTORY.equip:
@@ -326,7 +332,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
                 throw new Error("sandbox equip params are invalid");
               }
 
-              return (await skillExecution.equip(params)) as unknown as Readonly<
+              return (await skillExecution.equip(params, skillControl)) as unknown as Readonly<
                 Record<string, unknown>
               >;
             case SKILL_DIRECTORY.cutTree:
@@ -337,7 +343,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
                 throw new Error("Skill cutTree execution dependency is not configured");
               }
 
-              return (await skillExecution.cutTree(params)) as unknown as Readonly<
+              return (await skillExecution.cutTree(params, skillControl)) as unknown as Readonly<
                 Record<string, unknown>
               >;
           }
@@ -377,6 +383,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
             capability,
             params,
             skillExecution,
+            control: createSkillExecutionControl(control),
           });
           if (!result.ok) {
             throw createToolchainCapabilityError(
@@ -428,6 +435,21 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           delivered: true,
           method,
         });
+      },
+      captureConditionState(control?: SandboxFacadeCallControl): EnsureConditionStateSnapshot {
+        assertSandboxFacadeCallActive(control);
+        return createEnsureConditionStateSnapshot(input.transport);
+      },
+      evaluateCondition(
+        input: Parameters<NonNullable<SandboxFacadeExecutionAdapter["evaluateCondition"]>>[0],
+        control?: SandboxFacadeCallControl,
+      ) {
+        assertSandboxFacadeCallActive(control);
+        if (typeof skillExecution.evaluateCondition !== "function") {
+          throw new Error("ensure condition evaluator is not configured");
+        }
+
+        return skillExecution.evaluateCondition(input);
       },
       ...(context?.searchMemory === undefined
         ? {}
@@ -526,8 +548,10 @@ export function createBotActorRuntime<TBotId extends string>(input: {
         kind: "code" as const,
         message_id: job.message_id,
       });
+      const abortController = new AbortController();
       const execution: BotActorCurrentExecutionState = {
         message_id: job.message_id,
+        abortController,
         interrupted: false,
       };
       currentExecution = execution;
@@ -563,6 +587,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
             }),
           },
           facade: createActorSandboxFacade(job, context),
+          signal: abortController.signal,
         });
         if (execution.interrupted) {
           throw createBotActorInterruptedError(
@@ -654,6 +679,9 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       if (currentExecution !== null) {
         currentExecution.interrupted = true;
         currentExecution.interrupt_signal = signal;
+        currentExecution.abortController.abort(
+          createBotActorInterruptedError("BotActor code execution was interrupted", signal),
+        );
         input.transport.stopCurrentAction();
       }
 
@@ -1127,27 +1155,51 @@ function formatToolchainErrorDetails(
   }
 }
 
+function createEnsureConditionStateSnapshot(
+  transport: MineflayerRuntimeTransport<string>,
+): EnsureConditionStateSnapshot {
+  const observation = transport.readObservationInput();
+  return Object.freeze({
+    world_key: observation?.bot.world_key ?? transport.getCurrentWorldKey?.() ?? null,
+    inventory: Object.freeze(
+      (observation?.inventory.items ?? []).map((item) =>
+        Object.freeze({
+          item_name: item.item_name,
+          count: item.count,
+        }),
+      ),
+    ),
+    main_hand_item_name: observation?.equipment.main_hand?.item_name ?? null,
+    nearby_block_names: Object.freeze(
+      (observation?.nearby_blocks ?? []).map((block) => block.block_name),
+    ),
+  });
+}
+
 async function executeActorToolchainCapability<TName extends ToolchainCapabilityName>(input: {
   readonly capability: TName;
   readonly params: Readonly<ToolchainCapabilityParamsByName[TName]>;
   readonly skillExecution: SkillExecutionDependencies;
+  readonly control: SkillExecutionControl;
 }): Promise<ToolchainCapabilityResult<ToolchainCapabilityData>> {
   switch (input.capability) {
     case "craft":
       return input.skillExecution.craft(
         input.params as Readonly<ToolchainCapabilityParamsByName["craft"]>,
+        input.control,
       );
     case "place":
       return input.skillExecution.place(
         input.params as Readonly<ToolchainCapabilityParamsByName["place"]>,
+        input.control,
       );
     case "placeCraftingTable":
-      return input.skillExecution.place({ blockName: "crafting_table" });
+      return input.skillExecution.place({ blockName: "crafting_table" }, input.control);
     case "ensure":
-      return readConfiguredEnsure(
-        input.skillExecution.ensureDependency,
-        input.capability,
-      )(input.params as Readonly<ToolchainCapabilityParamsByName["ensure"]>);
+      return readConfiguredEnsure(input.skillExecution.ensureDependency, input.capability)(
+        input.params as Readonly<ToolchainCapabilityParamsByName["ensure"]>,
+        input.control,
+      );
     case "equip":
     case "mine":
       throw new Error(
@@ -1158,15 +1210,36 @@ async function executeActorToolchainCapability<TName extends ToolchainCapability
 
 function readConfiguredEnsure<TParams>(
   handler:
-    | ((params: Readonly<TParams>) => Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>)
+    | ((
+        params: Readonly<TParams>,
+        control: SkillExecutionControl,
+      ) => Promise<ToolchainCapabilityResult<ToolchainCapabilityData>>)
     | undefined,
   capability: ToolchainCapabilityName,
-): (params: Readonly<TParams>) => Promise<ToolchainCapabilityResult<ToolchainCapabilityData>> {
+): (
+  params: Readonly<TParams>,
+  control: SkillExecutionControl,
+) => Promise<ToolchainCapabilityResult<ToolchainCapabilityData>> {
   if (handler === undefined) {
     throw new Error(`Toolchain capability ${capability} is not executable in current sandbox`);
   }
 
   return handler;
+}
+
+function createSkillExecutionControl(
+  control: SandboxFacadeCallControl | undefined,
+): SkillExecutionControl {
+  if (control === undefined) {
+    return NOOP_SKILL_EXECUTION_CONTROL;
+  }
+
+  return Object.freeze({
+    signal: control.signal,
+    throwIfAborted(): void {
+      assertSandboxFacadeCallActive(control);
+    },
+  });
 }
 
 const defaultRuntimeRecentEventFormatter: RuntimeRecentEventFormatter = Object.freeze({

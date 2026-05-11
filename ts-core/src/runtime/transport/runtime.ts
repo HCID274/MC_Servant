@@ -21,12 +21,14 @@ import type {
   CraftCapabilityParams,
   EquipSkillParams,
   GoToSkillParams,
-  MineSkillParams,
+  MineSkillExecutionRequest,
   PlaceCapabilityParams,
+  SkillExecutionControl,
   ToolchainEnsureFacts,
   ToolchainEnsureInventoryItem,
   ToolchainMaterialSource,
 } from "../../core-ports/skills.js";
+import { NOOP_SKILL_EXECUTION_CONTROL } from "../../core-ports/skills.js";
 import { assertNonEmptyString, cloneReadonlyValue } from "../../domain/invariants.js";
 import { attachMineflayerBlockWorldCompatibility } from "./block-world-compat.js";
 import { executeMineflayerCollect } from "./collect.js";
@@ -177,7 +179,11 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
 
       await bot.chat(text);
     },
-    async goTo(params: Readonly<GoToSkillParams>) {
+    async goTo(
+      params: Readonly<GoToSkillParams>,
+      control: SkillExecutionControl = NOOP_SKILL_EXECUTION_CONTROL,
+    ) {
+      control.throwIfAborted();
       const currentBot = ensureWorldInteractionReady("goTo");
       const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
       return executeMineflayerGoTo({
@@ -186,9 +192,14 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
         pathfinderModule,
         params,
         worldKey: createMineflayerWorldKey(currentBot),
+        control,
       });
     },
-    async mine(params: Readonly<MineSkillParams>) {
+    async mine(
+      params: Readonly<MineSkillExecutionRequest>,
+      control: SkillExecutionControl = NOOP_SKILL_EXECUTION_CONTROL,
+    ) {
+      control.throwIfAborted();
       const currentBot = ensureWorldInteractionReady("mine");
       const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
       return executeMineflayerMine({
@@ -196,9 +207,14 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
         pathfinder,
         pathfinderModule,
         params: { ...params, worldKey: createMineflayerWorldKey(currentBot) },
+        control,
       });
     },
-    async digBlockAt(position: Readonly<MineflayerVec3Like>) {
+    async digBlockAt(
+      position: Readonly<MineflayerVec3Like>,
+      control: SkillExecutionControl = NOOP_SKILL_EXECUTION_CONTROL,
+    ) {
+      control.throwIfAborted();
       const currentBot = ensureWorldInteractionReady("digBlockAt");
       const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
       await executeMineflayerDigBlockAt({
@@ -206,9 +222,15 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
         pathfinder,
         pathfinderModule,
         position,
+        control,
       });
+      control.throwIfAborted();
     },
-    async collect(params: Readonly<CollectSkillParams>) {
+    async collect(
+      params: Readonly<CollectSkillParams>,
+      control: SkillExecutionControl = NOOP_SKILL_EXECUTION_CONTROL,
+    ) {
+      control.throwIfAborted();
       const currentBot = ensureWorldInteractionReady("collect");
       const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
       return executeMineflayerCollect({
@@ -217,9 +239,14 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
         pathfinderModule,
         params,
         worldKey: createMineflayerWorldKey(currentBot),
+        control,
       });
     },
-    async equip(params: Readonly<EquipSkillParams>) {
+    async equip(
+      params: Readonly<EquipSkillParams>,
+      control: SkillExecutionControl = NOOP_SKILL_EXECUTION_CONTROL,
+    ) {
+      control.throwIfAborted();
       const currentBot = ensureWorldInteractionReady("equip");
       return executeMineflayerEquip({
         bot: currentBot,
@@ -227,7 +254,11 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
         worldKey: createMineflayerWorldKey(currentBot),
       });
     },
-    async craft(params: Readonly<CraftCapabilityParams>) {
+    async craft(
+      params: Readonly<CraftCapabilityParams>,
+      control: SkillExecutionControl = NOOP_SKILL_EXECUTION_CONTROL,
+    ) {
+      control.throwIfAborted();
       const currentBot = ensureWorldInteractionReady("craft");
       return executeMineflayerCraft({
         bot: currentBot,
@@ -236,7 +267,11 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
         craftingTableCache,
       });
     },
-    async place(params: Readonly<PlaceCapabilityParams>) {
+    async place(
+      params: Readonly<PlaceCapabilityParams>,
+      control: SkillExecutionControl = NOOP_SKILL_EXECUTION_CONTROL,
+    ) {
+      control.throwIfAborted();
       const currentBot = ensureWorldInteractionReady("place");
       const { pathfinder, pathfinderModule } = await createPathfinderContext(currentBot);
       return executeMineflayerPlaceCraftingTable({
@@ -246,6 +281,7 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
         params,
         worldKey: createMineflayerWorldKey(currentBot),
         cache: craftingTableCache,
+        control,
       });
     },
     createToolchainEnsureFacts(): ToolchainEnsureFacts {
@@ -940,6 +976,22 @@ function createMineflayerToolchainEnsureFacts(source: {
       const name = readStringValue(table?.name);
       return name ?? (table === undefined ? null : "crafting_table");
     },
+    resolveBlockDropItemNames(
+      input: Parameters<ToolchainEnsureFacts["resolveBlockDropItemNames"]>[0],
+    ) {
+      const bot = source.getBot();
+      return bot === null
+        ? Object.freeze([])
+        : resolveBlockDropItemNamesFromRegistry(bot.registry, input.blockName);
+    },
+    countInventoryItemsByTag(
+      input: Parameters<ToolchainEnsureFacts["countInventoryItemsByTag"]>[0],
+    ) {
+      const bot = source.getBot();
+      return bot === null
+        ? 0
+        : countInventoryItemsByRegistryTag(bot.registry, input.tagName, input.inventory);
+    },
   });
 }
 
@@ -1006,6 +1058,40 @@ function resolveMaterialSourceFromRegistry(
         itemName: normalizedItemName,
         blockName: normalizeEnsureName(sourceBlockName),
       });
+}
+
+function resolveBlockDropItemNamesFromRegistry(
+  registry: unknown,
+  blockName: string,
+): readonly string[] {
+  const block = readRegistryBlockFactByName(registry, blockName);
+  const dropNames = readRegistryBlockDropIds(block ?? {})
+    .map((dropId) => readRegistryItemName(registry, dropId))
+    .filter((name): name is string => name !== null);
+  if (dropNames.length > 0) {
+    return Object.freeze([...new Set(dropNames.map(normalizeEnsureName))]);
+  }
+
+  const item = readRegistryItemFactByName(registry, blockName);
+  return item?.name === undefined
+    ? Object.freeze([normalizeEnsureName(blockName)])
+    : Object.freeze([normalizeEnsureName(item.name)]);
+}
+
+function countInventoryItemsByRegistryTag(
+  registry: unknown,
+  tagName: string,
+  inventory: readonly ToolchainEnsureInventoryItem[],
+): number {
+  const matchingItemIds = createInventoryItemIdsForRegistryBlockTag(registry, tagName);
+  if (matchingItemIds.size === 0) {
+    return 0;
+  }
+
+  return inventory.reduce((sum, item) => {
+    const fact = readRegistryItemFactByName(registry, item.item_name);
+    return fact !== undefined && matchingItemIds.has(fact.id) ? sum + item.count : sum;
+  }, 0);
 }
 
 function compareMaterialSourceBlocks(
@@ -1165,6 +1251,61 @@ function createInventoryItemIdsForSemanticRole(
   return itemIds;
 }
 
+function createInventoryItemIdsForRegistryBlockTag(
+  registry: unknown,
+  tagName: string,
+): ReadonlySet<number> {
+  const normalizedTagName = normalizeEnsureName(tagName);
+  const itemIds = new Set<number>();
+  const registryRecord = asRecord(registry);
+  const blocksByName = asRecord(registryRecord?.blocksByName);
+  const itemsByName = asRecord(registryRecord?.itemsByName);
+
+  if (blocksByName === undefined) {
+    return itemIds;
+  }
+
+  for (const blockFact of Object.values(blocksByName)) {
+    const fact = asRecord(blockFact);
+    if (fact === undefined || !registryBlockHasTag(registry, fact, normalizedTagName)) {
+      continue;
+    }
+
+    for (const dropId of readRegistryBlockDropIds(fact)) {
+      itemIds.add(dropId);
+    }
+
+    const blockName = typeof fact.name === "string" ? normalizeEnsureName(fact.name) : null;
+    const itemFact = blockName === null ? undefined : asRecord(itemsByName?.[blockName]);
+    const itemId = readNumber(itemFact?.id, Number.NaN);
+    if (Number.isInteger(itemId)) {
+      itemIds.add(itemId);
+    }
+  }
+
+  return itemIds;
+}
+
+function registryBlockHasTag(
+  registry: unknown,
+  blockFact: Readonly<Record<string, unknown>>,
+  normalizedTagName: string,
+): boolean {
+  const directTags = readBlockDirectTags(blockFact.tags as MineflayerBlockHandle["tags"]);
+  if (directTags.has(normalizedTagName)) {
+    return true;
+  }
+
+  const blockId = readNumber(blockFact.id, Number.NaN);
+  if (!Number.isInteger(blockId)) {
+    return false;
+  }
+
+  const blockTags = asRecord(asRecord(asRecord(registry)?.tags)?.blocks);
+  const values = normalizeRegistryTagValue(blockTags?.[normalizedTagName]);
+  return values.includes(blockId);
+}
+
 function readRegistryBlockDropIds(fact: Readonly<Record<string, unknown>>): readonly number[] {
   return Array.isArray(fact.drops)
     ? Object.freeze(fact.drops.filter((dropId): dropId is number => Number.isInteger(dropId)))
@@ -1203,14 +1344,15 @@ function canReachRuntimeResourceBlock(
     const canSee = bot.canSeeBlock(block);
 
     if (!canSee) {
-      diagnostics.push("can_see_block_false");
+      diagnostics.push("line_of_sight_blocked");
+      diagnostics.push("reachability_deferred_to_skill");
     }
 
-    return canSee;
+    return true;
   }
 
-  diagnostics.push("reachability_fact_unavailable");
-  return false;
+  diagnostics.push("reachability_deferred_to_skill");
+  return true;
 }
 
 function createRuntimeResourceTags(

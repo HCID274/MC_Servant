@@ -1,4 +1,3 @@
-import type { StairBFSBlockRole } from "../../domain/stair-bfs-planner.js";
 import { normalizeMinecraftName as normalizeMineflayerName } from "./naming.js";
 import type {
   MineflayerBlockHandle,
@@ -10,7 +9,7 @@ import type {
 export interface MineBlockFactReader {
   readonly registry: unknown;
   normalizeName(value: string | undefined): string;
-  classifyBlockRole(block: MineflayerBlockHandle, targetBlockName: string): StairBFSBlockRole;
+  isLiteralAirBlock(block: MineflayerBlockHandle): boolean;
   isAirBlock(block: MineflayerBlockHandle): boolean;
   isHazardBlock(block: MineflayerBlockHandle): boolean;
   isSupportBlock(block: MineflayerBlockHandle): boolean;
@@ -25,8 +24,8 @@ export function createMineBlockFactReader(registry: unknown): MineBlockFactReade
   return Object.freeze({
     registry,
     normalizeName,
-    classifyBlockRole(block, targetBlockName) {
-      return classifyMineBlockRole(registry, block, targetBlockName);
+    isLiteralAirBlock(block) {
+      return isLiteralAirBlock(block);
     },
     isAirBlock(block) {
       return isAirBlock(registry, block);
@@ -55,36 +54,8 @@ export function createMineBlockFactReader(registry: unknown): MineBlockFactReade
   });
 }
 
-function classifyMineBlockRole(
-  registry: unknown,
-  block: MineflayerBlockHandle,
-  targetBlockName: string,
-): StairBFSBlockRole {
-  const blockName = normalizeName(block.name);
-  const fact = readRegistryBlockFact(registry, blockName);
-
-  if (isAirBlockFact(blockName, fact)) {
-    return "air";
-  }
-
-  const material = normalizeName(fact?.material);
-  if (material === "lava" || blockName === "lava") {
-    return "lava";
-  }
-  if (material === "water" || blockName === "water") {
-    return "water";
-  }
-  if (isFallingBlockFact(fact)) {
-    return "falling";
-  }
-  if (blockName === targetBlockName) {
-    return readRequiredHarvestToolIds(registry, targetBlockName).length > 0 ? "ore" : "mineable";
-  }
-  if (block.diggable === true || fact?.diggable === true) {
-    return "mineable";
-  }
-
-  return "solid";
+function isLiteralAirBlock(block: MineflayerBlockHandle): boolean {
+  return AIR_BLOCK_NAMES.has(normalizeName(block.name));
 }
 
 function isAirBlock(registry: unknown, block: MineflayerBlockHandle): boolean {
@@ -105,7 +76,7 @@ function isDiggableBlock(registry: unknown, block: MineflayerBlockHandle): boole
   const blockName = normalizeName(block.name);
   const fact = readRegistryBlockFact(registry, blockName);
   if (block.diggable === false) return false;
-  if (isAirBlockFact(blockName, fact)) return false;
+  if (isLiteralAirBlock(block)) return false;
   if (isHazardBlockFact(blockName, fact)) return false;
   if (isUnbreakableBlockFact(blockName, fact)) return false;
   return true;
@@ -177,10 +148,6 @@ function isUnbreakableBlockFact(
   );
 }
 
-function isFallingBlockFact(fact: MineflayerRegistryBlockFactWithMining | undefined): boolean {
-  return fact?.falling === true;
-}
-
 function normalizeName(value: string | undefined): string {
   const normalized = normalizeMineflayerName(value);
   return normalized.startsWith("minecraft:") ? normalized.slice("minecraft:".length) : normalized;
@@ -200,7 +167,6 @@ interface MineflayerRegistryBlockFactWithMining {
   readonly boundingBox?: string;
   readonly material?: string;
   readonly hardness?: number;
-  readonly falling?: boolean;
   readonly harvestTools?: Readonly<Record<string, unknown>>;
 }
 

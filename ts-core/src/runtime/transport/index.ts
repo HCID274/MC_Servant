@@ -6,6 +6,5 @@ export * from "./equip.js";
 export * from "./craft.js";
 export * from "./crafting-table.js";
 export * from "./placement.js";
-export * from "./pathfinder-goals.js";
 export * from "./block-world-compat.js";
 export * from "./world-reader.js";
