@@ -679,6 +679,8 @@ Phase 1 全本地部署。
 
 **模块解耦原则**：模块间只通过队列、事件和类型接口通信，不允许直接 import 其他模块的内部实现。方便未来再设计、再修改、重构。
 
+**模块组织口径**：目录代表已经稳定的抽象边界，文件代表边界内的具体角色。是否建目录优先取决于职责边界和依赖方向，而不是文件行数；边界未稳定、能力很小或只有 1-2 个文件时允许平铺。barrel 只能作为出口聚合，不承载业务逻辑、兼容判断、fallback 或错误转换。
+
 ---
 
 ## 16. 目录结构
@@ -800,7 +802,7 @@ ts-core/
 
 其中 `domain/`（领域） 与 `core-ports/`（核心端口） 作为横切基础层，只承载可被多模块复用的核心类型、基础校验、只读辅助与跨模块端口契约，不直接承载业务流程、队列装配或外部 I/O（输入输出） 逻辑。`app/`（应用装配） 作为组合根，集中处理依赖装配与生命周期，不承载业务执行。
 
-**barrel 兼容入口约定**：当一级模块文件被拆入子目录后（如 `runtime/transport/`、`conversation/llm/`、`workers/conversation-worker/`、`app/bootstrap/`、`data/contracts/`），保留同名 1 行 `.ts` 文件作为 `export * from "./xxx/index.js"` 的兼容入口，使外部 import 路径不破坏。**新代码应直接 import 子目录入口**，barrel 入口仅用于过渡兼容。
+**barrel 兼容入口约定**：当一级模块文件被拆入子目录后（如 `runtime/transport/`、`conversation/llm/`、`workers/conversation-worker/`、`app/bootstrap/`、`data/contracts/`），保留同名 1 行 `.ts` 文件作为 `export * from "./xxx/index.js"` 的兼容入口，使外部 import 路径不破坏。**新代码应直接 import 子目录入口**，barrel 入口仅用于过渡兼容。barrel 不得放业务逻辑、兼容判断、fallback 或错误转换。
 
 ### 16.1 命名约定
 
