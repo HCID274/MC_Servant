@@ -22,6 +22,7 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
   const ownerJson = JSON.stringify(task.owner ?? {});
 
   return `
+    (() => {
     const __sandboxHostCallRef = __sandboxHostCall;
     const __sandboxHostReadRef = __sandboxHostRead;
     delete globalThis.__sandboxHostCall;
@@ -32,7 +33,7 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
         result: { promise: true, copy: true }
       });
     const __sandboxTryCall = (method, args) =>
-      __sandboxHostCallRef.apply(undefined, ["system.tryFacadeCall", [method, args]], {
+      __sandboxHostCallRef.apply(undefined, ["system.tryHostCall", [method, args]], {
         arguments: { copy: true },
         result: { promise: true, copy: true }
       });
@@ -615,5 +616,6 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
       configurable: false,
       enumerable: true
     });
+    })();
   `;
 }

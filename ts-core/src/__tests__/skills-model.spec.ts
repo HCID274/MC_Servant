@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { createCodeJobForSkill } from "./test-code-job.js";
 
 import {
+  type LegacySkillCallInput as SkillCallInput,
+  createLegacySkillCall,
+} from "../core-ports/legacy/skill-call.js";
+import {
   CRAFT_SERVICE_ALLOWED_TARGETS,
   ExecPriority,
   ExecutionTaskKind,
@@ -10,7 +14,6 @@ import {
   PHASE1_SKILL_NAMES,
   PLACEMENT_SERVICE_ALLOWED_BLOCKS,
   SKILL_DIRECTORY,
-  type SkillCallInput,
   type SkillName,
   type SkillParamsByName,
   TOOLCHAIN_CAPABILITY_NAMES,
@@ -24,7 +27,6 @@ import {
   createMineSkillExecutionResult,
   createPhase1SkillRegistry,
   createPlacementService,
-  createSkillCall,
   createSkillRegistry,
   createToolchainEnsureExecutor,
   evaluateEnsureCondition,
@@ -126,14 +128,7 @@ describe("skills 模块契约", () => {
       },
     };
 
-    expect(TOOLCHAIN_CAPABILITY_NAMES).toEqual([
-      "craft",
-      "place",
-      "placeCraftingTable",
-      "equip",
-      "mine",
-      "ensure",
-    ]);
+    expect(TOOLCHAIN_CAPABILITY_NAMES).toEqual(["craft", "place", "equip", "mine", "ensure"]);
     expect(FORBIDDEN_TOOLCHAIN_DEMO_NAMES).toEqual(["demoMineIron"]);
     expect(TOOLCHAIN_CAPABILITY_NAMES).not.toContain("demoMineIron");
     expect(TOOLCHAIN_FAILURE_CODES).toEqual(
@@ -1036,7 +1031,7 @@ describe("skills 模块契约", () => {
   });
 
   it("应让 code 构造与运行时任务共享同一套强类型目录", () => {
-    const codeInvocation = createSkillCall({
+    const codeInvocation = createLegacySkillCall({
       skill: SKILL_DIRECTORY.collect,
       params: {
         itemName: "oak_log",

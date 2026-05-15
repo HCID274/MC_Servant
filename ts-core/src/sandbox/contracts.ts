@@ -54,12 +54,11 @@ export const SANDBOX_BOT_METHOD_NAMES = [
   "equip",
   "craft",
   "place",
-  "placeCraftingTable",
   "ensure",
 ] as const;
 
 /** `bot`（动作） 分区方法名联合类型。 */
-export type SandboxBotMethodName = SkillName | "craft" | "place" | "placeCraftingTable" | "ensure";
+export type SandboxBotMethodName = SkillName | "craft" | "place" | "ensure";
 
 /** sandbox（沙箱） 工具链能力契约清单；未实现前不得注入为真实 Facade（门面） 方法。 */
 export const SANDBOX_TOOLCHAIN_CAPABILITY_NAMES = TOOLCHAIN_CAPABILITY_NAMES;
@@ -156,8 +155,6 @@ export interface SandboxStepParamsByAction extends Pick<SkillParamsByName, Skill
   readonly craft: CraftCapabilityParams;
   /** `place`（放置） 的参数结构。 */
   readonly place: PlaceCapabilityParams;
-  /** `placeCraftingTable`（放置工作台） 的参数结构。 */
-  readonly placeCraftingTable: Readonly<Record<string, never>>;
   /** `ensure`（确保） 的通用依赖解析参数结构。 */
   readonly ensure: EnsureDependencyParams;
   /** `say`（聊天输出） 的参数结构。 */

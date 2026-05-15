@@ -100,17 +100,6 @@ export interface SkillParamsByName {
   readonly equip: EquipSkillParams;
 }
 
-/** 单技能调用的只读桥接结构。 */
-export interface SkillCall<TName extends SkillName = SkillName> {
-  readonly skill: TName;
-  readonly params: Readonly<SkillParamsByName[TName]>;
-}
-
-/** 所有合法技能调用输入的判别联合。 */
-export type SkillCallInput = {
-  [TName in SkillName]: SkillCall<TName>;
-}[SkillName];
-
 /** 技能元信息分类。 */
 export type SkillCategory = "movement" | "resource" | "inventory";
 
@@ -153,10 +142,6 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isEquipDestination(value: unknown): value is EquipDestination {
   return typeof value === "string" && (EQUIP_DESTINATIONS as readonly string[]).includes(value);
-}
-
-function freezePlainObject<TValue extends object>(value: TValue): Readonly<TValue> {
-  return Object.freeze({ ...value });
 }
 
 /** 判断值是否为 `collect` 可用中心点。 */
@@ -241,14 +226,6 @@ export function isEquipSkillParams(params: unknown): params is EquipSkillParams 
     isNonEmptyString(params.itemName) &&
     (params.destination === undefined || isEquipDestination(params.destination))
   );
-}
-
-/** 创建与技能目录强绑定的只读技能调用结构。 */
-export function createSkillCall<TInput extends SkillCallInput>(input: TInput): TInput {
-  return Object.freeze({
-    skill: input.skill,
-    params: freezePlainObject(input.params),
-  }) as TInput;
 }
 
 /** Phase 1 默认技能定义目录。 */

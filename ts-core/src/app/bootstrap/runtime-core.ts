@@ -145,7 +145,7 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
         executeRequest: (sandboxInput) =>
           executeSandboxCodeRequest({
             request: sandboxInput.request,
-            facade: sandboxInput.facade,
+            hostBridge: sandboxInput.hostBridge,
             task: sandboxInput.task,
             signal: sandboxInput.signal,
           }),

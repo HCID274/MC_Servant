@@ -11,7 +11,8 @@ import { assertNonEmptyString } from "../../domain/invariants.js";
 import { API_ROUTE_DEFINITIONS, createHealthResponse } from "../../interfaces/index.js";
 import { BotStatus, createRuntimeScaffold } from "../../runtime/index.js";
 import type { ExternalAuthSecretBinding } from "../../runtime/index.js";
-import { createSandboxFacadeContract, createSandboxResourceLimits } from "../../sandbox/index.js";
+import { createSandboxResourceLimits } from "../../sandbox/index.js";
+import { createSandboxFacadeContract } from "../../sandbox/legacy/index.js";
 import { createWorkerQueueCatalog } from "../../workers/index.js";
 import { createAppLifecyclePlan, createAppReadinessCatalog } from "../contracts.js";
 import { selectDataBotConfig } from "./config.js";
@@ -152,7 +153,7 @@ export function createAppBootstrapContract<TBotId extends string>(
       health: createHealthResponse(input.now),
     }),
     sandbox: Object.freeze({
-      facade: createSandboxFacadeContract(),
+      legacy_facade: createSandboxFacadeContract(),
       resource_limits: createSandboxResourceLimits(),
     }),
     diagnostics: Object.freeze({

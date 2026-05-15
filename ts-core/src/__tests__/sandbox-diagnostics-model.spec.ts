@@ -8,17 +8,6 @@ import {
   type AbortError,
   ExecPriority,
   ExecutionTaskKind,
-  SANDBOX_BOT_METHOD_NAMES,
-  SANDBOX_BOT_SKILL_BINDINGS,
-  SANDBOX_FACADE_SECTIONS,
-  SANDBOX_FORBIDDEN_DEMO_METHOD_NAMES,
-  SANDBOX_READONLY_SECTIONS,
-  type SANDBOX_STEP_ACTION_NAMES,
-  SANDBOX_TOOLCHAIN_CAPABILITY_NAMES,
-  SANDBOX_TOOLCHAIN_FAILURE_CODES,
-  type SandboxExecutionRequest,
-  type SandboxStepParamsByAction,
-  type SandboxToolchainCapabilityParamsByName,
   TaskHistoryStatus,
   type TaskLifecycleEvent,
   createAsyncDiagnosticSink,
@@ -35,8 +24,6 @@ import {
   createSandboxExecutionRequest,
   createSandboxExecutionSuccess,
   createSandboxExperienceDraft,
-  createSandboxFacadeContract,
-  createSandboxFacadePromptIndex,
   createSandboxLogLine,
   createSandboxLogRef,
   createSandboxResourceLimits,
@@ -46,10 +33,27 @@ import {
   createTaskLogRef,
   createTaskStartedLifecycleEvent,
   createTaskTerminalLifecycleEvent,
-  describeFacadeNamespace,
   executeCodeRequest,
-  updateSandboxFacadeHotNamespaceQueue,
 } from "../index.js";
+import {
+  SANDBOX_BOT_METHOD_NAMES,
+  SANDBOX_FACADE_SECTIONS,
+  SANDBOX_FORBIDDEN_DEMO_METHOD_NAMES,
+  SANDBOX_READONLY_SECTIONS,
+  type SANDBOX_STEP_ACTION_NAMES,
+  SANDBOX_TOOLCHAIN_CAPABILITY_NAMES,
+  SANDBOX_TOOLCHAIN_FAILURE_CODES,
+  type SandboxExecutionRequest,
+  type SandboxStepParamsByAction,
+  type SandboxToolchainCapabilityParamsByName,
+} from "../sandbox/contracts.js";
+import {
+  SANDBOX_BOT_SKILL_BINDINGS,
+  createSandboxFacadeContract,
+  createSandboxFacadePromptIndex,
+  describeFacadeNamespace,
+  updateSandboxFacadeHotNamespaceQueue,
+} from "../sandbox/legacy/index.js";
 import { createTaskResultSummaryFromSandboxResult } from "../workers/task-result-summary.js";
 
 const validBindings: typeof SANDBOX_BOT_SKILL_BINDINGS = SANDBOX_BOT_SKILL_BINDINGS;
@@ -277,7 +281,6 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(SANDBOX_TOOLCHAIN_CAPABILITY_NAMES).toEqual([
       "craft",
       "place",
-      "placeCraftingTable",
       "equip",
       "mine",
       "ensure",
@@ -290,7 +293,6 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(Object.keys(facadeContract.bot)).toEqual([...SANDBOX_BOT_METHOD_NAMES]);
     expect(facadeContract.bot).toHaveProperty("craft");
     expect(facadeContract.bot).toHaveProperty("place");
-    expect(facadeContract.bot).toHaveProperty("placeCraftingTable");
     expect(facadeContract.bot).toHaveProperty("ensure");
   });
 
@@ -347,7 +349,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       request: createRuntimeSandboxRequest({
         code: "await reply('hello sandbox')",
       }),
-      facade: {
+      hostBridge: {
         async executeBotSkill() {
           throw new Error("skill should not run");
         },
@@ -375,7 +377,10 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       request: createRuntimeSandboxRequest({
         code: [
           "if (typeof api !== 'undefined') { throw new Error('legacy api leaked') }",
-          "if (typeof __sandboxHostCall !== 'undefined') { throw new Error('host leaked') }",
+          "(function () {",
+          "  const hostName = '__' + 'sandbox' + 'HostCall'",
+          "  if (typeof this[hostName] !== 'undefined') { throw new Error('host leaked') }",
+          "})()",
           "if (typeof owner !== 'object') { throw new Error('owner missing') }",
         ].join("\n"),
         messageId: "task-readonly",
@@ -385,7 +390,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         userMessage: "读任务上下文",
         intent: "code",
       },
-      facade: {
+      hostBridge: {
         async executeBotSkill() {
           throw new Error("skill should not run");
         },
@@ -427,7 +432,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
           position: { x: 8, y: 64, z: 2 },
         },
       },
-      facade: {
+      hostBridge: {
         ...createSatisfiedConditionFacade(),
         async executeBotSkill(skill, params) {
           botCalls.push({ skill, params });
@@ -497,7 +502,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         `,
         messageId: "T-070-goal-report",
       }),
-      facade: {
+      hostBridge: {
         ...createSatisfiedConditionFacade(),
         async executeBotSkill(skill, params) {
           return {
@@ -593,7 +598,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
           position: { x: 1, y: 64, z: 2 },
         },
       },
-      facade: {
+      hostBridge: {
         ...createSatisfiedConditionFacade(),
         async executeBotSkill(skill, params) {
           if (skill === "cutTree") {
@@ -690,7 +695,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         `,
         messageId: "T-070-goal-failed",
       }),
-      facade: {
+      hostBridge: {
         ...createSatisfiedConditionFacade(),
         async executeBotSkill() {
           const error = new Error("not_equipped");
@@ -779,7 +784,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         code: "await place('crafting_table')",
         messageId: "T-056-place",
       }),
-      facade: {
+      hostBridge: {
         async executeBotSkill() {
           throw new Error("unexpected skill call");
         },
@@ -818,7 +823,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         code: "await place('crafting_table')",
         messageId: "T-061-place-table",
       }),
-      facade: {
+      hostBridge: {
         async executeBotSkill() {
           throw new Error("unexpected skill call");
         },
@@ -895,7 +900,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         code: "await craft('wooden_pickaxe', 1)",
         messageId: "T-055-craft",
       }),
-      facade: {
+      hostBridge: {
         async executeBotSkill() {
           throw new Error("unexpected skill call");
         },
@@ -937,7 +942,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         code: "await ensure(async () => mine('iron_ore', 1), until.gained('raw_iron', 1))",
         messageId: "T-060-ensure",
       }),
-      facade: {
+      hostBridge: {
         captureConditionState: createSatisfiedConditionFacade().captureConditionState,
         evaluateCondition(input) {
           const targetCount = typeof input.condition.count === "number" ? input.condition.count : 1;
@@ -1023,7 +1028,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         `,
         messageId: "T-081-preflight-mine-equipment",
       }),
-      facade: {
+      hostBridge: {
         captureConditionState: createSatisfiedConditionFacade().captureConditionState,
         evaluateCondition: createSatisfiedConditionFacade().evaluateCondition,
         async executeBotSkill(skill) {
@@ -1082,7 +1087,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         `,
         messageId: "T-085-mine-direct-insufficient",
       }),
-      facade: {
+      hostBridge: {
         async executeBotSkill() {
           return {
             skill: "mine",
@@ -1134,7 +1139,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         `,
         messageId: "T-085-mine-unknown-completion",
       }),
-      facade: {
+      hostBridge: {
         async executeBotSkill() {
           return {
             ok: true,
@@ -1275,7 +1280,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         `,
         messageId: "T-085-cut-tree-insufficient",
       }),
-      facade: {
+      hostBridge: {
         async executeBotSkill() {
           return {
             skill: "cutTree",
@@ -1328,7 +1333,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         `,
         messageId: "T-081-condition-not-met",
       }),
-      facade: {
+      hostBridge: {
         captureConditionState: createSatisfiedConditionFacade().captureConditionState,
         evaluateCondition(input) {
           return createTestConditionEvaluation(input, 0, 1);
@@ -1374,7 +1379,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         code: "const task = await runGoal('恢复后满足', async () => { await ensure(async () => { await collect(); }, until.has('cobblestone', 1)); }); await report(task);",
         messageId: "T-081-condition-recovered",
       }),
-      facade: {
+      hostBridge: {
         captureConditionState: createSatisfiedConditionFacade().captureConditionState,
         evaluateCondition(input) {
           evaluations += 1;
@@ -1428,7 +1433,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
           position: { x: 8, y: 64, z: 2 },
         },
       },
-      facade: {
+      hostBridge: {
         captureConditionState: createSatisfiedConditionFacade().captureConditionState,
         evaluateCondition(input) {
           return createTestConditionEvaluation(input, 5, 5);
@@ -1492,7 +1497,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         code: "const task = await runGoal('恢复后仍不满足', async () => { await ensure(async () => { await collect(); }, until.has('cobblestone', 1)); }); await report(task);",
         messageId: "T-081-condition-still-missing",
       }),
-      facade: {
+      hostBridge: {
         captureConditionState: createSatisfiedConditionFacade().captureConditionState,
         evaluateCondition(input) {
           return createTestConditionEvaluation(input, 0, 1);
@@ -1532,7 +1537,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         code: "await place('crafting_table')",
         messageId: "T-056-place-failed",
       }),
-      facade: {
+      hostBridge: {
         async executeBotSkill() {
           throw new Error("unexpected skill call");
         },
@@ -1570,6 +1575,10 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       { code: "import('node:fs')", violation: "import" },
       { code: "globalThis.process", violation: "process" },
       { code: "await fetch('https://example.com')", violation: "network" },
+      {
+        code: "await __sandboxTryCall('bot.place', [{ blockName: 'crafting_table' }])",
+        violation: "sandbox_internal_bridge",
+      },
     ] as const;
 
     for (const forbiddenCase of forbiddenCases) {
@@ -1578,7 +1587,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
           code: forbiddenCase.code,
           messageId: `forbidden-${forbiddenCase.violation}`,
         }),
-        facade: {
+        hostBridge: {
           async executeBotSkill() {
             throw new Error("skill should not run");
           },
@@ -1649,7 +1658,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         code: "try { await goTo(1, 64, 1) } catch { await reply('handled') }",
         messageId: "T-027-facade-catch",
       }),
-      facade: {
+      hostBridge: {
         async executeBotSkill() {
           throw new Error("goTo failed");
         },
@@ -1684,7 +1693,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
           abort_cleanup_timeout_ms: 120,
         },
       }),
-      facade: {
+      hostBridge: {
         async executeBotSkill() {
           throw new Error("skill should not run");
         },
@@ -1716,7 +1725,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         code: "await cutTree(1)",
         messageId: "T-027-cut-tree",
       }),
-      facade: {
+      hostBridge: {
         async executeBotSkill(skill, params) {
           calls.push({ skill, params });
 

@@ -1,10 +1,11 @@
 /**
- * 技能真实执行边界。
+ * 旧单技能执行边界。
  *
  * 1. 逻辑收口：将技能调用统一路由到可注入的执行适配器中。
  * 2. 交互隔离：通过 GoToMovementAdapter 抽象 Mineflayer 物理移动能力，支持在测试环境注入假实现。
  */
 
+import type { LegacySkillCallInput } from "../../core-ports/legacy/skill-call.js";
 import type {
   CollectSkillAdapter,
   CollectSkillExecutionResult,
@@ -16,13 +17,12 @@ import type {
   GoToSkillExecutionResult,
   MineSkillAdapter,
   MineSkillExecutionResult,
-  SkillCallInput,
   SkillExecutionControl,
   SkillExecutionDependencies,
   SkillExecutionResult,
-} from "../core-ports/skills.js";
-import { NOOP_SKILL_EXECUTION_CONTROL } from "../core-ports/skills.js";
-import { SKILL_DIRECTORY, type SkillParamsByName } from "./contracts.js";
+} from "../../core-ports/skills.js";
+import { NOOP_SKILL_EXECUTION_CONTROL } from "../../core-ports/skills.js";
+import { SKILL_DIRECTORY, type SkillParamsByName } from "../contracts.js";
 
 export type {
   CollectSkillExecutionResult,
@@ -33,7 +33,7 @@ export type {
   MineSkillExecutionResult,
   SkillExecutionDependencies,
   SkillExecutionResult,
-} from "../core-ports/skills.js";
+} from "../../core-ports/skills.js";
 
 export {
   createCollectSkillExecutionResult,
@@ -41,7 +41,7 @@ export {
   createEquipSkillExecutionResult,
   createGoToSkillExecutionResult,
   createMineSkillExecutionResult,
-} from "../core-ports/skills.js";
+} from "../../core-ports/skills.js";
 
 /**
  * 执行单个技能调用。
@@ -54,7 +54,7 @@ export {
  */
 export async function executeSkillInvocation(input: {
   /** 待执行调用。 */
-  readonly invocation: SkillCallInput;
+  readonly invocation: LegacySkillCallInput;
   /** 执行依赖。 */
   readonly dependencies: SkillExecutionDependencies;
   /** 中断控制。 */

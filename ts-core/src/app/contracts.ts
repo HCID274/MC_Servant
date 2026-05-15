@@ -201,7 +201,7 @@ export function createAppLifecyclePlan(): AppLifecyclePlan {
       phase: "startup",
       subsystem: "sandbox",
       dependsOn: ["load_config"],
-      description: "准备 Facade API（门面接口） 与资源限制契约。",
+      description: "准备沙箱资源限制与旧 Facade 迁移诊断契约。",
     }),
     createLifecycleStep({
       name: "prepare_redis",
@@ -346,7 +346,7 @@ export function createAppReadinessCatalog(): readonly AppReadinessDescriptor[] {
       subsystem: "sandbox",
       readiness: "ready",
       dependencies: ["config"] as const,
-      ready_when: "Facade API（门面接口） 与资源限制已固定。",
+      ready_when: "沙箱资源限制与旧 Facade 迁移诊断契约已固定。",
     }),
     Object.freeze({
       subsystem: "redis",

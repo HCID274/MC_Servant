@@ -1,7 +1,4 @@
-import type {
-  SandboxFacadeCallControl,
-  SandboxFacadeExecutionAdapter,
-} from "../core-ports/sandbox.js";
+import type { SandboxHostCallControl, SandboxHostExecutionAdapter } from "../core-ports/sandbox.js";
 import type {
   EnsureConditionEvaluation,
   EnsureConditionStateSnapshot,
@@ -24,10 +21,10 @@ import type {
 import { createFacadeCallError, createToolchainCapabilityFacadeError } from "./errors.js";
 import {
   type SandboxExecutionControlState,
-  assertSandboxFacadeCallAllowed,
-  createSandboxFacadeCallControl,
+  assertSandboxHostCallAllowed,
+  createSandboxHostCallControl,
   markSandboxTerminalError,
-  trackSandboxFacadeCall,
+  trackSandboxHostCall,
 } from "./execution-control.js";
 import { createSandboxStepResult } from "./result-factory.js";
 import { isRecord, isSandboxStepActionName, toJsonlErrorSnapshot } from "./validators.js";
@@ -45,16 +42,17 @@ type SandboxReadonlyHostCallResult =
   | null;
 
 export interface SandboxHostCallRuntime {
-  readonly facade: SandboxFacadeExecutionAdapter;
+  readonly hostBridge: SandboxHostExecutionAdapter;
   readonly phaseLogs: SandboxJsonlLine[];
   readonly stepResults: SandboxStepResult[];
   readonly controlState: SandboxExecutionControlState;
   readonly resourceLimits: SandboxExecutionResourceLimits;
   readonly now: () => number;
-  readonly setLastFacadeError: (error: FacadeCallError) => void;
+  readonly setLastHostCallError: (error: FacadeCallError) => void;
 }
 
-export interface SandboxHostReadRuntime extends Omit<SandboxHostCallRuntime, "setLastFacadeError"> {
+export interface SandboxHostReadRuntime
+  extends Omit<SandboxHostCallRuntime, "setLastHostCallError"> {
   readonly botId: string;
 }
 
@@ -63,8 +61,8 @@ export async function handleSandboxHostCall(input: {
   readonly args: readonly unknown[];
   readonly runtime: SandboxHostCallRuntime;
 }): Promise<SandboxHostCallResult> {
-  if (input.method === "system.tryFacadeCall") {
-    return handleSandboxTryFacadeCall(input);
+  if (input.method === "system.tryHostCall") {
+    return handleSandboxTryHostCall(input);
   }
   if (input.method === "system.reportGoal") {
     return handleSandboxGoalReport(input);
@@ -74,7 +72,7 @@ export async function handleSandboxHostCall(input: {
   const params = normalizeSandboxCallParams(action, input.args);
   const startedAt = input.runtime.now();
 
-  assertSandboxFacadeCallAllowed(
+  assertSandboxHostCallAllowed(
     input.runtime.controlState,
     input.runtime.resourceLimits,
     input.runtime.now(),
@@ -90,20 +88,20 @@ export async function handleSandboxHostCall(input: {
   );
 
   try {
-    const control = createSandboxFacadeCallControl(input.runtime.controlState);
+    const control = createSandboxHostCallControl(input.runtime.controlState);
     const result =
       action === "say" || action === "report"
-        ? await trackSandboxFacadeCall(
+        ? await trackSandboxHostCall(
             input.runtime.controlState,
-            input.runtime.facade.writeChat(
+            input.runtime.hostBridge.writeChat(
               action,
               params as SandboxStepParamsByAction["say"],
               control,
             ),
           )
-        : await trackSandboxFacadeCall(
+        : await trackSandboxHostCall(
             input.runtime.controlState,
-            executeSandboxBotFacadeCall(input.runtime.facade, action, params, control),
+            executeSandboxBotHostCall(input.runtime.hostBridge, action, params, control),
           );
 
     if (input.runtime.controlState.terminalError !== null) {
@@ -164,7 +162,7 @@ export async function handleSandboxHostCall(input: {
     }
 
     const facadeError = createFacadeCallError(action, params, error);
-    input.runtime.setLastFacadeError(facadeError);
+    input.runtime.setLastHostCallError(facadeError);
     markSandboxTerminalError(input.runtime.controlState, facadeError);
     const durationMs = Math.max(0, input.runtime.now() - startedAt);
     input.runtime.stepResults.push(
@@ -197,23 +195,23 @@ export async function handleSandboxHostRead(input: {
   readonly args: readonly unknown[];
   readonly runtime: SandboxHostReadRuntime;
 }): Promise<SandboxReadonlyHostCallResult> {
-  assertSandboxFacadeCallAllowed(
+  assertSandboxHostCallAllowed(
     input.runtime.controlState,
     input.runtime.resourceLimits,
     input.runtime.now(),
   );
 
-  const control = createSandboxFacadeCallControl(input.runtime.controlState);
+  const control = createSandboxHostCallControl(input.runtime.controlState);
   if (input.method === "memory.search") {
-    if (typeof input.runtime.facade.searchMemory !== "function") {
+    if (typeof input.runtime.hostBridge.searchMemory !== "function") {
       throw new Error("search is not configured in current sandbox");
     }
 
     const params = normalizeSandboxSearchParams(input.args);
-    return trackSandboxFacadeCall(
+    return trackSandboxHostCall(
       input.runtime.controlState,
       Promise.resolve(
-        input.runtime.facade.searchMemory(
+        input.runtime.hostBridge.searchMemory(
           {
             bot_id: input.runtime.botId,
             query: params.query,
@@ -227,13 +225,13 @@ export async function handleSandboxHostRead(input: {
 
   if (input.method === "system.sleep") {
     const ms = normalizeSandboxSleepMs(input.args[0], input.runtime.resourceLimits.max_sleep_ms);
-    await trackSandboxFacadeCall(
+    await trackSandboxHostCall(
       input.runtime.controlState,
       new Promise<void>((resolve) => {
         setTimeout(resolve, ms);
       }),
     );
-    assertSandboxFacadeCallAllowed(
+    assertSandboxHostCallAllowed(
       input.runtime.controlState,
       input.runtime.resourceLimits,
       input.runtime.now(),
@@ -243,25 +241,25 @@ export async function handleSandboxHostRead(input: {
   }
 
   if (input.method === "system.captureConditionState") {
-    if (typeof input.runtime.facade.captureConditionState !== "function") {
+    if (typeof input.runtime.hostBridge.captureConditionState !== "function") {
       throw new Error("ensure condition state reader is not configured in current sandbox");
     }
 
-    return trackSandboxFacadeCall(
+    return trackSandboxHostCall(
       input.runtime.controlState,
-      Promise.resolve(input.runtime.facade.captureConditionState(control)),
+      Promise.resolve(input.runtime.hostBridge.captureConditionState(control)),
     );
   }
 
   if (input.method === "system.evaluateCondition") {
-    if (typeof input.runtime.facade.evaluateCondition !== "function") {
+    if (typeof input.runtime.hostBridge.evaluateCondition !== "function") {
       throw new Error("ensure condition evaluator is not configured in current sandbox");
     }
 
-    return trackSandboxFacadeCall(
+    return trackSandboxHostCall(
       input.runtime.controlState,
       Promise.resolve(
-        input.runtime.facade.evaluateCondition(
+        input.runtime.hostBridge.evaluateCondition(
           {
             condition: cloneReadonlyValue(input.args[0] ?? {}) as never,
             baseline: cloneReadonlyValue(input.args[1] ?? {}) as never,
@@ -355,10 +353,6 @@ function normalizeSandboxCallParams(
     return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["place"];
   }
 
-  if (action === "placeCraftingTable") {
-    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["placeCraftingTable"];
-  }
-
   if (action === "ensure") {
     return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["ensure"];
   }
@@ -419,7 +413,7 @@ async function handleSandboxGoalReport(input: {
   readonly runtime: SandboxHostCallRuntime;
 }): Promise<SandboxHostCallResult> {
   void input.method;
-  assertSandboxFacadeCallAllowed(
+  assertSandboxHostCallAllowed(
     input.runtime.controlState,
     input.runtime.resourceLimits,
     input.runtime.now(),
@@ -467,12 +461,12 @@ async function handleSandboxGoalReport(input: {
   return result;
 }
 
-async function handleSandboxTryFacadeCall(input: {
+async function handleSandboxTryHostCall(input: {
   readonly method: string;
   readonly args: readonly unknown[];
   readonly runtime: SandboxHostCallRuntime;
 }): Promise<SandboxHostCallResult> {
-  assertSandboxFacadeCallAllowed(
+  assertSandboxHostCallAllowed(
     input.runtime.controlState,
     input.runtime.resourceLimits,
     input.runtime.now(),
@@ -482,7 +476,7 @@ async function handleSandboxTryFacadeCall(input: {
   const callArgs = Array.isArray(input.args[1]) ? input.args[1] : [];
   const action = toSandboxStepActionName(method);
   if (action === "say" || action === "report") {
-    throw new Error("tryFacadeCall only supports bot actions");
+    throw new Error("tryHostCall only supports bot actions");
   }
 
   const params = normalizeSandboxCallParams(action, callArgs);
@@ -497,10 +491,10 @@ async function handleSandboxTryFacadeCall(input: {
   );
 
   try {
-    const control = createSandboxFacadeCallControl(input.runtime.controlState);
-    const result = await trackSandboxFacadeCall(
+    const control = createSandboxHostCallControl(input.runtime.controlState);
+    const result = await trackSandboxHostCall(
       input.runtime.controlState,
-      executeSandboxBotFacadeCall(input.runtime.facade, action, params, control),
+      executeSandboxBotHostCall(input.runtime.hostBridge, action, params, control),
     );
     if (input.runtime.controlState.terminalError !== null) {
       throw input.runtime.controlState.terminalError;
@@ -625,18 +619,18 @@ function normalizeSandboxSleepMs(value: unknown, maxSleepMs: number): number {
   return Math.min(ms, maxSleepMs);
 }
 
-async function executeSandboxBotFacadeCall(
-  facade: SandboxFacadeExecutionAdapter,
+async function executeSandboxBotHostCall(
+  hostBridge: SandboxHostExecutionAdapter,
   action: Exclude<SandboxStepActionName, "say" | "report">,
   params: SandboxStepResult["params"],
-  control: SandboxFacadeCallControl,
+  control: SandboxHostCallControl,
 ): Promise<Readonly<Record<string, unknown>>> {
   if (isToolchainSandboxAction(action)) {
-    if (typeof facade.executeToolchainCapability !== "function") {
+    if (typeof hostBridge.executeToolchainCapability !== "function") {
       throw new Error(`Toolchain capability ${action} is not configured in current sandbox`);
     }
 
-    const result = await facade.executeToolchainCapability(
+    const result = await hostBridge.executeToolchainCapability(
       action,
       params as ToolchainCapabilityParamsByName[typeof action],
       control,
@@ -653,18 +647,13 @@ async function executeSandboxBotFacadeCall(
     return result;
   }
 
-  return facade.executeBotSkill(action, params as SkillParamsByName[typeof action], control);
+  return hostBridge.executeBotSkill(action, params as SkillParamsByName[typeof action], control);
 }
 
 function isToolchainSandboxAction(
   action: Exclude<SandboxStepActionName, "say" | "report">,
 ): action is ToolchainCapabilityName {
-  return (
-    action === "craft" ||
-    action === "place" ||
-    action === "placeCraftingTable" ||
-    action === "ensure"
-  );
+  return action === "craft" || action === "place" || action === "ensure";
 }
 
 function isToolchainCapabilityFailure(value: unknown): value is {

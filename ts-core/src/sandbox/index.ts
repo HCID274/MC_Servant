@@ -1,8 +1,8 @@
 /**
  * 安全沙箱执行模块。
  *
- * 1. 隔离执行：提供在受限环境中执行外部代码（Sandbox Code）的能力，支持内存、CPU 时间和能力的严格限制。
- * 2. Facade 契约：定义沙箱内可见的 API 边界，将内部复杂的技能映射为沙箱内简单的异步函数。
+ * 1. 隔离执行：提供在受限环境中执行 Plan TS code 的能力，支持内存、CPU 时间和能力的严格限制。
+ * 2. Host bridge：通过闭包桥接 runtime 单写者能力，不向沙箱代码暴露旧命名空间执行面。
  * 3. 稳压适配：负责将沙箱内部的执行状态、日志和异常无损地同步到主进程的诊断流水线。
  */
 
@@ -12,18 +12,26 @@ import type { ModuleBoundary } from "../domain/contracts.js";
 export const sandboxModuleBoundary = {
   moduleName: "sandbox",
   responsibilities: [
-    "定义 Facade API 的顶层类型边界与 Phase 1 技能映射",
+    "执行 Plan 产出的 TS code 并注入顶层语义函数",
     "集中描述沙箱执行请求、结果、资源限制与错误分类",
   ],
   placeholderExports: [
     "sandboxModuleBoundary",
-    "createSandboxFacadeContract",
     "createSandboxExecutionRequest",
     "createSandboxError",
   ],
 } satisfies ModuleBoundary;
 
-export * from "./contracts.js";
-export * from "./facade.js";
 export * from "./execution.js";
 export * from "./recent-event.js";
+export type {
+  SandboxExecutionRequest,
+  SandboxExecutionResourceLimits,
+  SandboxExecutionResult,
+  SandboxExecutionSummary,
+  SandboxExecutionFailure,
+  SandboxExecutionInterrupted,
+  SandboxExecutionSuccess,
+  SandboxGoalResult,
+  SandboxStepResult,
+} from "./contracts.js";

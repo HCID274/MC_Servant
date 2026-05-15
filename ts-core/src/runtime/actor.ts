@@ -7,8 +7,8 @@ import type {
 import type {
   RuntimeSandboxExecutionDependencies,
   RuntimeSandboxExecutionResult,
-  SandboxFacadeCallControl,
-  SandboxFacadeExecutionAdapter,
+  SandboxHostCallControl,
+  SandboxHostExecutionAdapter,
   SandboxOwnerContext,
   SandboxSearchAdapter,
   SandboxSearchInput,
@@ -53,7 +53,7 @@ import {
 import type { RuntimeEventType } from "./events.js";
 import { resolveTransition } from "./state-machine.js";
 import type { CodeJob } from "./tasking.js";
-import type { MineflayerRuntimeTransport, MineflayerTransportSnapshot } from "./transport.js";
+import type { MineflayerRuntimeTransport, MineflayerTransportSnapshot } from "./transport/types.js";
 
 /** BotActor（机器人执行代理） 只需要持有观测缓存引用，不直接依赖 observation（观测） 实现。 */
 export interface BotActorObservationRuntimeCachePort {
@@ -293,17 +293,17 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       recent_events: Object.freeze([...recentEvents]),
     });
 
-  const createActorSandboxFacade = (
+  const createActorSandboxHostBridge = (
     job: CodeJob,
     context: BotActorCodeExecutionContext | undefined,
-  ): SandboxFacadeExecutionAdapter =>
+  ): SandboxHostExecutionAdapter =>
     Object.freeze({
       async executeBotSkill<TName extends SkillName>(
         skill: TName,
         params: Readonly<SkillParamsByName[TName]>,
-        control?: SandboxFacadeCallControl,
+        control?: SandboxHostCallControl,
       ): Promise<Readonly<Record<string, unknown>>> {
-        assertSandboxFacadeCallActive(control);
+        assertSandboxHostCallActive(control);
         const skillControl = createSkillExecutionControl(control);
 
         try {
@@ -356,7 +356,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
 
           throw new Error(`Unsupported sandbox skill: ${String(skill)}`);
         } catch (error) {
-          throw createSandboxFacadeExecutionError({
+          throw createSandboxHostExecutionError({
             action: skill,
             params: params as Readonly<Record<string, unknown>>,
             error,
@@ -367,18 +367,15 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       async executeToolchainCapability<TName extends ToolchainCapabilityName>(
         capability: TName,
         params: Readonly<ToolchainCapabilityParamsByName[TName]>,
-        control?: SandboxFacadeCallControl,
+        control?: SandboxHostCallControl,
       ) {
-        assertSandboxFacadeCallActive(control);
+        assertSandboxHostCallActive(control);
 
         if (capability === "craft" && !isCraftCapabilityParams(params)) {
           throw new Error("sandbox craft params are invalid");
         }
         if (capability === "place" && !isPlaceCapabilityParams(params)) {
           throw new Error("sandbox place params are invalid");
-        }
-        if (capability === "placeCraftingTable" && Object.keys(params).length > 0) {
-          throw new Error(`sandbox ${capability} params are invalid`);
         }
         if (capability === "ensure" && !isEnsureDependencyParams(params)) {
           throw new Error("sandbox ensure params are invalid");
@@ -408,7 +405,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
 
           return result as unknown as Readonly<Record<string, unknown>>;
         } catch (error) {
-          throw createSandboxFacadeExecutionError({
+          throw createSandboxHostExecutionError({
             action: capability,
             params: params as Readonly<Record<string, unknown>>,
             error,
@@ -419,13 +416,13 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       async writeChat(
         method: "say" | "report",
         params: Readonly<{ message: string }>,
-        control?: SandboxFacadeCallControl,
+        control?: SandboxHostCallControl,
       ): Promise<Readonly<Record<string, unknown>>> {
         assertSandboxChatParams(params);
-        assertSandboxFacadeCallActive(control);
+        assertSandboxHostCallActive(control);
 
         await runSerializedChatWrite(async () => {
-          assertSandboxFacadeCallActive(control);
+          assertSandboxHostCallActive(control);
           await input.transport.chat(params.message);
           emittedEvents.push("chat.reply");
           chatWrites.push(
@@ -442,15 +439,15 @@ export function createBotActorRuntime<TBotId extends string>(input: {
           method,
         });
       },
-      captureConditionState(control?: SandboxFacadeCallControl): EnsureConditionStateSnapshot {
-        assertSandboxFacadeCallActive(control);
+      captureConditionState(control?: SandboxHostCallControl): EnsureConditionStateSnapshot {
+        assertSandboxHostCallActive(control);
         return createEnsureConditionStateSnapshot(input.transport);
       },
       evaluateCondition(
-        input: Parameters<NonNullable<SandboxFacadeExecutionAdapter["evaluateCondition"]>>[0],
-        control?: SandboxFacadeCallControl,
+        input: Parameters<NonNullable<SandboxHostExecutionAdapter["evaluateCondition"]>>[0],
+        control?: SandboxHostCallControl,
       ) {
-        assertSandboxFacadeCallActive(control);
+        assertSandboxHostCallActive(control);
         if (typeof skillExecution.evaluateCondition !== "function") {
           throw new Error("ensure condition evaluator is not configured");
         }
@@ -460,11 +457,8 @@ export function createBotActorRuntime<TBotId extends string>(input: {
       ...(context?.searchMemory === undefined
         ? {}
         : {
-            async searchMemory(
-              searchInput: SandboxSearchInput,
-              control?: SandboxFacadeCallControl,
-            ) {
-              assertSandboxFacadeCallActive(control);
+            async searchMemory(searchInput: SandboxSearchInput, control?: SandboxHostCallControl) {
+              assertSandboxHostCallActive(control);
               return context.searchMemory?.(searchInput) ?? Object.freeze({ hits: [] });
             },
           }),
@@ -592,7 +586,7 @@ export function createBotActorRuntime<TBotId extends string>(input: {
               transport: input.transport,
             }),
           },
-          facade: createActorSandboxFacade(job, context),
+          hostBridge: createActorSandboxHostBridge(job, context),
           signal: abortController.signal,
         });
         if (execution.interrupted) {
@@ -969,15 +963,15 @@ function assertSandboxChatParams(input: Readonly<{ message: string }>): void {
 }
 
 /**
- * 校验沙箱 Facade API（门面接口） 调用仍处在当前执行窗口内。
+ * 校验沙箱 host bridge 调用仍处在当前执行窗口内。
  */
-function assertSandboxFacadeCallActive(control: SandboxFacadeCallControl | undefined): void {
+function assertSandboxHostCallActive(control: SandboxHostCallControl | undefined): void {
   if (control === undefined) {
     return;
   }
 
   if (control.signal.aborted || Date.now() >= control.deadline_ms) {
-    throw new Error("sandbox Facade call is no longer active");
+    throw new Error("sandbox host call is no longer active");
   }
 }
 
@@ -1013,25 +1007,25 @@ function createToolchainCapabilityError(
   });
 }
 
-function createSandboxFacadeExecutionError(input: {
+function createSandboxHostExecutionError(input: {
   readonly action: string;
   readonly params: Readonly<Record<string, unknown>>;
   readonly error: unknown;
   readonly transport: RuntimeWorldStateReadPort;
 }): Error {
   return createToolchainCapabilityError(
-    readSandboxFacadeErrorCode(input.error),
+    readSandboxHostErrorCode(input.error),
     getErrorMessage(input.error),
     createSandboxFailureDetails({
       action: input.action,
       params: input.params,
-      details: readSandboxFacadeErrorDetails(input.error),
+      details: readSandboxHostErrorDetails(input.error),
       transport: input.transport,
     }),
   );
 }
 
-function readSandboxFacadeErrorCode(error: unknown): string {
+function readSandboxHostErrorCode(error: unknown): string {
   if (typeof error !== "object" || error === null) {
     return "facade_call_failed";
   }
@@ -1045,7 +1039,7 @@ function readSandboxFacadeErrorCode(error: unknown): string {
   return TOOLCHAIN_FAILURE_CODES.find((code) => message.includes(code)) ?? "facade_call_failed";
 }
 
-function readSandboxFacadeErrorDetails(
+function readSandboxHostErrorDetails(
   error: unknown,
 ): Readonly<Record<string, unknown>> | undefined {
   if (typeof error !== "object" || error === null) {
@@ -1199,8 +1193,6 @@ async function executeActorToolchainCapability<TName extends ToolchainCapability
         input.params as Readonly<ToolchainCapabilityParamsByName["place"]>,
         input.control,
       );
-    case "placeCraftingTable":
-      return input.skillExecution.place({ blockName: "crafting_table" }, input.control);
     case "ensure":
       return readConfiguredEnsure(input.skillExecution.ensureDependency, input.capability)(
         input.params as Readonly<ToolchainCapabilityParamsByName["ensure"]>,
@@ -1234,7 +1226,7 @@ function readConfiguredEnsure<TParams>(
 }
 
 function createSkillExecutionControl(
-  control: SandboxFacadeCallControl | undefined,
+  control: SandboxHostCallControl | undefined,
 ): SkillExecutionControl {
   if (control === undefined) {
     return NOOP_SKILL_EXECUTION_CONTROL;
@@ -1243,7 +1235,7 @@ function createSkillExecutionControl(
   return Object.freeze({
     signal: control.signal,
     throwIfAborted(): void {
-      assertSandboxFacadeCallActive(control);
+      assertSandboxHostCallActive(control);
     },
   });
 }

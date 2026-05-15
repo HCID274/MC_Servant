@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import * as TsCoreExports from "../index.js";
 import {
   BotStatus,
   CORE_MODULE_NAMES,
@@ -42,7 +43,6 @@ import {
   createRedisRuntimeClientOptions,
   createRuntimeReadyGate,
   createRuntimeScaffold,
-  createSandboxFacadeContract,
   createSessionRecord,
   createStatusResponse,
   createWorkerBullmqRuntime,
@@ -51,6 +51,7 @@ import {
   runDrizzleMigrations,
   toExecPriority,
 } from "../index.js";
+import { createSandboxFacadeContract } from "../sandbox/legacy/index.js";
 
 describe("TS Core 工程骨架", () => {
   it("应导出全部模块边界并与模块名清单一致", () => {
@@ -161,7 +162,15 @@ describe("TS Core 工程骨架", () => {
     expect(authSnapshot.state.action_summary?.command_preview).toBe("/login <redacted>");
   });
 
-  it("应从根入口导出 sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
+  it("根入口不应自然暴露 legacy（旧兼容） 执行面", () => {
+    expect("createSandboxFacadeContract" in TsCoreExports).toBe(false);
+    expect("createSandboxFacadePromptIndex" in TsCoreExports).toBe(false);
+    expect("createSkillCall" in TsCoreExports).toBe(false);
+    expect("executeSkillInvocation" in TsCoreExports).toBe(false);
+    expect("executeMineflayerCraft" in TsCoreExports).toBe(false);
+  });
+
+  it("应显式从 legacy（旧兼容） 入口读取迁移诊断契约", () => {
     const facadeContract = createSandboxFacadeContract();
     const diagnosticsCatalog = createDiagnosticsCatalog();
 

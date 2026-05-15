@@ -8,8 +8,8 @@ import {
   createGoToSkillExecutionResult,
   createMineSkillExecutionResult,
   createMineSkillExecutor,
-  executeSkillInvocation,
 } from "../skills/index.js";
+import { executeSkillInvocation } from "../skills/legacy/execution.js";
 import { createResourceService } from "../world-model/index.js";
 
 describe("runtime skill execution（运行时技能执行） 模型", () => {

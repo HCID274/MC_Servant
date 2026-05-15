@@ -7,9 +7,8 @@
  * 4. 技能对齐：确保沙箱内的 `bot` 分区方法与 Phase 1 技能元数据严格对齐。
  */
 
-import { PHASE1_SKILL_DEFINITIONS, type SkillName } from "../core-ports/skills.js";
+import { PHASE1_SKILL_DEFINITIONS, type SkillName } from "../../core-ports/skills.js";
 import {
-  SANDBOX_BOT_METHOD_NAMES,
   SANDBOX_CHAT_METHOD_NAMES,
   SANDBOX_FACADE_SECTIONS,
   SANDBOX_KNOWLEDGE_METHOD_NAMES,
@@ -23,7 +22,7 @@ import {
   type SandboxFacadeSectionName,
   type SandboxMethodContract,
   type SandboxValueContract,
-} from "./contracts.js";
+} from "../contracts.js";
 
 /** Facade API（门面接口） 命名空间热队列条目。 */
 export interface SandboxFacadeHotNamespaceEntry {
@@ -186,12 +185,6 @@ export function createSandboxFacadeContract(): SandboxFacadeContract {
         name: "place",
         access: "write",
         parameterKeys: ["blockName", "near"],
-        emitsStep: true,
-      }),
-      placeCraftingTable: createMethodContract({
-        name: "placeCraftingTable",
-        access: "write",
-        parameterKeys: [],
         emitsStep: true,
       }),
       ensure: createMethodContract({

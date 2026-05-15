@@ -8,10 +8,7 @@
 import { transform } from "esbuild";
 import ivm from "isolated-vm";
 
-import type {
-  SandboxFacadeCallControl,
-  SandboxFacadeExecutionAdapter,
-} from "../core-ports/sandbox.js";
+import type { SandboxHostCallControl, SandboxHostExecutionAdapter } from "../core-ports/sandbox.js";
 import type { SandboxJsonlLine } from "../diagnostics/contracts.js";
 import { createSandboxLogLine } from "../diagnostics/logs.js";
 import { type SandboxExecutionTaskContext, createSandboxBootstrapScript } from "./bootstrap.js";
@@ -32,7 +29,7 @@ import {
   createSandboxExecutionControlState,
   markSandboxTerminalError,
   runSandboxScriptWithTimeout,
-  waitForActiveFacadeCalls,
+  waitForActiveHostCalls,
 } from "./execution-control.js";
 import { handleSandboxHostCall, handleSandboxHostRead } from "./host-call.js";
 import { checkSandboxSourceStaticPolicy } from "./resource-limits.js";
@@ -43,7 +40,7 @@ import {
 } from "./result-factory.js";
 import { isSandboxExecutionError, toJsonlErrorSnapshot } from "./validators.js";
 
-export type { SandboxFacadeCallControl, SandboxFacadeExecutionAdapter };
+export type { SandboxHostCallControl, SandboxHostExecutionAdapter };
 export type { SandboxExecutionTaskContext } from "./bootstrap.js";
 export { createSandboxError } from "./validators.js";
 export {
@@ -62,11 +59,11 @@ export {
 /**
  * 在 isolated-vm 内执行 Plan 产出的 TS code。
  *
- * 对外仍是单一 code 执行入口；不接受旧 SkillCall / sandbox_code 双任务语义。
+ * 对外仍是单一 code 执行入口；不接受旧单技能调用 / 旧沙箱代码双任务语义。
  */
 export async function executeSandboxCodeRequest(input: {
   request: SandboxExecutionRequest;
-  facade: SandboxFacadeExecutionAdapter;
+  hostBridge: SandboxHostExecutionAdapter;
   task?: Partial<SandboxExecutionTaskContext>;
   signal?: AbortSignal;
   now?: () => number;
@@ -75,7 +72,7 @@ export async function executeSandboxCodeRequest(input: {
   const startedAt = now();
   const phaseLogs: SandboxJsonlLine[] = [];
   const stepResults: SandboxStepResult[] = [];
-  let lastFacadeError: FacadeCallError | null = null;
+  let lastHostCallError: FacadeCallError | null = null;
   const controlState = createSandboxExecutionControlState({
     startedAt,
     resourceLimits: input.request.resource_limits,
@@ -175,13 +172,13 @@ export async function executeSandboxCodeRequest(input: {
           method,
           args,
           runtime: {
-            facade: input.facade,
+            hostBridge: input.hostBridge,
             phaseLogs,
             stepResults,
             controlState,
             resourceLimits: input.request.resource_limits,
-            setLastFacadeError: (error) => {
-              lastFacadeError = error;
+            setLastHostCallError: (error) => {
+              lastHostCallError = error;
             },
             now,
           },
@@ -196,7 +193,7 @@ export async function executeSandboxCodeRequest(input: {
           args,
           runtime: {
             botId: input.request.bot_id,
-            facade: input.facade,
+            hostBridge: input.hostBridge,
             phaseLogs,
             stepResults,
             controlState,
@@ -229,7 +226,7 @@ export async function executeSandboxCodeRequest(input: {
       controlState,
     );
 
-    const terminalFacadeError = lastFacadeError ?? findFacadeStepError(stepResults);
+    const terminalFacadeError = lastHostCallError ?? findFacadeStepError(stepResults);
     if (terminalFacadeError !== null) {
       markSandboxTerminalError(controlState, terminalFacadeError);
       pushPhaseLog({
@@ -264,13 +261,13 @@ export async function executeSandboxCodeRequest(input: {
     });
   } catch (error) {
     const sandboxError =
-      lastFacadeError ??
+      lastHostCallError ??
       controlState.terminalError ??
       (isSandboxExecutionError(error)
         ? error
         : createRuntimeSandboxError(error, input.request.resource_limits));
     markSandboxTerminalError(controlState, sandboxError);
-    await waitForActiveFacadeCalls(
+    await waitForActiveHostCalls(
       controlState,
       input.request.resource_limits.abort_cleanup_timeout_ms,
     );

@@ -46,24 +46,14 @@ import {
   createMineflayerRuntimeTransport,
   createMineflayerTransportDescriptor,
   createObservationRuntimeCache,
-  executeMineflayerCraft,
-  executeMineflayerEquip,
-  executeMineflayerPlaceCraftingTable,
-  readMineflayerBlockAt,
 } from "../index.js";
-import type {
-  CraftingTablePlacementCache,
-  MineflayerBlockHandle,
-  MineflayerBotHandle,
-  MineflayerControlState,
-  MineflayerEntityHandle,
-  MineflayerItemHandle,
-  MineflayerRecipeHandle,
-} from "../runtime/transport.js";
+import { executeMineflayerCraft } from "../runtime/transport/craft.js";
+import { executeMineflayerEquip } from "../runtime/transport/equip.js";
 import { stepToFoot } from "../runtime/transport/foot-step.js";
 import { executeMineRouteAction } from "../runtime/transport/mine-action-executor.js";
 import { planMineRoute } from "../runtime/transport/mine-bfs.js";
 import { createMineBlockFactReader } from "../runtime/transport/mine-block-facts.js";
+import { executeMineflayerPlaceCraftingTable } from "../runtime/transport/placement.js";
 import {
   createProgressWatchdog,
   waitForPromiseOrCondition,
@@ -77,6 +67,16 @@ import {
   clearSelfPlacedTerrainMemoryForTests,
   recordSelfPlacedTerrainBlock,
 } from "../runtime/transport/terrain-self-placed-memory.js";
+import type {
+  CraftingTablePlacementCache,
+  MineflayerBlockHandle,
+  MineflayerBotHandle,
+  MineflayerControlState,
+  MineflayerEntityHandle,
+  MineflayerItemHandle,
+  MineflayerRecipeHandle,
+} from "../runtime/transport/test-only.js";
+import { readMineflayerBlockAt } from "../runtime/transport/world-reader.js";
 
 class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-mc";

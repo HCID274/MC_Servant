@@ -189,7 +189,7 @@ function formatCompletedReport(facts: TaskReportFacts): string {
   if (facts.operation === "equip") {
     return `任务完成：已装备 ${facts.target ?? "目标物品"}，耗时 ${facts.duration_text}，${facts.world_text}喵~`;
   }
-  if (facts.operation === "place" || facts.operation === "placeCraftingTable") {
+  if (facts.operation === "place") {
     return `任务完成：已放置 ${facts.target ?? "目标方块"}，耗时 ${facts.duration_text}，${facts.world_text}喵~`;
   }
 

@@ -6,6 +6,7 @@ const FORBIDDEN_SANDBOX_PATTERNS = Object.freeze([
   { name: "require", pattern: /\brequire\s*\(/ },
   { name: "process", pattern: /\bprocess\b/ },
   { name: "globalThis", pattern: /\bglobalThis\b/ },
+  { name: "sandbox_internal_bridge", pattern: /\b__sandbox[A-Za-z0-9_]*\b/ },
   { name: "eval", pattern: /\beval\s*\(/ },
   { name: "Function", pattern: /\bFunction\s*\(/ },
   { name: "filesystem", pattern: /\b(?:fs|node:fs)\b/ },
@@ -57,7 +58,7 @@ export function createSandboxResourceLimits(
 /**
  * 对沙箱源码执行静态预检。
  *
- * 该检查只作为进入 isolated-vm 前的第一道硬边界，真正能力仍由 Facade API 注入控制。
+ * 该检查只作为进入 isolated-vm 前的第一道硬边界，真正能力仍由 host bridge 注入控制。
  */
 export function checkSandboxSourceStaticPolicy(code: string): StaticCheckError | null {
   if (code.trim().length === 0) {

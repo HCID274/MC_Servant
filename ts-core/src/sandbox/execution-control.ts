@@ -1,10 +1,10 @@
-import type { SandboxFacadeCallControl } from "../core-ports/sandbox.js";
+import type { SandboxHostCallControl } from "../core-ports/sandbox.js";
 import type { SandboxExecutionError, SandboxExecutionResourceLimits } from "./contracts.js";
 import { createSandboxAbortError, createSandboxTimeoutError, readAbortReason } from "./errors.js";
 
 export interface SandboxExecutionControlState {
   readonly abortController: AbortController;
-  readonly activeFacadeCalls: Set<Promise<void>>;
+  readonly activeHostCalls: Set<Promise<void>>;
   readonly deadlineMs: number;
   terminalError: SandboxExecutionError | null;
 }
@@ -15,22 +15,22 @@ export function createSandboxExecutionControlState(input: {
 }): SandboxExecutionControlState {
   return {
     abortController: new AbortController(),
-    activeFacadeCalls: new Set<Promise<void>>(),
+    activeHostCalls: new Set<Promise<void>>(),
     deadlineMs: input.startedAt + input.resourceLimits.timeout_ms,
     terminalError: null,
   };
 }
 
-export function createSandboxFacadeCallControl(
+export function createSandboxHostCallControl(
   state: SandboxExecutionControlState,
-): SandboxFacadeCallControl {
+): SandboxHostCallControl {
   return Object.freeze({
     signal: state.abortController.signal,
     deadline_ms: state.deadlineMs,
   });
 }
 
-export function assertSandboxFacadeCallAllowed(
+export function assertSandboxHostCallAllowed(
   state: SandboxExecutionControlState,
   limits: SandboxExecutionResourceLimits,
   now: number,
@@ -42,7 +42,7 @@ export function assertSandboxFacadeCallAllowed(
   if (state.abortController.signal.aborted || now >= state.deadlineMs) {
     const timeoutError = createSandboxTimeoutError(limits);
     markSandboxTerminalError(state, timeoutError);
-    abortSandboxFacadeCalls(state, timeoutError);
+    abortSandboxHostCalls(state, timeoutError);
     throw new Error(timeoutError.message);
   }
 }
@@ -53,11 +53,11 @@ export function markSandboxTerminalError(
 ): void {
   if (state.terminalError === null) {
     state.terminalError = error;
-    abortSandboxFacadeCalls(state, error);
+    abortSandboxHostCalls(state, error);
   }
 }
 
-export function abortSandboxFacadeCalls(
+export function abortSandboxHostCalls(
   state: SandboxExecutionControlState,
   error: SandboxExecutionError,
 ): void {
@@ -89,7 +89,7 @@ export function attachExternalAbortSignal(
   };
 }
 
-export async function trackSandboxFacadeCall<TValue>(
+export async function trackSandboxHostCall<TValue>(
   state: SandboxExecutionControlState,
   call: Promise<TValue>,
 ): Promise<TValue> {
@@ -97,20 +97,20 @@ export async function trackSandboxFacadeCall<TValue>(
     () => undefined,
     () => undefined,
   );
-  state.activeFacadeCalls.add(trackedCall);
+  state.activeHostCalls.add(trackedCall);
 
   try {
     return await Promise.race([call, waitForSandboxAbort(state)]);
   } finally {
-    state.activeFacadeCalls.delete(trackedCall);
+    state.activeHostCalls.delete(trackedCall);
   }
 }
 
-export async function waitForActiveFacadeCalls(
+export async function waitForActiveHostCalls(
   state: SandboxExecutionControlState,
   cleanupTimeoutMs: number,
 ): Promise<void> {
-  const activeCalls = [...state.activeFacadeCalls];
+  const activeCalls = [...state.activeHostCalls];
 
   if (activeCalls.length === 0) {
     return;
@@ -134,7 +134,7 @@ export function runSandboxScriptWithTimeout<TValue>(
     timeoutId = setTimeout(() => {
       const timeoutError = createSandboxTimeoutError(limits);
       markSandboxTerminalError(state, timeoutError);
-      abortSandboxFacadeCalls(state, timeoutError);
+      abortSandboxHostCalls(state, timeoutError);
       reject(timeoutError);
     }, limits.timeout_ms);
   });

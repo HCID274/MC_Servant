@@ -17,8 +17,8 @@ import type {
 } from "./skills.js";
 import type { TaskHistoryStatus } from "./tasking.js";
 
-/** 单次 Facade API（门面接口） 调用的执行门控。 */
-export interface SandboxFacadeCallControl {
+/** 单次 sandbox host bridge 调用的执行门控。 */
+export interface SandboxHostCallControl {
   /** 沙箱执行进入终态后触发，用于阻止后续真实副作用。 */
   readonly signal: AbortSignal;
   /** 沙箱执行级截止时间。 */
@@ -50,34 +50,34 @@ export type SandboxSearchAdapter = (
   input: SandboxSearchInput,
 ) => Promise<Readonly<Record<string, unknown>>> | Readonly<Record<string, unknown>>;
 
-/** 沙箱 Facade API（门面接口） 写动作适配器。 */
-export interface SandboxFacadeExecutionAdapter {
+/** 沙箱到 runtime host bridge 的执行适配器。 */
+export interface SandboxHostExecutionAdapter {
   /** 通过 BotActor（机器人执行代理） 单写者执行技能动作。 */
   executeBotSkill<TName extends SkillName>(
     skill: TName,
     params: Readonly<SkillParamsByName[TName]>,
-    control?: SandboxFacadeCallControl,
+    control?: SandboxHostCallControl,
   ): Promise<Readonly<Record<string, unknown>>>;
   /** 通过 BotActor（机器人执行代理） 单写者执行已实现的工具链能力。 */
   executeToolchainCapability?<TName extends ToolchainCapabilityName>(
     capability: TName,
     params: Readonly<ToolchainCapabilityParamsByName[TName]>,
-    control?: SandboxFacadeCallControl,
+    control?: SandboxHostCallControl,
   ): Promise<Readonly<Record<string, unknown>>>;
   /** 通过 BotActor（机器人执行代理） 单写者写入聊天。 */
   writeChat(
     method: "say" | "report",
     params: Readonly<{ message: string }>,
-    control?: SandboxFacadeCallControl,
+    control?: SandboxHostCallControl,
   ): Promise<Readonly<Record<string, unknown>>>;
   /** 通过 Brain search（大脑检索） 等只读通道执行 search（检索）。 */
   searchMemory?(
     input: SandboxSearchInput,
-    control?: SandboxFacadeCallControl,
+    control?: SandboxHostCallControl,
   ): Promise<Readonly<Record<string, unknown>>>;
   /** 读取 ensure（确保） 条件检查的真实状态快照。 */
   captureConditionState?(
-    control?: SandboxFacadeCallControl,
+    control?: SandboxHostCallControl,
   ): Promise<EnsureConditionStateSnapshot> | EnsureConditionStateSnapshot;
   /** 用 runtime/minecraft-data（运行时/Minecraft 数据库）事实评估 ensure 条件。 */
   evaluateCondition?(
@@ -86,7 +86,7 @@ export interface SandboxFacadeExecutionAdapter {
       readonly baseline: EnsureConditionStateSnapshot;
       readonly current: EnsureConditionStateSnapshot;
     }>,
-    control?: SandboxFacadeCallControl,
+    control?: SandboxHostCallControl,
   ): Promise<EnsureConditionEvaluation> | EnsureConditionEvaluation;
 }
 
@@ -193,7 +193,7 @@ export interface RuntimeSandboxExecutionDependencies {
   /** 执行 code（代码） 请求。 */
   executeRequest(input: {
     request: RuntimeSandboxExecutionRequest;
-    facade: SandboxFacadeExecutionAdapter;
+    hostBridge: SandboxHostExecutionAdapter;
     signal: AbortSignal;
     task: {
       readonly id: string;

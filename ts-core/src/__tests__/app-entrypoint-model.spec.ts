@@ -47,7 +47,7 @@ import {
   createMineflayerTransportDescriptor,
   createRuntimeReadyGate,
 } from "../runtime/index.js";
-import type { MineflayerBotHandle } from "../runtime/transport.js";
+import type { MineflayerBotHandle } from "../runtime/transport/test-only.js";
 import {
   type BotWorkerTask,
   type BrainWorkerTask,
@@ -834,9 +834,9 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           },
         },
         {
-          action: "placeCraftingTable",
+          action: "place",
           status: "ok",
-          params: {},
+          params: { blockName: "crafting_table" },
           result: {
             ok: true,
             data: {

@@ -115,7 +115,6 @@ export type ToolchainCapabilityResult<TData extends object> =
 export const TOOLCHAIN_CAPABILITY_NAMES = Object.freeze([
   "craft",
   "place",
-  "placeCraftingTable",
   "equip",
   "mine",
   "ensure",
@@ -141,9 +140,6 @@ export interface PlaceCapabilityParams {
   readonly blockName: string;
   readonly near?: Readonly<{ readonly x: number; readonly y: number; readonly z: number }>;
 }
-
-/** 无参数 ensure 能力参数。 */
-export type EmptyEnsureCapabilityParams = Readonly<Record<string, never>>;
 
 /** ensure 支持的完成条件。 */
 export type EnsureCondition =
@@ -215,7 +211,6 @@ export interface EnsureConditionEvaluation {
 export interface ToolchainCapabilityParamsByName {
   readonly craft: CraftCapabilityParams;
   readonly place: PlaceCapabilityParams;
-  readonly placeCraftingTable: EmptyEnsureCapabilityParams;
   readonly equip: EquipSkillParams;
   readonly mine: MineSkillParams;
   readonly ensure: EnsureDependencyParams;
@@ -286,13 +281,6 @@ export function isCraftCapabilityParams(params: unknown): params is CraftCapabil
   }
 
   return isNonEmptyString(params.itemName) && isPositiveInteger(params.count);
-}
-
-/** 校验无参数 ensure 工具链参数。 */
-export function isEmptyEnsureCapabilityParams(
-  params: unknown,
-): params is EmptyEnsureCapabilityParams {
-  return isRecord(params) && hasOnlyAllowedKeys(params, []);
 }
 
 /** 校验 ensure 完成条件。 */

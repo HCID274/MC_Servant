@@ -40,8 +40,8 @@ export const runtimeModuleBoundary = {
     "resolveTransition",
     "RuntimeTaskEnvelope",
     "createRuntimeScaffold",
-    "createMineflayerRuntimeTransport",
     "createMineflayerTransportDescriptor",
+    "createMineflayerRuntimeTransport",
     "createBotActorRuntime",
     "selectReflexAction",
   ],
@@ -51,5 +51,13 @@ export * from "./contracts.js";
 export * from "./tasking.js";
 export * from "./events.js";
 export * from "./state-machine.js";
-export * from "./transport.js";
 export * from "./actor.js";
+export { createMineflayerTransportDescriptor } from "./transport/lifecycle.js";
+export { createMineflayerRuntimeTransport } from "./transport/runtime.js";
+export { parseWorldDimensionMap } from "./transport/block-world-compat.js";
+export type {
+  MineflayerRuntimeTransportDependencies,
+  MineflayerRuntimeTransport,
+  MineflayerTransportDescriptor,
+  MineflayerTransportSnapshot,
+} from "./transport/types.js";
