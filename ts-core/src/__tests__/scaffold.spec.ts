@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import * as TsCoreExports from "../index.js";
@@ -184,6 +187,62 @@ describe("TS Core 工程骨架", () => {
     ]);
   });
 
+  it("测试主路径不应自然依赖旧 SkillCall / Facade / legacy 执行入口", () => {
+    const testsRoot = join(process.cwd(), "src", "__tests__");
+    const allowedLegacyTestFiles = new Set([
+      "sandbox-diagnostics-model.spec.ts",
+      "scaffold.spec.ts",
+      "skills-legacy-model.spec.ts",
+      "runtime-skill-legacy-execution-model.spec.ts",
+    ]);
+    const legacyPatterns = [
+      'from "../skills/' + "legacy/",
+      'from "../core-ports/' + "legacy/",
+      'from "../sandbox/' + "legacy/",
+      "create" + "LegacySkillCall",
+      "execute" + "SkillInvocation",
+    ];
+
+    const offenders = listTestFiles(testsRoot).flatMap((file) => {
+      const source = readFileSync(file, "utf8");
+      const relativePath = relative(testsRoot, file);
+      if (allowedLegacyTestFiles.has(relativePath)) {
+        return [];
+      }
+
+      return legacyPatterns
+        .filter((pattern) => source.includes(pattern))
+        .map((pattern) => `${relativePath}: ${pattern}`);
+    });
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("旧 api.bot / api.chat 只能出现在负向或 LLM prompt 防回归测试中", () => {
+    const testsRoot = join(process.cwd(), "src", "__tests__");
+    const allowedOldApiTestFiles = new Set([
+      "conversation-llm-planning-model.spec.ts",
+      "report-llm-model.spec.ts",
+      "sandbox-diagnostics-model.spec.ts",
+      "scaffold.spec.ts",
+    ]);
+    const oldApiPatterns = ["api" + ".bot", "api" + ".chat"];
+
+    const offenders = listTestFiles(testsRoot).flatMap((file) => {
+      const source = readFileSync(file, "utf8");
+      const relativePath = relative(testsRoot, file);
+      if (allowedOldApiTestFiles.has(relativePath)) {
+        return [];
+      }
+
+      return oldApiPatterns
+        .filter((pattern) => source.includes(pattern))
+        .map((pattern) => `${relativePath}: ${pattern}`);
+    });
+
+    expect(offenders).toEqual([]);
+  });
+
   it("应从根入口导出 conversation（对话） 与 workers（工作线程） 契约", () => {
     const triage = createMessageTriage({
       intent: "task",
@@ -286,3 +345,14 @@ describe("TS Core 工程骨架", () => {
     expect(readyGate.blocked_by).toContain("external_auth_pending");
   });
 });
+
+function listTestFiles(root: string): string[] {
+  return readdirSync(root).flatMap((entry) => {
+    const path = join(root, entry);
+    const stats = statSync(path);
+    if (stats.isDirectory()) {
+      return listTestFiles(path);
+    }
+    return entry.endsWith(".ts") ? [path] : [];
+  });
+}

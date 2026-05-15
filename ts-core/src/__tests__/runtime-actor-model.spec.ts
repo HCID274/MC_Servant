@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createCodeJobForSkill } from "./test-code-job.js";
+import { createTestOnlyProvenMineResult } from "./test-skill-proofs.js";
 
 import { createSandboxLogRef } from "../diagnostics/index.js";
 import {
@@ -26,7 +27,6 @@ import {
   createCollectSkillExecutionResult,
   createEquipSkillExecutionResult,
   createGoToSkillExecutionResult,
-  createMineSkillExecutionResult,
 } from "../skills/index.js";
 
 const testSandboxExecution = Object.freeze({
@@ -104,10 +104,10 @@ function createFakeTransport(input?: {
 
       await input?.mine?.(params);
 
-      return createMineSkillExecutionResult(params, {
-        collected_item_name: params.blockName,
-        collected_count: params.count,
-        mined_count: params.count,
+      return createTestOnlyProvenMineResult(params, {
+        collectedItemName: "test_runtime_drop",
+        collectedCount: params.count,
+        minedCount: params.count,
       });
     },
     async digBlockAt(position) {

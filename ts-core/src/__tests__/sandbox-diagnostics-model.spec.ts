@@ -263,7 +263,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       resource_limits: input.resourceLimits,
     });
 
-  it("应让 Facade API（门面接口） 写动作覆盖已启用技能与工作台放置工具链", () => {
+  it("legacy/test-only：应让旧 Facade API 写动作覆盖已启用技能与放置工具链", () => {
     const facadeContract = createSandboxFacadeContract();
 
     expect(Object.keys(facadeContract)).toEqual([...SANDBOX_FACADE_SECTIONS]);
@@ -275,7 +275,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(SANDBOX_READONLY_SECTIONS).toEqual(["world", "knowledge", "memory", "owner", "task"]);
   });
 
-  it("应声明工具链能力契约且把 craft/place/ensure（合成/放置/确保） 注入当前 Facade（门面）", () => {
+  it("legacy/test-only：应声明旧 Facade 工具链能力契约", () => {
     const facadeContract = createSandboxFacadeContract();
 
     expect(SANDBOX_TOOLCHAIN_CAPABILITY_NAMES).toEqual([
@@ -296,7 +296,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(facadeContract.bot).toHaveProperty("ensure");
   });
 
-  it("应提供渐进披露索引并按 namespace（命名空间） 描述 Facade API（门面接口）", () => {
+  it("legacy/test-only：应提供旧 Facade 渐进披露索引", () => {
     const index = createSandboxFacadePromptIndex();
     const botDescription = describeFacadeNamespace("bot");
 
@@ -307,7 +307,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     expect(describeFacadeNamespace("task")).toContain("userMessage");
   });
 
-  it("应按 token（令牌） 预算维护 LRU（最近最少使用） Facade API 热队列", () => {
+  it("legacy/test-only：应按 token 预算维护旧 Facade LRU 热队列", () => {
     const botBudget = Math.ceil(describeFacadeNamespace("bot").length / 4) + 1;
     const chatBudget = Math.ceil(describeFacadeNamespace("chat").length / 4) + 1;
     const bothBudget = botBudget + chatBudget + 4;

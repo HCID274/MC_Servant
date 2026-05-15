@@ -2,10 +2,6 @@ import { describe, expect, it } from "vitest";
 import { createCodeJobForSkill } from "./test-code-job.js";
 
 import {
-  type LegacySkillCallInput as SkillCallInput,
-  createLegacySkillCall,
-} from "../core-ports/legacy/skill-call.js";
-import {
   CRAFT_SERVICE_ALLOWED_TARGETS,
   ExecPriority,
   ExecutionTaskKind,
@@ -60,13 +56,6 @@ void validToolchainCapabilityName;
 // @ts-expect-error `demoMineIron`（演示挖铁） 不允许成为可复用工具链能力。
 const invalidToolchainCapabilityName: ToolchainCapabilityName = "demoMineIron";
 void invalidToolchainCapabilityName;
-
-const invalidSkillCallInput: SkillCallInput = {
-  skill: SKILL_DIRECTORY.goTo,
-  // @ts-expect-error `goTo`（前往坐标） 与 `count`（数量） 参数形态不对齐。
-  params: { count: 2 },
-};
-void invalidSkillCallInput;
 
 describe("skills 模块契约", () => {
   it("应暴露五个 Phase 1 技能目录与参数校验器", () => {
@@ -1030,14 +1019,7 @@ describe("skills 模块契约", () => {
     expect(cutTreeCalls).toBe(0);
   });
 
-  it("应让 code 构造与运行时任务共享同一套强类型目录", () => {
-    const codeInvocation = createLegacySkillCall({
-      skill: SKILL_DIRECTORY.collect,
-      params: {
-        itemName: "oak_log",
-        radius: 32,
-      },
-    });
+  it("应让语义 code job 构造与运行时任务共享同一套强类型目录", () => {
     const codeJob = createCodeJobForSkill({
       message_id: "msg-skill-call",
       intent_epoch: 3,
@@ -1047,10 +1029,6 @@ describe("skills 模块契约", () => {
       params: { count: 2 },
     });
 
-    expect(codeInvocation.skill).toBe("collect");
-    expect(codeInvocation.params.radius).toBe(32);
-    expect(Object.isFrozen(codeInvocation)).toBe(true);
-    expect(Object.isFrozen(codeInvocation.params)).toBe(true);
     expect(codeJob.type).toBe(ExecutionTaskKind.Code);
     expect(codeJob.code).toContain("cutTree(2)");
     expect(Object.isFrozen(codeJob)).toBe(true);

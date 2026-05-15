@@ -19,7 +19,7 @@ import {
 function createCompletedCodeResult(input: {
   readonly message_id: string;
   readonly action?: string;
-  readonly result?: Readonly<Record<string, unknown>>;
+  readonly result: Readonly<Record<string, unknown>>;
 }): {
   readonly status: TaskHistoryStatus.Completed;
   readonly summary: { readonly total_steps: number };
@@ -38,7 +38,7 @@ function createCompletedCodeResult(input: {
       Object.freeze({
         action: input.action ?? "code",
         status: "ok" as const,
-        result: input.result ?? { ok: true },
+        result: input.result,
       }),
     ]),
   });
@@ -60,7 +60,16 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
             executedMessages.push(job.message_id);
 
             return {
-              result: createCompletedCodeResult({ message_id: job.message_id, action: "goTo" }),
+              result: createCompletedCodeResult({
+                message_id: job.message_id,
+                action: "goTo",
+                result: {
+                  skill: "goTo",
+                  reached: true,
+                  world_key: "minecraft:overworld",
+                  target: { x: 10, y: 64, z: -5 },
+                },
+              }),
               snapshot: {} as never,
             };
           },
@@ -258,7 +267,16 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
             executeCount += 1;
 
             return {
-              result: createCompletedCodeResult({ message_id: job.message_id, action: "goTo" }),
+              result: createCompletedCodeResult({
+                message_id: job.message_id,
+                action: "goTo",
+                result: {
+                  skill: "goTo",
+                  reached: true,
+                  world_key: "minecraft:overworld",
+                  target: { x: 10, y: 64, z: -5 },
+                },
+              }),
               snapshot: {} as never,
             };
           },
@@ -314,7 +332,17 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
             executedSkills.push("code");
 
             return {
-              result: createCompletedCodeResult({ message_id: job.message_id, action: "equip" }),
+              result: createCompletedCodeResult({
+                message_id: job.message_id,
+                action: "equip",
+                result: {
+                  skill: "equip",
+                  item_name: "stone_pickaxe",
+                  destination: "hand",
+                  equipped: true,
+                  world_key: "minecraft:overworld",
+                },
+              }),
               snapshot: {} as never,
             };
           },

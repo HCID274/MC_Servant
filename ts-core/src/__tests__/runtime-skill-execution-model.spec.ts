@@ -1,163 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  SKILL_DIRECTORY,
   createCollectSkillExecutionResult,
   createCutTreeSkillExecutor,
-  createEquipSkillExecutionResult,
-  createGoToSkillExecutionResult,
   createMineSkillExecutionResult,
   createMineSkillExecutor,
 } from "../skills/index.js";
-import { executeSkillInvocation } from "../skills/legacy/execution.js";
 import { createResourceService } from "../world-model/index.js";
 
 describe("runtime skill execution（运行时技能执行） 模型", () => {
-  it("应通过可注入 movement adapter（移动适配器） 执行 goTo（前往坐标）", async () => {
-    const targets: Array<{ x: number; y: number; z: number }> = [];
-    const invocation = {
-      skill: SKILL_DIRECTORY.goTo,
-      params: { x: 10, y: 64, z: -5 },
-    } as const;
-
-    const result = await executeSkillInvocation({
-      invocation,
-      dependencies: {
-        goToMovement: {
-          async goTo(params) {
-            targets.push({ ...params });
-
-            return createGoToSkillExecutionResult(params);
-          },
-        },
-        async mine(params) {
-          return createMineSkillExecutionResult(params, {
-            collected_item_name: params.blockName,
-            collected_count: params.count,
-            mined_count: params.count,
-          });
-        },
-        async collect(params) {
-          return createCollectSkillExecutionResult(params, { collected: [] });
-        },
-        async equip(params) {
-          return createEquipSkillExecutionResult(params);
-        },
-      },
-    });
-
-    expect(targets).toEqual([{ x: 10, y: 64, z: -5 }]);
-    expect(result).toEqual({
-      skill: "goTo",
-      target: { x: 10, y: 64, z: -5 },
-      world_key: null,
-      reached: true,
-      total_steps: 1,
-    });
-    expect(Object.isFrozen(result)).toBe(true);
-    expect(Object.isFrozen(result.target)).toBe(true);
-  });
-
-  it("应透出 movement adapter（移动适配器） 的失败，不允许静默成功", async () => {
-    const invocation = {
-      skill: SKILL_DIRECTORY.goTo,
-      params: { x: 10, y: 64, z: -5 },
-    } as const;
-
-    await expect(
-      executeSkillInvocation({
-        invocation,
-        dependencies: {
-          goToMovement: {
-            async goTo() {
-              throw new Error("path not found");
-            },
-          },
-          async mine(params) {
-            return createMineSkillExecutionResult(params, {
-              collected_item_name: params.blockName,
-              collected_count: params.count,
-              mined_count: params.count,
-            });
-          },
-          async collect(params) {
-            return createCollectSkillExecutionResult(params, { collected: [] });
-          },
-          async equip(params) {
-            return createEquipSkillExecutionResult(params);
-          },
-        },
-      }),
-    ).rejects.toThrow("path not found");
-  });
-
-  it("应通过可注入 adapter（适配器） 执行 mine（挖掘） / collect（捡拾） / equip（装备）", async () => {
-    const calls: string[] = [];
-
-    const mineInvocation = {
-      skill: SKILL_DIRECTORY.mine,
-      params: { blockName: "stone", count: 2 },
-    } as const;
-    const collectInvocation = {
-      skill: SKILL_DIRECTORY.collect,
-      params: { itemName: "cobblestone", radius: 32 },
-    } as const;
-    const equipInvocation = {
-      skill: SKILL_DIRECTORY.equip,
-      params: { itemName: "stone_pickaxe", destination: "hand" },
-    } as const;
-
-    const dependencies = {
-      goToMovement: {
-        async goTo(params: { readonly x: number; readonly y: number; readonly z: number }) {
-          return createGoToSkillExecutionResult(params);
-        },
-      },
-      async mine(params: { readonly blockName: string; readonly count: number }) {
-        calls.push(`mine:${params.blockName}:${params.count}`);
-        return createMineSkillExecutionResult(params, {
-          collected_item_name: params.blockName,
-          collected_count: params.count,
-          mined_count: params.count,
-        });
-      },
-      async collect(params: { readonly itemName: string; readonly radius?: number }) {
-        calls.push(`collect:${params.itemName}:${params.radius ?? 32}`);
-        return createCollectSkillExecutionResult(params, { collected: [] });
-      },
-      async equip(params: { readonly itemName: string; readonly destination?: "hand" }) {
-        calls.push(`equip:${params.itemName}:${params.destination ?? "hand"}`);
-        return createEquipSkillExecutionResult(params);
-      },
-    };
-
-    await expect(
-      executeSkillInvocation({ invocation: mineInvocation, dependencies }),
-    ).resolves.toMatchObject({
-      skill: "mine",
-      block_name: "stone",
-      mined_count: 2,
-      total_steps: 2,
-    });
-    await expect(
-      executeSkillInvocation({ invocation: collectInvocation, dependencies }),
-    ).resolves.toMatchObject({
-      skill: "collect",
-      item_name: "cobblestone",
-      radius: 32,
-      total_steps: 1,
-    });
-    await expect(
-      executeSkillInvocation({ invocation: equipInvocation, dependencies }),
-    ).resolves.toMatchObject({
-      skill: "equip",
-      item_name: "stone_pickaxe",
-      destination: "hand",
-      total_steps: 1,
-    });
-    expect(calls).toEqual(["mine:stone:2", "collect:cobblestone:32", "equip:stone_pickaxe:hand"]);
-  });
-
   it("mine（挖掘） stone（石头） 应把工具准备交给 runtime（运行时） 并以背包增量完成", async () => {
     const inventory = new Map<string, number>();
     const calls: string[] = [];
@@ -484,35 +335,7 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
           [...inventory.entries()].map(([item_name, count]) => ({ item_name, count })),
       },
     });
-    const invocation = {
-      skill: SKILL_DIRECTORY.cutTree,
-      params: { count: 3 },
-    } as const;
-
-    const result = await executeSkillInvocation({
-      invocation,
-      dependencies: {
-        goToMovement: {
-          async goTo(params) {
-            return createGoToSkillExecutionResult(params);
-          },
-        },
-        async mine(params) {
-          return createMineSkillExecutionResult(params, {
-            collected_item_name: params.blockName,
-            collected_count: params.count,
-            mined_count: params.count,
-          });
-        },
-        async collect(params) {
-          return createCollectSkillExecutionResult(params, { collected: [] });
-        },
-        async equip(params) {
-          return createEquipSkillExecutionResult(params);
-        },
-        cutTree,
-      },
-    });
+    const result = await cutTree({ count: 3 });
 
     expect(result).toMatchObject({
       skill: "cutTree",
