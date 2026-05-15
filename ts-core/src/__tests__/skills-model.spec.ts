@@ -6,6 +6,7 @@ import {
   ExecPriority,
   ExecutionTaskKind,
   FORBIDDEN_TOOLCHAIN_DEMO_NAMES,
+  type MineSkillExecutionResult,
   PHASE1_SKILL_DEFINITIONS,
   PHASE1_SKILL_NAMES,
   PLACEMENT_SERVICE_ALLOWED_BLOCKS,
@@ -877,6 +878,83 @@ describe("skills 模块契约", () => {
         reason: "no_placeable_position",
       },
     ]);
+  });
+
+  it("ToolchainEnsure（工具链确保） mine 恢复缺完成证明时不得用 total_steps 伪造成成功", async () => {
+    const inventory: { item_name: string; count: number }[] = [
+      { item_name: "wooden_pickaxe", count: 1 },
+    ];
+    const ensure = createToolchainEnsureExecutor({
+      readCurrentWorldKey: () => "minecraft:overworld",
+      facts: createFakeEnsureFacts(),
+      inventory: {
+        readInventoryItems: () => inventory,
+        countLogs: () => 0,
+      },
+      async equip(params) {
+        return {
+          skill: "equip",
+          item_name: params.itemName,
+          destination: "hand",
+          status: "equipped",
+          total_steps: 1,
+        };
+      },
+      async mine() {
+        return {
+          skill: "mine",
+          block_name: "stone",
+          total_steps: 1,
+        } as unknown as MineSkillExecutionResult;
+      },
+      async craft() {
+        throw new Error("craft should not run");
+      },
+      async place() {
+        throw new Error("place should not run");
+      },
+      async collect() {
+        throw new Error("collect should not run");
+      },
+    });
+
+    const result = await ensure.ensureDependency({
+      failure: {
+        action: "mine",
+        params: { blockName: "stone", count: 1 },
+        code: "condition_not_met",
+        message: "condition_not_met",
+        details: { missing_count: 1 },
+      },
+      condition: { kind: "gainedDropOf", blockName: "stone", count: 1 },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "unknown_completion",
+        details: {
+          action: "mine",
+          target: "stone",
+          requested_count: 1,
+          missing_fields: ["collected_count", "mined_count"],
+          result_summary: {
+            skill: "mine",
+            total_steps: 1,
+          },
+          actions: expect.arrayContaining([
+            expect.objectContaining({
+              action: "mine",
+              target: "stone",
+              requested_count: 1,
+              completed_count: 0,
+              status: "failed",
+              reason: "unknown_completion",
+            }),
+          ]),
+        },
+      },
+    });
   });
 
   it("ToolchainEnsure（工具链确保） 合成石镐缺 1 个圆石时应补到目标总数", async () => {

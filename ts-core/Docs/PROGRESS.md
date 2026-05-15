@@ -301,3 +301,7 @@
 ## T-096 | 2026-05-15 | runtime transport 的 terrain/navigation 能力目录化
 
 - 摘要: 将 terrain route、navigation、action executor、foot-step、自放置记忆收进 `runtime/transport/terrain/`,由 `terrain/index` 提供受控入口。; 通过。新文件为旧 terrain 能力搬迁并调整相对 import,外部 goTo/collect/place/digBlock/mining 只经 terrain 入口使用能力,内部 router/action/self-memory 未被在线路径绕过。typecheck、lint、runtime 定向测试、pre_review 全绿。; terrain 可被 mining 使用,但不反向知道 mining 任务语义;白盒测试可直测内部 planner/executor。冲突: 无。
+
+## T-097 | 2026-05-15 | ToolchainEnsure 按语义拆分
+
+- 摘要: 将 ToolchainEnsure 拆成 condition checker、recovery planner、capability executor、failure attribution 四层,入口仍只暴露 `createToolchainEnsureExecutor`/`evaluateEnsureCondition`。; 曾打回 1 次;移除 `total_steps` 伪完成兜底,缺 mine/cutTree/collect 完成 proof 返回 `unknown_completion`,缺石镐挖铁恢复链和 gained/has/gainedDropOf 语义测试通过。typecheck、lint、skills 定向测试、pre_review 全绿。; planner 只规划不执行,executor 只调用能力和记录动作,failure attribution 统一结构化失败;不改 MC 事实来源。冲突: 无。
