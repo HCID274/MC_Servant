@@ -132,7 +132,7 @@ export type ConversationWorkerRuntimeEvent =
       /** 原始消息标识。 */
       readonly message_id: string;
       /** provider（提供器） 所属路由。 */
-      readonly route_kind: "plan_exec";
+      readonly route_kind: "triage" | "chat_reply" | "plan_exec";
       /** 降级的 provider（提供器） 名称。 */
       readonly provider:
         | "recent"

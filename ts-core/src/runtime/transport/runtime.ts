@@ -375,8 +375,12 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
       if (!currentBot?.quit) {
         currentBot?.end?.(reason);
       }
-    } catch {
+    } catch (error) {
       // 清理路径不能覆盖连接失败或上层关闭的真实原因。
+      console.warn("[runtime-transport] bot close cleanup failed", {
+        reason,
+        error_summary: summarizeError(error),
+      });
     }
   }
 
@@ -1694,4 +1698,8 @@ function asRecord(value: unknown): Readonly<Record<string, unknown>> | undefined
   return typeof value === "object" && value !== null
     ? (value as Readonly<Record<string, unknown>>)
     : undefined;
+}
+
+function summarizeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

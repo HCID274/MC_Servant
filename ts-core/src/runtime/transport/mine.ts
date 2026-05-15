@@ -376,7 +376,13 @@ async function executeWithSuppliedTargets(
 }
 
 function scanNearbyTargets(ctx: ExecutionContext): readonly MineRouteTarget[] {
-  if (typeof ctx.bot.findBlocks !== "function") return [];
+  if (typeof ctx.bot.findBlocks !== "function") {
+    throw createMineScanProviderError({
+      blockName: ctx.blockName,
+      requestedCount: ctx.params.count,
+      reason: "findBlocks_unavailable",
+    });
+  }
   const matcher = (block: { readonly name?: string; readonly diggable?: boolean }): boolean =>
     block.diggable !== false && ctx.facts.normalizeName(block.name) === ctx.blockName;
   let positions: readonly MineflayerVec3Like[];
@@ -387,8 +393,13 @@ function scanNearbyTargets(ctx: ExecutionContext): readonly MineRouteTarget[] {
       count: SCAN_COUNT,
     });
     positions = Array.isArray(result) ? (result as readonly MineflayerVec3Like[]) : [];
-  } catch {
-    return [];
+  } catch (error) {
+    throw createMineScanProviderError({
+      blockName: ctx.blockName,
+      requestedCount: ctx.params.count,
+      reason: "findBlocks_failed",
+      cause: error,
+    });
   }
 
   const targets: MineRouteTarget[] = [];
@@ -798,4 +809,27 @@ function createMineUnsafePathError(input: {
       diagnostics: input.diagnostics,
     },
   });
+}
+
+function createMineScanProviderError(input: {
+  readonly blockName: string;
+  readonly requestedCount: number;
+  readonly reason: "findBlocks_unavailable" | "findBlocks_failed";
+  readonly cause?: unknown;
+}): Error {
+  return Object.assign(new Error(`runtime_adapter_error:scan_nearby_targets:${input.reason}`), {
+    error_code: "runtime_adapter_error",
+    details: {
+      failure_stage: "scan_nearby_targets",
+      provider: "findBlocks",
+      block_name: input.blockName,
+      requested_count: input.requestedCount,
+      reason: input.reason,
+      ...(input.cause === undefined ? {} : { cause_summary: summarizeError(input.cause) }),
+    },
+  });
+}
+
+function summarizeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

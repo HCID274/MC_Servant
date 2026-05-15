@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createCodeJobForSkill } from "./test-code-job.js";
 
 import {
@@ -918,6 +918,73 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       recovery_class: "recoverable",
       replan_count: 1,
     });
+  });
+
+  it("生产指标写入失败只能作为旁路 fallback，不能阻断已规划任务入队", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const enqueuedExecTasks: unknown[] = [];
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createCompositeTaskTriage({
+            priority: ConversationPriority.Normal,
+            reason: "unit_metric_side_effect_failure",
+          }),
+        planner: () => ({
+          code: 'const task = await runGoal("测试", async () => {}); await report(task);',
+        }),
+        enqueueExecTaskSink: async ({ task }) => {
+          enqueuedExecTasks.push(task);
+        },
+        broadcastReplySink: async () => undefined,
+        productionMetricSink: async () => {
+          throw new Error("metric disk unavailable");
+        },
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-metric-side-effect-failed",
+          content: "去测试",
+          intent_epoch: 2,
+          snapshot_ts: 100,
+        },
+      }),
+    });
+
+    expect(enqueuedExecTasks).toHaveLength(1);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.accepted",
+      bot_id: "bot-cw",
+      message_id: "msg-metric-side-effect-failed",
+      exec_type: "code",
+      priority: "normal",
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[conversation-worker] production metric sink failed",
+      expect.objectContaining({
+        event_type: "conversation.plan_accepted",
+        error_summary: "metric disk unavailable",
+      }),
+    );
+    warnSpy.mockRestore();
   });
 
   it("prompt（提示词） 最近上下文窗口应限制为最近 5 轮原文", async () => {
@@ -2058,6 +2125,14 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
     });
 
     expect(stateContexts).toEqual([undefined]);
+    expect(runtime.getEvents()).toContainEqual({
+      type: "conversation.context_provider_failed",
+      bot_id: "bot-cw",
+      message_id: "msg-chat-projection-failed",
+      route_kind: "chat_reply",
+      provider: "actor_state",
+      error_summary: "projection source unavailable",
+    });
   });
 
   it("应只在 chat（闲聊） 路由需要 memory（记忆） 时读取并注入 memory_context（记忆上下文）", async () => {

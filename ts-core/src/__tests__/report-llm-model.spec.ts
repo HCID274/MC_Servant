@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   type ConversationLlmDiagnosticRecord,
@@ -93,6 +93,7 @@ describe("ReportLLM 终态润色", () => {
   });
 
   it("ReportLLM 调用失败时应回退确定性模板且不改变任务结果", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const reporter = createTaskResultReporter({
       reportLlm: {
         generateReport: async () => {
@@ -131,6 +132,14 @@ describe("ReportLLM 终态润色", () => {
 
     expect(reply?.content).toContain("任务失败：code 失败码 not_equipped");
     expect(reply?.content).toContain("阶段 mine");
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[task-result-reporter] report llm fallback",
+      expect.objectContaining({
+        message_id: "msg-report-fallback",
+        error_summary: "report gateway unavailable",
+      }),
+    );
+    warnSpy.mockRestore();
   });
 
   it("ConversationLlmClient 的 report 阶段应校验事实，失败时记录 fallback diagnostics", async () => {

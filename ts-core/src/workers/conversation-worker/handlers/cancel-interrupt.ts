@@ -91,7 +91,16 @@ async function appendConversationReplyLog(input: {
       triage: input.route.triage,
       contexts: {},
     });
-  } catch {
-    // conversation（对话）本地日志是旁路诊断，不能阻断实服回复。
+  } catch (error) {
+    // conversation（对话）本地日志是旁路诊断，不能阻断实服回复；stderr 是最低可观测记录。
+    console.warn("[conversation-worker] reply log sink failed", {
+      route_kind: input.route.kind,
+      message_id: input.task.message.message_id,
+      error_summary: summarizeError(error),
+    });
   }
+}
+
+function summarizeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

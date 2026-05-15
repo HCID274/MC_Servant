@@ -1085,7 +1085,10 @@ function safelyReadObservation(
 ): NonNullable<ReturnType<RuntimeWorldStateReadPort["readObservationInput"]>> | null {
   try {
     return transport.readObservationInput();
-  } catch {
+  } catch (error) {
+    console.warn("[bot-actor] observation read failed while building failure details", {
+      error_summary: summarizeError(error),
+    });
     return null;
   }
 }
@@ -1150,7 +1153,8 @@ function formatToolchainErrorDetails(
 
   try {
     return ` details=${JSON.stringify(details)}`;
-  } catch {
+  } catch (error) {
+    void error;
     return " details=<unserializable>";
   }
 }
@@ -1312,4 +1316,8 @@ function normalizeRecentEventMessage(message: string | undefined): string {
 
 function formatNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function summarizeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

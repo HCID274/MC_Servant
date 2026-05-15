@@ -98,8 +98,12 @@ export function createAsyncDiagnosticSink<TRecord>(input: {
 
         try {
           await input.write(record);
-        } catch {
+        } catch (error) {
           errorCount += 1;
+          console.warn("[diagnostics] async diagnostic sink write failed", {
+            error_count: errorCount,
+            error_summary: summarizeError(error),
+          });
         }
       }
     } finally {
@@ -169,4 +173,8 @@ function createDefaultAsyncSchedule(run: () => void): void {
   }
 
   setTimeout(run, 0);
+}
+
+function summarizeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -32,13 +32,7 @@ export async function handleChatReplyRoute(input: {
   try {
     const actorProjection = await readActorStateProjection(input);
     const stateContext = createConversationStateContextFromProjection(actorProjection);
-    const recentContext = input.dependencies.recentContextStore?.render({
-      ...(actorProjection?.recent_events === undefined
-        ? {}
-        : { actorRecentEvents: actorProjection.recent_events }),
-      currentMessageId: input.task.message.message_id,
-      roundLimit: 5,
-    });
+    const recentContext = readRecentContext({ ...input, actorProjection });
     const memoryContext = await readMemoryContext(input);
     const brainContext = await readBrainContext(input);
     const promptContext =
@@ -50,6 +44,9 @@ export async function handleChatReplyRoute(input: {
             dependencies: input.dependencies,
             ...(recentContext === undefined ? {} : { recent_context: recentContext }),
           });
+    for (const diagnostic of promptContext?.provider_diagnostics ?? []) {
+      appendContextProviderFailedEvent(input, diagnostic.provider, diagnostic.error_summary);
+    }
     let generatedReply: ReturnType<typeof normalizeGeneratedReply>;
     try {
       generatedReply = normalizeGeneratedReply(
@@ -146,6 +143,7 @@ export async function handleChatReplyRoute(input: {
 async function readBrainContext(input: {
   readonly task: ConversationWorkerTask;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
+  readonly events: ConversationWorkerRuntimeEvent[];
 }): Promise<string | undefined> {
   try {
     const context = await input.dependencies.brainContextProvider?.({
@@ -158,7 +156,8 @@ async function readBrainContext(input: {
       ...(context === null || context === undefined ? {} : { context }),
       includeSkill: false,
     });
-  } catch {
+  } catch (error) {
+    appendContextProviderFailedEvent(input, "brain", summarizeError(error));
     return undefined;
   }
 }
@@ -167,12 +166,34 @@ async function readBrainContext(input: {
 async function readActorStateProjection(input: {
   readonly task: ConversationWorkerTask;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
+  readonly events: ConversationWorkerRuntimeEvent[];
 }): Promise<BotActorStateProjection | null | undefined> {
   try {
     return input.dependencies.actorStateProjectionProvider?.({
       task: input.task,
     });
-  } catch {
+  } catch (error) {
+    appendContextProviderFailedEvent(input, "actor_state", summarizeError(error));
+    return undefined;
+  }
+}
+
+function readRecentContext(input: {
+  readonly task: ConversationWorkerTask;
+  readonly dependencies: ConversationWorkerRuntimeDependencies;
+  readonly events: ConversationWorkerRuntimeEvent[];
+  readonly actorProjection: BotActorStateProjection | null | undefined;
+}): string | undefined {
+  try {
+    return input.dependencies.recentContextStore?.render({
+      ...(input.actorProjection?.recent_events === undefined
+        ? {}
+        : { actorRecentEvents: input.actorProjection.recent_events }),
+      currentMessageId: input.task.message.message_id,
+      roundLimit: 5,
+    });
+  } catch (error) {
+    appendContextProviderFailedEvent(input, "recent", summarizeError(error));
     return undefined;
   }
 }
@@ -206,8 +227,13 @@ async function appendConversationReplyLog(input: {
       contexts: input.contexts,
       ...(input.llm_diagnostics === undefined ? {} : { llm_diagnostics: input.llm_diagnostics }),
     });
-  } catch {
-    // conversation（对话）本地日志是旁路诊断，不能阻断实服回复。
+  } catch (error) {
+    // conversation（对话）本地日志是旁路诊断，不能阻断实服回复；stderr 是最低可观测记录。
+    console.warn("[conversation-worker] reply log sink failed", {
+      route_kind: input.route.kind,
+      message_id: input.task.message.message_id,
+      error_summary: summarizeError(error),
+    });
   }
 }
 
@@ -216,6 +242,7 @@ async function readMemoryContext(input: {
   readonly task: ConversationWorkerTask;
   readonly route: Extract<ConversationRouteDecision, { readonly kind: "chat_reply" }>;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
+  readonly events: ConversationWorkerRuntimeEvent[];
 }): Promise<string | undefined> {
   if (!input.route.needs_memory_search || input.dependencies.memoryContextProvider === undefined) {
     return undefined;
@@ -234,7 +261,32 @@ async function readMemoryContext(input: {
         char_budget: CONVERSATION_WORKER_MEMORY_CONTEXT_CHAR_BUDGET,
       }),
     );
-  } catch {
+  } catch (error) {
+    appendContextProviderFailedEvent(input, "memory", summarizeError(error));
     return undefined;
   }
+}
+
+function appendContextProviderFailedEvent(
+  input: {
+    readonly task: ConversationWorkerTask;
+    readonly events: ConversationWorkerRuntimeEvent[];
+  },
+  provider: "recent" | "actor_state" | "memory" | "brain" | "environment_snapshot",
+  errorSummary: string,
+): void {
+  input.events.push(
+    Object.freeze({
+      type: "conversation.context_provider_failed",
+      bot_id: input.task.bot_id,
+      message_id: input.task.message.message_id,
+      route_kind: "chat_reply",
+      provider,
+      error_summary: errorSummary,
+    }),
+  );
+}
+
+function summarizeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

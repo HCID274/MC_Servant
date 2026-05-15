@@ -31,8 +31,9 @@ export async function emitPlanAcceptedMetric(input: {
         replan_count: input.replan_count ?? null,
       }),
     );
-  } catch {
-    // 生产指标是旁路诊断，不能影响真实规划入队。
+  } catch (error) {
+    // 生产指标是旁路诊断，不能影响真实规划入队；stderr 是最低可观测记录。
+    logMetricSideEffectFailure("conversation.plan_accepted", error);
   }
 }
 
@@ -66,7 +67,19 @@ export async function emitPlanDiscardedMetric(input: {
         replan_count: input.replan_count ?? null,
       }),
     );
-  } catch {
-    // 生产指标是旁路诊断，不能影响真实回复。
+  } catch (error) {
+    // 生产指标是旁路诊断，不能影响真实回复；stderr 是最低可观测记录。
+    logMetricSideEffectFailure("conversation.plan_discarded", error);
   }
+}
+
+function logMetricSideEffectFailure(eventType: string, error: unknown): void {
+  console.warn("[conversation-worker] production metric sink failed", {
+    event_type: eventType,
+    error_summary: summarizeError(error),
+  });
+}
+
+function summarizeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

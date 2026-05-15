@@ -5,6 +5,7 @@
  * 动作层仍只产事实，话术层只消费这些事实。
  */
 
+import { resolveFailureRecoverable } from "../core-ports/task-result.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
 import type { BrainTaskCard, BrainTaskCardResult } from "../data/contracts.js";
 
@@ -267,7 +268,9 @@ function createFailureFact(
     failure?.failure_code ?? result.error.error_code ?? readCodeFromMessage(result.error.message);
   const stage =
     failure?.failure_stage ?? readString(details.failure_stage) ?? result.last_step ?? "unknown";
-  const recoverable = failure?.recoverable ?? readRecoverable(result.error);
+  const recoverable =
+    failure?.recoverable ??
+    resolveFailureRecoverable(result.error.error_code ?? readCodeFromMessage(result.error.message));
 
   return Object.freeze({
     code,
@@ -340,45 +343,6 @@ function readString(value: unknown): string | undefined {
 function readCodeFromMessage(message: string): string {
   const separatorIndex = message.indexOf(":");
   return separatorIndex <= 0 ? "unknown_error" : message.slice(0, separatorIndex);
-}
-
-function readRecoverable(error: {
-  readonly message: string;
-  readonly error_code?: string;
-  readonly details?: Readonly<Record<string, unknown>>;
-}): boolean | null {
-  const details = readDetails(error);
-  if (typeof details.recoverable === "boolean") {
-    return details.recoverable;
-  }
-
-  const code = error.error_code ?? readCodeFromMessage(error.message);
-  if (
-    code === "missing_materials" ||
-    code === "missing_item" ||
-    code === "missing_crafting_table" ||
-    code === "missing_crafting_table_item" ||
-    code === "crafting_table_required" ||
-    code === "not_equipped" ||
-    code === "resource_not_found" ||
-    code === "unsafe_path" ||
-    code === "condition_not_met"
-  ) {
-    return true;
-  }
-
-  if (
-    code === "runtime_mine_failed" ||
-    code === "runtime_craft_failed" ||
-    code === "runtime_equip_failed" ||
-    code === "place_failed" ||
-    code === "cannot_place" ||
-    code === "unknown_completion"
-  ) {
-    return false;
-  }
-
-  return null;
 }
 
 function formatRecoverable(recoverable: boolean | null): string {

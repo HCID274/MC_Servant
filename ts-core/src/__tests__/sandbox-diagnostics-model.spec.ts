@@ -1269,6 +1269,79 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     });
   });
 
+  it("sandbox terminal failure 缺显式 recoverable 时应使用统一失败分类口径", () => {
+    const sandboxJob = createCodeJob({
+      message_id: "T-093-terminal-recoverable",
+      intent_epoch: 1,
+      snapshot_ts: 1,
+      priority: ExecPriority.Normal,
+      code: "code",
+    });
+    const createFailedSandboxResult = (errorCode: string) =>
+      ({
+        status: TaskHistoryStatus.Failed,
+        summary: { total_steps: 1, duration_ms: 1 },
+        step_results: [
+          {
+            action: "mine",
+            status: "error",
+            params: { blockName: "stone", count: 1 },
+            error: {
+              error_code: errorCode,
+              message: `${errorCode}:stone`,
+              details: {
+                failure_stage: "mine",
+                target_progress: {
+                  action: "mine",
+                  target: "stone",
+                  requested_count: 1,
+                  completed_count: 0,
+                },
+              },
+            },
+          },
+        ],
+        error: {
+          error_code: errorCode,
+          message: `${errorCode}:stone`,
+          details: {
+            failure_stage: "mine",
+            target_progress: {
+              action: "mine",
+              target: "stone",
+              requested_count: 1,
+              completed_count: 0,
+            },
+          },
+        },
+      }) as unknown as Parameters<typeof createTaskResultSummaryFromSandboxResult>[1];
+
+    expect(
+      createTaskResultSummaryFromSandboxResult(
+        sandboxJob,
+        createFailedSandboxResult("not_equipped"),
+      ),
+    ).toMatchObject({
+      status: "failed",
+      failure: {
+        failure_code: "not_equipped",
+        recoverable: true,
+      },
+    });
+    expect(
+      createTaskResultSummaryFromSandboxResult(
+        sandboxJob,
+        createFailedSandboxResult("unknown_completion"),
+      ),
+    ).toMatchObject({
+      status: "failed",
+      failure: {
+        failure_code: "unknown_completion",
+        recoverable: false,
+      },
+    });
+  });
+
   it("cutTree（砍树） count 以原木获得数量为准，少拿到原木必须失败", async () => {
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({

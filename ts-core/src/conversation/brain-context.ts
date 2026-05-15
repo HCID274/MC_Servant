@@ -78,7 +78,8 @@ function createBrainSearchSnippet(hit: BrainSearchHit): string {
 function stringifyCompact(value: unknown): string {
   try {
     return JSON.stringify(value);
-  } catch {
+  } catch (error) {
+    void error;
     return String(value);
   }
 }

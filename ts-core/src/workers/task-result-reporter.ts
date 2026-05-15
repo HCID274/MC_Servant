@@ -100,9 +100,18 @@ async function renderTaskResultReportWithOptionalLlm(input: {
     );
 
     return result.reply;
-  } catch {
+  } catch (error) {
+    // ReportLLM 是汇报润色旁路；失败时回退确定性模板并保留最低诊断。
+    console.warn("[task-result-reporter] report llm fallback", {
+      message_id: input.taskCard.message_id,
+      error_summary: summarizeError(error),
+    });
     return input.deterministicReport;
   }
+}
+
+function summarizeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function createConversationLlmReportInput(input: {

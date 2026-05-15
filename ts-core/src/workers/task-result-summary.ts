@@ -9,8 +9,8 @@ import type { SkillExecutionResult } from "../core-ports/skills.js";
 import {
   type TaskResultInventoryDelta,
   type TaskResultSummary,
-  classifyFailureCode,
   createTaskResultSummary,
+  resolveFailureRecoverable,
 } from "../core-ports/task-result.js";
 import type { CodeJob, ExecJob } from "../core-ports/tasking.js";
 import { TaskHistoryStatus } from "../core-ports/tasking.js";
@@ -233,7 +233,7 @@ function createTaskResultSummaryFromGoalResult(
       code: failureCode,
       stage: readOptionalString(failure.failure_stage) ?? "code",
       message: readOptionalString(failure.message) ?? failureCode,
-      recoverable: readBoolean(failure.recoverable) ?? inferRecoverable(failureCode),
+      recoverable: readBoolean(failure.recoverable) ?? resolveFailureRecoverable(failureCode),
       details,
     }),
     details: {
@@ -302,18 +302,21 @@ function createSandboxTerminalResultSummary(
     readNumber(targetProgress?.requested_count) ??
     readNumber(details?.target_count);
   const worldKey = readOptionalString(details?.world_key);
+  const failureCode =
+    readOptionalString(errorRecord?.error_code) ??
+    readOptionalString(stepErrorRecord?.error_code) ??
+    "facade_call_failed";
   const failure = createFailureSummary({
-    code:
-      readOptionalString(errorRecord?.error_code) ??
-      readOptionalString(stepErrorRecord?.error_code) ??
-      "facade_call_failed",
+    code: failureCode,
     stage: readOptionalString(details?.failure_stage) ?? operation,
     message:
       readOptionalString(errorRecord?.message) ??
       readOptionalString(stepErrorRecord?.message) ??
       "code terminal failure",
     recoverable:
-      readBoolean(errorRecord?.recoverable) ?? readBoolean(stepErrorRecord?.recoverable) ?? null,
+      readBoolean(errorRecord?.recoverable) ??
+      readBoolean(stepErrorRecord?.recoverable) ??
+      resolveFailureRecoverable(failureCode),
     details,
   });
 
@@ -354,7 +357,7 @@ export function createTaskFailureResultSummary(
       code: failureCode,
       stage: readOptionalString(details.failure_stage) ?? "code",
       message: error.message,
-      recoverable: readBoolean(details.recoverable) ?? inferRecoverable(failureCode),
+      recoverable: readBoolean(details.recoverable) ?? resolveFailureRecoverable(failureCode),
       details,
     }),
     details,
@@ -515,22 +518,6 @@ function readFailureCodeFromMessage(message: string): string {
   return separatorIndex <= 0 ? "unknown_error" : message.slice(0, separatorIndex);
 }
 
-function inferRecoverable(code: string | undefined): boolean | null {
-  if (code === undefined) {
-    return null;
-  }
-
-  if (classifyFailureCode(code) === "recoverable" || code === "missing_item") {
-    return true;
-  }
-
-  if (classifyFailureCode(code) === "implementation_blocker") {
-    return false;
-  }
-
-  return null;
-}
-
 function readToolchainSuccessData(value: unknown): {
   readonly world_key: string | null;
   readonly completed_count: number;
@@ -684,7 +671,7 @@ function createUnknownCompletionSkillSummary(input: {
       code: "unknown_completion",
       stage: input.skill,
       message: `${input.skill} result lacks completion proof`,
-      recoverable: inferRecoverable("unknown_completion"),
+      recoverable: resolveFailureRecoverable("unknown_completion"),
       details,
     }),
     details,

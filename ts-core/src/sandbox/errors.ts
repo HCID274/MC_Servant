@@ -165,7 +165,8 @@ function formatToolchainErrorDetails(
 
   try {
     return ` details=${JSON.stringify(details)}`;
-  } catch {
+  } catch (error) {
+    void error;
     return " details=<unserializable>";
   }
 }

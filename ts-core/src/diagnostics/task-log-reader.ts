@@ -21,8 +21,16 @@ export function createLocalTaskLogExcerptReader(input: {
       const content = await readFile(join(input.baseDir, logRef), "utf8");
 
       return content.split(/\r?\n/u).filter(Boolean).slice(0, maxLines).join("\n");
-    } catch {
+    } catch (error) {
+      console.warn("[diagnostics] task log excerpt read failed", {
+        log_ref: logRef,
+        error_summary: summarizeError(error),
+      });
       return undefined;
     }
   };
+}
+
+function summarizeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

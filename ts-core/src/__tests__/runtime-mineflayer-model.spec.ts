@@ -3416,6 +3416,87 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     await transport.disconnect("test shutdown");
   });
 
+  it("mine（挖掘） 扫描 provider 抛错时不得伪装成无目标路径失败", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-mine-findblocks-error",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
+          bot.findBlocks = () => {
+            throw new Error("findBlocks backend unavailable");
+          };
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(transport.mine({ blockName: "stone", count: 1 })).rejects.toMatchObject({
+      error_code: "runtime_adapter_error",
+      message: "runtime_adapter_error:scan_nearby_targets:findBlocks_failed",
+      details: {
+        failure_stage: "scan_nearby_targets",
+        provider: "findBlocks",
+        block_name: "stone",
+        requested_count: 1,
+        reason: "findBlocks_failed",
+        cause_summary: "findBlocks backend unavailable",
+      },
+    });
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("mine（挖掘） 缺少 findBlocks provider 时不得静默返回空候选", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-mine-findblocks-missing",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          bot.inventoryItems.push({ type: 2, name: "wooden_pickaxe", count: 1 });
+          Object.defineProperty(bot, "findBlocks", { value: undefined });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(transport.mine({ blockName: "stone", count: 1 })).rejects.toMatchObject({
+      error_code: "runtime_adapter_error",
+      message: "runtime_adapter_error:scan_nearby_targets:findBlocks_unavailable",
+      details: {
+        failure_stage: "scan_nearby_targets",
+        provider: "findBlocks",
+        block_name: "stone",
+        requested_count: 1,
+        reason: "findBlocks_unavailable",
+      },
+    });
+
+    await transport.disconnect("test shutdown");
+  });
+
   it("mine（挖掘） ore（矿石） 应只执行 ResourceService（资源服务） 传入候选，不调用 findBlocks（查找方块）重扫", async () => {
     const createdBots: FakeMineflayerBot[] = [];
     const transport = createMineflayerRuntimeTransport(

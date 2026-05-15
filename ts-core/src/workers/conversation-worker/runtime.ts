@@ -53,6 +53,7 @@ export function createConversationWorkerRuntime(input: {
     const brainContext = await readBrainContext({
       task,
       dependencies,
+      events,
       includeSkill: false,
     });
     const rawTriage = await (dependencies.triage?.({
@@ -98,6 +99,7 @@ export function createConversationWorkerRuntime(input: {
 async function readBrainContext(input: {
   readonly task: ReturnType<typeof cloneWorkerTask>;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
+  readonly events: ConversationWorkerRuntimeEvent[];
   readonly includeSkill: boolean;
 }): Promise<string | undefined> {
   try {
@@ -111,7 +113,17 @@ async function readBrainContext(input: {
       ...(context === null || context === undefined ? {} : { context }),
       includeSkill: input.includeSkill,
     });
-  } catch {
+  } catch (error) {
+    input.events.push(
+      Object.freeze({
+        type: "conversation.context_provider_failed",
+        bot_id: input.task.bot_id,
+        message_id: input.task.message.message_id,
+        route_kind: "triage",
+        provider: "brain",
+        error_summary: summarizeError(error),
+      }),
+    );
     return undefined;
   }
 }
@@ -284,7 +296,16 @@ async function appendConversationReplyLog(input: {
       reply: input.reply,
       contexts: {},
     });
-  } catch {
-    // conversation（对话）本地日志是旁路诊断，不能阻断实服回复。
+  } catch (error) {
+    // conversation（对话）本地日志是旁路诊断，不能阻断实服回复；stderr 是最低可观测记录。
+    console.warn("[conversation-worker] reply log sink failed", {
+      route_kind: "composite_chat",
+      message_id: input.task.message.message_id,
+      error_summary: summarizeError(error),
+    });
   }
+}
+
+function summarizeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

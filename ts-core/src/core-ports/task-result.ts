@@ -188,6 +188,7 @@ export function createTaskResultSummary(
 export function classifyFailureCode(code: string | undefined): FailureRecoveryClass {
   switch (code) {
     case "missing_materials":
+    case "missing_item":
     case "not_equipped":
     case "resource_not_found":
     case "missing_crafting_table":
@@ -202,6 +203,12 @@ export function classifyFailureCode(code: string | undefined): FailureRecoveryCl
       return "recoverable";
     case "unsupported_capability":
     case "runtime_adapter_error":
+    case "runtime_mine_failed":
+    case "runtime_craft_failed":
+    case "runtime_equip_failed":
+    case "place_failed":
+    case "cannot_place":
+    case "unknown_completion":
     case "world_mismatch":
     case "invalid_runtime_object":
     case "protocol_error":
@@ -209,6 +216,18 @@ export function classifyFailureCode(code: string | undefined): FailureRecoveryCl
       return "implementation_blocker";
     default:
       return "unknown";
+  }
+}
+
+/** 将失败分类收敛为用户可见的 recoverable 字段；未知时必须保留 null。 */
+export function resolveFailureRecoverable(code: string | undefined): boolean | null {
+  switch (classifyFailureCode(code)) {
+    case "recoverable":
+      return true;
+    case "implementation_blocker":
+      return false;
+    case "unknown":
+      return null;
   }
 }
 
