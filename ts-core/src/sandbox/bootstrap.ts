@@ -54,6 +54,7 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
     let __ensureDepth = 0;
     let __lastActionResult = null;
     let __lastEnsureCondition = null;
+    let __ensureResults = [];
     const __goalFrames = [];
     const __semanticCall = (method, args) =>
       (__ensureDepth > 0 ? __sandboxTryCall(method, args) : __sandboxCall(method, args)).then((result) => {
@@ -62,7 +63,7 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
         __lastActionResult = normalizedResult;
         const frame = __goalFrames[__goalFrames.length - 1];
         if (frame) {
-          frame.results.push({ method, args, result: normalizedResult });
+          frame.results.push({ method, args, result: normalizedResult, ensure_depth: __ensureDepth });
         }
         if (__isFailedResult(normalizedResult) && __ensureDepth <= 0) {
           const error = new Error(normalizedResult.error?.message ?? normalizedResult.error?.code ?? "semantic action failed");
@@ -306,19 +307,60 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
         ...(__readWorldKey(data) !== undefined ? { world_key: __readWorldKey(data) } : {})
       };
     };
-    const __createGoalSuccess = (name, startedAt, result, condition, frame) => {
+    const __readConditionEvaluation = (result) => {
       const data = __readResultData(result);
-      const actionSummaries = (frame?.results ?? []).map((entry) => __readActionSummary(entry, undefined));
-      const successfulActionCount = actionSummaries.filter((entry) =>
-        (entry.inventory_delta?.length ?? 0) > 0 || (entry.completed_count ?? 0) > 0 || "target" in entry
-      ).length;
-      const effectiveCondition = successfulActionCount > 1 ? undefined : condition;
-      const mergedInventoryDelta = __mergeInventoryDelta(actionSummaries.flatMap((entry) => entry.inventory_delta ?? []));
+      const evaluation = data?.condition_evaluation;
+      return evaluation !== null && typeof evaluation === "object" && evaluation.ok === true
+        ? evaluation
+        : null;
+    };
+    const __readConditionEvaluationTarget = (evaluation, condition) => {
+      const resolvedTarget = Array.isArray(evaluation?.resolved_targets)
+        ? evaluation.resolved_targets.find((target) => typeof target === "string")
+        : undefined;
+      return resolvedTarget ?? __readTarget(null, condition);
+    };
+    const __readConditionEvaluationSummary = (evaluation) => {
+      const condition = evaluation.condition;
+      const completedCount = Number(evaluation.completed_count ?? 0);
+      const target = __readConditionEvaluationTarget(evaluation, condition);
+      return {
+        ...(typeof target === "string" ? { target } : {}),
+        completed_count: completedCount,
+        ...(__createInventoryDelta(target, completedCount, condition)
+          ? { inventory_delta: __createInventoryDelta(target, completedCount, condition) }
+          : {}),
+        ...(__readWorldKey(evaluation.current) !== undefined ? { world_key: __readWorldKey(evaluation.current) } : {})
+      };
+    };
+    const __createGoalSuccess = (name, startedAt, result, condition, frame, ensureResults) => {
+      const data = __readResultData(result);
+      const frameResults = frame?.results ?? [];
+      const actionSummaries = frameResults.map((entry) => __readActionSummary(entry, undefined));
+      const conditionEvaluations = (ensureResults ?? [])
+        .map((ensureResult) => __readConditionEvaluation(ensureResult))
+        .filter(Boolean);
+      const directActionSummaries = frameResults
+        .filter((entry) => Number(entry.ensure_depth ?? 0) <= 0)
+        .map((entry) => __readActionSummary(entry, undefined));
+      const conditionSummaries = conditionEvaluations.map((evaluation) => __readConditionEvaluationSummary(evaluation));
+      const directInventoryDelta = __mergeInventoryDelta(directActionSummaries.flatMap((entry) => entry.inventory_delta ?? []));
+      const effectiveCondition = conditionEvaluations.length === 1 && !directInventoryDelta
+        ? conditionEvaluations[0].condition
+        : condition;
+      const mergedInventoryDelta = __mergeInventoryDelta([
+        ...(directInventoryDelta ?? []),
+        ...conditionSummaries.flatMap((entry) => entry.inventory_delta ?? [])
+      ]);
       const completedCount = mergedInventoryDelta
         ? mergedInventoryDelta.reduce((sum, delta) => sum + delta.count, 0)
         : __readCompletedCount(data, effectiveCondition);
-      const target = __readTarget(data, effectiveCondition);
-      const requestedCount = __readRequestedCount(effectiveCondition, completedCount);
+      const target = mergedInventoryDelta && mergedInventoryDelta.length > 1
+        ? undefined
+        : conditionSummaries[0]?.target ?? __readTarget(data, effectiveCondition);
+      const requestedCount = effectiveCondition
+        ? __readRequestedCount(effectiveCondition, completedCount)
+        : undefined;
       const inventoryDelta = mergedInventoryDelta ?? __createInventoryDelta(target, completedCount, effectiveCondition);
       const worldKey = [...actionSummaries].reverse().find((entry) => "world_key" in entry)?.world_key ?? __readWorldKey(data);
       return __deepFreeze({
@@ -333,7 +375,7 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
           completed_count: completedCount,
           ...(inventoryDelta ? { inventory_delta: inventoryDelta } : {}),
           ...(worldKey !== undefined ? { world_key: worldKey } : {}),
-          ...(successfulActionCount > 1 ? { action_results: actionSummaries } : {})
+          ...(actionSummaries.length > 1 ? { action_results: actionSummaries } : {})
         }
       });
     };
@@ -483,6 +525,7 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
           if (evaluation.ok === true) {
             const success = __createEnsureConditionSuccess(evaluation, lastResult, undefined);
             __lastActionResult = success;
+            __ensureResults.push(success);
             return success;
           }
           lastResult = { ok: false, error: __createConditionFailure(normalizedCondition, evaluation) };
@@ -501,6 +544,7 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
         if (evaluation.ok === true) {
           const success = __createEnsureConditionSuccess(evaluation, lastResult, recovered);
           __lastActionResult = success;
+          __ensureResults.push(success);
           return success;
         }
         lastResult = { ok: false, error: __createConditionFailure(normalizedCondition, evaluation) };
@@ -527,6 +571,7 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
       }
       const conditionBefore = __lastEnsureCondition;
       __lastActionResult = null;
+      __ensureResults = [];
       const frame = { results: [] };
       __goalFrames.push(frame);
       try {
@@ -536,7 +581,7 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
         if (__isFailedResult(finalResult)) {
           return __createGoalFailure(name, startedAt, finalResult.error, condition);
         }
-        return __createGoalSuccess(name, startedAt, finalResult, condition, frame);
+        return __createGoalSuccess(name, startedAt, finalResult, condition, frame, __ensureResults);
       } catch (error) {
         const failure = __isFailedResult(__lastActionResult)
           ? __lastActionResult.error

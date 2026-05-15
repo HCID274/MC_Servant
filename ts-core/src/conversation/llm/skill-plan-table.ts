@@ -40,8 +40,7 @@ export const CONVERSATION_SKILL_PLAN_TABLE = Object.freeze({
   }),
   [SKILL_DIRECTORY.mine]: createCodePlanCapability({
     skill: SKILL_DIRECTORY.mine,
-    paramsSchema:
-      "mine(blockName: 'stone' | 'iron_ore' | 'deepslate_iron_ore', count: number)，count 为需要实际进入背包的掉落物数量",
+    paramsSchema: "mine(blockName: string, count: number)，count 为目标方块名与目标数量",
   }),
   [SKILL_DIRECTORY.cutTree]: createCodePlanCapability({
     skill: SKILL_DIRECTORY.cutTree,

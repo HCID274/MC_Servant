@@ -1311,6 +1311,85 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     ]);
   });
 
+  it("runGoal 应保留 ensure 的最终资源条件证明，不被后续 goTo 动作稀释", async () => {
+    const result = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: `
+          const task = await runGoal('砍 5 个木头并返回主人身边', async () => {
+            await ensure(async () => { await cutTree(5); }, until.gainedTag('logs', 5));
+            await goTo(owner.position.x, owner.position.y, owner.position.z);
+          });
+          await report(task);
+        `,
+        messageId: "T-087-ensure-then-goto-summary",
+      }),
+      task: {
+        id: "T-087-ensure-then-goto-summary",
+        userMessage: "砍5个木头回来",
+        intent: "code",
+        owner: {
+          online: true,
+          position: { x: 8, y: 64, z: 2 },
+        },
+      },
+      facade: {
+        captureConditionState: createSatisfiedConditionFacade().captureConditionState,
+        evaluateCondition(input) {
+          return createTestConditionEvaluation(input, 5, 5);
+        },
+        async executeBotSkill(skill) {
+          if (skill === "cutTree") {
+            return {
+              skill: "cutTree",
+              requested_count: 5,
+              collected_count: 1,
+              completed: true,
+              status: "partial_action_summary",
+              world_key: "minecraft:overworld",
+              clusters: [
+                { cluster_id: "tree-1", log_block_name: "runtime_log", collected_count: 1 },
+              ],
+              total_steps: 1,
+            };
+          }
+
+          return {
+            skill: "goTo",
+            target: { x: 8, y: 64, z: 2 },
+            reached: true,
+            world_key: "minecraft:overworld",
+            total_steps: 3,
+            diagnostics: ["test_returned_to_owner"],
+          };
+        },
+        async writeChat() {
+          throw new Error("goal report should not chat");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Completed);
+    expect(result.step_results.at(-1)).toMatchObject({
+      action: "report",
+      params: {
+        goal_result: {
+          ok: true,
+          condition: {
+            kind: "gainedTag",
+            tagName: "logs",
+            count: 5,
+          },
+          summary: {
+            target: "logs",
+            requested_count: 5,
+            completed_count: 5,
+            inventory_delta: [{ item_name: "logs", count: 5 }],
+          },
+        },
+      },
+    });
+  });
+
   it("ensure（确保） 应在恢复后仍不满足 condition 时保留 condition_not_met 失败", async () => {
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({

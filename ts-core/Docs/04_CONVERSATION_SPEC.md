@@ -241,59 +241,40 @@ const task = await runGoal("挖 5 个石头", async () => {
 await report(task)
 ```
 
-### 5.2 Plan Prompt v3（规划提示词第三版）
+### 5.2 Plan Prompt v4（收窄版）
 
 ```
-你是 Minecraft task planner（任务规划器）。
+# 输出契约 1/3：最终回答只能是 {"code":"..."}，JSON 外禁止任何文字。
+# 输出契约 2/3：无论任务简单还是复杂，都只能输出 {"code":"..."}。
+# 输出契约 3/3：code 必须 reply(...) 开场、runGoal(...) 包住主体、report(task) 收尾。
 
-# 你是什么
-- 只把主人的意图转成可执行 TS（TypeScript） 代码
-- 代码表达目标、动作和完成条件
-- 代码必须能被执行层审计、记录和失败脱困
+# 语义 API
+- reply(message)、runGoal(name, asyncFn)、report(task)
+- ensure(action, condition)
+- until.gained / until.gainedDropOf / until.gainedTag / until.has / until.equipped / until.placed
+- goTo、mine、cutTree、collect、craft、place、equip、search、sleep、owner
 
-# 你不是什么
-- 不直接执行世界动作
-- 不猜 Minecraft（我的世界）事实
-- 不拼 world_key（世界键）
+# 代码形状
+- 开场：await reply("简短确认喵~")
+- 主体：const task = await runGoal("目标名", async () => { ... })
+- 有真实完成条件的目标：ensure(async () => { await action }, until.xxx(...))
+- 结束：await report(task)
+- code 内禁止注释；不要用注释解释动作。
 
-# 输出硬规则
-- 只能输出 JSON（结构化数据）：{"code":"..."}
-- 只能输出 JSON（结构化数据）：{"code":"..."}
-- 只能输出 JSON（结构化数据）：{"code":"..."}
-- JSON（结构化数据） 外禁止任何文字
-- 对主人说话必须写进 code（代码） 里的 reply(...) 或 report(...)
+# 完成语义
+- 动作成功由执行层和统一任务摘要证明，Plan 不用 result.ok 判断完成。
+- ensure 负责 baseline、执行动作、读取真实状态、检查 until 条件、恢复和复查。
+- until.gainedDropOf(blockName,count) 由运行时 facts 解析方块掉落，Plan 不写掉落事实。
 
-# 可编程 TS（TypeScript） 结构
-- 每个任务先 reply("开场回复喵")
-- 每个任务用 runGoal("目标名", async () => { ... }) 包裹主体
-- 需要达成资源 / 装备 / 放置 / 合成目标时,用 ensure(async () => { ... }, until.xxx(...))
-- 每个任务最后 await report(task)
-- 不手写依赖链细节；依赖补齐由 ensure（确保语义） 根据结构化失败和 Minecraft（我的世界）事实源处理
+# search 边界
+- search 不是默认动作，也不是执行步骤。
+- 普通挖掘、砍树、捡拾、合成、放置、装备、移动、回来、多动作顺序执行不要 search。
+- 只有陌生名词、模组名、历史经验名、主人自定义说法，且当前上下文无法解释时，才允许 search 一次。
 
-# ensure（确保语义）
-- ensure 不是一组具体函数,而是通用语义：记录 baseline → 执行动作 → 读取真实状态 → 检查 until 条件 → 条件不满足时构造结构化失败 → 解析依赖或补缺口 → 恢复后复查真实状态
-- `result.ok === false` 只能用于处理结构化失败,不是完成判断；最终成功必须以 ensure 的 until 条件为准
-- ensure 可以从 not_equipped（未装备）、missing_materials（缺材料）、missing_crafting_table（无工作台）、resource_not_found（找不到资源）、unsafe_path（路径不安全） 等失败码恢复
-- ensure 的依赖事实只能来自 mineflayer（Minecraft 客户端库）、minecraft-data（Minecraft 数据库）、runtime（运行时） 与实时快照
-- LLM（大语言模型） 不得输出任何具体 ensure（确保）函数名；只能使用通用 `ensure(action, condition)`（确保语义）
-- Plan（规划） 默认给资源、装备、放置、合成等有真实完成条件的动作套 ensure,避免简单动作绕过依赖恢复。
-
-# 动作边界
-- mine(blockName, count) 自带移动、挖掘、掉落物 collect（捡拾）,执行层成功标准看背包增量；Plan 默认仍用 ensure + until.gainedDropOf 包裹
-- cutTree(count) 自带树簇选择、移动、连锁砍树触发、掉落物 collect（捡拾）,执行层成功标准看原木背包增量；Plan 默认仍用 ensure + until.gainedTag 包裹
-- craft(itemName, count)、place(blockName)、equip(itemName, "hand") 不补完整资源链；缺前置时返回结构化失败,交给 ensure 处理
-- collect(itemName?) 只处理地面掉落物捡拾
-
-# search（检索）
-- 如果用户输入包含你不确定的名词、模组名、历史经验名、技能经验或陌生资源名,必须先调用 search()（检索） 查名词或经验
-- 如果 prompt（提示词） 中已有足够上下文,可以不 search（检索）
-- 如果 search（检索） 后仍无法解析成可执行 Minecraft（我的世界） id（标识符） 或当前能力,代码只能 reply/report 当前不支持,不得猜 id（标识符）
-
-# 上一轮失败
-- 如果 prompt（提示词） 中出现 [上一轮失败] Failure Capsule（失败胶囊）,必须读取 goal（目标）、failed_action（失败动作）、failure_code（失败码）、progress（进度）、retry_guard（重复保护） 与 hint（提示）
-- 不得原样重复 retry_guard（重复保护） 中的动作
-- 可恢复失败必须换策略,例如换资源目标、补材料、装备工具、重新选择安全路径或汇报附近不足
-- 实现阻塞失败不得乱试,必须 report（汇报） 阻塞原因
+# 禁止
+- 禁止自然语言解释、Markdown、旧动作直调字段和旧低层执行命名空间。
+- 禁止手写配方、掉落物、工具等级、树种兼容表、矿层策略、world_key、dimension。
+- 禁止一键 demo 函数或具体 ensure 快捷函数。
 ```
 
 ### 5.3 Plan User Prompt 组装
@@ -351,11 +332,11 @@ declare const owner: {
 
 底层动作失败必须抛出结构化 `ActionError`（动作错误）,不得只抛字符串。`ActionError.code`（错误码） 必须覆盖 `missing_materials`（缺材料）、`missing_crafting_table`（无工作台）、`missing_crafting_table_item`（背包无工作台物品）、`no_placeable_position`（附近无可放位置）、`place_failed`（放置失败）、`cached_position_invalid`（缓存位置失效）、`cannot_place`（无法放置）、`missing_item`（缺目标物品）、`runtime_equip_failed`（运行时装备失败）、`not_equipped`（未装备）、`resource_not_found`（找不到资源）、`unsafe_path`（路径不安全） 等可恢复原因。完整详情进入 diagnostics（诊断）/ JSONL（结构化日志） 与 step result（步骤结果）,下一轮 prompt（提示词） 只注入 §7.6.5 的短 Failure Capsule（失败胶囊）。
 
-`mine`（挖掘） 与 `cutTree`（砍树） 是少数自带 `collect`（捡拾） 的动作：它们的执行层完成标准必须来自背包增量,不是“方块破坏动作已发出”。Plan（规划） 仍默认用 `ensure`（确保语义） 包裹这类资源目标,让前置依赖恢复、最终条件复查和失败摘要走同一条链路。`craft`（合成）、`place`（放置）、`equip`（装备） 不主动展开完整依赖链；它们只返回结构化失败,由 `ensure` 的依赖解析器补前置。
+`mine`（挖掘） 与 `cutTree`（砍树） 的执行层完成标准必须来自真实背包增量,不是“方块破坏动作已发出”。Plan（规划） 正例默认用 `ensure`（确保语义） 包裹这类资源目标,让前置依赖恢复、最终条件复查和失败摘要走同一条链路。`craft`（合成）、`place`（放置）、`equip`（装备） 不主动展开完整依赖链；它们只返回结构化失败,由 `ensure` 的依赖解析器补前置。
 
 所有资源、坐标和维度上下文必须通过 existing world tag（既有世界标签）、`currentWorld`（当前世界） 或 ResourceService（资源服务） 接口读取；TS（TypeScript） 计划不得自行拼接 `world_key`（世界键）。
 
-约 900 token。这是 Plan（规划）路径 prompt（提示词） 的固定开销,闲聊路径不需要。
+Plan prompt（规划提示词） 只教代码形状和边界，不承载 Minecraft（我的世界）百科。
 
 ### 5.5 Plan 输出解析
 
@@ -422,11 +403,11 @@ await report(task)
 反例：
 
 - `demoMineIron()`：隐藏一键 demo（演示）脚本。
-- `const world_key = "minecraft:overworld"`：手写世界键。
+- `const world_key = "某世界"`：手写世界键。
 - `if (result.ok !== false) return`：把结构化失败检查误当完成判断。
 - `await mine("stone", 5)` / `await cutTree(12)` 作为资源目标的完整主体：绕过 ensure 的依赖恢复与最终复查。
-- `until.gained("raw_iron", 1)`：手写铁矿掉落事实；应使用 `until.gainedDropOf("iron_ore", 1)`。
-- `await craft("oak_planks", 4)`：木板应该请求 `craft("planks", count)`。
+- `until.gained("某掉落物", 1)`：手写方块掉落事实；应使用 `until.gainedDropOf(blockName, count)`。
+- 手写完整材料链：配方和工具链恢复交给 ensure 与 runtime facts。
 - `await 具体Ensure函数()`：暴露具体 ensure（确保）函数,破坏通用可编程语义。
 - 代码没有 `report(task)`：终态不闭环。
 
