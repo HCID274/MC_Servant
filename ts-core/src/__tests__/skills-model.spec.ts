@@ -18,7 +18,9 @@ import {
   type ToolchainCapabilityName,
   type ToolchainCapabilityResult,
   type ToolchainEnsureFacts,
+  createCollectSkillExecutionResult,
   createCraftService,
+  createCutTreeSkillExecutionResult,
   createMineSkillExecutionResult,
   createPhase1SkillRegistry,
   createPlacementService,
@@ -157,6 +159,87 @@ describe("skills 模块契约", () => {
     expect(failureResult.error.code).toBe("missing_materials");
     expect(successResult.ok).toBe(true);
     expect(successResult.data.completed_count).toBe(1);
+  });
+
+  it("资源结果工厂缺完成证明时不得伪造成成功", () => {
+    let proofError: unknown;
+    try {
+      createMineSkillExecutionResult({ blockName: "stone", count: 2 });
+    } catch (error) {
+      proofError = error;
+    }
+    expect(proofError).toMatchObject({
+      error_code: "unknown_completion",
+      details: {
+        code: "unknown_completion",
+        skill: "mine",
+        requested_count: 2,
+        known_fields: [],
+        missing_fields: ["collected_count"],
+      },
+    });
+    expect(() => createMineSkillExecutionResult({ blockName: "stone", count: 2 })).toThrow(
+      "mine result lacks numeric collected_count completion proof",
+    );
+    expect(() =>
+      createMineSkillExecutionResult(
+        { blockName: "stone", count: 2 },
+        {
+          collected_item_name: "cobblestone",
+          collected_count: 2,
+        },
+      ),
+    ).toThrow("mine result lacks numeric mined_count completion proof");
+    expect(() =>
+      createMineSkillExecutionResult(
+        { blockName: "stone", count: 2 },
+        {
+          collected_item_name: null,
+          collected_count: 2,
+          mined_count: 2,
+        },
+      ),
+    ).toThrow("mine result lacks collected item proof");
+    expect(() =>
+      createMineSkillExecutionResult(
+        { blockName: "stone", count: 2 },
+        {
+          collected_item_name: "   ",
+          collected_count: 2,
+          mined_count: 2,
+        },
+      ),
+    ).toThrow("mine result lacks collected item proof");
+    expect(
+      createMineSkillExecutionResult(
+        { blockName: "stone", count: 2 },
+        {
+          collected_item_name: "cobblestone",
+          collected_count: 2,
+          mined_count: 2,
+        },
+      ),
+    ).toMatchObject({
+      skill: "mine",
+      collected_item_name: "cobblestone",
+      collected_count: 2,
+      mined_count: 2,
+    });
+    expect(() => createCollectSkillExecutionResult({ itemName: "oak_log" })).toThrow(
+      "collect result lacks collected completion proof",
+    );
+    expect(() => createCutTreeSkillExecutionResult({ count: 5 })).toThrow(
+      "cutTree result lacks numeric collected_count completion proof",
+    );
+    expect(() =>
+      createCutTreeSkillExecutionResult(
+        { count: 5 },
+        {
+          collected_count: 5,
+          clusters: [],
+        },
+      ),
+    ).toThrow("cutTree result lacks explicit completion state proof");
   });
 
   it("PlacementService（放置服务） 应只允许 crafting table（工作台） 并委托 runtime（运行时）", async () => {

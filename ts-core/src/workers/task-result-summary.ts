@@ -563,28 +563,68 @@ function readSandboxSkillResult(value: unknown): TaskResultSummary | null {
     case "mine": {
       const target = readOptionalString(value.block_name);
       const completedCount = readNumber(value.collected_count);
+      const minedCount = readNumber(value.mined_count);
+      const collectedItemName = readOptionalString(value.collected_item_name);
+      const missingFields = [
+        ...(collectedItemName === undefined ? ["collected_item_name"] : []),
+        ...(completedCount === undefined ? ["collected_count"] : []),
+        ...(minedCount === undefined ? ["mined_count"] : []),
+      ];
+      if (missingFields.length > 0) {
+        return createUnknownCompletionSkillSummary({
+          skill: "mine",
+          knownFields: knownRecordFields(value),
+          missingFields,
+          ...(target === undefined ? {} : { target }),
+          ...(readOptionalString(value.world_key) === undefined
+            ? {}
+            : { worldKey: readOptionalString(value.world_key) }),
+        });
+      }
+      const proofCompletedCount = completedCount as number;
+      const proofMinedCount = minedCount as number;
+      const proofCollectedItemName = collectedItemName as string;
       const worldKey = readOptionalString(value.world_key);
-      const inventoryDelta = createInventoryDelta(
-        readOptionalString(value.collected_item_name),
-        completedCount ?? 0,
-      );
+      const inventoryDelta = createInventoryDelta(proofCollectedItemName, proofCompletedCount);
       return createTaskResultSummary({
         task_type: ExecutionTaskKind.Code,
         operation: "mine",
         ...(target === undefined ? {} : { target }),
-        ...(completedCount === undefined ? {} : { completed_count: completedCount }),
+        completed_count: proofCompletedCount,
         ...(inventoryDelta === undefined ? {} : { inventory_delta: inventoryDelta }),
         ...(worldKey === undefined ? {} : { world_key: worldKey }),
+        details: { mined_count: proofMinedCount },
       });
     }
     case "collect": {
       const completedCount = readCollectedCount(value.collected);
+      if (!Array.isArray(value.collected)) {
+        return createUnknownCompletionSkillSummary({
+          skill: "collect",
+          target: readOptionalString(value.item_name) ?? "all_items",
+          knownFields: knownRecordFields(value),
+          missingFields: ["collected"],
+          ...(readOptionalString(value.world_key) === undefined
+            ? {}
+            : { worldKey: readOptionalString(value.world_key) }),
+        });
+      }
       const worldKey = readOptionalString(value.world_key);
       return createTaskResultSummary({
         task_type: ExecutionTaskKind.Code,
         operation: "collect",
         target: readOptionalString(value.item_name) ?? "all_items",
-        ...(completedCount === undefined ? {} : { completed_count: completedCount }),
+        completed_count: completedCount ?? 0,
+        inventory_delta: value.collected.flatMap((item): TaskResultInventoryDelta[] => {
+          if (!isRecord(item)) {
+            return [];
+          }
+          const itemName = readOptionalString(item.name);
+          const count = readNumber(item.count);
+          return itemName === undefined || count === undefined || count <= 0
+            ? []
+            : [{ item_name: itemName, count }];
+        }),
         ...(worldKey === undefined ? {} : { world_key: worldKey }),
       });
     }
@@ -617,6 +657,46 @@ function readSandboxSkillResult(value: unknown): TaskResultSummary | null {
     default:
       return null;
   }
+}
+
+function createUnknownCompletionSkillSummary(input: {
+  readonly skill: string;
+  readonly target?: string | undefined;
+  readonly knownFields: readonly string[];
+  readonly missingFields: readonly string[];
+  readonly worldKey?: string | undefined;
+}): TaskResultSummary {
+  const details = Object.freeze({
+    code: "unknown_completion",
+    skill: input.skill,
+    known_fields: Object.freeze([...input.knownFields]),
+    missing_fields: Object.freeze([...input.missingFields]),
+    ...(input.target === undefined ? {} : { target: input.target }),
+  });
+  return createTaskResultSummary({
+    task_type: ExecutionTaskKind.Code,
+    operation: input.skill,
+    status: "failed",
+    ...(input.target === undefined ? {} : { target: input.target }),
+    completed_count: 0,
+    ...(input.worldKey === undefined ? {} : { world_key: input.worldKey }),
+    failure: createFailureSummary({
+      code: "unknown_completion",
+      stage: input.skill,
+      message: `${input.skill} result lacks completion proof`,
+      recoverable: inferRecoverable("unknown_completion"),
+      details,
+    }),
+    details,
+  });
+}
+
+function knownRecordFields(value: Readonly<Record<string, unknown>>): readonly string[] {
+  return Object.freeze(
+    Object.keys(value)
+      .filter((key) => value[key] !== undefined)
+      .sort(),
+  );
 }
 
 function readRequestedCount(value: unknown): number | undefined {

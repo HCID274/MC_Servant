@@ -31,10 +31,14 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
           },
         },
         async mine(params) {
-          return createMineSkillExecutionResult(params);
+          return createMineSkillExecutionResult(params, {
+            collected_item_name: params.blockName,
+            collected_count: params.count,
+            mined_count: params.count,
+          });
         },
         async collect(params) {
-          return createCollectSkillExecutionResult(params);
+          return createCollectSkillExecutionResult(params, { collected: [] });
         },
         async equip(params) {
           return createEquipSkillExecutionResult(params);
@@ -70,10 +74,14 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
             },
           },
           async mine(params) {
-            return createMineSkillExecutionResult(params);
+            return createMineSkillExecutionResult(params, {
+              collected_item_name: params.blockName,
+              collected_count: params.count,
+              mined_count: params.count,
+            });
           },
           async collect(params) {
-            return createCollectSkillExecutionResult(params);
+            return createCollectSkillExecutionResult(params, { collected: [] });
           },
           async equip(params) {
             return createEquipSkillExecutionResult(params);
@@ -107,11 +115,15 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
       },
       async mine(params: { readonly blockName: string; readonly count: number }) {
         calls.push(`mine:${params.blockName}:${params.count}`);
-        return createMineSkillExecutionResult(params);
+        return createMineSkillExecutionResult(params, {
+          collected_item_name: params.blockName,
+          collected_count: params.count,
+          mined_count: params.count,
+        });
       },
       async collect(params: { readonly itemName: string; readonly radius?: number }) {
         calls.push(`collect:${params.itemName}:${params.radius ?? 32}`);
-        return createCollectSkillExecutionResult(params);
+        return createCollectSkillExecutionResult(params, { collected: [] });
       },
       async equip(params: { readonly itemName: string; readonly destination?: "hand" }) {
         calls.push(`equip:${params.itemName}:${params.destination ?? "hand"}`);
@@ -486,10 +498,14 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
           },
         },
         async mine(params) {
-          return createMineSkillExecutionResult(params);
+          return createMineSkillExecutionResult(params, {
+            collected_item_name: params.blockName,
+            collected_count: params.count,
+            mined_count: params.count,
+          });
         },
         async collect(params) {
-          return createCollectSkillExecutionResult(params);
+          return createCollectSkillExecutionResult(params, { collected: [] });
         },
         async equip(params) {
           return createEquipSkillExecutionResult(params);
@@ -559,7 +575,7 @@ describe("runtime skill execution（运行时技能执行） 模型", () => {
       },
       collector: {
         async collect(params) {
-          return createCollectSkillExecutionResult(params);
+          return createCollectSkillExecutionResult(params, { collected: [] });
         },
       },
       inventory: {

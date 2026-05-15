@@ -1166,6 +1166,102 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         },
       },
     });
+    const summary = createTaskResultSummaryFromSandboxResult(
+      createCodeJob({
+        message_id: "T-085-mine-unknown-completion",
+        intent_epoch: 1,
+        snapshot_ts: 1,
+        priority: ExecPriority.Normal,
+        code: "code",
+      }),
+      result,
+    );
+    expect(summary).toMatchObject({
+      status: "failed",
+      failure: {
+        failure_code: "unknown_completion",
+      },
+    });
+  });
+
+  it("sandbox skill 兼容摘要路径不得把缺 proof 的 mine / collect 包装成完成", () => {
+    const sandboxJob = createCodeJob({
+      message_id: "T-088-summary-proof",
+      intent_epoch: 1,
+      snapshot_ts: 1,
+      priority: ExecPriority.Normal,
+      code: "code",
+    });
+    const createCompletedSandboxResult = (resultRecord: Readonly<Record<string, unknown>>) =>
+      ({
+        status: TaskHistoryStatus.Completed,
+        summary: { total_steps: 1, duration_ms: 1 },
+        step_results: [
+          {
+            action: resultRecord.skill,
+            status: "ok",
+            params: {},
+            result: resultRecord,
+          },
+        ],
+      }) as unknown as Parameters<typeof createTaskResultSummaryFromSandboxResult>[1];
+
+    expect(
+      createTaskResultSummaryFromSandboxResult(
+        sandboxJob,
+        createCompletedSandboxResult({ skill: "mine", block_name: "stone" }),
+      ),
+    ).toMatchObject({
+      status: "failed",
+      failure: { failure_code: "unknown_completion" },
+      details: { missing_fields: ["collected_item_name", "collected_count", "mined_count"] },
+    });
+    expect(
+      createTaskResultSummaryFromSandboxResult(
+        sandboxJob,
+        createCompletedSandboxResult({
+          skill: "mine",
+          block_name: "stone",
+          collected_item_name: "cobblestone",
+          collected_count: 5,
+          mined_count: 5,
+          world_key: "minecraft:overworld",
+        }),
+      ),
+    ).toMatchObject({
+      status: "completed",
+      operation: "mine",
+      target: "stone",
+      completed_count: 5,
+      inventory_delta: [{ item_name: "cobblestone", count: 5 }],
+      world_key: "minecraft:overworld",
+    });
+    expect(
+      createTaskResultSummaryFromSandboxResult(
+        sandboxJob,
+        createCompletedSandboxResult({
+          skill: "collect",
+          item_name: null,
+          collected: [{ name: "oak_log", count: 2 }],
+        }),
+      ),
+    ).toMatchObject({
+      status: "completed",
+      operation: "collect",
+      target: "all_items",
+      completed_count: 2,
+      inventory_delta: [{ item_name: "oak_log", count: 2 }],
+    });
+    expect(
+      createTaskResultSummaryFromSandboxResult(
+        sandboxJob,
+        createCompletedSandboxResult({ skill: "collect", item_name: null }),
+      ),
+    ).toMatchObject({
+      status: "failed",
+      failure: { failure_code: "unknown_completion" },
+      details: { missing_fields: ["collected"] },
+    });
   });
 
   it("cutTree（砍树） count 以原木获得数量为准，少拿到原木必须失败", async () => {

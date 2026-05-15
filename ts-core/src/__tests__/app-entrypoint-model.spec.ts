@@ -659,6 +659,8 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
           {
             world_key: "minecraft:overworld",
             collected_count: 5,
+            completed: true,
+            status: "completed",
             clusters: [
               {
                 cluster_id: "tree-1",

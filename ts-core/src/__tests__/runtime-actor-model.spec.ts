@@ -104,7 +104,11 @@ function createFakeTransport(input?: {
 
       await input?.mine?.(params);
 
-      return createMineSkillExecutionResult(params);
+      return createMineSkillExecutionResult(params, {
+        collected_item_name: params.blockName,
+        collected_count: params.count,
+        mined_count: params.count,
+      });
     },
     async digBlockAt(position) {
       if (!connected) {
@@ -120,7 +124,7 @@ function createFakeTransport(input?: {
 
       await input?.collect?.(params);
 
-      return createCollectSkillExecutionResult(params);
+      return createCollectSkillExecutionResult(params, { collected: [] });
     },
     async equip(params) {
       if (!connected) {
