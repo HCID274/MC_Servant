@@ -11,8 +11,15 @@ export interface ConversationPromptSnapshotContext {
   readonly inventory_change_context?: string;
   /** ConversationWorker（对话工作线程） 同轮快照中的主人坐标。 */
   readonly owner_position_at_message?: SnapshotPosition;
+  /** prompt（提示词） 上下文 provider（提供器） 降级诊断。 */
+  readonly provider_diagnostics: readonly ConversationPromptSnapshotProviderDiagnostic[];
   /** prompt（提示词） 渲染完成后必须调用，用于推进 inventory baseline（背包基线）。 */
   advanceInventoryBaseline(): void;
+}
+
+export interface ConversationPromptSnapshotProviderDiagnostic {
+  readonly provider: "environment_snapshot";
+  readonly error_summary: string;
 }
 
 /** 构建 Chat（闲聊） 路径共享 prompt（提示词） 快照上下文。 */
@@ -21,13 +28,13 @@ export async function createChatPromptSnapshotContext(input: {
   readonly dependencies: ConversationWorkerRuntimeDependencies;
   readonly recent_context?: string;
 }): Promise<ConversationPromptSnapshotContext> {
-  const snapshot = await readEnvironmentSnapshot(input);
-  const inventoryDiffContext = prepareInventoryDiffContext(input, snapshot);
+  const snapshotResult = await readEnvironmentSnapshot(input);
+  const inventoryDiffContext = prepareInventoryDiffContext(input, snapshotResult.snapshot);
   const snapshotContext =
-    snapshot === null
+    snapshotResult.snapshot === null
       ? undefined
       : createChatSnapshotContext({
-          snapshot,
+          snapshot: snapshotResult.snapshot,
           ...(input.recent_context === undefined ? {} : { recentContext: input.recent_context }),
           ...(inventoryDiffContext?.inventoryChangeContext === undefined
             ? {}
@@ -39,7 +46,8 @@ export async function createChatPromptSnapshotContext(input: {
     ...(inventoryDiffContext?.inventoryChangeContext === undefined
       ? {}
       : { inventory_change_context: inventoryDiffContext.inventoryChangeContext }),
-    ...createOwnerPositionAtMessageField(snapshot),
+    ...createOwnerPositionAtMessageField(snapshotResult.snapshot),
+    provider_diagnostics: snapshotResult.diagnostics,
     advanceInventoryBaseline() {
       inventoryDiffContext?.advanceBaseline();
     },
@@ -53,10 +61,10 @@ export async function createPlanPromptSnapshotContext(input: {
   readonly resource_context?: string;
   readonly recent_context?: string;
 }): Promise<ConversationPromptSnapshotContext> {
-  const snapshot = await readEnvironmentSnapshot(input);
-  const inventoryDiffContext = prepareInventoryDiffContext(input, snapshot);
+  const snapshotResult = await readEnvironmentSnapshot(input);
+  const inventoryDiffContext = prepareInventoryDiffContext(input, snapshotResult.snapshot);
   const snapshotContext = createPlannerSnapshotContext({
-    snapshot,
+    snapshot: snapshotResult.snapshot,
     ...(input.resource_context === undefined ? {} : { resourceContext: input.resource_context }),
     ...(input.recent_context === undefined ? {} : { recentContext: input.recent_context }),
     ...(inventoryDiffContext?.inventoryChangeContext === undefined
@@ -69,7 +77,8 @@ export async function createPlanPromptSnapshotContext(input: {
     ...(inventoryDiffContext?.inventoryChangeContext === undefined
       ? {}
       : { inventory_change_context: inventoryDiffContext.inventoryChangeContext }),
-    ...createOwnerPositionAtMessageField(snapshot),
+    ...createOwnerPositionAtMessageField(snapshotResult.snapshot),
+    provider_diagnostics: snapshotResult.diagnostics,
     advanceInventoryBaseline() {
       inventoryDiffContext?.advanceBaseline();
     },
@@ -93,20 +102,41 @@ function createOwnerPositionAtMessageField(snapshot: EnvironmentSnapshot | null)
 async function readEnvironmentSnapshot(input: {
   readonly task: ConversationWorkerTask;
   readonly dependencies: ConversationWorkerRuntimeDependencies;
-}): Promise<EnvironmentSnapshot | null> {
+}): Promise<{
+  readonly snapshot: EnvironmentSnapshot | null;
+  readonly diagnostics: readonly ConversationPromptSnapshotProviderDiagnostic[];
+}> {
   if (input.dependencies.environmentSnapshotProvider === undefined) {
-    return null;
+    return Object.freeze({ snapshot: null, diagnostics: Object.freeze([]) });
   }
 
   try {
-    return (
-      (await input.dependencies.environmentSnapshotProvider({
-        task: input.task,
-      })) ?? null
-    );
-  } catch {
-    return null;
+    return Object.freeze({
+      snapshot:
+        (await input.dependencies.environmentSnapshotProvider({
+          task: input.task,
+        })) ?? null,
+      diagnostics: Object.freeze([]),
+    });
+  } catch (error) {
+    return Object.freeze({
+      snapshot: null,
+      diagnostics: Object.freeze([
+        Object.freeze({
+          provider: "environment_snapshot" as const,
+          error_summary: summarizeError(error),
+        }),
+      ]),
+    });
   }
+}
+
+function summarizeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return typeof error === "string" ? error : "unknown provider failure";
 }
 
 function prepareInventoryDiffContext(

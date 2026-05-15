@@ -123,6 +123,26 @@ export type ConversationWorkerRuntimeEvent =
       readonly enqueue_error_summary: string;
       /** 诊断写入失败摘要。 */
       readonly diagnostic_error_summary: string;
+    }
+  | {
+      /** 事件类型。 */
+      readonly type: "conversation.context_provider_failed";
+      /** 目标 Bot 标识。 */
+      readonly bot_id: string;
+      /** 原始消息标识。 */
+      readonly message_id: string;
+      /** provider（提供器） 所属路由。 */
+      readonly route_kind: "plan_exec";
+      /** 降级的 provider（提供器） 名称。 */
+      readonly provider:
+        | "recent"
+        | "actor_state"
+        | "memory"
+        | "brain"
+        | "resource"
+        | "environment_snapshot";
+      /** 失败摘要。 */
+      readonly error_summary: string;
     };
 
 /** ConversationWorker（对话工作线程） 广播回复汇点。 */

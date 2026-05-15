@@ -2461,6 +2461,142 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
       exec_type: "code",
       priority: "normal",
     });
+    expect(runtime.getEvents()).toContainEqual({
+      type: "conversation.context_provider_failed",
+      bot_id: "bot-cw",
+      message_id: "msg-plan-memory-fallback",
+      route_kind: "plan_exec",
+      provider: "memory",
+      error_summary: "memory backend unavailable",
+    });
+    expect(runtime.getEvents()).toContainEqual({
+      type: "conversation.context_provider_failed",
+      bot_id: "bot-cw",
+      message_id: "msg-plan-memory-fallback",
+      route_kind: "plan_exec",
+      provider: "resource",
+      error_summary: "resource index unavailable",
+    });
+  });
+
+  it("plan（规划）上下文 provider（提供器）失败时必须留下结构化诊断", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const plannerInputs: Array<{
+      readonly brain_context?: string;
+      readonly recent_context?: string;
+      readonly snapshot_context?: string;
+    }> = [];
+    const baseRecentContextStore = createConversationRecentContextStore();
+    const runtime = createConversationWorkerRuntime({
+      queue: {
+        name: "msg:bot-cw",
+        connection: {},
+      },
+      dependencies: {
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+        triage: () =>
+          createCompositeTaskTriage({
+            priority: ConversationPriority.Normal,
+            reason: "unit_plan_provider_diagnostics",
+          }),
+        recentContextStore: {
+          ...baseRecentContextStore,
+          getLatestFailureCapsuleInfo: () => {
+            throw new Error("recent failure capsule unavailable");
+          },
+          render: () => {
+            throw new Error("recent timeline unavailable");
+          },
+        },
+        brainContextProvider: (input) => {
+          if (input.include_skill) {
+            throw new Error("brain context unavailable");
+          }
+
+          return null;
+        },
+        environmentSnapshotProvider: () => {
+          throw new Error("snapshot unavailable");
+        },
+        planner: async (input) => {
+          plannerInputs.push({
+            brain_context: input.brain_context,
+            recent_context: input.recent_context,
+            snapshot_context: input.snapshot_context,
+          });
+
+          return {
+            code: 'const task = await runGoal("测试", async () => {}); await report(task);',
+          };
+        },
+        broadcastReplySink: async () => undefined,
+        enqueueExecTaskSink: async () => undefined,
+      },
+    });
+
+    await runtime.start();
+    await processor?.({
+      data: createConversationWorkerTask({
+        bot_id: "bot-cw",
+        message: {
+          bot_id: "bot-cw",
+          message_id: "msg-plan-provider-diagnostics",
+          content: "去测试",
+          intent_epoch: 12,
+          snapshot_ts: 111,
+        },
+      }),
+    });
+
+    expect(plannerInputs).toEqual([
+      {
+        brain_context: undefined,
+        recent_context: undefined,
+        snapshot_context: expect.stringContaining("observation unavailable"),
+      },
+    ]);
+    expect(runtime.getEvents()).toEqual(
+      expect.arrayContaining([
+        {
+          type: "conversation.context_provider_failed",
+          bot_id: "bot-cw",
+          message_id: "msg-plan-provider-diagnostics",
+          route_kind: "plan_exec",
+          provider: "recent",
+          error_summary: "recent failure capsule unavailable",
+        },
+        {
+          type: "conversation.context_provider_failed",
+          bot_id: "bot-cw",
+          message_id: "msg-plan-provider-diagnostics",
+          route_kind: "plan_exec",
+          provider: "recent",
+          error_summary: "recent timeline unavailable",
+        },
+        {
+          type: "conversation.context_provider_failed",
+          bot_id: "bot-cw",
+          message_id: "msg-plan-provider-diagnostics",
+          route_kind: "plan_exec",
+          provider: "brain",
+          error_summary: "brain context unavailable",
+        },
+        {
+          type: "conversation.context_provider_failed",
+          bot_id: "bot-cw",
+          message_id: "msg-plan-provider-diagnostics",
+          route_kind: "plan_exec",
+          provider: "environment_snapshot",
+          error_summary: "snapshot unavailable",
+        },
+      ]),
+    );
   });
 
   it("明确动作进入 plan 时不应把 search 工具传给 planner，历史引用才允许传入", async () => {
