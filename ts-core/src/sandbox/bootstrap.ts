@@ -1,4 +1,8 @@
 import type { SandboxOwnerContext } from "../core-ports/sandbox.js";
+import { createSandboxGoalResultScript } from "./goal-result.js";
+import { createSandboxGoalSummaryScript } from "./goal-summary.js";
+import { createSandboxResultFactsScript } from "./result-facts.js";
+import { createSandboxSemanticActionResultScript } from "./semantic-action-result.js";
 
 /** 沙箱执行时暴露给只读 task（任务） 分区的上下文。 */
 export interface SandboxExecutionTaskContext {
@@ -18,8 +22,11 @@ export interface SandboxExecutionTaskContext {
  * 该模块只负责沙箱内 API 注入，不直接执行 BotActor 写动作。
  */
 export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext): string {
-  const taskJson = JSON.stringify(task);
   const ownerJson = JSON.stringify(task.owner ?? {});
+  const resultFactsScript = createSandboxResultFactsScript();
+  const semanticActionResultScript = createSandboxSemanticActionResultScript();
+  const goalSummaryScript = createSandboxGoalSummaryScript();
+  const goalResultScript = createSandboxGoalResultScript();
 
   return `
     (() => {
@@ -57,6 +64,10 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
     let __lastEnsureCondition = null;
     let __ensureResults = [];
     const __goalFrames = [];
+    ${resultFactsScript}
+    ${semanticActionResultScript}
+    ${goalSummaryScript}
+    ${goalResultScript}
     const __semanticCall = (method, args) =>
       (__ensureDepth > 0 ? __sandboxTryCall(method, args) : __sandboxCall(method, args)).then((result) => {
         const normalizedResult =
@@ -73,10 +84,6 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
         }
         return normalizedResult;
       });
-    const __isFailedResult = (value) =>
-      value !== null && typeof value === "object" && value.ok === false && value.error;
-    const __isGoalResult = (value) =>
-      value !== null && typeof value === "object" && value.kind === "goal_result";
     const __normalizeEnsureCondition = (condition) => {
       if (condition === null || typeof condition !== "object") {
         throw new Error("ensure condition must be an until.* condition");
@@ -120,282 +127,6 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
         throw new Error("invalid until.placed condition");
       }
       return { kind: "placed", blockName };
-    };
-    const __readResultData = (value) => {
-      if (value !== null && typeof value === "object" && value.ok === true && value.data) {
-        return value.data;
-      }
-      if (value !== null && typeof value === "object" && value.ok === true && value.result) {
-        return __readResultData(value.result);
-      }
-      return value;
-    };
-    const __readCompletedCount = (data, condition) => {
-      if (data !== null && typeof data === "object") {
-        if (typeof data.completed_count === "number") return data.completed_count;
-        if (typeof data.collected_count === "number") return data.collected_count;
-        if (Array.isArray(data.collected)) {
-          return data.collected.reduce((sum, item) => sum + (typeof item?.count === "number" ? item.count : 0), 0);
-        }
-        if (data.skill === "equip" || data.skill === "goTo") return 1;
-      }
-      if (condition?.kind === "equipped" || condition?.kind === "placed") return 1;
-      return 0;
-    };
-    const __readTarget = (data, condition) => {
-      if (condition?.kind === "gained" || condition?.kind === "has" || condition?.kind === "equipped") return condition.itemName;
-      if (condition?.kind === "gainedTag") return condition.tagName;
-      if (condition?.kind === "gainedDropOf") return data?.item_name ?? data?.resolved_targets?.[0] ?? condition.blockName;
-      if (condition?.kind === "placed") return condition.blockName;
-      if (data !== null && typeof data === "object") {
-        return data.item_name ?? data.block_name ?? data.collected_item_name ?? data.log_block_name;
-      }
-      return undefined;
-    };
-    const __readRequestedCount = (condition, completedCount) => {
-      if (condition && typeof condition.count === "number") return condition.count;
-      return completedCount > 0 ? completedCount : undefined;
-    };
-    const __readWorldKey = (data) => {
-      if (data !== null && typeof data === "object" && "world_key" in data) {
-        return data.world_key ?? null;
-      }
-      return undefined;
-    };
-    const __readActionCountArg = (args, index = 1) => {
-      const count = Number(args?.[index]);
-      return Number.isInteger(count) && count > 0 ? count : undefined;
-    };
-    const __readNumericField = (data, field) =>
-      data !== null && typeof data === "object" && typeof data[field] === "number"
-        ? data[field]
-        : undefined;
-    const __createUnknownCompletionFailure = (method, args, data, reason) => ({
-      ok: false,
-      error: {
-        action: String(method).replace(/^bot\\./, ""),
-        params: { args },
-        code: "unknown_completion",
-        message: reason,
-        details: {
-          failure_stage: String(method).replace(/^bot\\./, ""),
-          reason,
-          result: data
-        }
-      }
-    });
-    const __createSemanticConditionFailure = (method, args, data, target, requestedCount, completedCount, reason) => ({
-      ok: false,
-      error: {
-        action: String(method).replace(/^bot\\./, ""),
-        params: { args },
-        code: "condition_not_met",
-        message: reason,
-        details: {
-          failure_stage: String(method).replace(/^bot\\./, ""),
-          reason,
-          target_progress: {
-            action: String(method).replace(/^bot\\./, ""),
-            ...(typeof target === "string" ? { target } : {}),
-            ...(typeof requestedCount === "number" ? { requested_count: requestedCount, target_count: requestedCount } : {}),
-            ...(typeof completedCount === "number" ? { completed_count: completedCount } : {})
-          },
-          ...(typeof target === "string" ? { target } : {}),
-          ...(typeof requestedCount === "number" ? { requested_count: requestedCount, target_count: requestedCount } : {}),
-          ...(typeof completedCount === "number" ? { completed_count: completedCount } : {}),
-          ...(__readWorldKey(data) !== undefined ? { world_key: __readWorldKey(data) } : {})
-        }
-      }
-    });
-    const __normalizeSemanticActionCompletion = (method, args, result) => {
-      if (__isFailedResult(result)) {
-        return result;
-      }
-      const data = __readResultData(result);
-      if (method === "bot.mine") {
-        const requestedCount = __readActionCountArg(args);
-        const completedCount = __readNumericField(data, "collected_count");
-        const target = typeof args?.[0] === "string" ? args[0] : data?.block_name;
-        if (requestedCount === undefined || completedCount === undefined || typeof data?.collected_item_name !== "string") {
-          return __createUnknownCompletionFailure(method, args, data, "mine result lacks inventory completion proof");
-        }
-        return completedCount >= requestedCount
-          ? result
-          : __createSemanticConditionFailure(method, args, data, target, requestedCount, completedCount, "mine completed below requested count");
-      }
-      if (method === "bot.cutTree") {
-        const requestedCount = __readActionCountArg(args, 0);
-        const completedCount = __readNumericField(data, "collected_count");
-        const target = data?.clusters?.find?.((cluster) => cluster?.collected_count > 0)?.log_block_name ?? data?.clusters?.[0]?.log_block_name ?? "logs";
-        if (requestedCount === undefined || completedCount === undefined || !Array.isArray(data?.clusters)) {
-          return __createUnknownCompletionFailure(method, args, data, "cutTree result lacks inventory completion proof");
-        }
-        return completedCount >= requestedCount
-          ? result
-          : __createSemanticConditionFailure(method, args, data, target, requestedCount, completedCount, "cutTree collected logs below requested count");
-      }
-      if (method === "bot.equip") {
-        return typeof data?.item_name === "string" || typeof data?.itemName === "string"
-          ? result
-          : __createUnknownCompletionFailure(method, args, data, "equip result lacks equipped item proof");
-      }
-      if (method === "bot.goTo") {
-        return data?.reached === true
-          ? result
-          : __createUnknownCompletionFailure(method, args, data, "goTo result lacks reached proof");
-      }
-      if (method === "bot.craft") {
-        const requestedCount = __readActionCountArg(args);
-        const completedCount = __readNumericField(data, "completed_count");
-        const target = typeof args?.[0] === "string" ? args[0] : data?.item_name;
-        if (requestedCount === undefined || completedCount === undefined || typeof data?.item_name !== "string") {
-          return __createUnknownCompletionFailure(method, args, data, "craft result lacks inventory completion proof");
-        }
-        return completedCount >= requestedCount
-          ? result
-          : __createSemanticConditionFailure(method, args, data, target, requestedCount, completedCount, "craft completed below requested count");
-      }
-      if (method === "bot.place") {
-        const completedCount = __readNumericField(data, "completed_count");
-        const target = typeof args?.[0] === "string" ? args[0] : data?.block_name;
-        if (completedCount === undefined || completedCount < 1 || typeof data?.block_name !== "string") {
-          return __createUnknownCompletionFailure(method, args, data, "place result lacks placed block proof");
-        }
-        return result;
-      }
-      return result;
-    };
-    const __createInventoryDelta = (target, count, condition) => {
-      if (typeof target !== "string" || count <= 0) return undefined;
-      if (condition?.kind === "equipped" || condition?.kind === "placed") return undefined;
-      return [{ item_name: target, count }];
-    };
-    const __mergeInventoryDelta = (deltas) => {
-      const counts = new Map();
-      for (const delta of deltas.flat()) {
-        if (!delta || typeof delta.item_name !== "string" || typeof delta.count !== "number" || delta.count <= 0) continue;
-        counts.set(delta.item_name, (counts.get(delta.item_name) ?? 0) + delta.count);
-      }
-      const merged = Array.from(counts.entries()).map(([item_name, count]) => ({ item_name, count }));
-      return merged.length > 0 ? merged : undefined;
-    };
-    const __readActionSummary = (entry, condition) => {
-      const result = entry?.result ?? entry;
-      const data = __readResultData(result);
-      const completedCount = __readCompletedCount(data, condition);
-      let target = __readTarget(data, condition);
-      let inventoryDelta = __createInventoryDelta(target, completedCount, condition);
-      if (data !== null && typeof data === "object") {
-        if (data.skill === "cutTree") {
-          target = data.clusters?.find?.((cluster) => cluster?.collected_count > 0)?.log_block_name ?? data.clusters?.[0]?.log_block_name ?? data.log_block_name ?? "logs";
-          inventoryDelta = __createInventoryDelta(target, Number(data.collected_count ?? 0), undefined);
-        } else if (data.skill === "mine") {
-          target = data.collected_item_name ?? data.block_name ?? target;
-          inventoryDelta = __createInventoryDelta(target, Number(data.collected_count ?? completedCount), undefined);
-        } else if (data.skill === "collect" && Array.isArray(data.collected)) {
-          inventoryDelta = data.collected
-            .filter((item) => typeof item?.name === "string" && typeof item?.count === "number" && item.count > 0)
-            .map((item) => ({ item_name: item.name, count: item.count }));
-        } else if (data.skill === "equip" || data.skill === "goTo" || data.skill === "place") {
-          inventoryDelta = undefined;
-        }
-      }
-      return {
-        ...(typeof target === "string" ? { target } : {}),
-        ...(entry?.method ? { action: String(entry.method).replace(/^bot\\./, "") } : {}),
-        completed_count: completedCount,
-        ...(inventoryDelta ? { inventory_delta: inventoryDelta } : {}),
-        ...(__readWorldKey(data) !== undefined ? { world_key: __readWorldKey(data) } : {})
-      };
-    };
-    const __readConditionEvaluation = (result) => {
-      const data = __readResultData(result);
-      const evaluation = data?.condition_evaluation;
-      return evaluation !== null && typeof evaluation === "object" && evaluation.ok === true
-        ? evaluation
-        : null;
-    };
-    const __readConditionEvaluationTarget = (evaluation, condition) => {
-      const resolvedTarget = Array.isArray(evaluation?.resolved_targets)
-        ? evaluation.resolved_targets.find((target) => typeof target === "string")
-        : undefined;
-      return resolvedTarget ?? __readTarget(null, condition);
-    };
-    const __readConditionEvaluationSummary = (evaluation) => {
-      const condition = evaluation.condition;
-      const completedCount = Number(evaluation.completed_count ?? 0);
-      const target = __readConditionEvaluationTarget(evaluation, condition);
-      return {
-        ...(typeof target === "string" ? { target } : {}),
-        completed_count: completedCount,
-        ...(__createInventoryDelta(target, completedCount, condition)
-          ? { inventory_delta: __createInventoryDelta(target, completedCount, condition) }
-          : {}),
-        ...(__readWorldKey(evaluation.current) !== undefined ? { world_key: __readWorldKey(evaluation.current) } : {})
-      };
-    };
-    const __createGoalSuccess = (name, startedAt, result, condition, frame, ensureResults) => {
-      const data = __readResultData(result);
-      const frameResults = frame?.results ?? [];
-      const actionSummaries = frameResults.map((entry) => __readActionSummary(entry, undefined));
-      const conditionEvaluations = (ensureResults ?? [])
-        .map((ensureResult) => __readConditionEvaluation(ensureResult))
-        .filter(Boolean);
-      const directActionSummaries = frameResults
-        .filter((entry) => Number(entry.ensure_depth ?? 0) <= 0)
-        .map((entry) => __readActionSummary(entry, undefined));
-      const conditionSummaries = conditionEvaluations.map((evaluation) => __readConditionEvaluationSummary(evaluation));
-      const directInventoryDelta = __mergeInventoryDelta(directActionSummaries.flatMap((entry) => entry.inventory_delta ?? []));
-      const effectiveCondition = conditionEvaluations.length === 1 && !directInventoryDelta
-        ? conditionEvaluations[0].condition
-        : condition;
-      const mergedInventoryDelta = __mergeInventoryDelta([
-        ...(directInventoryDelta ?? []),
-        ...conditionSummaries.flatMap((entry) => entry.inventory_delta ?? [])
-      ]);
-      const completedCount = mergedInventoryDelta
-        ? mergedInventoryDelta.reduce((sum, delta) => sum + delta.count, 0)
-        : __readCompletedCount(data, effectiveCondition);
-      const target = mergedInventoryDelta && mergedInventoryDelta.length > 1
-        ? undefined
-        : conditionSummaries[0]?.target ?? __readTarget(data, effectiveCondition);
-      const requestedCount = effectiveCondition
-        ? __readRequestedCount(effectiveCondition, completedCount)
-        : undefined;
-      const inventoryDelta = mergedInventoryDelta ?? __createInventoryDelta(target, completedCount, effectiveCondition);
-      const worldKey = [...actionSummaries].reverse().find((entry) => "world_key" in entry)?.world_key ?? __readWorldKey(data);
-      return __deepFreeze({
-        kind: "goal_result",
-        ok: true,
-        name,
-        duration_ms: Math.max(0, Date.now() - startedAt),
-        ...(effectiveCondition ? { condition: effectiveCondition } : {}),
-        summary: {
-          ...(typeof target === "string" ? { target } : {}),
-          ...(typeof requestedCount === "number" ? { requested_count: requestedCount } : {}),
-          completed_count: completedCount,
-          ...(inventoryDelta ? { inventory_delta: inventoryDelta } : {}),
-          ...(worldKey !== undefined ? { world_key: worldKey } : {}),
-          ...(actionSummaries.length > 1 ? { action_results: actionSummaries } : {})
-        }
-      });
-    };
-    const __createGoalFailure = (name, startedAt, failure, condition) => {
-      const details = failure?.details && typeof failure.details === "object" ? failure.details : {};
-      return __deepFreeze({
-        kind: "goal_result",
-        ok: false,
-        name,
-        duration_ms: Math.max(0, Date.now() - startedAt),
-        ...(condition ? { condition } : {}),
-        failure: {
-          failure_code: String(failure?.code ?? failure?.error_code ?? "facade_call_failed"),
-          failure_stage: String(details.failure_stage ?? failure?.action ?? "code"),
-          message: String(failure?.message ?? "code goal failed"),
-          recoverable: typeof failure?.recoverable === "boolean" ? failure.recoverable : null,
-          ...(Object.keys(details).length > 0 ? { details } : {})
-        }
-      });
     };
     const reply = (message) => __sandboxCall("chat.say", [message]);
     const report = async (task) => {

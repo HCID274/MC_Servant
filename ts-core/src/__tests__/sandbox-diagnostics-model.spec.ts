@@ -568,6 +568,38 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     });
   });
 
+  it("report(task) 应拒绝缺 completed_count 的成功 GoalResult", async () => {
+    const result = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: `
+          await report({
+            kind: 'goal_result',
+            ok: true,
+            name: '空成功摘要',
+            duration_ms: 1,
+            summary: {},
+          });
+        `,
+        messageId: "T-098-report-empty-success-summary",
+      }),
+      hostBridge: {
+        async executeBotSkill() {
+          throw new Error("skill should not run");
+        },
+        async writeChat() {
+          throw new Error("chat should not run");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Failed);
+    expect(result.step_results).toEqual([]);
+    expect(result.error).toMatchObject({
+      name: "UnhandledError",
+      message: "GoalResult.summary.completed_count must be finite",
+    });
+  });
+
   it("runGoal 应聚合多动作目标里的背包增量并保留最终世界事实", async () => {
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
@@ -1650,6 +1682,14 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       { code: "await fetch('https://example.com')", violation: "network" },
       {
         code: "await __sandboxTryCall('bot.place', [{ blockName: 'crafting_table' }])",
+        violation: "sandbox_internal_bridge",
+      },
+      {
+        code: "await __sandboxHostCall('bot.mine', ['stone', 1])",
+        violation: "sandbox_internal_bridge",
+      },
+      {
+        code: "await __sandboxRead('memory.search', ['stone'])",
         violation: "sandbox_internal_bridge",
       },
     ] as const;

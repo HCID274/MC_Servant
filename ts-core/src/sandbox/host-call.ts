@@ -13,7 +13,6 @@ import { cloneReadonlyValue } from "../domain/invariants.js";
 import type {
   FacadeCallError,
   SandboxExecutionResourceLimits,
-  SandboxGoalResult,
   SandboxStepActionName,
   SandboxStepParamsByAction,
   SandboxStepResult,
@@ -26,8 +25,15 @@ import {
   markSandboxTerminalError,
   trackSandboxHostCall,
 } from "./execution-control.js";
+import {
+  normalizeSandboxCallParams,
+  normalizeSandboxSearchParams,
+  normalizeSandboxSleepMs,
+  toSandboxStepActionName,
+} from "./host-call-params.js";
+import { recordSandboxGoalReport } from "./host-call-report.js";
 import { createSandboxStepResult } from "./result-factory.js";
-import { isRecord, isSandboxStepActionName, toJsonlErrorSnapshot } from "./validators.js";
+import { toJsonlErrorSnapshot } from "./validators.js";
 
 type SandboxHostCallResult = Readonly<Record<string, unknown>>;
 
@@ -274,139 +280,6 @@ export async function handleSandboxHostRead(input: {
   throw new Error(`Unsupported readonly Facade method: ${input.method}`);
 }
 
-function toSandboxStepActionName(method: string): SandboxStepActionName {
-  const action =
-    method.startsWith("bot.") || method.startsWith("chat.")
-      ? method.slice(method.indexOf(".") + 1)
-      : method;
-
-  if (!isSandboxStepActionName(action)) {
-    throw new Error(`Unsupported Facade method: ${method}`);
-  }
-
-  return action;
-}
-
-function normalizeSandboxCallParams(
-  action: SandboxStepActionName,
-  args: readonly unknown[],
-): SandboxStepResult["params"] {
-  const first = args[0];
-
-  if (action === "goTo") {
-    if (args.length === 3) {
-      return { x: Number(args[0]), y: Number(args[1]), z: Number(args[2]) };
-    }
-
-    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["goTo"];
-  }
-
-  if (action === "mine") {
-    if (typeof first === "string") {
-      return { blockName: first, count: Number(args[1] ?? 1) };
-    }
-
-    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["mine"];
-  }
-
-  if (action === "collect") {
-    if (typeof first === "string") {
-      return {
-        itemName: first,
-        ...(args[1] !== undefined ? { radius: Number(args[1]) } : {}),
-      };
-    }
-
-    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["collect"];
-  }
-
-  if (action === "equip") {
-    if (typeof first === "string") {
-      return {
-        itemName: first,
-        ...(typeof args[1] === "string" ? { destination: args[1] } : {}),
-      } as SandboxStepParamsByAction["equip"];
-    }
-
-    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["equip"];
-  }
-
-  if (action === "craft") {
-    if (typeof first === "string") {
-      return {
-        itemName: first,
-        count: Number(args[1] ?? 1),
-      } as SandboxStepParamsByAction["craft"];
-    }
-
-    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["craft"];
-  }
-
-  if (action === "place") {
-    if (typeof first === "string") {
-      return {
-        blockName: first,
-        ...(isRecord(args[1]) ? { near: cloneReadonlyValue(args[1]) } : {}),
-      } as SandboxStepParamsByAction["place"];
-    }
-
-    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["place"];
-  }
-
-  if (action === "ensure") {
-    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["ensure"];
-  }
-
-  if (action === "cutTree") {
-    if (typeof first === "number") {
-      return { count: first } as SandboxStepParamsByAction["cutTree"];
-    }
-
-    return cloneReadonlyValue(first ?? {}) as SandboxStepParamsByAction["cutTree"];
-  }
-
-  if (typeof first !== "string" || first.trim().length === 0) {
-    return { message: "" };
-  }
-
-  return { message: first };
-}
-
-function normalizeSandboxGoalResult(value: unknown): SandboxGoalResult {
-  if (!isRecord(value) || value.kind !== "goal_result" || typeof value.ok !== "boolean") {
-    throw new Error("report(task) requires a GoalResult returned by runGoal");
-  }
-  if (typeof value.name !== "string" || value.name.trim().length === 0) {
-    throw new Error("GoalResult.name must be non-empty");
-  }
-  if (typeof value.duration_ms !== "number" || !Number.isFinite(value.duration_ms)) {
-    throw new Error("GoalResult.duration_ms must be finite");
-  }
-  if (value.ok === true) {
-    if (!isRecord(value.summary)) {
-      throw new Error("GoalResult.summary must be an object");
-    }
-
-    return cloneReadonlyValue(value) as SandboxGoalResult;
-  }
-  if (!isRecord(value.failure)) {
-    throw new Error("GoalResult.failure must be an object");
-  }
-  const failure = value.failure;
-  if (
-    typeof failure.failure_code !== "string" ||
-    failure.failure_code.trim().length === 0 ||
-    typeof failure.failure_stage !== "string" ||
-    failure.failure_stage.trim().length === 0 ||
-    typeof failure.message !== "string" ||
-    failure.message.trim().length === 0
-  ) {
-    throw new Error("GoalResult.failure must include code, stage and message");
-  }
-
-  return cloneReadonlyValue(value) as SandboxGoalResult;
-}
-
 async function handleSandboxGoalReport(input: {
   readonly method: string;
   readonly args: readonly unknown[];
@@ -419,46 +292,10 @@ async function handleSandboxGoalReport(input: {
     input.runtime.now(),
   );
 
-  const goalResult = normalizeSandboxGoalResult(input.args[0]);
-  const params: SandboxStepParamsByAction["report"] = Object.freeze({
-    message: "",
-    goal_result: goalResult,
+  return recordSandboxGoalReport({
+    args: input.args,
+    runtime: input.runtime,
   });
-  const result = Object.freeze({
-    reported: true,
-    goal_result: goalResult,
-  });
-
-  input.runtime.phaseLogs.push(
-    createSandboxLogLine({
-      t: input.runtime.now(),
-      phase: "facade_call",
-      m: "report",
-      p: params,
-    }),
-  );
-  input.runtime.stepResults.push(
-    createSandboxStepResult({
-      step_index: input.runtime.stepResults.length,
-      action: "report",
-      params,
-      status: "ok",
-      duration_ms: 0,
-      result,
-    }),
-  );
-  input.runtime.phaseLogs.push(
-    createSandboxLogLine({
-      t: input.runtime.now(),
-      phase: "facade_result",
-      m: "report",
-      s: "ok",
-      r: result,
-      ms: 0,
-    }),
-  );
-
-  return result;
 }
 
 async function handleSandboxTryHostCall(input: {
@@ -567,56 +404,6 @@ async function handleSandboxTryHostCall(input: {
       }),
     });
   }
-}
-
-function normalizeSandboxSearchParams(args: readonly unknown[]): {
-  readonly query: string;
-  readonly limit?: number;
-} {
-  const first = args[0];
-  if (typeof first === "string") {
-    const query = first.trim();
-    if (query.length === 0) {
-      throw new Error("search query must be non-empty");
-    }
-
-    return Object.freeze({
-      query,
-      ...(args[1] === undefined ? {} : { limit: normalizeSandboxSearchLimit(args[1]) }),
-    });
-  }
-
-  if (isRecord(first) && typeof first.query === "string") {
-    const query = first.query.trim();
-    if (query.length === 0) {
-      throw new Error("search query must be non-empty");
-    }
-
-    return Object.freeze({
-      query,
-      ...(first.limit === undefined ? {} : { limit: normalizeSandboxSearchLimit(first.limit) }),
-    });
-  }
-
-  throw new Error("search requires a query string");
-}
-
-function normalizeSandboxSearchLimit(value: unknown): number {
-  const limit = Number(value);
-  if (!Number.isInteger(limit) || limit <= 0 || limit > 10) {
-    throw new Error("search limit must be an integer between 1 and 10");
-  }
-
-  return limit;
-}
-
-function normalizeSandboxSleepMs(value: unknown, maxSleepMs: number): number {
-  const ms = Number(value);
-  if (!Number.isInteger(ms) || ms < 0) {
-    throw new Error("sleep ms must be a non-negative integer");
-  }
-
-  return Math.min(ms, maxSleepMs);
 }
 
 async function executeSandboxBotHostCall(
