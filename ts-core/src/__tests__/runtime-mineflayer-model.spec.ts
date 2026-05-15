@@ -1540,7 +1540,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(cache.position).toEqual({ x: 2, y: 64, z: 0 });
   });
 
-  it("place（放置） 应先尝试合成工作台，并暴露材料不足与附近无可放位置", async () => {
+  it("place（放置） 缺工作台物品时应返回结构化失败，不在放置层合成", async () => {
     const missingItemBot = new FakeMineflayerBot();
     missingItemBot.entity.position = { x: 0, y: 64, z: 0 };
     missingItemBot.craftRecipes.set(7, [
@@ -1576,9 +1576,10 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     ).resolves.toMatchObject({
       ok: false,
       error: {
-        code: "missing_materials",
+        code: "missing_crafting_table_item",
       },
     });
+    expect(missingItemBot.craftCalls).toEqual([]);
 
     const noPositionBot = new FakeMineflayerBot();
     noPositionBot.entity.position = { x: 0, y: 64, z: 0 };
@@ -1601,7 +1602,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     });
   });
 
-  it("place（放置） 应在背包无工作台时先用 Mineflayer recipe（配方） 合成再放置", async () => {
+  it("place（放置） 背包无工作台时不应调用 Mineflayer recipe（配方） 合成", async () => {
     const bot = new FakeMineflayerBot();
     const cache: CraftingTablePlacementCache = { position: null };
     const tableRecipe: MineflayerRecipeHandle = {
@@ -1630,19 +1631,17 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         cache,
       }),
     ).resolves.toMatchObject({
-      ok: true,
-      data: {
-        block_name: "crafting_table",
-        position: { x: 2, y: 64, z: 0 },
+      ok: false,
+      error: {
+        code: "missing_crafting_table_item",
       },
     });
-    expect(bot.craftCalls).toEqual([{ recipe: tableRecipe, count: 1, table: undefined }]);
-    expect(bot.equipCalls).toEqual([
-      { item: { type: 7, name: "crafting_table", count: 1 }, destination: "hand" },
-    ]);
+    expect(bot.craftCalls).toEqual([]);
+    expect(bot.equipCalls).toEqual([]);
+    expect(cache.position).toBeNull();
   });
 
-  it("place（放置） 背包只有 logs（原木） 时应先按配方合成 planks（木板） 再合成工作台", async () => {
+  it("place（放置） 背包只有 logs（原木） 时不应递归合成工作台", async () => {
     const bot = new FakeMineflayerBot();
     const cache: CraftingTablePlacementCache = { position: null };
     const planksRecipe: MineflayerRecipeHandle = {
@@ -1680,17 +1679,14 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         cache,
       }),
     ).resolves.toMatchObject({
-      ok: true,
-      data: {
-        block_name: "crafting_table",
-        position: { x: 2, y: 64, z: 0 },
+      ok: false,
+      error: {
+        code: "missing_crafting_table_item",
       },
     });
-    expect(bot.craftCalls).toEqual([
-      { recipe: planksRecipe, count: 1, table: undefined },
-      { recipe: tableRecipe, count: 1, table: undefined },
-    ]);
-    expect(bot.placeBlockCalls).toHaveLength(1);
+    expect(bot.craftCalls).toEqual([]);
+    expect(bot.placeBlockCalls).toHaveLength(0);
+    expect(cache.position).toBeNull();
   });
 
   it("place（放置） 应选择附近空位、调用 Mineflayer placeBlock（放方块） 并缓存位置", async () => {

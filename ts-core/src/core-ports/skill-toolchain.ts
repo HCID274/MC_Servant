@@ -7,9 +7,11 @@ import type { SkillName } from "./skill-catalog.js";
 export const TOOLCHAIN_FAILURE_CODES = Object.freeze([
   "missing_materials",
   "missing_crafting_table",
+  "crafting_table_required",
   "crafting_table_unavailable",
   "recipe_not_found",
   "runtime_craft_failed",
+  "craft_failed",
   "runtime_mine_failed",
   "drop_not_obtained",
   "missing_crafting_table_item",

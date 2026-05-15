@@ -191,6 +191,8 @@ export function classifyFailureCode(code: string | undefined): FailureRecoveryCl
     case "not_equipped":
     case "resource_not_found":
     case "missing_crafting_table":
+    case "missing_crafting_table_item":
+    case "crafting_table_required":
     case "crafting_table_unavailable":
     case "inventory_full":
     case "unsafe_path":
@@ -286,6 +288,8 @@ function createFailureCapsuleHint(input: {
     case "not_equipped":
       return "先调用 equip 或 ensure 工具链准备所需工具";
     case "missing_crafting_table":
+    case "missing_crafting_table_item":
+    case "crafting_table_required":
     case "crafting_table_unavailable":
       return "先确保可用工作台";
     case "inventory_full":

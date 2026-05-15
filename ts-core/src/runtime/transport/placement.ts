@@ -13,7 +13,6 @@ import type {
   ToolchainFailureCode,
 } from "../../core-ports/skills.js";
 import { NOOP_SKILL_EXECUTION_CONTROL } from "../../core-ports/skills.js";
-import { executeMineflayerCraft } from "./craft.js";
 import { type CraftingTablePlacementCache, isCraftingTableBlock } from "./crafting-table.js";
 import { createMineBlockFactReader } from "./mine-block-facts.js";
 import { navigateTerrainToFoot, readTerrainBotFoot } from "./terrain-navigation.js";
@@ -75,14 +74,10 @@ export async function executeMineflayerPlaceCraftingTable(input: {
     });
   }
 
-  const craftingTableItem = await ensureCraftingTableItem(input);
-  if (craftingTableItem.status === "failed") {
-    return craftingTableItem.result;
-  }
-  if (craftingTableItem.item === null) {
+  if (findInventoryItemByName(input.bot, "crafting_table") === null) {
     return createPlacementFailure({
       code: "missing_crafting_table_item",
-      message: "Crafting table item is still unavailable after craft attempt",
+      message: "Crafting table item is not available for placement",
       worldKey: input.worldKey,
     });
   }
@@ -566,91 +561,6 @@ function isEmptyBlock(block: MineflayerBlockHandle | null): boolean {
   const blockName = normalizePlacementName(block.name ?? "");
   return (
     block.type === 0 || blockName === "air" || blockName === "cave_air" || blockName === "void_air"
-  );
-}
-
-type EnsureCraftingTableItemResult =
-  | { readonly status: "ready"; readonly item: MineflayerItemHandle | null }
-  | { readonly status: "failed"; readonly result: PlacementTransportResult };
-
-/** 确保背包中有工作台物品（如果没有则尝试合成）。 */
-async function ensureCraftingTableItem(input: {
-  readonly bot: MineflayerBotHandle;
-  readonly worldKey: string | null;
-  readonly cache: CraftingTablePlacementCache;
-}): Promise<EnsureCraftingTableItemResult> {
-  const existingItem = findInventoryItemByName(input.bot, "crafting_table");
-  if (existingItem !== null) {
-    return { status: "ready", item: existingItem };
-  }
-
-  const craftResult = await executeMineflayerCraft({
-    bot: input.bot,
-    params: { itemName: "crafting_table", count: 1 },
-    worldKey: input.worldKey,
-    craftingTableCache: input.cache,
-  });
-
-  if (craftResult.ok) {
-    return { status: "ready", item: findInventoryItemByName(input.bot, "crafting_table") };
-  }
-
-  if (craftResult.error.code !== "missing_materials") {
-    return { status: "failed", result: craftResult };
-  }
-
-  const planksResult = await executeMineflayerCraft({
-    bot: input.bot,
-    params: { itemName: "planks", count: readLargestMissingMaterialCount(craftResult.error) },
-    worldKey: input.worldKey,
-    craftingTableCache: input.cache,
-  });
-
-  if (!planksResult.ok) {
-    return { status: "failed", result: planksResult };
-  }
-
-  const retryCraftResult = await executeMineflayerCraft({
-    bot: input.bot,
-    params: { itemName: "crafting_table", count: 1 },
-    worldKey: input.worldKey,
-    craftingTableCache: input.cache,
-  });
-
-  if (!retryCraftResult.ok) {
-    return { status: "failed", result: retryCraftResult };
-  }
-
-  return { status: "ready", item: findInventoryItemByName(input.bot, "crafting_table") };
-}
-
-/** 从错误中读取最大缺失材料数量（用于诊断）。 */
-function readLargestMissingMaterialCount(error: {
-  readonly details?: Readonly<Record<string, unknown>>;
-}): number {
-  const candidates = readRecordArray(error.details?.candidates);
-  let largestMissing = 1;
-
-  for (const candidate of candidates) {
-    for (const missingItem of readRecordArray(candidate.missing)) {
-      const missing = missingItem.missing;
-      if (typeof missing === "number" && Number.isFinite(missing) && missing > largestMissing) {
-        largestMissing = Math.ceil(missing);
-      }
-    }
-  }
-
-  return largestMissing;
-}
-
-/** 从值中读取 Record 数组（用于解析错误详情）。 */
-function readRecordArray(value: unknown): readonly Readonly<Record<string, unknown>>[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter(
-    (item): item is Readonly<Record<string, unknown>> => typeof item === "object" && item !== null,
   );
 }
 

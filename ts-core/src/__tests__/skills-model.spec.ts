@@ -140,8 +140,10 @@ describe("skills 模块契约", () => {
       expect.arrayContaining([
         "missing_materials",
         "missing_crafting_table",
+        "crafting_table_required",
         "recipe_not_found",
         "runtime_craft_failed",
+        "craft_failed",
         "missing_crafting_table_item",
         "no_placeable_position",
         "place_failed",
@@ -718,9 +720,111 @@ describe("skills 模块契约", () => {
     });
     expect(actions).toEqual([
       "craft:wooden_pickaxe",
+      "craft:crafting_table",
       "place:crafting_table",
       "craft:wooden_pickaxe",
       "equip:wooden_pickaxe",
+    ]);
+  });
+
+  it("ToolchainEnsure（工具链确保） 缺工作台物品时应先合成并放置，再回到原合成目标", async () => {
+    const inventory: { item_name: string; count: number }[] = [
+      { item_name: "cobblestone", count: 3 },
+      { item_name: "stick", count: 2 },
+    ];
+    const actions: string[] = [];
+    let tablePlaced = false;
+    const ensure = createToolchainEnsureExecutor({
+      facts: createFakeEnsureFacts(),
+      inventory: {
+        readInventoryItems: () => inventory,
+        countLogs: () => 0,
+      },
+      async place(params) {
+        actions.push(`place:${params.blockName}`);
+        if (countInventory(inventory, "crafting_table") <= 0) {
+          return {
+            ok: false,
+            error: {
+              code: "missing_crafting_table_item",
+              message: "Crafting table item is not available for placement",
+              world_key: "minecraft:overworld",
+            },
+          };
+        }
+        tablePlaced = true;
+        return {
+          ok: true,
+          data: {
+            block_name: params.blockName,
+            completed_count: 1,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async craft(params) {
+        actions.push(`craft:${params.itemName}`);
+        if (params.itemName === "stone_pickaxe" && !tablePlaced) {
+          return {
+            ok: false,
+            error: {
+              code: "missing_crafting_table",
+              message: "Craft target requires a nearby crafting table",
+              world_key: "minecraft:overworld",
+            },
+          };
+        }
+        addInventory(inventory, params.itemName, params.count);
+        return {
+          ok: true,
+          data: {
+            item_name: params.itemName,
+            completed_count: params.count,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async equip(params) {
+        actions.push(`equip:${params.itemName}`);
+        return {
+          skill: "equip",
+          item_name: params.itemName,
+          destination: "hand",
+          status: "equipped",
+          total_steps: 1,
+        };
+      },
+      async mine() {
+        throw new Error("mine should not run when materials are already present");
+      },
+      async collect() {
+        throw new Error("collect should not run");
+      },
+    });
+
+    const result = await ensure.ensureDependency({
+      failure: {
+        action: "mine",
+        params: { blockName: "iron_ore", count: 1 },
+        code: "not_equipped",
+        message: "not_equipped:iron_ore:requires_stone_pickaxe",
+      },
+      condition: { kind: "gainedDropOf", blockName: "iron_ore", count: 1 },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        item_name: "stone_pickaxe",
+        completed_count: 1,
+      },
+    });
+    expect(actions).toEqual([
+      "craft:stone_pickaxe",
+      "craft:crafting_table",
+      "place:crafting_table",
+      "craft:stone_pickaxe",
+      "equip:stone_pickaxe",
     ]);
   });
 
@@ -728,7 +832,7 @@ describe("skills 模块契约", () => {
     const ensure = createToolchainEnsureExecutor({
       facts: createFakeEnsureFacts(),
       inventory: {
-        readInventoryItems: () => [],
+        readInventoryItems: () => [{ item_name: "crafting_table", count: 1 }],
         countLogs: () => 0,
       },
       async craft() {

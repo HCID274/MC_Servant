@@ -357,6 +357,8 @@ function readRecoverable(error: {
     code === "missing_materials" ||
     code === "missing_item" ||
     code === "missing_crafting_table" ||
+    code === "missing_crafting_table_item" ||
+    code === "crafting_table_required" ||
     code === "not_equipped" ||
     code === "resource_not_found" ||
     code === "unsafe_path" ||
@@ -395,6 +397,8 @@ function createFailureSuggestion(code: string): string | null {
     case "missing_item":
       return "下一步建议先补齐材料";
     case "missing_crafting_table":
+    case "missing_crafting_table_item":
+    case "crafting_table_required":
     case "crafting_table_unavailable":
       return "下一步建议先准备可用工作台";
     case "not_equipped":

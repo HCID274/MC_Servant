@@ -111,8 +111,11 @@ async function resolveDependency(
       : equipItemWithLocalRecovery(context, tool, actions);
   }
 
-  if (params.failure.code === "missing_crafting_table") {
-    return placeCraftingTable(context, actions);
+  if (
+    params.failure.code === "missing_crafting_table" ||
+    params.failure.code === "missing_crafting_table_item"
+  ) {
+    return ensureCraftingTablePlaced(context, actions);
   }
 
   if (params.failure.code === "missing_materials") {
@@ -410,7 +413,7 @@ async function craftWithLocalRecovery(
     }
 
     if (crafted.result.error.code === "missing_crafting_table") {
-      const table = await placeCraftingTable(context, actions);
+      const table = await ensureCraftingTablePlaced(context, actions);
       if (!table.ok) {
         return { ok: false as const, failure: table };
       }
@@ -444,7 +447,7 @@ async function craftWithLocalRecovery(
   };
 }
 
-async function placeCraftingTable(
+async function ensureCraftingTablePlaced(
   context: ResolverContext,
   actions: ToolchainActionSummary[],
 ): Promise<EnsureResult> {
@@ -456,6 +459,33 @@ async function placeCraftingTable(
       worldKey: readCurrentWorldKey(context.dependencies),
       actions,
     });
+  }
+
+  if (countInventoryItem(readInventoryItems(context), blockName) <= 0) {
+    const crafted = await callToolchain({
+      action: "craft",
+      target: blockName,
+      requestedCount: 1,
+      actions,
+      run: () => context.dependencies.craft({ itemName: blockName, count: 1 }, context.control),
+    });
+
+    if (!crafted.ok) {
+      if (crafted.result.error.code === "missing_crafting_table") {
+        return createEnsureFailure({
+          code: "crafting_table_required",
+          message: "crafting table item cannot be crafted because a crafting table is required",
+          worldKey: crafted.result.error.world_key,
+          actions,
+          details: {
+            target_item_name: blockName,
+            failure: crafted.result.error,
+          },
+        });
+      }
+
+      return crafted.failure;
+    }
   }
 
   const placed = await callToolchain({
@@ -1078,9 +1108,11 @@ function normalizeFailureCode(code: string): ToolchainFailureCode {
   switch (code) {
     case "missing_materials":
     case "missing_crafting_table":
+    case "crafting_table_required":
     case "crafting_table_unavailable":
     case "recipe_not_found":
     case "runtime_craft_failed":
+    case "craft_failed":
     case "runtime_mine_failed":
     case "drop_not_obtained":
     case "missing_crafting_table_item":
@@ -1097,6 +1129,7 @@ function normalizeFailureCode(code: string): ToolchainFailureCode {
     case "inventory_full":
     case "world_mismatch":
     case "condition_not_met":
+    case "unknown_completion":
     case "unsupported_capability":
       return code;
     default:
