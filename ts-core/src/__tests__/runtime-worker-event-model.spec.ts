@@ -42,7 +42,7 @@ describe("runtime（运行时） 生命周期事件与 worker（工作线程） 
         intent_epoch: 21,
         snapshot_ts: 1_712_950_000,
         priority: ExecPriority.Normal,
-        code: "await api.chat.say('收到');",
+        code: "await reply('收到');",
       }),
     });
     const acceptedAction = actions.find((action) => action.type === "emit_task_lifecycle");
@@ -65,7 +65,7 @@ describe("runtime（运行时） 生命周期事件与 worker（工作线程） 
         intent_epoch: 22,
         snapshot_ts: 1_712_950_001,
         priority: ExecPriority.Urgent,
-        code: "await api.chat.say('执行');",
+        code: "await reply('执行');",
       }),
     });
     const discardedActions = createBotWorkerActions({
@@ -120,7 +120,7 @@ describe("runtime（运行时） 生命周期事件与 worker（工作线程） 
       intent_epoch: 23,
       snapshot_ts: 1_712_950_002,
       priority: ExecPriority.Background,
-      code: "await api.chat.say('root');",
+      code: "await reply('root');",
     });
     const actions = createBotWorkerActions({
       task: createBotWorkerTask({
@@ -160,7 +160,7 @@ describe("runtime（运行时） 生命周期事件与 worker（工作线程） 
         intent_epoch: 24,
         snapshot_ts: 1_712_950_003,
         priority: ExecPriority.Normal,
-        code: "await api.chat.say('interrupt');",
+        code: "await reply('interrupt');",
       }),
     });
 

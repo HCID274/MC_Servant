@@ -148,7 +148,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
 
   it("应让 Plan（规划） 唯一 code（代码）形态对齐执行契约", () => {
     const codePlan = createCodePlanDraft({
-      code: "await api.chat.say('收到'); await api.bot.cutTree(3); await api.chat.report('完成');",
+      code: "await reply('收到'); await cutTree(3); await report('完成');",
     });
     const codeJob = createExecJobFromPlan({
       plan: codePlan,
@@ -159,7 +159,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
     });
 
     expect(codePlan).toEqual({
-      code: "await api.chat.say('收到'); await api.bot.cutTree(3); await api.chat.report('完成');",
+      code: "await reply('收到'); await cutTree(3); await report('完成');",
     });
     expect(codeJob.type).toBe(ExecutionTaskKind.Code);
   });
@@ -218,7 +218,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
       }),
       exec_job: createExecJobFromPlan({
         plan: createCodePlanDraft({
-          code: "await api.chat.say('我改成先砍两棵树喵~'); await api.bot.cutTree(2); await api.chat.report('完成喵~');",
+          code: "await reply('我改成先砍两棵树喵~'); await cutTree(2); await report('完成喵~');",
         }),
         message_id: "msg-modify",
         intent_epoch: 10,
@@ -336,7 +336,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
       bot_id: "bot-008",
       exec_job: createExecJobFromPlan({
         plan: createCodePlanDraft({
-          code: "await api.chat.say('我去装备一下喵~'); await api.bot.equip('stone_pickaxe', 'hand'); await api.chat.report('完成喵~');",
+          code: "await reply('我去装备一下喵~'); await equip('stone_pickaxe', 'hand'); await report('完成喵~');",
         }),
         message_id: "msg-exec",
         intent_epoch: 13,
@@ -396,7 +396,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
       bot_id: "bot-008",
       exec_job: createExecJobFromPlan({
         plan: createCodePlanDraft({
-          code: "await api.chat.say('我去砍树喵~'); await api.bot.cutTree(1); await api.chat.report('完成喵~');",
+          code: "await reply('我去砍树喵~'); await cutTree(1); await report('完成喵~');",
         }),
         message_id: "msg-discarded",
         intent_epoch: 14,
@@ -439,7 +439,7 @@ describe("conversation（对话） 与 workers（工作线程） 契约", () => 
       bot_id: "bot-008",
       exec_job: createExecJobFromPlan({
         plan: createCodePlanDraft({
-          code: "await api.chat.say('我去挖矿喵~'); await api.bot.mine('coal_ore', 1); await api.chat.report('完成喵~');",
+          code: "await reply('我去挖矿喵~'); await mine('coal_ore', 1); await report('完成喵~');",
         }),
         message_id: "msg-failed-missing-error",
         intent_epoch: 16,

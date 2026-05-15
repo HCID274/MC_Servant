@@ -1070,7 +1070,7 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
         intent_epoch: 1,
         snapshot_ts: 1_712_930_001_000,
         priority: ExecPriority.Normal,
-        code: "await api.chat.say('sandbox hello')",
+        code: "await reply('sandbox hello')",
       }),
     );
 
@@ -1124,7 +1124,7 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
         intent_epoch: 1,
         snapshot_ts: 1_712_930_002_000,
         priority: ExecPriority.Normal,
-        code: "await api.bot.goTo(1, 64, 1)",
+        code: "await goTo(1, 64, 1)",
       }),
     );
 
@@ -1163,7 +1163,7 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
         intent_epoch: 1,
         snapshot_ts: 1_712_930_002_500,
         priority: ExecPriority.Normal,
-        code: "await api.bot.place('crafting_table')",
+        code: "await place('crafting_table')",
       }),
     );
 
@@ -1178,7 +1178,7 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
     ]);
   });
 
-  it("应让 code（沙箱代码） 的 bot.placeCraftingTable（放置工作台） 复用工具链执行边界", async () => {
+  it("应让 code（沙箱代码） 通过 place('crafting_table') 复用工具链执行边界", async () => {
     const placements: Array<{ readonly blockName: string }> = [];
     const externalAuth = createExternalAuthState({ status: "not_required" });
     const actor = createBotActorRuntime({
@@ -1202,7 +1202,7 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
         intent_epoch: 1,
         snapshot_ts: 1_712_930_002_550,
         priority: ExecPriority.Normal,
-        code: "await api.bot.placeCraftingTable()",
+        code: "await place('crafting_table')",
       }),
     );
 
@@ -1210,9 +1210,9 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
     expect(placements).toEqual([{ blockName: "crafting_table" }]);
     expect(outcome.result.step_results).toMatchObject([
       {
-        action: "placeCraftingTable",
+        action: "place",
         status: "ok",
-        params: {},
+        params: { blockName: "crafting_table" },
       },
     ]);
   });
@@ -1241,7 +1241,7 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
         intent_epoch: 1,
         snapshot_ts: 1_712_930_002_600,
         priority: ExecPriority.Normal,
-        code: "await api.bot.craft('wooden_pickaxe', 1)",
+        code: "await craft('wooden_pickaxe', 1)",
       }),
     );
 
@@ -1281,7 +1281,7 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
         intent_epoch: 1,
         snapshot_ts: 1_712_930_002_500,
         priority: ExecPriority.Normal,
-        code: "await api.bot.place('crafting_table')",
+        code: "await place('crafting_table')",
       }),
     );
 
@@ -1332,7 +1332,7 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
         intent_epoch: 1,
         snapshot_ts: 1_712_930_002_700,
         priority: ExecPriority.Normal,
-        code: "await api.bot.mine('stone', 5)",
+        code: "await mine('stone', 5)",
       }),
     );
 
@@ -1384,7 +1384,7 @@ describe("BotActor（机器人执行代理） 沙箱代码入口", () => {
           intent_epoch: 1,
           snapshot_ts: 1_712_930_003_000,
           priority: ExecPriority.Normal,
-          code: "await api.chat.say('should not write')",
+          code: "await reply('should not write')",
         }),
       ),
     ).rejects.toThrow(/world interaction is not ready/);

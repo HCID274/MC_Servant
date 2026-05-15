@@ -548,7 +548,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
         intent_epoch: 1,
         snapshot_ts: 120,
         priority: ExecPriority.Normal,
-        code: "await api.chat.say('hello')",
+        code: "await reply('hello')",
       }),
     });
 
@@ -596,7 +596,7 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
         intent_epoch: 3,
         snapshot_ts: 130,
         priority: ExecPriority.Normal,
-        code: "await api.chat.say('password=hunter2 sk-local-dev')",
+        code: "await reply('password=hunter2 sk-local-dev')",
       }),
     });
     const skillTask = createBotWorkerTask({

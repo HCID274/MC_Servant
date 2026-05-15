@@ -25,7 +25,7 @@ describe("conversation recent context（最近上下文）", () => {
     store.appendOwnerMessage({ message_id: "msg-1", text: "去捡盾牌", timestamp: 10 });
     store.appendSandboxCode({
       message_id: "msg-1",
-      code: "await api.bot.collect('shield')",
+      code: "await collect('shield')",
       timestamp: 20,
     });
 
@@ -44,7 +44,7 @@ describe("conversation recent context（最近上下文）", () => {
         "主人：去捡盾牌",
         "沙盒TS：",
         "```ts",
-        "await api.bot.collect('shield')",
+        "await collect('shield')",
         "```",
         "Bot：马上去喵~",
         "执行结果：collect 成功,捡到 shield x1",
@@ -120,7 +120,7 @@ describe("conversation recent context（最近上下文）", () => {
     store.appendOwnerMessage({ message_id: "msg-failed", text: "去挖铁", timestamp: 1 });
     store.appendSandboxCode({
       message_id: "msg-failed",
-      code: 'await api.bot.mine("iron_ore", 1); await api.chat.report("done")',
+      code: 'await mine("iron_ore", 1); await report("done")',
       timestamp: 2,
     });
     store.appendSandboxError({

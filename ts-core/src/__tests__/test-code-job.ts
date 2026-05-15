@@ -25,26 +25,26 @@ function renderSkillInvocationCode<TName extends SkillName>(
   switch (skill) {
     case "goTo": {
       const typed = params as Readonly<SkillParamsByName["goTo"]>;
-      return `await api.bot.goTo(${typed.x}, ${typed.y}, ${typed.z});`;
+      return `await goTo(${typed.x}, ${typed.y}, ${typed.z});`;
     }
     case "mine": {
       const typed = params as Readonly<SkillParamsByName["mine"]>;
-      return `await api.bot.mine(${JSON.stringify(typed.blockName)}, ${typed.count});`;
+      return `await mine(${JSON.stringify(typed.blockName)}, ${typed.count});`;
     }
     case "cutTree": {
       const typed = params as Readonly<SkillParamsByName["cutTree"]>;
-      return `await api.bot.cutTree(${typed.count});`;
+      return `await cutTree(${typed.count});`;
     }
     case "collect": {
       const typed = params as Readonly<SkillParamsByName["collect"]>;
       const item = typed.itemName === undefined ? "undefined" : JSON.stringify(typed.itemName);
-      return `await api.bot.collect(${item}, ${typed.radius ?? 32});`;
+      return `await collect(${item}, ${typed.radius ?? 32});`;
     }
     case "equip": {
       const typed = params as Readonly<SkillParamsByName["equip"]>;
       const destination =
         typed.destination === undefined ? "" : `, ${JSON.stringify(typed.destination)}`;
-      return `await api.bot.equip(${JSON.stringify(typed.itemName)}${destination});`;
+      return `await equip(${JSON.stringify(typed.itemName)}${destination});`;
     }
   }
 }

@@ -437,7 +437,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
         intent_epoch: 5,
         snapshot_ts: 1777906762364,
         priority: ExecPriority.Normal,
-        code: "await api.bot.mine('iron_ore', 1)",
+        code: "await mine('iron_ore', 1)",
       }),
       owner_text: "挖铁矿",
     });
@@ -507,9 +507,9 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       snapshot_ts: 1777906762364,
       priority: ExecPriority.Normal,
       code: [
-        "await api.bot.craft('wooden_pickaxe', 1)",
-        "await api.bot.equip('wooden_pickaxe')",
-        "await api.bot.mine('iron_ore', 1)",
+        "await craft('wooden_pickaxe', 1)",
+        "await equip('wooden_pickaxe')",
+        "await mine('iron_ore', 1)",
       ].join("\n"),
     });
     const sandboxResult = {
@@ -759,7 +759,7 @@ describe("app entrypoint（应用启动入口） 骨架", () => {
       intent_epoch: 1,
       snapshot_ts: 1777906762364,
       priority: ExecPriority.Normal,
-      code: "await api.bot.goTo(1, 64, 1)",
+      code: "await goTo(1, 64, 1)",
     });
     const createResult = (action: string, result: Readonly<Record<string, unknown>>) =>
       ({

@@ -31,7 +31,7 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
       intent_epoch: 9,
       snapshot_ts: 1_712_990_000,
       priority: ExecPriority.Normal,
-      code: "await api.chat.say('persist');",
+      code: "await reply('persist');",
     });
     const acceptedRecord = createPersistedTaskHistoryAcceptedRecord({
       bot_id: "bot-015",
@@ -198,14 +198,14 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
       intent_epoch: 10,
       snapshot_ts: 1_712_990_100,
       priority: ExecPriority.Urgent,
-      code: "await api.chat.say('open');",
+      code: "await reply('open');",
     });
     const otherJob = createCodeJob({
       message_id: "task-closed",
       intent_epoch: 11,
       snapshot_ts: 1_712_990_101,
       priority: ExecPriority.Urgent,
-      code: "await api.chat.say('closed');",
+      code: "await reply('closed');",
     });
     const detectionInput = createUnclosedTaskDetectionInput({
       bot_id: "bot-015",
@@ -291,7 +291,7 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
               intent_epoch: 12,
               snapshot_ts: 1_712_990_300,
               priority: ExecPriority.Normal,
-              code: "await api.chat.say('z');",
+              code: "await reply('z');",
             }),
             status: TaskHistoryStatus.Completed,
             total_steps: 1,
@@ -309,7 +309,7 @@ describe("persistence（持久化） 与 replay（补拉） 纯模型", () => {
               intent_epoch: 11,
               snapshot_ts: 1_712_990_299,
               priority: ExecPriority.Normal,
-              code: "await api.chat.say('old');",
+              code: "await reply('old');",
             }),
           ),
           source: MessageSource.System,

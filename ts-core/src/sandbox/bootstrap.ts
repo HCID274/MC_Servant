@@ -447,23 +447,5 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
       configurable: false,
       enumerable: true
     });
-    globalThis.api = Object.freeze({
-      bot: Object.freeze({
-        goTo: (...args) => __sandboxCall("bot.goTo", args),
-        mine: (...args) => __sandboxCall("bot.mine", args),
-        collect: (...args) => __sandboxCall("bot.collect", args),
-        equip: (...args) => __sandboxCall("bot.equip", args),
-        cutTree: (...args) => __sandboxCall("bot.cutTree", args),
-        craft: (...args) => __sandboxCall("bot.craft", args),
-        place: (...args) => __sandboxCall("bot.place", args),
-        placeCraftingTable: (...args) => __sandboxCall("bot.placeCraftingTable", args)
-      }),
-      chat: Object.freeze({
-        say: (...args) => __sandboxCall("chat.say", args),
-        report: (...args) => __sandboxCall("chat.report", args)
-      }),
-      owner: __owner,
-      task: Object.freeze(${taskJson})
-    });
   `;
 }

@@ -345,7 +345,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     const messages: string[] = [];
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
-        code: "await api.chat.say('hello sandbox')",
+        code: "await reply('hello sandbox')",
       }),
       facade: {
         async executeBotSkill() {
@@ -370,10 +370,14 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     ]);
   });
 
-  it("应让只读 task（任务） 查询不产出步骤记录", async () => {
+  it("应只暴露顶层语义对象且不泄漏旧 api 或 host bridge", async () => {
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
-        code: "if (api.task.id !== 'task-readonly') { throw new Error('bad task id') }\nif (typeof __sandboxHostCall !== 'undefined') { throw new Error('host leaked') }",
+        code: [
+          "if (typeof api !== 'undefined') { throw new Error('legacy api leaked') }",
+          "if (typeof __sandboxHostCall !== 'undefined') { throw new Error('host leaked') }",
+          "if (typeof owner !== 'object') { throw new Error('owner missing') }",
+        ].join("\n"),
         messageId: "task-readonly",
       }),
       task: {
@@ -771,7 +775,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     const calls: unknown[] = [];
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
-        code: "await api.bot.place('crafting_table')",
+        code: "await place('crafting_table')",
         messageId: "T-056-place",
       }),
       facade: {
@@ -806,11 +810,11 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     ]);
   });
 
-  it("应让 code（沙箱代码） 调用 placeCraftingTable（放置工作台） 快捷 API", async () => {
+  it("应让 code（沙箱代码） 通过 place('crafting_table') 放置工作台", async () => {
     const calls: unknown[] = [];
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
-        code: "await api.bot.placeCraftingTable()",
+        code: "await place('crafting_table')",
         messageId: "T-061-place-table",
       }),
       facade: {
@@ -836,20 +840,58 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     });
 
     expect(result.status).toBe(TaskHistoryStatus.Completed);
-    expect(calls).toEqual([{ capability: "placeCraftingTable", params: {} }]);
+    expect(calls).toEqual([{ capability: "place", params: { blockName: "crafting_table" } }]);
     expect(result.step_results).toMatchObject([
       {
-        action: "placeCraftingTable",
+        action: "place",
         status: "ok",
       },
     ]);
+  });
+
+  it("应拒绝旧 api.bot / api.chat 执行面", async () => {
+    const facade = {
+      async executeBotSkill() {
+        throw new Error("skill should not run");
+      },
+      async writeChat() {
+        throw new Error("chat should not run");
+      },
+    };
+    const apiVisibility = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "if (typeof api !== 'undefined') { throw new Error('legacy api leaked') }",
+        messageId: "T-083-api-undefined",
+      }),
+      facade,
+    });
+    const botApi = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "await api.bot.mine('stone', 1)",
+        messageId: "T-083-api-bot",
+      }),
+      facade,
+    });
+    const chatApi = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: "await api.chat.report('done')",
+        messageId: "T-083-api-chat",
+      }),
+      facade,
+    });
+
+    expect(apiVisibility.status).toBe(TaskHistoryStatus.Completed);
+    expect(botApi.status).toBe(TaskHistoryStatus.Failed);
+    expect(botApi.error.name).toBe("UnhandledError");
+    expect(chatApi.status).toBe(TaskHistoryStatus.Failed);
+    expect(chatApi.error.name).toBe("UnhandledError");
   });
 
   it("应让 code（沙箱代码） 调用 craft（合成） 工具链能力", async () => {
     const calls: unknown[] = [];
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
-        code: "await api.bot.craft('wooden_pickaxe', 1)",
+        code: "await craft('wooden_pickaxe', 1)",
         messageId: "T-055-craft",
       }),
       facade: {
@@ -1161,7 +1203,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
   it("应把 place（放置） 工具链结构化失败升级为沙箱失败", async () => {
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
-        code: "await api.bot.place('crafting_table')",
+        code: "await place('crafting_table')",
         messageId: "T-056-place-failed",
       }),
       facade: {
@@ -1259,7 +1301,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     });
     const facadeFailure = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
-        code: "await api.bot.goTo(1, 64, 1)",
+        code: "await goTo(1, 64, 1)",
         messageId: "T-027-facade",
       }),
       facade,
@@ -1278,7 +1320,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     const messages: string[] = [];
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
-        code: "try { await api.bot.goTo(1, 64, 1) } catch { await api.chat.say('handled') }",
+        code: "try { await goTo(1, 64, 1) } catch { await reply('handled') }",
         messageId: "T-027-facade-catch",
       }),
       facade: {
@@ -1308,7 +1350,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
-        code: "await api.chat.say('late side effect')",
+        code: "await reply('late side effect')",
         messageId: "T-027-timeout-side-effect",
         resourceLimits: {
           timeout_ms: 30,
@@ -1405,7 +1447,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         bot_id: "bot-007",
         intent_epoch: 2,
         snapshot_ts: 1,
-        code: "await api.chat.say('hello')",
+        code: "await reply('hello')",
         log_ref: taskLogRef,
       }),
     ).toThrow(/sandbox/);
@@ -1568,7 +1610,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       intent_epoch: 6,
       snapshot_ts: 1_712_940_000,
       priority: ExecPriority.Normal,
-      code: "await api.chat.say('ok')",
+      code: "await reply('ok')",
     });
     const startedSummary = createTaskLifecycleSummaryJsonlLine({
       t: 1_712_940_001,
@@ -1616,7 +1658,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       bot_id: "bot-007",
       intent_epoch: 4,
       snapshot_ts: 1712930000,
-      code: "await api.bot.goTo({ x: 1, y: 64, z: 2 });",
+      code: "await goTo({ x: 1, y: 64, z: 2 });",
       log_ref: logRef,
       code_ref: codeRef,
       resource_limits: resourceLimits,
@@ -1746,7 +1788,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
       duration_ms: 3456,
       log_ref: "sandbox/2026-04-26/msg-sandbox-exp.jsonl",
       code_ref: "sandbox/2026-04-26/msg-sandbox-exp.code.ts",
-      code: String.raw`await api.chat.say('LLM_API_KEY=sk-local-dev password=hunter2 file=/home/hcid274/code/MC_WSL_servant/.env win=C:\Users\hcid274\.ts-core\.env')`,
+      code: String.raw`await reply('LLM_API_KEY=sk-local-dev password=hunter2 file=/home/hcid274/code/MC_WSL_servant/.env win=C:\Users\hcid274\.ts-core\.env')`,
       error: {
         name: "FacadeCallError",
         message: String.raw`failed with sk-local-dev postgres://user:pg-pass@localhost/db EasyAuth密码=hunter2 at /Users/dev/MC_WSL_servant/.env and C:\Users\dev\AppData\Local\ts-core\.env`,

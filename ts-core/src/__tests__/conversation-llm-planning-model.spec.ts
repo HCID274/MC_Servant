@@ -1415,10 +1415,51 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
     });
   });
 
+  it("应拒绝规划结果继续使用旧 api.bot / api.chat 执行面", async () => {
+    const responses = [
+      '{"code":"await reply(\\"收到\\"); const task = await runGoal(\\"旧接口\\", async () => { await api.bot.mine(\\"stone\\", 1); }); await report(task);"}',
+      '{"code":"await reply(\\"收到\\"); const task = await runGoal(\\"旧接口\\", async () => {}); await api.chat.report(\\"完成\\");"}',
+    ];
+    const client = createConversationLlmClient(
+      createConversationLlmConfig({
+        base_url: "http://127.0.0.1:8045/v1",
+        api_key: "sk-local-dev",
+        model: "bl-auto",
+        bot_name: "maid_bot",
+        owner_name: "主人",
+        timeout_ms: 15_000,
+      }),
+      {
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: responses.shift() } }],
+            }),
+            {
+              status: 200,
+              headers: {
+                "content-type": "application/json",
+              },
+            },
+          ),
+      },
+    );
+
+    for (const message_id of ["msg-plan-old-api-bot", "msg-plan-old-api-chat"]) {
+      await expect(
+        client.generateCodePlan({
+          message_id,
+          message: "旧接口测试",
+          snapshot_context: "online_runtime: executable semantic functions",
+        }),
+      ).rejects.toBeInstanceOf(ConversationLlmPlanError);
+    }
+  });
+
   it("应拒绝 code（代码） 缺少最终 report（汇报） 或调用隐藏 demo（演示）", async () => {
     const responses = [
       '{"code":"await reply(\\"收到喵~\\"); const task = await runGoal(\\"挖铁\\", async () => { const result = await mine(\\"iron_ore\\",1); if (result.ok === false) { throw new Error(result.error.code); } });"}',
-      '{"code":"await demoMineIron(); await api.chat.report(\\"完成喵~\\")"}',
+      '{"code":"await demoMineIron(); await report(\\"完成喵~\\")"}',
     ];
     const client = createConversationLlmClient(
       createConversationLlmConfig({
@@ -1523,8 +1564,8 @@ describe("conversation llm（对话大语言模型） 分诊与规划", () => {
 
   it("应拒绝 JSON（结构化数据） 外自然语言和 Markdown（标记文本） 围栏", async () => {
     const responses = [
-      '先解释一下 {"code":"await api.chat.report(\\"完成喵~\\")"}',
-      '```json\n{"code":"await api.chat.report(\\"完成喵~\\")"}\n```',
+      '先解释一下 {"code":"await report(\\"完成喵~\\")"}',
+      '```json\n{"code":"await report(\\"完成喵~\\")"}\n```',
     ];
     const client = createConversationLlmClient(
       createConversationLlmConfig({

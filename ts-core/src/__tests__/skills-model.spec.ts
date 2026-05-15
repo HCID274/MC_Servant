@@ -870,7 +870,7 @@ describe("skills 模块契约", () => {
     expect(Object.isFrozen(codeInvocation)).toBe(true);
     expect(Object.isFrozen(codeInvocation.params)).toBe(true);
     expect(codeJob.type).toBe(ExecutionTaskKind.Code);
-    expect(codeJob.code).toContain("api.bot.cutTree(2)");
+    expect(codeJob.code).toContain("cutTree(2)");
     expect(Object.isFrozen(codeJob)).toBe(true);
   });
 });

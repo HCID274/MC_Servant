@@ -64,7 +64,7 @@ describe("runtime 执行态模型", () => {
       intent_epoch: 8,
       snapshot_ts: 1_712_930_001,
       priority: ExecPriority.Normal,
-      code: "await api.chat.say('ok')",
+      code: "await reply('ok')",
     });
 
     expect(codeJob.type).toBe(ExecutionTaskKind.Code);
@@ -277,7 +277,7 @@ describe("runtime 执行态模型", () => {
       intent_epoch: 12,
       snapshot_ts: 1_712_930_123,
       priority: ExecPriority.Normal,
-      code: "await api.chat.say('ok')",
+      code: "await reply('ok')",
     });
     const accepted = createTaskAcceptedLifecycleEvent(job);
     const discarded = createTaskDiscardedLifecycleEvent({
