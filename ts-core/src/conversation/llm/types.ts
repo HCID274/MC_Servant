@@ -182,6 +182,10 @@ export interface ConversationLlmReportInput {
   readonly deterministic_report: string;
   /** 面向 LLM 的短事实摘要。 */
   readonly fact_summary: string;
+  /** 原始 TaskResultSummary 的短摘要，仅用于 diagnostics 分层留痕。 */
+  readonly raw_summary_digest?: string;
+  /** 给汇报层的窄事实投影，仅用于 diagnostics 分层留痕。 */
+  readonly report_facts?: Readonly<Record<string, unknown>>;
   /** 必须保留的事实片段。 */
   readonly required_facts: readonly string[];
   /** 角色语气要求。 */

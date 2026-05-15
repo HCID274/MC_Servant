@@ -173,16 +173,28 @@ export function createConversationLlmClient(
         parse: (content) => parseConversationReport(content, input.required_facts),
         diagnosticMeta: {
           onSuccess: ({ value }) => ({
+            raw_summary_digest: input.raw_summary_digest ?? null,
+            report_facts_json: stringifyReportFacts(input.report_facts),
+            deterministic_template: input.deterministic_report,
             input_fact_summary: input.fact_summary,
+            llm_polished_output: value,
+            final_selected_output: value,
             output_summary: summarizeReportOutput(value),
             fallback: false,
             fallback_reason: null,
           }),
           onFailure: ({ error, assistantContent }) => ({
+            raw_summary_digest: input.raw_summary_digest ?? null,
+            report_facts_json: stringifyReportFacts(input.report_facts),
+            deterministic_template: input.deterministic_report,
             input_fact_summary: input.fact_summary,
             ...(assistantContent === undefined
               ? {}
-              : { output_summary: summarizeReportOutput(assistantContent) }),
+              : {
+                  llm_polished_output: assistantContent,
+                  output_summary: summarizeReportOutput(assistantContent),
+                }),
+            final_selected_output: input.deterministic_report,
             fallback: true,
             fallback_reason: error instanceof Error ? error.message : "report_llm_failed",
           }),
@@ -220,6 +232,10 @@ function parseConversationReport(content: string, requiredFacts: readonly string
 function summarizeReportOutput(content: string): string {
   const normalized = content.replace(/\s+/g, " ").trim();
   return normalized.length <= 120 ? normalized : `${normalized.slice(0, 117)}...`;
+}
+
+function stringifyReportFacts(facts: Readonly<Record<string, unknown>> | undefined): string | null {
+  return facts === undefined ? null : JSON.stringify(facts);
 }
 
 function createDefaultMonotonicNow(): number {

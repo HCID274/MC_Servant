@@ -73,6 +73,20 @@ describe("ReportLLM 终态润色", () => {
       ],
     });
     expect(reportInputs[0]?.deterministic_report).toContain("cobblestone x5");
+    expect(reportInputs[0]?.raw_summary_digest).toContain(
+      "inventory=cobblestone x5,cherry_log x16",
+    );
+    expect(reportInputs[0]?.report_facts).toMatchObject({
+      status: "completed",
+      operation: "挖石头、砍木头并返回主人身边",
+      inventory_delta: [
+        { item_name: "cobblestone", count: 5 },
+        { item_name: "cherry_log", count: 16 },
+      ],
+      duration_text: "73s",
+      world_text: "世界 multiworld:resource",
+    });
+    expect(JSON.stringify(reportInputs[0]?.report_facts)).not.toContain("exec_job");
     expect(JSON.stringify(reportInputs[0])).not.toContain("await");
     expect(JSON.stringify(reportInputs[0])).not.toContain("api.bot");
     await expect(reporter.consume(actions[1])).resolves.toBeNull();
@@ -157,6 +171,11 @@ describe("ReportLLM 终态润色", () => {
       meta: {
         fallback: true,
         fallback_reason: "ReportLLM output missing fact:cobblestone x5",
+        deterministic_template:
+          "任务完成：挖到 cobblestone x5，耗时 12s，世界 multiworld:resource喵~",
+        llm_polished_output: "完成啦，东西都拿到了喵~",
+        final_selected_output:
+          "任务完成：挖到 cobblestone x5，耗时 12s，世界 multiworld:resource喵~",
         input_fact_summary:
           "状态=任务完成；结果=cobblestone x5；耗时=12s；世界 multiworld:resource",
         output_summary: "完成啦，东西都拿到了喵~",
@@ -206,8 +225,51 @@ describe("ReportLLM 终态润色", () => {
       meta: {
         fallback: false,
         fallback_reason: null,
+        deterministic_template:
+          "任务完成：挖到 cobblestone x5，耗时 12s，世界 multiworld:resource喵~",
+        llm_polished_output:
+          "任务完成啦，cobblestone x5 已经到手，耗时 12s，世界 multiworld:resource喵~",
+        final_selected_output:
+          "任务完成啦，cobblestone x5 已经到手，耗时 12s，世界 multiworld:resource喵~",
         input_fact_summary:
           "状态=任务完成；结果=cobblestone x5；耗时=12s；世界 multiworld:resource",
+      },
+    });
+  });
+
+  it("ReportLLM 把失败说成成功时必须回退模板并记录原因", async () => {
+    const diagnostics: ConversationLlmDiagnosticRecord[] = [];
+    const client = createConversationLlmClient(createTestLlmConfig(), {
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "任务完成啦，已经搞定喵~" } }],
+            usage: { prompt_tokens: 18, completion_tokens: 5 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      now: () => new Date("2026-05-06T00:00:00.000Z"),
+      onDiagnostic: (record) => diagnostics.push(record),
+    });
+
+    const result = await client.generateReport({
+      message_id: "msg-report-failure-validate",
+      owner_text: "挖铁矿",
+      status: "failed",
+      deterministic_report:
+        "任务失败：mine 失败码 not_equipped，阶段 mine，可恢复，世界 unknown，已停止喵~",
+      fact_summary: "状态=任务失败；失败码=not_equipped；阶段=mine；恢复性=可恢复",
+      required_facts: ["失败", "not_equipped", "mine", "可恢复"],
+      tone: "短句汇报",
+    });
+
+    expect(result.reply).toContain("任务失败：mine 失败码 not_equipped");
+    expect(diagnostics[0]?.lines.at(-1)).toMatchObject({
+      meta: {
+        fallback: true,
+        fallback_reason: "ReportLLM output missing fact:失败",
+        final_selected_output:
+          "任务失败：mine 失败码 not_equipped，阶段 mine，可恢复，世界 unknown，已停止喵~",
       },
     });
   });
