@@ -188,6 +188,7 @@ export const TOOLCHAIN_FAILURE_CODES = Object.freeze([
   "inventory_full",
   "world_mismatch",
   "condition_not_met",
+  "unknown_completion",
   "unsupported_capability",
 ] as const);
 

@@ -542,9 +542,13 @@ function readToolchainSuccessData(value: unknown): {
   }
 
   const data = value.data;
+  if (typeof data.completed_count !== "number") {
+    return null;
+  }
+
   return Object.freeze({
     world_key: typeof data.world_key === "string" ? data.world_key : null,
-    completed_count: typeof data.completed_count === "number" ? data.completed_count : 1,
+    completed_count: data.completed_count,
     ...(typeof data.item_name === "string" ? { item_name: data.item_name } : {}),
     ...(typeof data.block_name === "string" ? { block_name: data.block_name } : {}),
   });

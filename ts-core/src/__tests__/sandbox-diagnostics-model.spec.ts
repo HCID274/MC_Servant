@@ -618,6 +618,7 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
             return {
               skill: "goTo",
               target: params,
+              reached: true,
               world_key: "multiworld:resource",
             };
           }
@@ -1070,6 +1071,156 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     ]);
   });
 
+  it("直接 mine（挖掘） 少拿到目标掉落物时不得汇报成功", async () => {
+    const result = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: `
+          const task = await runGoal('强语义挖掘', async () => {
+            await mine('target_block', 5);
+          });
+          await report(task);
+        `,
+        messageId: "T-085-mine-direct-insufficient",
+      }),
+      facade: {
+        async executeBotSkill() {
+          return {
+            skill: "mine",
+            block_name: "target_block",
+            collected_item_name: "runtime_drop",
+            collected_count: 3,
+            mined_count: 3,
+            total_steps: 1,
+            world_key: "minecraft:overworld",
+            diagnostics: ["test_runtime_drop_shortfall"],
+          };
+        },
+        async writeChat() {
+          throw new Error("goal report should not chat");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Failed);
+    expect(result.step_results.at(-1)).toMatchObject({
+      action: "report",
+      params: {
+        goal_result: {
+          ok: false,
+          failure: {
+            failure_code: "condition_not_met",
+            details: {
+              target_progress: {
+                action: "mine",
+                target: "target_block",
+                requested_count: 5,
+                completed_count: 3,
+              },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("直接 mine（挖掘） 返回 ok 但缺少完成证明时应转为 unknown_completion", async () => {
+    const result = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: `
+          const task = await runGoal('缺证明挖掘', async () => {
+            await mine('target_block', 2);
+          });
+          await report(task);
+        `,
+        messageId: "T-085-mine-unknown-completion",
+      }),
+      facade: {
+        async executeBotSkill() {
+          return {
+            ok: true,
+            data: {
+              skill: "mine",
+              block_name: "target_block",
+              world_key: "minecraft:overworld",
+            },
+          };
+        },
+        async writeChat() {
+          throw new Error("goal report should not chat");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Failed);
+    expect(result.step_results.at(-1)).toMatchObject({
+      action: "report",
+      params: {
+        goal_result: {
+          ok: false,
+          failure: {
+            failure_code: "unknown_completion",
+            details: {
+              reason: "mine result lacks inventory completion proof",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("cutTree（砍树） count 以原木获得数量为准，少拿到原木必须失败", async () => {
+    const result = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: `
+          const task = await runGoal('强语义砍树', async () => {
+            await cutTree(5);
+          });
+          await report(task);
+        `,
+        messageId: "T-085-cut-tree-insufficient",
+      }),
+      facade: {
+        async executeBotSkill() {
+          return {
+            skill: "cutTree",
+            requested_count: 5,
+            collected_count: 4,
+            completed: false,
+            status: "insufficient",
+            world_key: "minecraft:overworld",
+            clusters: [{ cluster_id: "tree-1", log_block_name: "runtime_log", collected_count: 4 }],
+            diagnostics: ["test_cut_tree_shortfall"],
+            total_steps: 1,
+          };
+        },
+        async writeChat() {
+          throw new Error("goal report should not chat");
+        },
+      },
+    });
+
+    expect(result.status).toBe(TaskHistoryStatus.Failed);
+    expect(result.step_results.at(-1)).toMatchObject({
+      action: "report",
+      params: {
+        goal_result: {
+          ok: false,
+          failure: {
+            failure_code: "condition_not_met",
+            details: {
+              target_progress: {
+                action: "cutTree",
+                target: "runtime_log",
+                requested_count: 5,
+                completed_count: 4,
+              },
+            },
+          },
+        },
+      },
+    });
+  });
+
   it("ensure（确保） 应在 action 成功但 condition 不满足时返回结构化失败", async () => {
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({
@@ -1394,7 +1545,17 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
         async executeBotSkill(skill, params) {
           calls.push({ skill, params });
 
-          return { ok: true, data: { completed_count: 1, world_key: "minecraft:overworld" } };
+          return {
+            skill: "cutTree",
+            requested_count: 1,
+            collected_count: 1,
+            completed: true,
+            status: "completed",
+            clusters: [{ cluster_id: "tree-1", log_block_name: "oak_log", collected_count: 1 }],
+            diagnostics: [],
+            total_steps: 1,
+            world_key: "minecraft:overworld",
+          };
         },
         async writeChat() {
           throw new Error("chat should not run");

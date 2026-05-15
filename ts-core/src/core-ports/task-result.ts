@@ -297,6 +297,8 @@ function createFailureCapsuleHint(input: {
       return "检查掉落与捡拾结果后换目标重试";
     case "condition_not_met":
       return "根据真实进度补齐缺口后复查完成条件";
+    case "unknown_completion":
+      return "缺少完成证明，需要重新读取真实状态或改用 ensure 条件验收";
     default:
       return "查看 diagnostics（诊断） 后决定是否换策略";
   }

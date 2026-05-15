@@ -57,12 +57,19 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
     const __goalFrames = [];
     const __semanticCall = (method, args) =>
       (__ensureDepth > 0 ? __sandboxTryCall(method, args) : __sandboxCall(method, args)).then((result) => {
-        __lastActionResult = result;
+        const normalizedResult =
+          __ensureDepth > 0 ? result : __normalizeSemanticActionCompletion(method, args, result);
+        __lastActionResult = normalizedResult;
         const frame = __goalFrames[__goalFrames.length - 1];
         if (frame) {
-          frame.results.push(result);
+          frame.results.push({ method, args, result: normalizedResult });
         }
-        return result;
+        if (__isFailedResult(normalizedResult) && __ensureDepth <= 0) {
+          const error = new Error(normalizedResult.error?.message ?? normalizedResult.error?.code ?? "semantic action failed");
+          error.__sandboxFailure = normalizedResult.error;
+          throw error;
+        }
+        return normalizedResult;
       });
     const __isFailedResult = (value) =>
       value !== null && typeof value === "object" && value.ok === false && value.error;
@@ -153,6 +160,109 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
       }
       return undefined;
     };
+    const __readActionCountArg = (args, index = 1) => {
+      const count = Number(args?.[index]);
+      return Number.isInteger(count) && count > 0 ? count : undefined;
+    };
+    const __readNumericField = (data, field) =>
+      data !== null && typeof data === "object" && typeof data[field] === "number"
+        ? data[field]
+        : undefined;
+    const __createUnknownCompletionFailure = (method, args, data, reason) => ({
+      ok: false,
+      error: {
+        action: String(method).replace(/^bot\\./, ""),
+        params: { args },
+        code: "unknown_completion",
+        message: reason,
+        details: {
+          failure_stage: String(method).replace(/^bot\\./, ""),
+          reason,
+          result: data
+        }
+      }
+    });
+    const __createSemanticConditionFailure = (method, args, data, target, requestedCount, completedCount, reason) => ({
+      ok: false,
+      error: {
+        action: String(method).replace(/^bot\\./, ""),
+        params: { args },
+        code: "condition_not_met",
+        message: reason,
+        details: {
+          failure_stage: String(method).replace(/^bot\\./, ""),
+          reason,
+          target_progress: {
+            action: String(method).replace(/^bot\\./, ""),
+            ...(typeof target === "string" ? { target } : {}),
+            ...(typeof requestedCount === "number" ? { requested_count: requestedCount, target_count: requestedCount } : {}),
+            ...(typeof completedCount === "number" ? { completed_count: completedCount } : {})
+          },
+          ...(typeof target === "string" ? { target } : {}),
+          ...(typeof requestedCount === "number" ? { requested_count: requestedCount, target_count: requestedCount } : {}),
+          ...(typeof completedCount === "number" ? { completed_count: completedCount } : {}),
+          ...(__readWorldKey(data) !== undefined ? { world_key: __readWorldKey(data) } : {})
+        }
+      }
+    });
+    const __normalizeSemanticActionCompletion = (method, args, result) => {
+      if (__isFailedResult(result)) {
+        return result;
+      }
+      const data = __readResultData(result);
+      if (method === "bot.mine") {
+        const requestedCount = __readActionCountArg(args);
+        const completedCount = __readNumericField(data, "collected_count");
+        const target = typeof args?.[0] === "string" ? args[0] : data?.block_name;
+        if (requestedCount === undefined || completedCount === undefined || typeof data?.collected_item_name !== "string") {
+          return __createUnknownCompletionFailure(method, args, data, "mine result lacks inventory completion proof");
+        }
+        return completedCount >= requestedCount
+          ? result
+          : __createSemanticConditionFailure(method, args, data, target, requestedCount, completedCount, "mine completed below requested count");
+      }
+      if (method === "bot.cutTree") {
+        const requestedCount = __readActionCountArg(args, 0);
+        const completedCount = __readNumericField(data, "collected_count");
+        const target = data?.clusters?.find?.((cluster) => cluster?.collected_count > 0)?.log_block_name ?? data?.clusters?.[0]?.log_block_name ?? "logs";
+        if (requestedCount === undefined || completedCount === undefined || !Array.isArray(data?.clusters)) {
+          return __createUnknownCompletionFailure(method, args, data, "cutTree result lacks inventory completion proof");
+        }
+        return completedCount >= requestedCount
+          ? result
+          : __createSemanticConditionFailure(method, args, data, target, requestedCount, completedCount, "cutTree collected logs below requested count");
+      }
+      if (method === "bot.equip") {
+        return typeof data?.item_name === "string" || typeof data?.itemName === "string"
+          ? result
+          : __createUnknownCompletionFailure(method, args, data, "equip result lacks equipped item proof");
+      }
+      if (method === "bot.goTo") {
+        return data?.reached === true
+          ? result
+          : __createUnknownCompletionFailure(method, args, data, "goTo result lacks reached proof");
+      }
+      if (method === "bot.craft") {
+        const requestedCount = __readActionCountArg(args);
+        const completedCount = __readNumericField(data, "completed_count");
+        const target = typeof args?.[0] === "string" ? args[0] : data?.item_name;
+        if (requestedCount === undefined || completedCount === undefined || typeof data?.item_name !== "string") {
+          return __createUnknownCompletionFailure(method, args, data, "craft result lacks inventory completion proof");
+        }
+        return completedCount >= requestedCount
+          ? result
+          : __createSemanticConditionFailure(method, args, data, target, requestedCount, completedCount, "craft completed below requested count");
+      }
+      if (method === "bot.place") {
+        const completedCount = __readNumericField(data, "completed_count");
+        const target = typeof args?.[0] === "string" ? args[0] : data?.block_name;
+        if (completedCount === undefined || completedCount < 1 || typeof data?.block_name !== "string") {
+          return __createUnknownCompletionFailure(method, args, data, "place result lacks placed block proof");
+        }
+        return result;
+      }
+      return result;
+    };
     const __createInventoryDelta = (target, count, condition) => {
       if (typeof target !== "string" || count <= 0) return undefined;
       if (condition?.kind === "equipped" || condition?.kind === "placed") return undefined;
@@ -167,7 +277,8 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
       const merged = Array.from(counts.entries()).map(([item_name, count]) => ({ item_name, count }));
       return merged.length > 0 ? merged : undefined;
     };
-    const __readActionSummary = (result, condition) => {
+    const __readActionSummary = (entry, condition) => {
+      const result = entry?.result ?? entry;
       const data = __readResultData(result);
       const completedCount = __readCompletedCount(data, condition);
       let target = __readTarget(data, condition);
@@ -189,6 +300,7 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
       }
       return {
         ...(typeof target === "string" ? { target } : {}),
+        ...(entry?.method ? { action: String(entry.method).replace(/^bot\\./, "") } : {}),
         completed_count: completedCount,
         ...(inventoryDelta ? { inventory_delta: inventoryDelta } : {}),
         ...(__readWorldKey(data) !== undefined ? { world_key: __readWorldKey(data) } : {})
@@ -292,13 +404,24 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
       code: "condition_not_met",
       message: "ensure condition not met",
       details: {
+        failure_stage: "ensure",
+        reason: "ensure condition not met",
         condition,
         baseline: evaluation.baseline,
         current: evaluation.current,
         completed_count: evaluation.completed_count,
         target_count: evaluation.target_count,
+        requested_count: evaluation.target_count,
         missing_count: evaluation.missing_count,
         resolved_targets: evaluation.resolved_targets,
+        world_key: evaluation.current?.world_key ?? evaluation.baseline?.world_key ?? null,
+        target_progress: {
+          action: "ensure",
+          target: evaluation.resolved_targets?.[0],
+          requested_count: evaluation.target_count,
+          target_count: evaluation.target_count,
+          completed_count: evaluation.completed_count
+        },
         evaluation
       }
     });
