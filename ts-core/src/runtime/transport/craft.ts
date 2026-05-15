@@ -512,10 +512,7 @@ function createMissingMaterialDetails(
 
 /** 按物品 ID 统计背包中指定物品的数量。 */
 function countInventoryItemById(items: readonly MineflayerItemHandle[], itemId: number): number {
-  return items.reduce(
-    (sum, item) => sum + (item.type === itemId ? (item.count ?? 1) : 0),
-    0,
-  );
+  return items.reduce((sum, item) => sum + (item.type === itemId ? (item.count ?? 1) : 0), 0);
 }
 
 /** 从注册表中读取物品名称（按 ID 查询）。 */

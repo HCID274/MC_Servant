@@ -93,6 +93,8 @@ export async function executeMineflayerMine(input: {
     expectedDropName,
     inventoryBefore,
     control: input.control,
+    pathfinder: input.pathfinder,
+    pathfinderModule: input.pathfinderModule,
   };
 
   if (input.params.targets !== undefined) {
@@ -109,6 +111,8 @@ interface ExecutionContext {
   readonly expectedDropName: string;
   readonly inventoryBefore: number;
   readonly control: SkillExecutionControl;
+  readonly pathfinder: MineflayerPathfinderApi;
+  readonly pathfinderModule: MineflayerPathfinderModule;
 }
 
 /** 非 ore 路径：扫附近候选 → BFS 规划 → 逐动作执行 → 终挖 → 检查背包 → 不够再扫。 */
@@ -186,6 +190,8 @@ async function executeWithDynamicScan(ctx: ExecutionContext): Promise<MineSkillE
           action,
           diagnostics,
           control: ctx.control,
+          pathfinder: ctx.pathfinder,
+          pathfinderModule: ctx.pathfinderModule,
         });
         minedCount += targetDigs;
         totalSteps += 1;
@@ -318,6 +324,8 @@ async function executeWithSuppliedTargets(
           action,
           diagnostics,
           control: ctx.control,
+          pathfinder: ctx.pathfinder,
+          pathfinderModule: ctx.pathfinderModule,
         });
         minedCount += targetDigs;
         totalSteps += 1;
@@ -471,6 +479,8 @@ async function navigateTowardMineTargets(input: {
         diagnostics,
         diagnosticPrefix,
         control: ctx.control,
+        pathfinder: ctx.pathfinder,
+        pathfinderModule: ctx.pathfinderModule,
       });
       return result.totalSteps;
     } catch (error) {

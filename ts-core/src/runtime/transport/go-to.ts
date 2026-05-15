@@ -53,6 +53,8 @@ export async function executeMineflayerGoTo(input: {
       diagnostics,
       diagnosticPrefix: "go_to",
       control: input.control,
+      pathfinder: input.pathfinder,
+      pathfinderModule: input.pathfinderModule,
     });
     totalSteps = navigation.totalSteps;
   } catch (error) {

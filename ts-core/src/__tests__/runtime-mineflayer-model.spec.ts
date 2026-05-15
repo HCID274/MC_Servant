@@ -2945,7 +2945,7 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(bot.controlStateCalls).toContainEqual({ control: "jump", state: false });
   });
 
-  it("mine-action digStepDown 应按跳跃阶梯动作执行", async () => {
+  it("mine-action digStepDown 应挖开后下落进坑而不是持续跳跃", async () => {
     const bot = new FakeMineflayerBot();
     bot.entity.position = {
       x: 0.5,
@@ -2963,10 +2963,126 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         digs: [],
       },
       diagnostics: [],
+      control: NOOP_SKILL_EXECUTION_CONTROL,
     });
 
-    expect(bot.controlStateCalls).toContainEqual({ control: "jump", state: true });
-    expect(bot.controlStateCalls).toContainEqual({ control: "jump", state: false });
+    expect(bot.controlStateCalls).toContainEqual({ control: "forward", state: true });
+    expect(bot.controlStateCalls).not.toContainEqual({ control: "jump", state: true });
+    expect(bot.entity.position).toMatchObject({ x: 1.5, y: 63, z: 0.5 });
+  });
+
+  it("mine-action 自然小位移应优先使用局部 pathfinder", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = {
+      x: 0.5,
+      y: 64,
+      z: 0.5,
+    };
+    const diagnostics: string[] = [];
+
+    await executeMineRouteAction({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      action: {
+        kind: "walk",
+        toFoot: { x: 1, y: 64, z: 0 },
+        dir: "east",
+      },
+      diagnostics,
+      control: NOOP_SKILL_EXECUTION_CONTROL,
+      pathfinder: bot.pathfinder,
+      pathfinderModule: fakePathfinderModule,
+    });
+
+    expect(bot.gotoCalls).toHaveLength(1);
+    expect(bot.controlStateCalls).toContainEqual({ control: "forward", state: true });
+    expect(bot.entity.position).toMatchObject({ x: 1.5, y: 64, z: 0.5 });
+    expect(
+      diagnostics.some((entry) =>
+        entry.startsWith("mine_local_pathfinder_reached:walk:target=1,64,0;"),
+      ),
+    ).toBe(true);
+  });
+
+  it("mine-action 局部 pathfinder 失败时应回退到自研按键原语", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = {
+      x: 0.5,
+      y: 64,
+      z: 0.5,
+    };
+    bot.onGoto = () => {
+      throw new Error("no_path");
+    };
+    const diagnostics: string[] = [];
+
+    await executeMineRouteAction({
+      bot,
+      facts: createMineBlockFactReader(bot.registry),
+      action: {
+        kind: "walk",
+        toFoot: { x: 1, y: 64, z: 0 },
+        dir: "east",
+      },
+      diagnostics,
+      control: NOOP_SKILL_EXECUTION_CONTROL,
+      pathfinder: bot.pathfinder,
+      pathfinderModule: fakePathfinderModule,
+    });
+
+    expect(bot.gotoCalls).toHaveLength(1);
+    expect(bot.controlStateCalls).toContainEqual({ control: "forward", state: true });
+    expect(
+      diagnostics.some((entry) => entry.includes("mine_local_pathfinder_failed:walk:no_path")),
+    ).toBe(true);
+  });
+
+  it("mine-action 局部 pathfinder 期间取消应向上传播且不得回退移动", async () => {
+    const bot = new FakeMineflayerBot();
+    bot.entity.position = {
+      x: 0.5,
+      y: 64,
+      z: 0.5,
+    };
+    const abortController = new AbortController();
+    const abortError = Object.assign(new Error("cancelled by test"), {
+      name: "AbortError",
+    });
+    const control = {
+      signal: abortController.signal,
+      throwIfAborted(): void {
+        if (abortController.signal.aborted) {
+          throw abortController.signal.reason;
+        }
+      },
+    };
+    bot.onGoto = () => {
+      abortController.abort(abortError);
+      return new Promise<void>(() => {});
+    };
+    const diagnostics: string[] = [];
+
+    await expect(
+      executeMineRouteAction({
+        bot,
+        facts: createMineBlockFactReader(bot.registry),
+        action: {
+          kind: "walk",
+          toFoot: { x: 1, y: 64, z: 0 },
+          dir: "east",
+        },
+        diagnostics,
+        control,
+        pathfinder: bot.pathfinder,
+        pathfinderModule: fakePathfinderModule,
+      }),
+    ).rejects.toBe(abortError);
+
+    expect(bot.gotoCalls).toHaveLength(1);
+    expect(bot.controlStateCalls).toEqual([]);
+    expect(diagnostics.some((entry) => entry.includes("mine_local_pathfinder_failed:walk"))).toBe(
+      false,
+    );
   });
 
   it("terrain-router 深坑 30 格纯垫高不得被 24 格 plannedSolid 旧预算剪掉", () => {

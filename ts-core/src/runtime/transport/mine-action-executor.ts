@@ -7,6 +7,7 @@ import { Vec3 } from "vec3";
 import type { SkillExecutionControl } from "../../core-ports/skills.js";
 import { NOOP_SKILL_EXECUTION_CONTROL } from "../../core-ports/skills.js";
 import { dropToFoot, isFootStepBotAtFoot, stepToFoot } from "./foot-step.js";
+import { tryLocalPathfinderMoveToFoot } from "./local-move-actuator.js";
 import type { MineBlockPos, MineRouteAction } from "./mine-bfs.js";
 import type { MineBlockFactReader } from "./mine-block-facts.js";
 import { prepareHandForMineDig } from "./mine-tool-policy.js";
@@ -16,6 +17,8 @@ import type {
   MineflayerInventoryPort,
   MineflayerMiningPort,
   MineflayerMovementPort,
+  MineflayerPathfinderApi,
+  MineflayerPathfinderModule,
   MineflayerPlacementPort,
 } from "./types.js";
 import { readMineflayerBlockAt } from "./world-reader.js";
@@ -40,6 +43,8 @@ export async function executeMineRouteAction(input: {
   readonly action: MineRouteAction;
   readonly diagnostics: string[];
   readonly control: SkillExecutionControl;
+  readonly pathfinder?: MineflayerPathfinderApi;
+  readonly pathfinderModule?: MineflayerPathfinderModule;
 }): Promise<void> {
   const control = input.control ?? NOOP_SKILL_EXECUTION_CONTROL;
   control.throwIfAborted();
@@ -51,6 +56,9 @@ export async function executeMineRouteAction(input: {
         { jump: false, kind: input.action.kind },
         MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
+        control,
+        input.pathfinder,
+        input.pathfinderModule,
       );
       control.throwIfAborted();
       return;
@@ -74,6 +82,9 @@ export async function executeMineRouteAction(input: {
         { jump: true, kind: input.action.kind },
         MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
+        control,
+        input.pathfinder,
+        input.pathfinderModule,
       );
       control.throwIfAborted();
       return;
@@ -88,6 +99,9 @@ export async function executeMineRouteAction(input: {
         { jump: false, kind: input.action.kind },
         MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
+        control,
+        input.pathfinder,
+        input.pathfinderModule,
       );
       control.throwIfAborted();
       return;
@@ -96,13 +110,16 @@ export async function executeMineRouteAction(input: {
         control.throwIfAborted();
         await digSingleBlock(input.bot, input.facts, dig, input.diagnostics, control);
       }
-      await stepForward(
-        input.bot,
-        input.action.toFoot,
-        { jump: true, kind: input.action.kind },
-        DROP_IDLE_TIMEOUT_MS,
-        input.diagnostics,
-      );
+      await dropToFoot({
+        bot: input.bot,
+        target: input.action.toFoot,
+        timeoutMs: DROP_IDLE_TIMEOUT_MS,
+        lookTimeoutMs: LOOK_TIMEOUT_MS,
+        diagnosticPrefix: "mine",
+        actionKind: input.action.kind,
+        diagnostics: input.diagnostics,
+        throwIfAborted: () => control.throwIfAborted(),
+      });
       control.throwIfAborted();
       return;
     case "digStepUp":
@@ -116,6 +133,9 @@ export async function executeMineRouteAction(input: {
         { jump: true, kind: input.action.kind },
         MOVE_IDLE_TIMEOUT_MS,
         input.diagnostics,
+        control,
+        input.pathfinder,
+        input.pathfinderModule,
       );
       control.throwIfAborted();
       return;
@@ -174,7 +194,24 @@ async function stepForward(
   options: { readonly jump: boolean; readonly kind: MineRouteAction["kind"] },
   timeoutMs: number,
   diagnostics: string[],
+  control: SkillExecutionControl,
+  pathfinder?: MineflayerPathfinderApi,
+  pathfinderModule?: MineflayerPathfinderModule,
 ): Promise<void> {
+  if (
+    await tryLocalPathfinderMoveToFoot({
+      bot,
+      target,
+      diagnostics,
+      diagnosticPrefix: "mine",
+      actionKind: options.kind,
+      control,
+      ...(pathfinder === undefined ? {} : { pathfinder }),
+      ...(pathfinderModule === undefined ? {} : { pathfinderModule }),
+    })
+  ) {
+    return;
+  }
   await stepToFoot({
     bot,
     target,

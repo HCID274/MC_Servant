@@ -11,6 +11,8 @@ import type {
   MineflayerInventoryPort,
   MineflayerMiningPort,
   MineflayerMovementPort,
+  MineflayerPathfinderApi,
+  MineflayerPathfinderModule,
   MineflayerPlacementPort,
   MineflayerVec3Like,
 } from "./types.js";
@@ -40,6 +42,8 @@ export async function navigateTerrainToFoot(input: {
   readonly diagnostics: string[];
   readonly diagnosticPrefix: string;
   readonly control: SkillExecutionControl;
+  readonly pathfinder?: MineflayerPathfinderApi;
+  readonly pathfinderModule?: MineflayerPathfinderModule;
 }): Promise<TerrainNavigationResult> {
   input.control.throwIfAborted();
   const startFoot = readTerrainBotFoot(input.bot);
@@ -81,6 +85,8 @@ export async function navigateTerrainToFoot(input: {
       action,
       diagnostics: input.diagnostics,
       control: input.control,
+      ...(input.pathfinder === undefined ? {} : { pathfinder: input.pathfinder }),
+      ...(input.pathfinderModule === undefined ? {} : { pathfinderModule: input.pathfinderModule }),
     });
     totalSteps += 1;
   }
