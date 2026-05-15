@@ -1,3 +1,4 @@
+import { readMineflayerWorldKey } from "./naming.js";
 import type { MineflayerLifecyclePort } from "./types.js";
 
 const SELF_PLACED_TERRAIN_BLOCKS = new Set<string>();
@@ -38,6 +39,6 @@ export function clearSelfPlacedTerrainMemoryForTests(): void {
 
 function createSelfPlacedKey(bot: MineflayerLifecyclePort, pos: TerrainMemoryBlockPos): string {
   const botKey = bot.username ?? "unknown_bot";
-  const worldKey = bot.game?.dimension ?? "unknown_world";
+  const worldKey = readMineflayerWorldKey(bot);
   return `${botKey}:${worldKey}:${pos.x}:${pos.y}:${pos.z}`;
 }

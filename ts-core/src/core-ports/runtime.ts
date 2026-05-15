@@ -6,8 +6,23 @@
  */
 
 import type { ExecutionTaskEnvelope } from "./foundation.js";
-import type { ReflexInterruptSource, SnapshotPosition } from "./observation.js";
-import type { SkillExecutionResult, SkillName } from "./skills.js";
+import type {
+  MineflayerObservationInput,
+  ReflexInterruptSource,
+  SnapshotPosition,
+} from "./observation.js";
+import type {
+  CollectSkillAdapter,
+  CraftToolchainAdapter,
+  EquipSkillAdapter,
+  GoToMovementAdapter,
+  MineSkillAdapter,
+  PlaceToolchainAdapter,
+  SkillExecutionControl,
+  SkillExecutionResult,
+  SkillName,
+  ToolchainEnsureFacts,
+} from "./skills.js";
 import type { FailureCapsule } from "./task-result.js";
 
 /** ResourceService（世界感知资源服务） 允许的只读刷新半径阶梯。 */
@@ -70,6 +85,78 @@ export interface RuntimeResourceRefreshResult {
   readonly blocks: readonly RuntimeResourceBlockSummary[];
   /** 可读诊断。 */
   readonly diagnostics: readonly string[];
+}
+
+/** runtime（运行时） 只读事件源；只允许订阅事件，不暴露 Mineflayer 原始 Bot。 */
+export interface RuntimeEventSource {
+  /** 注册持续事件监听器。 */
+  on(eventName: string, listener: (...args: readonly unknown[]) => void): unknown;
+  /** 注册一次性事件监听器。 */
+  once?(eventName: string, listener: (...args: readonly unknown[]) => void): unknown;
+  /** 移除事件监听器。 */
+  off?(eventName: string, listener: (...args: readonly unknown[]) => void): unknown;
+  /** 移除事件监听器。 */
+  removeListener?(eventName: string, listener: (...args: readonly unknown[]) => void): unknown;
+}
+
+/** runtime（运行时） 世界身份端口；world_key 的跨模块唯一读取入口。 */
+export interface RuntimeWorldIdentityPort {
+  /** 读取当前 Bot（机器人） 所在世界键。 */
+  getCurrentWorldKey(): string;
+}
+
+/** runtime（运行时） 只读资源刷新端口，供 ResourceService（资源服务） 使用。 */
+export interface RuntimeWorldResourceRefreshPort {
+  /** 围绕 Bot（机器人） 当前位置执行只读资源刷新。 */
+  refreshAroundBot(
+    resourceKey: string,
+    radius: ResourceRefreshRadius,
+  ): Promise<RuntimeResourceRefreshResult>;
+}
+
+/** runtime（运行时） 只读状态端口；不得产生 Minecraft（我的世界） 写副作用。 */
+export interface RuntimeWorldStateReadPort {
+  /** 采样当前 Mineflayer（Minecraft 协议客户端） 观测输入；未 ready（就绪） 时返回 null。 */
+  readObservationInput(ownerName?: string): MineflayerObservationInput | null;
+  /** 按 runtime（运行时） 资源语义角色统计背包物品。 */
+  countInventoryItemsBySemanticRole(role: RuntimeResourceBlockSemanticRole): number;
+}
+
+/** runtime（运行时） 世界事实端口；事实必须来自 Mineflayer / minecraft-data / 实时快照。 */
+export interface RuntimeWorldFactPort {
+  /** 创建 ensure（确保） 依赖解析所需的只读事实端口。 */
+  createToolchainEnsureFacts(): ToolchainEnsureFacts;
+}
+
+/** runtime（运行时） 事件诊断端口，供 observation（观测） 与 diagnostics（诊断） 订阅。 */
+export interface RuntimeEventDiagnosticsPort {
+  /** 获取当前只读事件源；未连接或已回收时为 null。 */
+  getEventSource(): RuntimeEventSource | null;
+}
+
+/** runtime（运行时） 聊天写端口；只能由 BotActor（机器人执行代理） 单写者持有。 */
+export interface RuntimeChatWritePort {
+  /** 通过当前连接发送聊天文本。 */
+  chat(text: string): Promise<void>;
+}
+
+/** runtime（运行时） 坐标挖掘动作端口，用于 ResourceService 推荐目标消费。 */
+export interface RuntimeBlockDigActionPort {
+  /** 挖掘指定坐标的单个方块。 */
+  digBlockAt(position: Readonly<SnapshotPosition>, control: SkillExecutionControl): Promise<void>;
+}
+
+/** runtime（运行时） 世界动作执行端口；只应注入 BotActor / skill 执行层。 */
+export interface RuntimeActionExecutionPort
+  extends GoToMovementAdapter,
+    MineSkillAdapter,
+    CollectSkillAdapter,
+    EquipSkillAdapter,
+    CraftToolchainAdapter,
+    PlaceToolchainAdapter,
+    RuntimeBlockDigActionPort {
+  /** 停止当前 Mineflayer（Minecraft 协议客户端） 世界交互动作。 */
+  stopCurrentAction(): void;
 }
 
 /** Bot（机器人） 状态枚举，用于描述 BotActor（机器人执行代理） 在运行时内的最小状态集合。 */

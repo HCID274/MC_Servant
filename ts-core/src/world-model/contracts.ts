@@ -11,6 +11,8 @@ import type {
   ResourceRefreshRadius,
   RuntimeResourceBlockSemanticRole,
   RuntimeResourceRefreshResult,
+  RuntimeWorldIdentityPort,
+  RuntimeWorldResourceRefreshPort,
 } from "../core-ports/runtime.js";
 import type { SnapshotPosition } from "../observation/contracts.js";
 
@@ -289,19 +291,10 @@ export interface TreeClusterSelectionResult {
 }
 
 /** ResourceService（世界感知资源服务） 运行时刷新端口。 */
-export interface ResourceServiceRefreshPort {
-  /** 围绕 Bot（机器人） 执行只读资源刷新。 */
-  refreshAroundBot(
-    resourceKey: string,
-    radius: ResourceRefreshRadius,
-  ): Promise<RuntimeResourceRefreshResult>;
-}
+export interface ResourceServiceRefreshPort extends RuntimeWorldResourceRefreshPort {}
 
 /** ResourceService（世界感知资源服务） 当前世界解析端口。 */
-export interface ResourceWorldKeyPort {
-  /** 读取当前 Bot（机器人） 所在世界键；唯一实现来自 transport（传输层）。 */
-  getCurrentWorldKey(): string;
-}
+export interface ResourceWorldKeyPort extends RuntimeWorldIdentityPort {}
 
 /** ResourceService（世界感知资源服务） 句柄。 */
 export interface ResourceServiceBoundary {

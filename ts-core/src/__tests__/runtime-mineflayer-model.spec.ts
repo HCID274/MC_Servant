@@ -2314,6 +2314,22 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
 
     expect(rejected.plan).toBeNull();
 
+    const wrongWorldBot = createStuckOnSupportBot();
+    recordSelfPlacedTerrainBlock(wrongWorldBot, { x: 0, y: 64, z: 0 });
+    wrongWorldBot.game.dimension = "multiworld:other";
+    const rejectedCrossWorld = planTerrainRoute({
+      bot: wrongWorldBot,
+      facts: createMineBlockFactReader(wrongWorldBot.registry),
+      startFoot: { x: 0, y: 65, z: 0 },
+      targetFoot: { x: 0, y: 64, z: 0 },
+      goalRange: 0,
+      allowDig: true,
+      allowPlaceUp: false,
+      maxExpandedStates: 80,
+    });
+
+    expect(rejectedCrossWorld.plan).toBeNull();
+
     const selfPlacedBot = createStuckOnSupportBot();
     recordSelfPlacedTerrainBlock(selfPlacedBot, { x: 0, y: 64, z: 0 });
     recordSelfPlacedTerrainBlock(selfPlacedBot, { x: 0, y: 63, z: 0 });

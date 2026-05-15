@@ -46,6 +46,7 @@ import {
   waitForMineflayerSpawn,
 } from "./lifecycle.js";
 import { executeMineflayerMine } from "./mine.js";
+import { readMineflayerWorldKey } from "./naming.js";
 import { createMineflayerPathfinderContext } from "./pathfinder.js";
 import { executeMineflayerPlaceCraftingTable } from "./placement.js";
 import type {
@@ -605,7 +606,7 @@ function createRuntimeResourceBlockSummary(input: {
 }
 
 function createMineflayerWorldKey(bot: MineflayerBotHandle): string {
-  return bot.game?.dimension ?? "unknown";
+  return readMineflayerWorldKey(bot);
 }
 
 /** 从 Mineflayer（Minecraft 协议客户端） 当前状态创建 observation（观测）输入。 */

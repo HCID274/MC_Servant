@@ -1,5 +1,10 @@
 import { type ThreatAssessment, ThreatLevel, ThreatRuleId } from "../core-ports/observation.js";
 import type {
+  RuntimeActionExecutionPort,
+  RuntimeWorldIdentityPort,
+  RuntimeWorldStateReadPort,
+} from "../core-ports/runtime.js";
+import type {
   RuntimeSandboxExecutionDependencies,
   RuntimeSandboxExecutionResult,
   SandboxFacadeCallControl,
@@ -252,15 +257,16 @@ export function createBotActorRuntime<TBotId extends string>(input: {
   const skillExecutions: BotActorSkillExecutionRecord[] = [];
   const codeExecutions: BotActorCodeExecutionRecord[] = [];
   const recentEvents: BotActorRecentEventProjection[] = [];
+  const transportActions: RuntimeActionExecutionPort = input.transport;
   const skillExecution = input.skillExecution ?? {
-    goToMovement: input.transport,
-    mine: input.transport.mine.bind(input.transport),
-    collect: input.transport.collect.bind(input.transport),
-    equip: input.transport.equip.bind(input.transport),
-    craft: input.transport.craft.bind(input.transport),
+    goToMovement: transportActions,
+    mine: transportActions.mine.bind(transportActions),
+    collect: transportActions.collect.bind(transportActions),
+    equip: transportActions.equip.bind(transportActions),
+    craft: transportActions.craft.bind(transportActions),
     place:
-      typeof input.transport.place === "function"
-        ? input.transport.place.bind(input.transport)
+      typeof transportActions.place === "function"
+        ? transportActions.place.bind(transportActions)
         : async () => {
             throw new Error("Toolchain place execution dependency is not configured");
           },
@@ -1011,7 +1017,7 @@ function createSandboxFacadeExecutionError(input: {
   readonly action: string;
   readonly params: Readonly<Record<string, unknown>>;
   readonly error: unknown;
-  readonly transport: MineflayerRuntimeTransport<string>;
+  readonly transport: RuntimeWorldStateReadPort;
 }): Error {
   return createToolchainCapabilityError(
     readSandboxFacadeErrorCode(input.error),
@@ -1058,7 +1064,7 @@ function createSandboxFailureDetails(input: {
   readonly details?: Readonly<Record<string, unknown>> | undefined;
   readonly failureStage?: string | undefined;
   readonly progress?: Readonly<Record<string, unknown>> | undefined;
-  readonly transport: MineflayerRuntimeTransport<string>;
+  readonly transport: RuntimeWorldStateReadPort;
 }): Readonly<Record<string, unknown>> {
   const observation = safelyReadObservation(input.transport);
   const targetProgress =
@@ -1081,8 +1087,8 @@ function createSandboxFailureDetails(input: {
 }
 
 function safelyReadObservation(
-  transport: MineflayerRuntimeTransport<string>,
-): NonNullable<ReturnType<MineflayerRuntimeTransport<string>["readObservationInput"]>> | null {
+  transport: RuntimeWorldStateReadPort,
+): NonNullable<ReturnType<RuntimeWorldStateReadPort["readObservationInput"]>> | null {
   try {
     return transport.readObservationInput();
   } catch {
@@ -1156,7 +1162,7 @@ function formatToolchainErrorDetails(
 }
 
 function createEnsureConditionStateSnapshot(
-  transport: MineflayerRuntimeTransport<string>,
+  transport: RuntimeWorldStateReadPort & RuntimeWorldIdentityPort,
 ): EnsureConditionStateSnapshot {
   const observation = transport.readObservationInput();
   return Object.freeze({

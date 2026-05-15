@@ -2,6 +2,10 @@ import { createRequire } from "node:module";
 
 import { describe, expect, it } from "vitest";
 
+import type {
+  RuntimeWorldIdentityPort,
+  RuntimeWorldResourceRefreshPort,
+} from "../core-ports/runtime.js";
 import {
   type ThreatAssessment,
   ThreatLevel,
@@ -689,6 +693,58 @@ describe("observation 与 world-model 契约", () => {
       status: "cache_miss",
       clusters: [],
     });
+  });
+
+  it("ResourceService（世界感知资源服务） 应只依赖世界身份与只读刷新窄端口", async () => {
+    let now = 1_712_000_250;
+    let currentWorldKey = "multiworld:port-a";
+    const worldKeyPort: RuntimeWorldIdentityPort = {
+      getCurrentWorldKey: () => currentWorldKey,
+    };
+    const refreshPort: RuntimeWorldResourceRefreshPort = {
+      async refreshAroundBot(resourceKey, radius) {
+        return {
+          resource_key: resourceKey,
+          radius,
+          status: "found",
+          world_key: currentWorldKey,
+          snapshot_version: `${currentWorldKey}:${resourceKey}:${radius}`,
+          scanned_at: now,
+          origin: { x: 0, y: 64, z: 0 },
+          blocks: [
+            {
+              block_name: "oak_log",
+              position: { x: 2, y: 64, z: 0 },
+              distance: 2,
+              resource_keys: [resourceKey],
+              semantic_roles: ["cut_tree_log"],
+              is_diggable: true,
+              is_reachable: true,
+            },
+          ],
+          diagnostics: [],
+        };
+      },
+    };
+    const resourceService = createResourceService({
+      now: () => now,
+      worldKeyPort,
+      refreshPort,
+    });
+
+    await expect(resourceService.refresh("tree", 16)).resolves.toMatchObject({
+      world_key: "multiworld:port-a",
+      status: "found",
+    });
+    expect(resourceService.query("tree").world_key).toBe("multiworld:port-a");
+
+    now += 1;
+    currentWorldKey = "multiworld:port-b";
+    await expect(resourceService.refresh("tree", 16)).resolves.toMatchObject({
+      world_key: "multiworld:port-b",
+      status: "found",
+    });
+    expect(resourceService.query("tree").world_key).toBe("multiworld:port-b");
   });
 
   it("应通过 ResourceService（世界感知资源服务） 按半径阶梯刷新并区分未命中、过期和命中", async () => {

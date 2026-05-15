@@ -1,3 +1,10 @@
+import type {
+  RuntimeActionExecutionPort,
+  RuntimeWorldFactPort,
+  RuntimeWorldIdentityPort,
+  RuntimeWorldResourceRefreshPort,
+  RuntimeWorldStateReadPort,
+} from "../../core-ports/runtime.js";
 import type { RuntimeSandboxExecutionResult } from "../../core-ports/sandbox.js";
 import { SKILL_DIRECTORY } from "../../core-ports/skills.js";
 import { createSandboxLogRef } from "../../diagnostics/index.js";
@@ -66,45 +73,49 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
     );
     const runtimeTransport = created.transport;
     created.resourceService = createResourceService({
-      refreshPort: runtimeTransport,
-      worldKeyPort: runtimeTransport,
+      refreshPort: runtimeTransport satisfies RuntimeWorldResourceRefreshPort,
+      worldKeyPort: runtimeTransport satisfies RuntimeWorldIdentityPort,
     });
+    const runtimeActions: RuntimeActionExecutionPort = runtimeTransport;
+    const runtimeStateReader: RuntimeWorldStateReadPort = runtimeTransport;
+    const runtimeWorldIdentity: RuntimeWorldIdentityPort = runtimeTransport;
+    const runtimeFacts: RuntimeWorldFactPort = runtimeTransport;
     const externalAuth = createAppRuntimeCoreExternalAuth(bootstrap, dependencies);
     const externalAuthPlan =
       dependencies.externalAuthPlan ??
       createExternalAuthExecutionPlan(externalAuth, dependencies.externalAuthSecret);
     const mineSkill = createMineSkillExecutor({
       resourceService: created.resourceService,
-      miner: created.transport,
+      miner: runtimeActions,
       collector: {
-        collect: created.transport.collect.bind(created.transport),
+        collect: runtimeActions.collect.bind(runtimeActions),
       },
       inventory: {
-        readInventoryItems: () => created.transport?.readObservationInput()?.inventory.items ?? [],
+        readInventoryItems: () => runtimeStateReader.readObservationInput()?.inventory.items ?? [],
       },
     });
     const cutTreeSkill = createCutTreeSkillExecutor({
       resourceService: created.resourceService,
-      digger: created.transport,
+      digger: runtimeActions,
       collector: {
-        collect: created.transport.collect.bind(created.transport),
+        collect: runtimeActions.collect.bind(runtimeActions),
       },
       inventory: {
-        readInventoryItems: () => created.transport?.readObservationInput()?.inventory.items ?? [],
+        readInventoryItems: () => runtimeStateReader.readObservationInput()?.inventory.items ?? [],
       },
     });
     const ensureToolchain = createToolchainEnsureExecutor({
-      readCurrentWorldKey: () => created.transport?.getCurrentWorldKey() ?? null,
-      facts: created.transport.createToolchainEnsureFacts(),
+      readCurrentWorldKey: () => runtimeWorldIdentity.getCurrentWorldKey(),
+      facts: runtimeFacts.createToolchainEnsureFacts(),
       inventory: {
-        readInventoryItems: () => created.transport?.readObservationInput()?.inventory.items ?? [],
-        countLogs: () => created.transport?.countInventoryItemsBySemanticRole("cut_tree_log") ?? 0,
+        readInventoryItems: () => runtimeStateReader.readObservationInput()?.inventory.items ?? [],
+        countLogs: () => runtimeStateReader.countInventoryItemsBySemanticRole("cut_tree_log"),
       },
-      craft: created.transport.craft.bind(created.transport),
-      place: created.transport.place.bind(created.transport),
-      equip: created.transport.equip.bind(created.transport),
+      craft: runtimeActions.craft.bind(runtimeActions),
+      place: runtimeActions.place.bind(runtimeActions),
+      equip: runtimeActions.equip.bind(runtimeActions),
       mine: mineSkill,
-      collect: created.transport.collect.bind(created.transport),
+      collect: runtimeActions.collect.bind(runtimeActions),
       cutTree: cutTreeSkill,
     });
     created.actor = createBotActorRuntime({
@@ -112,18 +123,18 @@ export async function createAppRuntimeCoreResources<TBotId extends string>(
       transport: created.transport,
       observation: created.observation,
       skillExecution: {
-        goToMovement: created.transport,
+        goToMovement: runtimeActions,
         mine: mineSkill,
-        collect: created.transport.collect.bind(created.transport),
-        equip: created.transport.equip.bind(created.transport),
-        craft: created.transport.craft.bind(created.transport),
-        place: created.transport.place.bind(created.transport),
+        collect: runtimeActions.collect.bind(runtimeActions),
+        equip: runtimeActions.equip.bind(runtimeActions),
+        craft: runtimeActions.craft.bind(runtimeActions),
+        place: runtimeActions.place.bind(runtimeActions),
         cutTree: cutTreeSkill,
         ensureDependency: ensureToolchain.ensureDependency,
         evaluateCondition: (input) =>
           evaluateEnsureCondition({
             ...input,
-            facts: runtimeTransport.createToolchainEnsureFacts(),
+            facts: runtimeFacts.createToolchainEnsureFacts(),
           }),
       },
       externalAuth,

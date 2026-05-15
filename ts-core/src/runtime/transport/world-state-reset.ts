@@ -1,3 +1,4 @@
+import { readMineflayerWorldKey } from "./naming.js";
 import type { MineflayerBotHandle, MineflayerEntityHandle } from "./types.js";
 
 interface RespawnWorldPacket {
@@ -99,7 +100,7 @@ function readPacketWorldKey(packet: unknown): string | undefined {
 }
 
 function readCurrentWorldKey(bot: MineflayerBotHandle): string {
-  return bot.game?.dimension ?? "unknown";
+  return readMineflayerWorldKey(bot);
 }
 
 function isSameWorldKey(left: string, right: string): boolean {

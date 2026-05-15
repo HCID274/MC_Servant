@@ -2,8 +2,16 @@ import type { Vec3 } from "vec3";
 import type { MineflayerObservationInput } from "../../core-ports/observation.js";
 import type {
   ResourceRefreshRadius,
+  RuntimeActionExecutionPort,
+  RuntimeChatWritePort,
+  RuntimeEventDiagnosticsPort,
+  RuntimeEventSource,
   RuntimeResourceBlockSemanticRole,
   RuntimeResourceRefreshResult,
+  RuntimeWorldFactPort,
+  RuntimeWorldIdentityPort,
+  RuntimeWorldResourceRefreshPort,
+  RuntimeWorldStateReadPort,
 } from "../../core-ports/runtime.js";
 import type {
   CollectSkillExecutionResult,
@@ -50,7 +58,7 @@ export interface MineflayerCreateBotOptions {
 }
 
 /** Mineflayer（Minecraft 协议客户端） 事件源最小接口。 */
-export interface MineflayerEventSource {
+export interface MineflayerEventSource extends RuntimeEventSource {
   /** 注册持续事件监听器。 */
   on(eventName: string, listener: (...args: readonly unknown[]) => void): unknown;
   /** 注册一次性事件监听器。 */
@@ -491,7 +499,14 @@ export interface MineflayerTransportSnapshot<TBotId extends string = string> {
 }
 
 /** Mineflayer（Minecraft 协议客户端） 运行时传输句柄。 */
-export interface MineflayerRuntimeTransport<TBotId extends string = string> {
+export interface MineflayerRuntimeTransport<TBotId extends string = string>
+  extends RuntimeChatWritePort,
+    RuntimeActionExecutionPort,
+    RuntimeWorldIdentityPort,
+    RuntimeWorldResourceRefreshPort,
+    RuntimeWorldStateReadPort,
+    RuntimeWorldFactPort,
+    RuntimeEventDiagnosticsPort {
   /** 传输描述。 */
   readonly descriptor: MineflayerTransportDescriptor<TBotId>;
   /** 建立 Mineflayer（Minecraft 协议客户端） 连接。 */

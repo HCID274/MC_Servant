@@ -5,6 +5,7 @@
  */
 
 import type { SnapshotPosition } from "../core-ports/observation.js";
+import type { RuntimeBlockDigActionPort } from "../core-ports/runtime.js";
 import {
   type CollectSkillAdapter,
   type CutTreeSkillClusterExecution,
@@ -23,11 +24,8 @@ import type {
 const DEFAULT_CUT_TREE_SETTLE_MS = 1_000;
 const CUT_TREE_DROP_COLLECT_RADIUS = 8;
 
-/** cutTree（砍树） 坐标挖掘端口；真实实现由 transport（传输层） 提供。 */
-export interface CutTreeDigTargetAdapter {
-  /** 挖掘指定坐标上的单个方块。 */
-  digBlockAt(position: Readonly<SnapshotPosition>, control: SkillExecutionControl): Promise<void>;
-}
+/** cutTree（砍树） 坐标挖掘端口；真实实现由 runtime action（运行时动作） 窄端口提供。 */
+export type CutTreeDigTargetAdapter = RuntimeBlockDigActionPort;
 
 /** cutTree（砍树） 背包只读端口，用于跨 dig（挖掘）+ collect（捡拾）计算真实原木增量。 */
 export interface CutTreeInventoryReader {
