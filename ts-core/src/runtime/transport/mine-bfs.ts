@@ -104,6 +104,7 @@ interface SearchNode {
 }
 
 /** 入口：从 startFoot 找最低代价能挖到任一 target 的动作序列。 */
+/** 挖掘路径规划入口：从起点出发寻找到达目标方块的最短路径（A* 搜索）。 */
 export function planMineRoute(input: {
   readonly bot: MineflayerMiningPort;
   readonly facts: MineBlockFactReader;
@@ -265,6 +266,11 @@ export function planMineRoute(input: {
   };
 }
 
+/**
+ * 根据起始脚位和目标位置动态计算挖掘搜索的最大空气方块预算。
+ * 垂直落差越大，需要挖掘的 stepDown 动作越多，因此需要更大的预算。
+ * 返回值被限制在 [DEFAULT_MAX_PLANNED_AIR, MAX_DYNAMIC_PLANNED_AIR] 范围内。
+ */
 function deriveMineMaxPlannedAir(
   startFoot: MineBlockPos,
   targets: readonly MineRouteTarget[],
@@ -281,6 +287,11 @@ function deriveMineMaxPlannedAir(
   );
 }
 
+/**
+ * 挖掘路径的 A* 启发式函数。
+ * 综合考虑水平距离（超出 MAX_REACH 的部分）和垂直距离（上/下需要不同代价），
+ * 返回从当前位置到最近目标的预估最低代价。
+ */
 function mineRouteHeuristic(foot: MineBlockPos, targets: readonly MineRouteTarget[]): number {
   let best = Number.POSITIVE_INFINITY;
   const eyeY = foot.y + EYE_OFFSET_Y;
@@ -299,6 +310,11 @@ function mineRouteHeuristic(foot: MineBlockPos, targets: readonly MineRouteTarge
   return Number.isFinite(best) ? best : 0;
 }
 
+/**
+ * 展开挖掘搜索节点的所有后继状态。
+ * 比 terrain-router 简单，不支持 placeUp（挖掘场景不需要垫脚石），
+ * 但额外支持 digStepDown（挖下去一格）和 digStepUp（挖上去一格）。
+ */
 function expandSuccessors(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -421,6 +437,10 @@ function expandSuccessors(
   return out;
 }
 
+/**
+ * 将后继动作加入搜索队列，维护 plannedAir 集合。
+ * 与 terrain-router 不同，这里没有 noProgressSteps 剪枝（挖掘场景目标更集中）。
+ */
 function pushSuccessor(
   out: SearchNode[],
   parent: SearchNode,
@@ -447,6 +467,10 @@ function pushSuccessor(
   });
 }
 
+/**
+ * 从搜索节点回溯重建完整动作序列。
+ * 沿 parent 指针反向遍历直到根节点，然后反转得到从起点到终点的动作列表。
+ */
 function reconstructActions(node: SearchNode): readonly MineRouteAction[] {
   const actions: MineRouteAction[] = [];
   let current: SearchNode | null = node;
@@ -457,6 +481,10 @@ function reconstructActions(node: SearchNode): readonly MineRouteAction[] {
   return Object.freeze(actions);
 }
 
+/**
+ * 检查上一步动作是否已经挖掉了某个目标方块。
+ * 用于在搜索循环中提前终止：如果动作序列中包含对目标的挖掘，就不需要再"到达"目标了。
+ */
 function findDugTarget(
   action: MineRouteAction | null,
   targets: readonly MineRouteTarget[],
@@ -469,6 +497,10 @@ function findDugTarget(
   return null;
 }
 
+/**
+ * 生成搜索节点的唯一标识，用于 visited 集合去重。
+ * 包含脚位坐标、最后朝向、最后动作类型和已计划空气方块集合。
+ */
 function stateKey(node: SearchNode): string {
   const foot = positionKey(node.foot);
   const dir = node.lastDir ?? "none";
@@ -477,14 +509,20 @@ function stateKey(node: SearchNode): string {
   return `${foot}:${dir}:${node.lastActionKind ?? "none"}#${sorted}`;
 }
 
+/** 坐标转字符串键，用于 plannedAir 集合去重。 */
 function positionKey(pos: MineBlockPos): string {
   return `${pos.x}:${pos.y}:${pos.z}`;
 }
 
+/** 冻结坐标对象为不可变实例。 */
 function freezePos(pos: MineBlockPos): MineBlockPos {
   return Object.freeze({ x: pos.x, y: pos.y, z: pos.z });
 }
 
+/**
+ * 校验目标方块在当前世界快照中是否确实可读、可挖、名称匹配。
+ * 过滤掉在搜索开始前就已经被挖掉或不可达的目标。
+ */
 function verifyTargetIsReadable(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -498,6 +536,7 @@ function verifyTargetIsReadable(
   return facts.normalizeName(block.name) === blockName;
 }
 
+/** 在当前节点状态下，检查是否有目标方块位于可达范围内且视线通畅。 */
 function findReachableTarget(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -527,6 +566,10 @@ function findReachableTarget(
   return best?.position ?? null;
 }
 
+/**
+ * 检查从当前脚位的眼部位置（+1.62 格高）到目标方块中心的视线是否通畅。
+ * 使用射线步进（ray marching）沿视线逐格检查，遇到非空气且未计划挖掘的方块就判定为不通。
+ */
 function rayClearTo(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -561,6 +604,10 @@ function rayClearTo(
   return true;
 }
 
+/**
+ * 判断指定坐标是否可通过（空气方块或已被计划挖掘）。
+ * 用于检查身体/头部空间是否足够。
+ */
 function isPassable(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -573,14 +620,17 @@ function isPassable(
   return facts.isAirBlock(block);
 }
 
+/** 计算两个坐标的欧几里得距离。 */
 function distance(left: MineBlockPos, right: MineBlockPos): number {
   return Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z);
 }
 
+/** 判断两个坐标是否相同。 */
 function samePos(left: MineBlockPos, right: MineBlockPos): boolean {
   return left.x === right.x && left.y === right.y && left.z === right.z;
 }
 
+/** 判断两个水平方向是否相反（north vs south，east vs west）。 */
 function isOppositeDirection(left: MineRouteDirection, right: MineRouteDirection): boolean {
   return (
     (left === "north" && right === "south") ||
@@ -590,6 +640,10 @@ function isOppositeDirection(left: MineRouteDirection, right: MineRouteDirection
   );
 }
 
+/**
+ * 防止连续反向垂直挖掘（先挖下去再挖上来，或反之）。
+ * 这种模式通常意味着搜索在"原地打转"，应该被剪枝。
+ */
 function isImmediateReverseVerticalExcavation(
   node: SearchNode,
   nextKind: "digStepDown" | "digStepUp",
@@ -601,14 +655,20 @@ function isImmediateReverseVerticalExcavation(
   return isOppositeDirection(previous.dir, nextDir);
 }
 
+/** 判断动作类型是否属于垂直挖掘（digStepDown / digStepUp）。 */
 function isVerticalExcavation(kind: MineRouteAction["kind"]): kind is "digStepDown" | "digStepUp" {
   return kind === "digStepDown" || kind === "digStepUp";
 }
 
+/** 坐标格式化为日志标签（x,y,z）。 */
 function posLabel(pos: MineBlockPos): string {
   return `${pos.x},${pos.y},${pos.z}`;
 }
 
+/**
+ * 判断指定坐标是否有实体支撑（可以站在上面）。
+ * 与 isPassable 互补：isPassable 检查"是否可以穿过"，这里检查"是否可以站立"。
+ */
 function isWalkableSupport(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -621,12 +681,17 @@ function isWalkableSupport(
   return facts.isSupportBlock(block);
 }
 
+/** 生成脚位上方 height 格的坐标序列，用于净空检查。 */
 function clearancePositions(foot: MineBlockPos, height: number): readonly MineBlockPos[] {
   return Object.freeze(
     Array.from({ length: height }, (_, dy) => freezePos({ x: foot.x, y: foot.y + dy, z: foot.z })),
   );
 }
 
+/**
+ * 检查指定脚位上方 height 格是否全部可通过（用于判断跳跃是否有足够空间）。
+ * BODY_CLEARANCE = 2 检查身体两格，JUMP_CLEARANCE = 3 检查跳跃三格。
+ */
 function hasClearance(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -637,6 +702,11 @@ function hasClearance(
   return clearancePositions(foot, height).every((pos) => isPassable(bot, facts, pos, plannedAir));
 }
 
+/**
+ * 收集需要挖掘才能通过的方块列表。
+ * 如果遇到不可挖掘的方块则返回 null（整个动作不可行）。
+ * 用于 digWalk / digStepDown / digStepUp 等需要先挖再走的动作。
+ */
 function collectClearanceDigs(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -656,6 +726,7 @@ function collectClearanceDigs(
   return Object.freeze(digs);
 }
 
+/** 判断方块是否可挖掘：排除已被计划挖掘的方块，检查 minecraft-data 中的 diggable 属性。 */
 function canDigBlock(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -668,19 +739,26 @@ function canDigBlock(
   return facts.isDiggableBlock(block);
 }
 
+/**
+ * 最小堆（优先队列），用于 A* 搜索中按代价排序展开节点。
+ * 实现了标准的二叉堆，支持 push / pop / isEmpty 操作。
+ */
 class MinHeap<T> {
   private readonly data: T[] = [];
   constructor(private readonly compare: (left: T, right: T) => number) {}
 
+  /** 判断堆是否为空。 */
   isEmpty(): boolean {
     return this.data.length === 0;
   }
 
+  /** 将元素插入堆并维护最小堆性质。 */
   push(item: T): void {
     this.data.push(item);
     this.bubbleUp(this.data.length - 1);
   }
 
+  /** 弹出堆顶（最小元素）并维护最小堆性质。 */
   pop(): T | undefined {
     if (this.data.length === 0) return undefined;
     const top = this.data[0];
@@ -693,6 +771,7 @@ class MinHeap<T> {
     return top;
   }
 
+  /** 上浮：将索引处元素向上移动直到满足堆性质。 */
   private bubbleUp(index: number): void {
     let cursor = index;
     while (cursor > 0) {
@@ -707,6 +786,7 @@ class MinHeap<T> {
     }
   }
 
+  /** 下沉：将索引处元素向下移动直到满足堆性质。 */
   private bubbleDown(index: number): void {
     const length = this.data.length;
     let cursor = index;

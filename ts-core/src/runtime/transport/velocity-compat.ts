@@ -54,6 +54,7 @@ export function attachMineflayerEntityVelocityCompatibility(bot: MineflayerBotHa
   };
 }
 
+/** 解析实体速度数据包，提取实体 ID 和速度分量（Notchian 单位转换为方块/秒）。 */
 function readEntityVelocityPacket(
   packet: unknown,
 ): { readonly entityId: number | string; readonly velocity: MineflayerVec3Like } | null {
@@ -81,6 +82,7 @@ function readEntityVelocityPacket(
   };
 }
 
+/** 按实体 ID 查找实体对象（先检查 Bot 自身，再检查实体字典）。 */
 function findEntityById(
   bot: MineflayerBotHandle,
   entityId: number | string,
@@ -93,6 +95,7 @@ function findEntityById(
   return bot.entities?.[key];
 }
 
+/** 将速度写入实体对象（优先使用 update/set 方法，否则直接赋值）。 */
 function writeEntityVelocity(entity: MineflayerEntityHandle, velocity: MineflayerVec3Like): void {
   const writableVelocity = entity.velocity as WritableVec3 | undefined;
   if (writableVelocity === undefined) {
@@ -114,6 +117,7 @@ function writeEntityVelocity(entity: MineflayerEntityHandle, velocity: Mineflaye
   writableVelocity.z = velocity.z;
 }
 
+/** 判断值是否为有限数字（排除 NaN 和 Infinity）。 */
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }

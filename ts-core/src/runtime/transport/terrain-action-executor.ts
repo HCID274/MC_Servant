@@ -1,3 +1,9 @@
+/**
+ * terrain-router 输出动作的单步执行器。
+ * 将 walk / drop1 / jumpUp / placeUp1 / digWalk / digStepDown / digStepUp 翻译为
+ * Mineflayer 的 setControlState + lookAt + dig / placeBlock 调用。
+ */
+
 import { Vec3 } from "vec3";
 import type { SkillExecutionControl } from "../../core-ports/skills.js";
 import {
@@ -48,6 +54,8 @@ const PLACE_UP_MAX_ROUNDS = 3;
 const PLACE_UP_DELAYS_MS = readPlaceUpDelayQueue(process.env.TERRAIN_PLACE_UP_DELAYS_MS);
 const PLACE_UP_DELAY_STATS = new Map<number, { successes: number; failures: number }>();
 
+/** 执行单条地形寻路动作。 */
+/** 执行地形寻路动作：根据动作类型分发到对应的 Mineflayer 操作。 */
 export async function executeTerrainRouteAction(input: {
   readonly bot: TerrainActionBot;
   readonly facts: MineBlockFactReader;
@@ -166,10 +174,12 @@ export async function executeTerrainRouteAction(input: {
   }
 }
 
+/** 判断 Bot 是否已到达目标脚位。 */
 export function isTerrainBotAtFoot(bot: TerrainActionBot, target: TerrainBlockPos): boolean {
   return isFootStepBotAtFoot(bot, target);
 }
 
+/** 读取 Bot 当前脚位坐标（向下取整）。 */
 function readBotFoot(bot: TerrainActionBot): TerrainBlockPos {
   const position = bot.entity?.position ?? { x: 0, y: 0, z: 0 };
   return freezePos({
@@ -179,6 +189,7 @@ function readBotFoot(bot: TerrainActionBot): TerrainBlockPos {
   });
 }
 
+/** 放置一个方块：居中 → 清除目标 → 装备物品 → 跳跃 → 放置 → 验证。 */
 async function placeUpOneBlock(
   bot: TerrainActionBot,
   facts: MineBlockFactReader,
@@ -320,6 +331,7 @@ async function placeUpOneBlock(
   throw new Error(`terrain_place_up_failed:${getErrorMessage(lastError)}`);
 }
 
+/** 等待放置后 Bot 脚位到达目标高度（放置成功后 Bot 会被抬高一格）。 */
 async function waitUntilPlaceUpFootReached(input: {
   readonly bot: TerrainActionBot;
   readonly target: TerrainBlockPos;
@@ -339,6 +351,7 @@ async function waitUntilPlaceUpFootReached(input: {
   });
 }
 
+/** 短暂跳跃：按下跳跃键 → 等待 → 松开跳跃键 → 等待剩余延迟。 */
 async function tapJump(bot: TerrainActionBot, placeDelayMs: number): Promise<void> {
   bot.setControlState?.("jump", true);
   await delay(Math.min(PLACE_JUMP_TAP_MS, placeDelayMs));
@@ -349,6 +362,7 @@ async function tapJump(bot: TerrainActionBot, placeDelayMs: number): Promise<voi
   }
 }
 
+/** 放置前居中：将 Bot 移动到目标脚位中心，确保放置位置准确。 */
 async function centerOnFootBeforePlaceUp(
   bot: TerrainActionBot,
   foot: TerrainBlockPos,
@@ -371,6 +385,7 @@ async function centerOnFootBeforePlaceUp(
   );
 }
 
+/** 挖掘下落前居中：将 Bot 移动到目标脚位中心，确保下落位置准确。 */
 async function centerOnFootBeforeDigDrop(
   bot: TerrainActionBot,
   foot: TerrainBlockPos,
@@ -393,6 +408,7 @@ async function centerOnFootBeforeDigDrop(
   );
 }
 
+/** 调用 Mineflayer 放置方块（优先使用 _placeBlockWithOptions，否则 fallback 到 placeBlock）。 */
 function placeUpWithMineflayer(
   bot: TerrainActionBot,
   supportBlock: MineflayerBlockHandle,
@@ -410,6 +426,7 @@ function placeUpWithMineflayer(
   return Promise.resolve(bot.placeBlock?.(supportBlock, faceVector));
 }
 
+/** 挖掘单个方块：检查可达性 → 装备工具 → 看向目标 → 执行挖掘 → 验证方块已变化。 */
 async function digSingleBlock(
   bot: TerrainActionBot,
   facts: MineBlockFactReader,
@@ -452,6 +469,7 @@ async function digSingleBlock(
   diagnostics.push(`terrain_dig_verified:${name}:${posLabel(pos)}`);
 }
 
+/** 向前移动一步：调用 foot-step 模块的 stepToFoot 实现。 */
 async function stepForward(
   bot: TerrainActionBot,
   target: TerrainBlockPos,
@@ -471,6 +489,7 @@ async function stepForward(
   });
 }
 
+/** 从背包中选择最适合放置的方块物品（优先数量多、硬度低、名称排序靠前）。 */
 function selectPlaceUpItem(bot: TerrainActionBot): MineflayerItemHandle | null {
   const registry = bot.registry as MineflayerRegistryFacts | undefined;
   const blocksByName = registry?.blocksByName;
@@ -487,6 +506,7 @@ function selectPlaceUpItem(bot: TerrainActionBot): MineflayerItemHandle | null {
   return candidates[0]?.item ?? null;
 }
 
+/** 确保放置物品已装备到主手；如果没有则从背包选择并装备。 */
 async function ensurePlaceUpItemEquipped(
   bot: TerrainActionBot,
   facts: MineBlockFactReader,
@@ -513,6 +533,7 @@ async function ensurePlaceUpItemEquipped(
   return item;
 }
 
+/** 判断物品是否为可放置方块（非掉落方块、非非完整方块）。 */
 function isPlaceUpItem(
   bot: TerrainActionBot,
   item: MineflayerItemHandle | null | undefined,
@@ -527,6 +548,7 @@ function isPlaceUpItem(
   return block.boundingBox === undefined || block.boundingBox === "block";
 }
 
+/** 清除放置目标位置的方块（如果是可替换方块则跳过，否则挖掘）。 */
 async function clearPlaceUpTargetBlock(input: {
   readonly bot: TerrainActionBot;
   readonly facts: MineBlockFactReader;
@@ -560,12 +582,14 @@ async function clearPlaceUpTargetBlock(input: {
   throw new Error(`terrain_place_target_clear_failed:${posLabel(input.pos)}:${blockName}`);
 }
 
+/** 判断方块是否为可替换的放置目标（无碰撞箱，如草、花等）。 */
 function isReplaceablePlaceTarget(block: MineflayerBlockHandle | null | undefined): boolean {
   if (block === null || block === undefined) return false;
   if (Array.isArray(block.shapes)) return block.shapes.length === 0;
   return false;
 }
 
+/** 判断放置失败后目标位置是否已被其他方块占据（可能是其他 Bot 放置的）。 */
 function isPlacedAfterFailedAttempt(
   facts: MineBlockFactReader,
   block: MineflayerBlockHandle | null | undefined,
@@ -576,6 +600,7 @@ function isPlacedAfterFailedAttempt(
   return previousTargetName === null || currentName !== previousTargetName;
 }
 
+/** 比较两个放置候选物品的优先级（堆叠数量 → 硬度 → 名称）。 */
 function comparePlaceUpCandidates(
   left: {
     readonly item: MineflayerItemHandle;
@@ -600,6 +625,7 @@ function comparePlaceUpCandidates(
   return normalizeName(left.item.name ?? "").localeCompare(normalizeName(right.item.name ?? ""));
 }
 
+/** 读取物品堆叠数量分桶（≥32 → 0，≥8 → 1，其他 → 2），用于排序。 */
 function readStackBucket(item: MineflayerItemHandle): number {
   const count = item.count ?? 1;
   if (count >= 32) return 0;
@@ -607,6 +633,7 @@ function readStackBucket(item: MineflayerItemHandle): number {
   return 2;
 }
 
+/** 读取方块硬度值（用于排序，硬度越低越容易放置）。 */
 function readPlacementHardness(
   block: NonNullable<MineflayerRegistryFacts["blocksByName"]>[string],
 ): number {
@@ -615,6 +642,7 @@ function readPlacementHardness(
     : 1;
 }
 
+/** 等待方块变化：轮询检查目标位置的方块是否已变为预期状态。 */
 async function waitUntilBlockChanged(
   bot: TerrainActionBot,
   facts: MineBlockFactReader,
@@ -633,6 +661,7 @@ async function waitUntilBlockChanged(
   throw new Error(`terrain_dig_no_effect:${originalName}:${posLabel(pos)}`);
 }
 
+/** 等待方块放置成功：轮询检查目标位置是否不再是空气。 */
 async function waitUntilPlaced(
   bot: TerrainActionBot,
   facts: MineBlockFactReader,
@@ -647,6 +676,7 @@ async function waitUntilPlaced(
   throw new Error(`terrain_place_no_effect:${posLabel(pos)}`);
 }
 
+/** 判断方块是否已变化（变为空气或名称不同）。 */
 function isBlockChanged(
   facts: MineBlockFactReader,
   block: MineflayerBlockHandle | null | undefined,
@@ -657,6 +687,7 @@ function isBlockChanged(
   return facts.isLiteralAirBlock(block) || currentName !== originalName;
 }
 
+/** 判断方块是否为空气（包括 null/undefined）。 */
 function isEmptyBlock(
   facts: MineBlockFactReader,
   block: MineflayerBlockHandle | null | undefined,
@@ -665,22 +696,27 @@ function isEmptyBlock(
   return facts.isLiteralAirBlock(block);
 }
 
+/** 计算方块中心坐标（+0.5 偏移）。 */
 function centerOfBlock(pos: TerrainBlockPos): Vec3 {
   return new Vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5);
 }
 
+/** 坐标格式化为日志标签（x,y,z）。 */
 function posLabel(pos: TerrainBlockPos): string {
   return `${pos.x},${pos.y},${pos.z}`;
 }
 
+/** 判断两个坐标是否相同。 */
 function samePos(left: TerrainBlockPos, right: TerrainBlockPos): boolean {
   return left.x === right.x && left.y === right.y && left.z === right.z;
 }
 
+/** 冻结坐标对象为不可变实例。 */
 function freezePos(pos: TerrainBlockPos): TerrainBlockPos {
   return Object.freeze({ x: pos.x, y: pos.y, z: pos.z });
 }
 
+/** 标准化方块名称：去除命名空间、转小写、空格和连字符转下划线。 */
 function normalizeName(value: string): string {
   return value
     .trim()
@@ -689,6 +725,7 @@ function normalizeName(value: string): string {
     .replace(/[\s-]+/gu, "_");
 }
 
+/** 带超时的 Promise 包装器：如果 promise 未在指定时间内完成则抛出错误。 */
 async function withTerrainActionTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -705,14 +742,17 @@ async function withTerrainActionTimeout<T>(
   }
 }
 
+/** 延迟指定毫秒。 */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** 从错误对象中提取错误消息。 */
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** 解析 TERRAIN_PLACE_UP_DELAYS_MS 环境变量为延迟队列。 */
 function readPlaceUpDelayQueue(value: string | undefined): readonly number[] {
   if (value === undefined || value.trim().length === 0) {
     return DEFAULT_PLACE_UP_DELAYS_MS;
@@ -726,10 +766,12 @@ function readPlaceUpDelayQueue(value: string | undefined): readonly number[] {
   return parsed.length === 0 ? DEFAULT_PLACE_UP_DELAYS_MS : Object.freeze(parsed);
 }
 
+/** 创建默认的放置延迟队列。 */
 function createPlaceUpDelayQueue(): readonly number[] {
   return PLACE_UP_DELAYS_MS;
 }
 
+/** 记录放置延迟的成功/失败统计。 */
 function recordPlaceUpDelay(delayMs: number, status: "success" | "failure"): void {
   const current = PLACE_UP_DELAY_STATS.get(delayMs) ?? { successes: 0, failures: 0 };
   PLACE_UP_DELAY_STATS.set(delayMs, {
@@ -738,6 +780,7 @@ function recordPlaceUpDelay(delayMs: number, status: "success" | "failure"): voi
   });
 }
 
+/** 清理诊断字符串：移除分号和换行符，截断到 160 字符。 */
 function sanitizeDiagnostic(value: string): string {
   return value.replaceAll(/[;\n\r]/gu, " ").slice(0, 160);
 }

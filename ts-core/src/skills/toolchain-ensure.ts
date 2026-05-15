@@ -1,3 +1,9 @@
+/**
+ * toolchain ensure（工具链确保）：根据结构化失败码自动补齐缺失依赖。
+ * 例如：缺少木板 → 先砍树获取原木 → 合成木板；没有工作台 → 合成并放置。
+ * 只组合底层通用能力（mine / craft / place / equip / collect），不直接操作 runtime。
+ */
+
 import type {
   CollectSkillAdapter,
   CraftToolchainAdapter,

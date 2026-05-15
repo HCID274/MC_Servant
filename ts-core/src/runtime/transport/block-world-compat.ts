@@ -1,3 +1,9 @@
+/**
+ * Mineflayer 多世界兼容补丁。
+ * Mineflayer 的 blocks plugin 在 Multiworld 服务器上用 dimension 而非 worldName 判断世界切换，
+ * 会导致方块缓存错乱。此模块通过监听协议包修正 respawn 帧中的世界名。
+ */
+
 import type { MineflayerBotHandle } from "./types.js";
 
 interface RespawnWorldPacket {
@@ -85,14 +91,17 @@ export function attachMineflayerBlockWorldCompatibility(
   };
 }
 
+/** 从数据包中读取维度类型（优先 worldState.dimension，其次 dimension）。 */
 function readDimensionType(packet: RespawnWorldPacket): string | undefined {
   return packet.worldState?.dimension ?? packet.dimension;
 }
 
+/** 从数据包中读取世界名（优先 worldState.name，其次 worldName）。 */
 function readWorldName(packet: RespawnWorldPacket): string | undefined {
   return packet.worldState?.name ?? packet.worldName;
 }
 
+/** 修正旧版 respawn 数据包：将 dimension 字段替换为世界名，避免 Mineflayer 误判世界切换。 */
 function normalizeLegacyRespawnWorld(
   packet: RespawnWorldPacket,
   worldDimensionMap: Readonly<Record<string, string>>,
@@ -112,6 +121,7 @@ function normalizeLegacyRespawnWorld(
   packet.dimension = worldName;
 }
 
+/** 修正新版 respawn 数据包：将 worldState.dimension 字段替换为世界名。 */
 function normalizeWorldStateRespawnWorld(
   packet: RespawnWorldPacket,
   worldDimensionMap: Readonly<Record<string, string>>,
@@ -129,6 +139,7 @@ function normalizeWorldStateRespawnWorld(
   packet.worldState.dimension = worldName;
 }
 
+/** 解析 MC_WORLD_DIMENSION_MAP 环境变量为世界名→维度类型的映射表。 */
 export function parseWorldDimensionMap(
   input: string | undefined,
 ): Readonly<Record<string, string>> {
@@ -160,6 +171,7 @@ export function parseWorldDimensionMap(
   return Object.freeze(entries);
 }
 
+/** 判断是否应该使用世界名缓存：世界名存在且与维度类型不同。 */
 function shouldUseWorldNameCache(
   worldName: string | undefined,
   dimensionType: string | undefined,
@@ -176,6 +188,7 @@ function shouldUseWorldNameCache(
   return resolveWorldDimensionType(worldName, worldDimensionMap) !== undefined;
 }
 
+/** 根据世界名查找对应的维度类型（支持带命名空间和不带命名空间的查询）。 */
 function resolveWorldDimensionType(
   worldName: string | undefined,
   worldDimensionMap: Readonly<Record<string, string>>,
@@ -202,6 +215,7 @@ function resolveWorldDimensionType(
   return undefined;
 }
 
+/** 标准化维度类型：补全 minecraft: 前缀，处理 overworld/the_nether/the_end 等简写。 */
 function normalizeDimensionType(value: string | undefined): string | undefined {
   if (value === undefined) {
     return undefined;
@@ -219,10 +233,12 @@ function normalizeDimensionType(value: string | undefined): string | undefined {
   return trimmed;
 }
 
+/** 判断世界名是否包含命名空间分隔符（如 multiworld:overworld）。 */
 function isNamespacedWorldName(value: unknown): value is string {
   return typeof value === "string" && value.includes(":");
 }
 
+/** 去除 minecraft: 前缀，返回纯世界名。 */
 function stripMinecraftNamespace(value: string | undefined): string | undefined {
   return value?.startsWith("minecraft:") ? value.slice("minecraft:".length) : value;
 }

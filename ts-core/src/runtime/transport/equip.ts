@@ -82,6 +82,7 @@ export async function executeMineflayerEquip(input: {
   );
 }
 
+/** 执行装备操作并设置超时，避免 Mineflayer 卡死。 */
 async function runEquipWithTimeout(
   operation: () => Promise<void> | void | undefined,
   timeoutMs: number,
@@ -94,6 +95,7 @@ async function runEquipWithTimeout(
   ]);
 }
 
+/** 创建装备失败的结构化错误，携带错误码和参数信息。 */
 function createEquipFailure(
   code: ToolchainFailureCode,
   message: string,

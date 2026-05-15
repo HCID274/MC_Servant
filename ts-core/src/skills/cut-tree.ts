@@ -1,3 +1,9 @@
+/**
+ * cutTree（砍树）技能执行器。
+ * 流程：从 ResourceService 选择树木簇 → 逐个挖推荐原木 → 等掉落 → 捡拾 → 更新缓存。
+ * 支持跨簇重试直到收集够数量。
+ */
+
 import type { SnapshotPosition } from "../core-ports/observation.js";
 import {
   type CollectSkillAdapter,

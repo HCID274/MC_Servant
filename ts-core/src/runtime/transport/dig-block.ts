@@ -73,6 +73,7 @@ export async function executeMineflayerDigBlockAt(input: {
   input.control.throwIfAborted();
 }
 
+/** 接近挖掘目标：通过地形导航移动到目标附近，使目标进入挖掘范围。 */
 async function approachDigTarget(input: {
   readonly bot: MineflayerDigBlockAtPort;
   readonly pathfinder: MineflayerPathfinderApi;
@@ -102,6 +103,7 @@ async function approachDigTarget(input: {
   }
 }
 
+/** 计算挖掘目标的脚位坐标（向下取整）。 */
 function resolveDigApproachFoot(position: Readonly<MineflayerVec3Like>): {
   readonly x: number;
   readonly y: number;
@@ -114,6 +116,7 @@ function resolveDigApproachFoot(position: Readonly<MineflayerVec3Like>): {
   });
 }
 
+/** 判断当前 Bot 位置是否可以直接挖掘目标（无需移动）。 */
 function canDigTargetFromCurrentPosition(
   bot: MineflayerDigBlockAtPort,
   block: MineflayerBlockHandle,
@@ -138,6 +141,7 @@ function canDigTargetFromCurrentPosition(
   );
 }
 
+/** 在错误上附加挖掘目标的详细信息，便于诊断。 */
 function withDigBlockApproachDetails(
   error: unknown,
   position: Readonly<MineflayerVec3Like>,
@@ -147,6 +151,7 @@ function withDigBlockApproachDetails(
   return createDigBlockError(wrapped.message, position, diagnostics, wrapped);
 }
 
+/** 创建挖掘方块的结构化错误，携带错误码、目标坐标和诊断信息。 */
 function createDigBlockError(
   message: string,
   position: Readonly<MineflayerVec3Like>,
@@ -177,6 +182,7 @@ function createDigBlockError(
   return enriched;
 }
 
+/** 坐标格式化为整数字符串（x,y,z）。 */
 function formatPosition(position: Readonly<MineflayerVec3Like>): string {
   return `${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`;
 }

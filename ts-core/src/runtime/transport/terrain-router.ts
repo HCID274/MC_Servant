@@ -1,3 +1,14 @@
+/**
+ * 通用地形寻路规划器：用 A* 搜索为 Bot 找到从 startFoot 到 targetFoot 的最低代价移动路径。
+ *
+ * 核心设计：
+ * - 分阶段搜索（natural → light_dig → light_place → relaxed），每个阶段放宽"允许破坏/放置方块"的预算，
+ *   优先走自然通道，最后才动地形，尽量减少对世界的副作用。
+ * - 支持 7 种动作：walk / drop1 / jumpUp / placeUp1 / digWalk / digStepDown / digStepUp / digDropSelfPlaced。
+ * - 通过 noProgressSteps 计数器限制"原地打转"的搜索分支，避免指数爆炸。
+ * - mining profile（采矿模式）会给予更大的挖掘/放置预算，适合在地下复杂矿洞中穿行。
+ */
+
 import type { MineBlockFactReader } from "./mine-block-facts.js";
 import { isSelfPlacedTerrainBlock } from "./terrain-self-placed-memory.js";
 import type {
@@ -7,14 +18,21 @@ import type {
 } from "./types.js";
 import { readMineflayerBlockAt } from "./world-reader.js";
 
+/** 地形方块坐标（整数，代表一个 1×1×1 方块格子）。 */
 export interface TerrainBlockPos {
   readonly x: number;
   readonly y: number;
   readonly z: number;
 }
 
+/** 水平方向枚举，用于记录每步移动的朝向并计算转弯惩罚。 */
 export type TerrainRouteDirection = "north" | "east" | "south" | "west";
 
+/**
+ * 地形寻路输出的单步动作联合类型。
+ * 每个动作都携带 toFoot（目标脚位）和 dir（移动方向），
+ * 需要破坏方块的动作还会附带 digs（待挖掘坐标列表）。
+ */
 export type TerrainRouteAction =
   | { readonly kind: "walk"; readonly toFoot: TerrainBlockPos; readonly dir: TerrainRouteDirection }
   | {
@@ -75,9 +93,15 @@ export interface TerrainRoutePlanResult {
   readonly budgetExhausted: boolean;
 }
 
+/** 寻路配置文件：normal 用于一般移动，mining 给予更大的挖掘/下落预算。 */
 export type TerrainRouteProfile = "normal" | "mining";
+/** 搜索阶段名称，对应从保守到激进的四种策略。 */
 export type TerrainRouteSearchPhaseName = "natural" | "light_dig" | "light_place" | "relaxed";
 
+/**
+ * 搜索预算配置，用于限制寻路算法的资源消耗。
+ * 生产环境建议设置 maxPlanningMs（搜索超时毫秒数）防止长时间阻塞。
+ */
 export interface TerrainRouteBudget {
   readonly maxTotalExpandedStates?: number;
   readonly maxPhaseExpandedStates?: number;
@@ -118,6 +142,10 @@ const DEFAULT_MAX_TOTAL_PLANNED_CHANGES = 192;
 const BODY_CLEARANCE = 2;
 const JUMP_CLEARANCE = 3;
 
+/**
+ * 单个搜索阶段的配置，定义该阶段允许的动作类型和资源预算。
+ * 阶段之间从保守到激进递进：natural 不允许任何地形修改，relaxed 允许大量挖掘和放置。
+ */
 interface TerrainSearchPhase {
   readonly name: TerrainRouteSearchPhaseName;
   readonly solvedDiagnostic: string;
@@ -131,6 +159,11 @@ interface TerrainSearchPhase {
   readonly maxNoProgressSteps: number;
 }
 
+/**
+ * A* 搜索节点，记录当前脚位、累计代价、父节点指针和已修改方块集合。
+ * plannedAir / plannedSolid 用于在搜索中追踪"假设已被挖掘/放置"的方块，
+ * 避免对同一方块重复操作，也避免把已计划变为空气的方块当作不可通过。
+ */
 interface SearchNode {
   readonly foot: TerrainBlockPos;
   readonly plannedAir: ReadonlySet<string>;
@@ -148,6 +181,7 @@ interface SearchNode {
   readonly noProgressSteps: number;
 }
 
+/** 地形寻路入口：根据起点和终点执行分阶段 A* 搜索，返回最低代价路径或 null。 */
 export function planTerrainRoute(input: {
   readonly bot: TerrainRouteBot;
   readonly facts: MineBlockFactReader;
@@ -284,6 +318,10 @@ export function planTerrainRoute(input: {
   };
 }
 
+/**
+ * 在单个搜索阶段内执行 A* 搜索。
+ * 如果当前阶段找到了路径就返回 plan，否则返回 null 让外层尝试下一阶段。
+ */
 function searchTerrainPhase(input: {
   readonly input: {
     readonly bot: TerrainRouteBot;
@@ -415,6 +453,13 @@ function searchTerrainPhase(input: {
   };
 }
 
+/**
+ * 展开当前节点的所有后继状态：对四个方向逐一尝试 walk / drop1 / jumpUp /
+ * placeUp1 / digWalk / digStepDown / digStepUp / digDropSelfPlaced。
+ *
+ * 每个候选动作都需要通过"支撑检查"（脚下方块是否实体）和"净空检查"（身体/头部是否可通过）。
+ * prunedNoProgress 统计因"原地打转"被剪枝的分支数，用于诊断。
+ */
 function expandSuccessors(
   input: {
     readonly bot: TerrainRouteBot;
@@ -716,6 +761,17 @@ function expandSuccessors(
   return { successors: out, prunedNoProgress };
 }
 
+/**
+ * 创建分阶段搜索配置列表。
+ *
+ * 四个阶段从保守到激进递进：
+ * 1. natural（自然）：只允许走/跳/下落，不修改任何方块。
+ * 2. light_dig（轻挖掘）：允许少量挖掘来打通路径。
+ * 3. light_place（轻放置）：允许放置 1 个方块（垫脚石）。
+ * 4. relaxed（宽松）：放宽所有限制，适合复杂矿洞。
+ *
+ * mining profile 会给予更大的预算，因为矿洞中天然通道少、需要更多挖掘。
+ */
 function createSearchPhases(input: {
   readonly profile: TerrainRouteProfile;
   readonly allowDig: boolean;
@@ -796,6 +852,15 @@ function createSearchPhases(input: {
   return Object.freeze(phases);
 }
 
+/**
+ * 将后继动作加入搜索队列。
+ *
+ * 核心逻辑：
+ * - 跟踪 noProgressSteps（无进展步数），如果连续多步未靠近目标则剪枝返回 false。
+ * - 维护 plannedAir / plannedSolid 集合，记录搜索过程中假设被挖掘/放置的方块。
+ *
+ * @returns true 表示成功加入，false 表示被剪枝。
+ */
 function pushSuccessor(
   out: SearchNode[],
   parent: SearchNode,
@@ -855,6 +920,10 @@ function pushSuccessor(
   return true;
 }
 
+/**
+ * 从搜索节点回溯重建完整动作序列。
+ * 沿 parent 指针反向遍历直到根节点，然后反转得到从起点到终点的动作列表。
+ */
 function reconstructActions(node: SearchNode): readonly TerrainRouteAction[] {
   const actions: TerrainRouteAction[] = [];
   let current: SearchNode | null = node;
@@ -865,6 +934,7 @@ function reconstructActions(node: SearchNode): readonly TerrainRouteAction[] {
   return Object.freeze(actions);
 }
 
+/** 统计动作序列中各类型的出现次数，用于诊断日志。 */
 function summarizeActions(actions: readonly TerrainRouteAction[]): readonly string[] {
   const counts = new Map<string, number>();
   for (const action of actions) {
@@ -875,6 +945,7 @@ function summarizeActions(actions: readonly TerrainRouteAction[]): readonly stri
   );
 }
 
+/** 判断当前脚位是否已到达目标位置附近，使用水平距离 + 垂直距离双重判定。 */
 function isGoal(
   current: TerrainBlockPos,
   target: TerrainBlockPos,
@@ -887,6 +958,11 @@ function isGoal(
   );
 }
 
+/**
+ * A* 启发式函数：估算从当前脚位到目标的剩余代价。
+ * 使用曼哈顿距离的变体：水平距离取向上取整，垂直距离按绝对值计算。
+ * 返回值永远不会高估实际代价（admissible），保证 A* 找到最优解。
+ */
 function routeHeuristic(
   current: TerrainBlockPos,
   target: TerrainBlockPos,
@@ -904,6 +980,11 @@ function routeHeuristic(
   return horizontalSteps * COST_WALK + verticalCost;
 }
 
+/**
+ * 目标距离评分：用于搜索中的"最佳节点"追踪。
+ * 垂直距离权重远高于水平距离（×1000），因为垂直移动成本更高。
+ * 注意：这与 routeHeuristic 不同，前者用于优先队列排序，这里用于诊断。
+ */
 function goalDistanceScore(
   current: TerrainBlockPos,
   target: TerrainBlockPos,
@@ -918,6 +999,11 @@ function goalDistanceScore(
   return verticalMiss * 1000 + horizontalMiss;
 }
 
+/**
+ * 生成搜索节点的唯一标识，用于 visited 集合去重。
+ * 包含脚位坐标、已计划空气/实体方块集合、最后动作类型和各种计数器，
+ * 确保相同"搜索状态"不会被重复展开。
+ */
 function stateKey(node: SearchNode): string {
   const foot = positionKey(node.foot);
   const air = node.plannedAir.size === 0 ? "" : `a=${Array.from(node.plannedAir).sort().join("|")}`;
@@ -926,14 +1012,20 @@ function stateKey(node: SearchNode): string {
   return `${foot}#${air}#${solid}#last=${node.lastActionKind ?? "none"}#dig=${node.digCount};place=${node.placeCount};drop=${node.dropCount};np=${node.noProgressSteps}`;
 }
 
+/** 坐标转字符串键，用于 plannedAir/plannedSolid 集合去重。 */
 function positionKey(pos: TerrainBlockPos): string {
   return `${pos.x}:${pos.y}:${pos.z}`;
 }
 
+/** 冻结坐标对象为不可变实例，避免后续修改。 */
 function freezePos(pos: TerrainBlockPos): TerrainBlockPos {
   return Object.freeze({ x: pos.x, y: pos.y, z: pos.z });
 }
 
+/**
+ * 判断指定坐标是否可通过（空气方块或已被计划挖掘）。
+ * 注意：plannedSolid 优先级高于 plannedAir，因为放置操作会覆盖之前的挖掘计划。
+ */
 function isPassable(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -948,6 +1040,10 @@ function isPassable(
   return facts.isAirBlock(block);
 }
 
+/**
+ * 判断指定坐标是否有实体支撑（可以站在上面）。
+ * 支撑方块必须是"非空气且非危险"的实体方块，或已被计划放置的方块。
+ */
 function isWalkableSupport(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -962,12 +1058,17 @@ function isWalkableSupport(
   return facts.isSupportBlock(block);
 }
 
+/** 生成脚位上方 height 格的坐标序列，用于净空检查。 */
 function clearancePositions(foot: TerrainBlockPos, height: number): readonly TerrainBlockPos[] {
   return Object.freeze(
     Array.from({ length: height }, (_, dy) => freezePos({ x: foot.x, y: foot.y + dy, z: foot.z })),
   );
 }
 
+/**
+ * 检查指定脚位上方 height 格是否全部可通过（用于判断跳跃/放置是否有足够空间）。
+ * BODY_CLEARANCE = 2 检查身体两格，JUMP_CLEARANCE = 3 检查跳跃三格。
+ */
 function hasClearance(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -978,6 +1079,11 @@ function hasClearance(
   return clearancePositions(foot, height).every((pos) => isPassable(bot, facts, pos, node));
 }
 
+/**
+ * 收集需要挖掘才能通过的方块列表。
+ * 如果遇到不可挖掘的方块则返回 null（整个动作不可行）。
+ * 用于 digWalk / digStepDown / digStepUp 等需要先挖再走的动作。
+ */
 function collectClearanceDigs(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -997,6 +1103,10 @@ function collectClearanceDigs(
   return Object.freeze(digs);
 }
 
+/**
+ * 判断方块是否可挖掘：排除已被计划修改的方块，检查 minecraft-data 中的 diggable 属性。
+ * 用于在搜索中预判"如果需要挖掘这个方块，是否真的能挖"。
+ */
 function canDigBlock(
   bot: MineflayerMiningPort,
   facts: MineBlockFactReader,
@@ -1010,6 +1120,10 @@ function canDigBlock(
   return facts.isDiggableBlock(block);
 }
 
+/**
+ * 判断方块是否为 Bot 自行放置的临时垫脚方块（可以被挖掉回收）。
+ * digDropSelfPlaced 动作的前置条件：只能挖掉自己放的方块，不能破坏世界原生方块。
+ */
 function canDigSelfPlacedSupport(
   bot: TerrainRouteBot,
   facts: MineBlockFactReader,
@@ -1024,6 +1138,7 @@ function canDigSelfPlacedSupport(
   return facts.isSupportBlock(block) && facts.isDiggableBlock(block);
 }
 
+/** 判断两个水平方向是否相反（north vs south，east vs west）。 */
 function isOppositeDirection(left: TerrainRouteDirection, right: TerrainRouteDirection): boolean {
   return (
     (left === "north" && right === "south") ||
@@ -1033,6 +1148,10 @@ function isOppositeDirection(left: TerrainRouteDirection, right: TerrainRouteDir
   );
 }
 
+/**
+ * 防止连续反向垂直挖掘（先挖下去再挖上来，或反之）。
+ * 这种模式通常意味着搜索在"原地打转"，应该被剪枝。
+ */
 function isImmediateReverseVerticalExcavation(
   node: SearchNode,
   nextKind: "digDropSelfPlaced" | "digStepDown" | "digStepUp",
@@ -1044,33 +1163,43 @@ function isImmediateReverseVerticalExcavation(
   return isOppositeDirection(previous.dir, nextDir);
 }
 
+/** 判断动作类型是否属于垂直挖掘（digDropSelfPlaced / digStepDown / digStepUp）。 */
 function isVerticalExcavation(
   kind: TerrainRouteAction["kind"],
 ): kind is "digDropSelfPlaced" | "digStepDown" | "digStepUp" {
   return kind === "digDropSelfPlaced" || kind === "digStepDown" || kind === "digStepUp";
 }
 
+/** 坐标格式化为日志标签（x,y,z）。 */
 function posLabel(pos: TerrainBlockPos): string {
   return `${pos.x},${pos.y},${pos.z}`;
 }
 
+/**
+ * 最小堆（优先队列），用于 A* 搜索中按代价排序展开节点。
+ * compare 函数返回负数表示 left 优先级更高，正数表示 right 更高。
+ */
 class MinHeap<T> {
   private readonly data: T[] = [];
   constructor(private readonly compare: (left: T, right: T) => number) {}
 
+  /** 判断堆是否为空。 */
   isEmpty(): boolean {
     return this.data.length === 0;
   }
 
+  /** 返回堆中元素数量。 */
   size(): number {
     return this.data.length;
   }
 
+  /** 将元素插入堆并维护最小堆性质。 */
   push(item: T): void {
     this.data.push(item);
     this.bubbleUp(this.data.length - 1);
   }
 
+  /** 弹出堆顶（最小元素）并维护最小堆性质。 */
   pop(): T | undefined {
     if (this.data.length === 0) return undefined;
     const top = this.data[0];
@@ -1083,6 +1212,7 @@ class MinHeap<T> {
     return top;
   }
 
+  /** 上浮：将索引处元素向上移动直到满足堆性质。 */
   private bubbleUp(index: number): void {
     let cursor = index;
     while (cursor > 0) {
@@ -1097,6 +1227,7 @@ class MinHeap<T> {
     }
   }
 
+  /** 下沉：将索引处元素向下移动直到满足堆性质。 */
   private bubbleDown(index: number): void {
     const length = this.data.length;
     let cursor = index;

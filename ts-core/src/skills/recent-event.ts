@@ -1,3 +1,9 @@
+/**
+ * 技能执行结果的最近上下文格式化器。
+ * 将 goTo / collect / cutTree / mine 的执行结果格式化为单行中文文本，
+ * 供 conversation-worker 写入最近上下文摘要。
+ */
+
 import type {
   CollectSkillExecutionResult,
   CutTreeSkillExecutionResult,

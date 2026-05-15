@@ -1,3 +1,8 @@
+/**
+ * collect（捡拾掉落物）技能适配器。
+ * 流程：移动到中心点 → 等待实体稳定 → 逐个走向捡拾 → 通过背包差异统计收集量。
+ */
+
 import {
   COLLECT_DEFAULT_RADIUS,
   COLLECT_MAX_RADIUS,
@@ -58,6 +63,7 @@ interface CollectDropsOptions {
 }
 
 /** 执行 collect（捡拾） 技能的 Mineflayer（Minecraft 协议客户端） 适配器。 */
+/** 执行 collect（捡拾）技能：收集指定范围内的掉落物实体。 */
 export async function executeMineflayerCollect(input: {
   readonly bot: MineflayerCollectPort;
   readonly pathfinder: MineflayerPathfinderApi;
@@ -205,6 +211,7 @@ async function collectDrops(input: {
 }
 
 /** 执行 pickup（单实体捡拾），只处理明确实体，不扫描周围其他掉落物。 */
+/** 捡拾单个实体：接近目标 → 等待拾取 → 验证背包变化。 */
 async function pickupEntity(input: {
   readonly bot: MineflayerCollectPort;
   readonly itemName?: string;
@@ -293,6 +300,7 @@ async function pickupEntity(input: {
   };
 }
 
+/** 移动到捡拾目标附近。 */
 async function goToPickupTarget(
   bot: MineflayerCollectPort,
   position: MineflayerVec3Like,
@@ -320,6 +328,7 @@ async function goToPickupTarget(
 }
 
 /** 规范化 collectDrops（收集掉落物） 参数，保证半径默认值和上限一致。 */
+/** 标准化捡拾选项：从参数中提取物品名称、范围、超时等配置。 */
 function normalizeCollectDropsOptions(
   bot: MineflayerCollectPort,
   params: Readonly<CollectSkillParams>,
@@ -355,6 +364,7 @@ function normalizeCollectDropsOptions(
   });
 }
 
+/** 扩大捡拾范围：当初始范围内找不到目标时，逐步扩大搜索半径。 */
 function expandCollectDropsOptions(options: CollectDropsOptions): CollectDropsOptions {
   return Object.freeze({
     ...(options.itemName === undefined ? {} : { itemName: options.itemName }),
@@ -366,6 +376,7 @@ function expandCollectDropsOptions(options: CollectDropsOptions): CollectDropsOp
 }
 
 /** 当传入 center（中心点） 时先靠近锚点，再执行范围扫描。 */
+/** 如果需要，移动到捡拾区域中心（当 Bot 距离目标太远时）。 */
 async function moveToCollectCenterIfNeeded(
   bot: MineflayerCollectPort,
   options: CollectDropsOptions,
@@ -401,11 +412,12 @@ async function moveToCollectCenterIfNeeded(
 }
 
 /** 判断未知值是否为普通对象。 */
+/** 判断值是否为 Record 对象。 */
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** 解析注册表中的标准物品 ID。 */
+/** 从注册表中查找物品 ID（按名称匹配）。 */
 function findRegistryItemId(registry: unknown, itemName: string): number | null {
   if (!isRecord(registry) || !isRecord(registry.itemsByName)) {
     return null;
@@ -417,6 +429,7 @@ function findRegistryItemId(registry: unknown, itemName: string): number | null 
 }
 
 /** 从未知结构中提取可能的物品 ID。 */
+/** 从值中收集数字 ID 列表（支持单个数字、数字数组或嵌套结构）。 */
 function collectNumericIds(value: unknown): readonly number[] {
   if (typeof value === "number") {
     return Object.freeze([value]);
@@ -445,6 +458,7 @@ function collectNumericIds(value: unknown): readonly number[] {
 }
 
 /** 从实体上提取可用于匹配的物品名称。 */
+/** 收集实体的候选名称（用于匹配捡拾目标）。 */
 function collectEntityCandidateNames(entity: MineflayerEntityHandle): readonly string[] {
   const names = [
     entity.name,
@@ -490,6 +504,7 @@ function collectEntityCandidateNames(entity: MineflayerEntityHandle): readonly s
 }
 
 /** 判断掉落物实体是否匹配目标物品名。 */
+/** 判断实体是否匹配捡拾目标（按名称或 ID 匹配）。 */
 function matchesCollectTargetEntity(
   entity: MineflayerEntityHandle,
   itemName: string | undefined,
@@ -515,6 +530,7 @@ function matchesCollectTargetEntity(
 }
 
 /** 判断实体是否可能是掉落物，兼容不同 Mineflayer（Minecraft 协议客户端） 版本字段。 */
+/** 判断实体是否为掉落物实体（非玩家、非生物、有位置）。 */
 function isLikelyItemEntity(entity: MineflayerEntityHandle): boolean {
   return (
     entity.name === "item" ||
@@ -525,15 +541,15 @@ function isLikelyItemEntity(entity: MineflayerEntityHandle): boolean {
 }
 
 /** 计算两点间的平方距离。 */
+/** 计算两个坐标的欧几里得距离平方（避免开方运算）。 */
 function calculateDistanceSquared(a: MineflayerVec3Like, b: MineflayerVec3Like): number {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   const dz = a.z - b.z;
-
   return dx * dx + dy * dy + dz * dz;
 }
 
-/** 从当前世界状态中定位范围内所有目标掉落物。 */
+/** 查找所有匹配捡拾目标的实体（按名称/ID 和距离筛选）。 */
 function findCollectTargetEntities(
   bot: MineflayerCollectPort,
   options: CollectDropsOptions,
@@ -561,6 +577,7 @@ function findCollectTargetEntities(
 }
 
 /** 按实体标识读取当前实体快照。 */
+/** 按实体 ID 查找实体对象。 */
 function findEntityById(
   bot: MineflayerCollectPort,
   entityId: number | string | undefined,
@@ -578,6 +595,7 @@ function findEntityById(
 }
 
 /** 统计背包内匹配物品的数量。 */
+/** 统计背包中指定物品的数量。 */
 function countInventoryItems(bot: MineflayerInventoryPort, itemName: string): number {
   return (
     bot.inventory
@@ -590,6 +608,7 @@ function countInventoryItems(bot: MineflayerInventoryPort, itemName: string): nu
 }
 
 /** 按标准物品名统计背包快照。 */
+/** 统计背包中所有物品的数量（按名称分组）。 */
 function countInventoryByName(bot: MineflayerInventoryPort): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
 
@@ -606,6 +625,7 @@ function countInventoryByName(bot: MineflayerInventoryPort): ReadonlyMap<string,
 }
 
 /** 判断背包是否无空槽，支持测试替身与 Mineflayer（Minecraft 协议客户端） 常见接口。 */
+/** 判断背包是否已满（所有槽位都有物品）。 */
 function isInventoryFull(bot: MineflayerInventoryPort): boolean {
   const inventory = bot.inventory;
 
@@ -621,6 +641,7 @@ function isInventoryFull(bot: MineflayerInventoryPort): boolean {
 }
 
 /** 监听 playerCollect（玩家捡拾） 事件，用于缩短被其他玩家拾取时的等待时间。 */
+/** 监听其他 Bot 的捡拾事件，避免重复捡拾同一实体。 */
 function listenForOtherCollector(
   bot: MineflayerCollectPort,
   entityId: number | string | undefined,
@@ -654,6 +675,7 @@ function listenForOtherCollector(
 }
 
 /** 从实体兼容结构读取标识。 */
+/** 读取实体 ID（支持数字或字符串）。 */
 function readEntityId(entity: unknown): number | string | undefined {
   if (!isRecord(entity)) {
     return undefined;
@@ -665,6 +687,7 @@ function readEntityId(entity: unknown): number | string | undefined {
 }
 
 /** 创建收集增量结果。 */
+/** 计算捡拾前后背包物品差异（用于确定实际捡到了什么）。 */
 function createCollectedDiff(
   itemName: string | undefined,
   before: ReadonlyMap<string, number>,
@@ -691,6 +714,7 @@ function createCollectedDiff(
 }
 
 /** 创建跳过记录。 */
+/** 创建跳过捡拾的记录（携带原因）。 */
 function createSkippedItem(
   entityId: number | string | undefined,
   reason: CollectSkillSkippedItem["reason"],
@@ -702,6 +726,7 @@ function createSkippedItem(
 }
 
 /** 创建 collect（捡拾） 执行结果。 */
+/** 创建捡拾结果对象。 */
 function createCollectResult(
   options: CollectDropsOptions,
   outcome: {
@@ -730,6 +755,7 @@ function createCollectResult(
   );
 }
 
+/** 计算捡拾区域中心坐标。 */
 function resolveCollectCenter(
   bot: MineflayerCollectPort,
   options: CollectDropsOptions,
@@ -738,15 +764,17 @@ function resolveCollectCenter(
 }
 
 /** 格式化跳过记录，作为失败诊断的一部分。 */
+/** 格式化跳过捡拾的记录为可读字符串。 */
 function formatSkippedItems(skipped: readonly CollectSkillSkippedItem[]): string {
-  return skipped.map((item) => `${String(item.entityId)}:${item.reason}`).join(",");
+  return skipped.map((item) => `${item.entityId}:${item.reason}`).join("; ");
 }
 
+/** 从错误对象中提取错误消息。 */
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** 等待指定毫秒数。 */
+/** 延迟指定毫秒。 */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);

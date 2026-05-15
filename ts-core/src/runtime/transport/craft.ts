@@ -1,3 +1,9 @@
+/**
+ * 最小 craft（合成）能力，配方事实来自 Mineflayer/minecraft-data。
+ * Phase 1 白名单：planks、stick、crafting_table、wooden_pickaxe、stone_pickaxe。
+ * 支持递归补齐缺失材料（如先砍树获取木板再合成木镐）。
+ */
+
 import type {
   CraftCapabilityParams,
   ToolchainCapabilityData,
@@ -28,6 +34,7 @@ const PHASE1_CRAFT_ALLOWLIST = Object.freeze([
 type CraftTransportResult = ToolchainCapabilityResult<ToolchainCapabilityData>;
 
 /** 执行最小 craft（合成） 能力，配方事实全部来自 Mineflayer（Minecraft 客户端库）/minecraft-data（Minecraft 数据库）。 */
+/** 执行 craft（合成）技能：验证能力 → 解析配方 → 检查材料 → 执行合成。 */
 export async function executeMineflayerCraft(input: {
   readonly bot: MineflayerBotHandle;
   readonly params: Readonly<CraftCapabilityParams>;
@@ -65,6 +72,7 @@ export async function executeMineflayerCraft(input: {
   });
 }
 
+/** 内部合成执行器：处理递归合成（合成原材料 → 合成目标物品）。 */
 async function executeMineflayerCraftInternal(input: {
   readonly bot: MineflayerBotHandle;
   readonly params: Readonly<CraftCapabilityParams>;
@@ -169,6 +177,7 @@ async function executeMineflayerCraftInternal(input: {
   });
 }
 
+/** 合成缺失的原材料：递归调用合成器合成配方所需的中间材料。 */
 async function craftMissingMaterials(input: {
   readonly bot: MineflayerBotHandle;
   readonly candidates: readonly { readonly itemName: string; readonly itemId: number }[];
@@ -253,6 +262,7 @@ async function craftMissingMaterials(input: {
   return { ok: true as const };
 }
 
+/** 判断物品是否为木质修复材料（原木→木板的特殊映射）。 */
 function isWoodenRepairMaterial(registry: unknown, itemName: string): boolean {
   const registryFacts = registry as MineflayerRegistryFacts | undefined;
   const repairItems = registryFacts?.itemsByName?.wooden_pickaxe?.repairWith ?? [];
@@ -260,6 +270,7 @@ function isWoodenRepairMaterial(registry: unknown, itemName: string): boolean {
   return repairItems.includes(itemName);
 }
 
+/** 从多个配方中选择一个代表性配方（优先选择产出数量最多的）。 */
 function selectRepresentativeRecipe(input: {
   readonly bot: MineflayerBotHandle;
   readonly candidates: readonly { readonly itemName: string; readonly itemId: number }[];
@@ -284,6 +295,7 @@ function selectRepresentativeRecipe(input: {
   return null;
 }
 
+/** 验证合成能力：检查 Bot 是否有合成台（如果需要）和合成配方。 */
 function validateCraftingCapabilities(
   bot: MineflayerBotHandle,
   worldKey: string | null,
@@ -311,6 +323,7 @@ function validateCraftingCapabilities(
   return null;
 }
 
+/** 解析合成目标候选（从 minecraft-data 中查找匹配的配方输出）。 */
 function resolveCraftTargetCandidates(
   registry: unknown,
   itemName: string,
@@ -353,6 +366,7 @@ type CraftPlan =
       readonly details?: Readonly<Record<string, unknown>>;
     };
 
+/** 选择合成计划：检查材料是否足够，计算需要合成几轮。 */
 function selectCraftPlan(input: {
   readonly bot: MineflayerBotHandle;
   readonly candidates: readonly { readonly itemName: string; readonly itemId: number }[];
@@ -426,6 +440,7 @@ function selectCraftPlan(input: {
   };
 }
 
+/** 查找附近的工作台（从缓存或世界中搜索）。 */
 async function findNearbyCraftingTable(
   bot: MineflayerBotHandle,
   cache: CraftingTablePlacementCache | undefined,
@@ -461,10 +476,13 @@ async function findNearbyCraftingTable(
   return firstPosition === undefined ? null : (bot.blockAt(firstPosition) ?? null);
 }
 
+/** 计算合成轮数（向上取整，例如需要 5 个木板但每次合成 4 个，则需要 2 轮）。 */
 function calculateCraftRuns(recipe: MineflayerRecipeHandle, requestedCount: number): number {
-  return Math.max(1, Math.ceil(requestedCount / Math.max(1, recipe.result.count)));
+  const yieldCount = Math.max(1, recipe.result?.count ?? 1);
+  return Math.max(1, Math.ceil(requestedCount / yieldCount));
 }
 
+/** 创建缺失材料详情（用于错误报告）。 */
 function createMissingMaterialDetails(
   bot: MineflayerInventoryPort & { readonly registry?: unknown },
   recipe: MineflayerRecipeHandle,
@@ -492,16 +510,22 @@ function createMissingMaterialDetails(
   );
 }
 
+/** 按物品 ID 统计背包中指定物品的数量。 */
 function countInventoryItemById(items: readonly MineflayerItemHandle[], itemId: number): number {
-  return items.reduce((sum, item) => sum + (item.type === itemId ? (item.count ?? 0) : 0), 0);
+  return items.reduce(
+    (sum, item) => sum + (item.type === itemId ? (item.count ?? 1) : 0),
+    0,
+  );
 }
 
+/** 从注册表中读取物品名称（按 ID 查询）。 */
 function readRegistryItemName(registry: unknown, itemId: number): string | null {
   const item = (registry as MineflayerRegistryFacts | undefined)?.items?.[String(itemId)];
 
   return item?.name ?? null;
 }
 
+/** 创建合成失败的结构化错误。 */
 function createCraftFailure(input: {
   readonly code: ToolchainFailureCode;
   readonly message: string;
@@ -519,14 +543,21 @@ function createCraftFailure(input: {
   });
 }
 
+/** 标准化合成目标名称：移除 minecraft: 命名空间前缀，将连续空白或连字符归一化为单个下划线。 */
 function normalizeCraftName(value: string): string {
-  return value.trim().toLowerCase().replaceAll(" ", "_").replaceAll("-", "_");
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^minecraft:/u, "")
+    .replace(/[\s-]+/gu, "_");
 }
 
+/** 判断合成目标是否在 Phase 1 允许列表中。 */
 function isPhase1CraftAllowed(itemName: string): boolean {
   return (PHASE1_CRAFT_ALLOWLIST as readonly string[]).includes(itemName);
 }
 
+/** 从错误对象中提取错误消息。 */
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

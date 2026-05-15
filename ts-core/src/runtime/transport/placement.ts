@@ -1,3 +1,8 @@
+/**
+ * place（放置）能力：当前只支持放置 crafting table（工作台）。
+ * 流程：检查缓存 → 确保背包有工作台物品 → 附近找安全位置 → 靠近 → 放置 → 更新缓存。
+ */
+
 import { Vec3 } from "vec3";
 
 import type {
@@ -34,6 +39,7 @@ const PLACE_REACH_DISTANCE = 4.5;
 type PlacementTransportResult = ToolchainCapabilityResult<ToolchainCapabilityData>;
 
 /** 执行最小 place（放置） 能力；当前只允许工具链放置 crafting table（工作台）。 */
+/** 执行放置工作台能力：检查缓存 → 确保物品 → 查找候选位置 → 尝试放置。 */
 export async function executeMineflayerPlaceCraftingTable(input: {
   readonly bot: MineflayerBotHandle;
   readonly pathfinder: MineflayerPathfinderApi;
@@ -123,6 +129,7 @@ export async function executeMineflayerPlaceCraftingTable(input: {
   });
 }
 
+/** 尝试在候选位置放置工作台：接近 → 装备 → 放置 → 验证。 */
 async function tryPlaceCraftingTableAtCandidate(
   input: {
     readonly bot: MineflayerBotHandle;
@@ -231,6 +238,7 @@ async function tryPlaceCraftingTableAtCandidate(
   }
 }
 
+/** 带重试的放置工作台：多次尝试放置，处理可重试的异常。 */
 async function placeCraftingTableWithRetries(
   input: {
     readonly bot: MineflayerBotHandle;
@@ -317,6 +325,7 @@ async function placeCraftingTableWithRetries(
   };
 }
 
+/** 判断放置异常是否可重试（基于错误消息关键词）。 */
 function shouldRetryPlaceException(message: string): boolean {
   const normalized = message.toLowerCase();
   return !(
@@ -327,6 +336,7 @@ function shouldRetryPlaceException(message: string): boolean {
   );
 }
 
+/** 验证工作台是否已成功放置（检查目标位置是否为工作台方块）。 */
 function verifyCraftingTablePlaced(
   bot: MineflayerBotHandle,
   candidate: PlacementCandidate,
@@ -355,6 +365,7 @@ type CachedCraftingTableResult =
   | { readonly status: "valid"; readonly position: MineflayerVec3Like }
   | { readonly status: "invalid"; readonly position: MineflayerVec3Like };
 
+/** 读取缓存的工作台位置（如果存在且有效则直接返回）。 */
 function readCachedCraftingTable(
   bot: MineflayerBotHandle,
   cache: CraftingTablePlacementCache,
@@ -387,6 +398,7 @@ interface PlacementCandidate {
   readonly approachFeet: readonly TerrainBlockPos[];
 }
 
+/** 查找工作台放置候选位置（在目标附近搜索可放置的空位）。 */
 function findCraftingTablePlacementCandidates(
   bot: MineflayerBotHandle,
   near: PlaceCapabilityParams["near"],
@@ -423,6 +435,7 @@ function findCraftingTablePlacementCandidates(
   return Object.freeze(candidates);
 }
 
+/** 创建放置候选位置的接近脚位（Bot 需要站在哪里才能点击目标位置）。 */
 function createPlacementApproachFeet(
   target: MineflayerVec3Like,
   botPosition: MineflayerVec3Like | undefined,
@@ -464,6 +477,7 @@ function createPlacementApproachFeet(
   );
 }
 
+/** 生成放置候选位置（在目标周围搜索可放置的空位）。 */
 function createPlacementCandidatePositions(
   origin: MineflayerVec3Like,
   botPosition: MineflayerVec3Like | undefined,
@@ -509,6 +523,7 @@ function createPlacementCandidatePositions(
   );
 }
 
+/** 从背包中查找指定名称的物品。 */
 function findInventoryItemByName(
   bot: MineflayerBotHandle,
   itemName: string,
@@ -526,6 +541,7 @@ function findInventoryItemByName(
   );
 }
 
+/** 装备工作台物品到主手。 */
 async function equipCraftingTableForPlace(
   bot: MineflayerBotHandle,
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
@@ -541,6 +557,7 @@ async function equipCraftingTableForPlace(
   return { ok: true };
 }
 
+/** 判断方块是否为空气（包括 null）。 */
 function isEmptyBlock(block: MineflayerBlockHandle | null): boolean {
   if (block === null) {
     return false;
@@ -556,6 +573,7 @@ type EnsureCraftingTableItemResult =
   | { readonly status: "ready"; readonly item: MineflayerItemHandle | null }
   | { readonly status: "failed"; readonly result: PlacementTransportResult };
 
+/** 确保背包中有工作台物品（如果没有则尝试合成）。 */
 async function ensureCraftingTableItem(input: {
   readonly bot: MineflayerBotHandle;
   readonly worldKey: string | null;
@@ -606,6 +624,7 @@ async function ensureCraftingTableItem(input: {
   return { status: "ready", item: findInventoryItemByName(input.bot, "crafting_table") };
 }
 
+/** 从错误中读取最大缺失材料数量（用于诊断）。 */
 function readLargestMissingMaterialCount(error: {
   readonly details?: Readonly<Record<string, unknown>>;
 }): number {
@@ -624,6 +643,7 @@ function readLargestMissingMaterialCount(error: {
   return largestMissing;
 }
 
+/** 从值中读取 Record 数组（用于解析错误详情）。 */
 function readRecordArray(value: unknown): readonly Readonly<Record<string, unknown>>[] {
   if (!Array.isArray(value)) {
     return [];
@@ -634,10 +654,12 @@ function readRecordArray(value: unknown): readonly Readonly<Record<string, unkno
   );
 }
 
+/** 创建方块中心坐标（+0.5 偏移）。 */
 function createBlockCenter(position: MineflayerVec3Like): Vec3 {
   return new Vec3(position.x + 0.5, position.y + 0.5, position.z + 0.5);
 }
 
+/** 创建放置成功结果。 */
 function createPlacementSuccess(
   worldKey: string | null,
   position: MineflayerVec3Like,
@@ -653,6 +675,7 @@ function createPlacementSuccess(
   });
 }
 
+/** 创建放置失败结果。 */
 function createPlacementFailure(input: {
   readonly code: ToolchainFailureCode;
   readonly message: string;
@@ -670,14 +693,24 @@ function createPlacementFailure(input: {
   });
 }
 
+/** 标准化放置目标名称：移除 minecraft: 命名空间前缀，将连续空白或连字符归一化为单个下划线。 */
 function normalizePlacementName(value: string): string {
-  return value.trim().toLowerCase().replaceAll(" ", "_").replaceAll("-", "_");
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^minecraft:/u, "")
+    .replace(/[\s-]+/gu, "_");
 }
 
+/** 计算两个坐标的欧几里得距离平方（结果与 ** 2 等价，拆成变量后可读性更好）。 */
 function calculateDistanceSquared(left: MineflayerVec3Like, right: MineflayerVec3Like): number {
-  return (left.x - right.x) ** 2 + (left.y - right.y) ** 2 + (left.z - right.z) ** 2;
+  const dx = left.x - right.x;
+  const dy = left.y - right.y;
+  const dz = left.z - right.z;
+  return dx * dx + dy * dy + dz * dz;
 }
 
+/** 判断两个坐标是否相同（向下取整后比较）。 */
 function sameBlockFoot(left: TerrainBlockPos, right: MineflayerVec3Like): boolean {
   return (
     left.x === Math.floor(right.x) &&
@@ -686,22 +719,27 @@ function sameBlockFoot(left: TerrainBlockPos, right: MineflayerVec3Like): boolea
   );
 }
 
+/** 判断两个地形坐标是否相同。 */
 function sameTerrainFoot(left: TerrainBlockPos, right: TerrainBlockPos): boolean {
   return left.x === right.x && left.y === right.y && left.z === right.z;
 }
 
+/** 坐标格式化为方块坐标（使用 Math.floor 确保与方块坐标语义一致，包括负数）。 */
 function posLabel(position: MineflayerVec3Like): string {
-  return `${position.x},${position.y},${position.z}`;
+  return `${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`;
 }
 
+/** 清理诊断字符串：移除连续换行、回车和分号，截断到 160 字符。 */
 function sanitizeDiagnostic(value: string): string {
-  return value.replace(/[\r\n;]+/gu, " ").slice(0, 240);
+  return value.replace(/[\r\n;]+/gu, " ").slice(0, 160);
 }
 
+/** 延迟指定毫秒。 */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** 从错误对象中提取错误消息。 */
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
