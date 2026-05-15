@@ -1,12 +1,5 @@
-import type { SkillExecutionControl } from "../../core-ports/skills.js";
-import type { MineBlockFactReader } from "./block-facts.js";
-import { executeTerrainRouteAction, isTerrainBotAtFoot } from "./terrain-action-executor.js";
-import {
-  type TerrainBlockPos,
-  type TerrainRouteBudget,
-  type TerrainRouteProfile,
-  planTerrainRoute,
-} from "./terrain-router.js";
+import type { SkillExecutionControl } from "../../../core-ports/skills.js";
+import type { MineBlockFactReader } from "../block-facts.js";
 import type {
   MineflayerInventoryPort,
   MineflayerMiningPort,
@@ -15,7 +8,14 @@ import type {
   MineflayerPathfinderModule,
   MineflayerPlacementPort,
   MineflayerVec3Like,
-} from "./types.js";
+} from "../types.js";
+import { executeTerrainRouteAction, isTerrainBotAtFoot } from "./action-executor.js";
+import {
+  type TerrainBlockPos,
+  type TerrainRouteBudget,
+  type TerrainRouteProfile,
+  planTerrainRoute,
+} from "./router.js";
 
 export type TerrainNavigationBot = MineflayerMovementPort &
   MineflayerMiningPort &

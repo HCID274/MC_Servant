@@ -15,8 +15,11 @@ import type {
 import { NOOP_SKILL_EXECUTION_CONTROL } from "../../core-ports/skills.js";
 import { createMineBlockFactReader } from "./block-facts.js";
 import { type CraftingTablePlacementCache, isCraftingTableBlock } from "./crafting-table.js";
-import { navigateTerrainToFoot, readTerrainBotFoot } from "./terrain-navigation.js";
-import type { TerrainBlockPos } from "./terrain-router.js";
+import {
+  type TerrainBlockPos,
+  navigateTerrainToFoot,
+  readTerrainBotFoot,
+} from "./terrain/index.js";
 import type {
   MineflayerBlockHandle,
   MineflayerBotHandle,

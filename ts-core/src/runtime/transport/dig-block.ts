@@ -1,6 +1,6 @@
 import type { SkillExecutionControl } from "../../core-ports/skills.js";
 import { createMineBlockFactReader } from "./block-facts.js";
-import { navigateTerrainToFoot } from "./terrain-navigation.js";
+import { navigateTerrainToFoot } from "./terrain/index.js";
 import type {
   MineflayerBlockHandle,
   MineflayerInventoryPort,

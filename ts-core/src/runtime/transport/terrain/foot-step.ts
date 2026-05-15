@@ -1,10 +1,10 @@
 import { Vec3 } from "vec3";
-import { createProgressWatchdog } from "./progress-watchdog.js";
+import { createProgressWatchdog } from "../progress-watchdog.js";
 import type {
   MineflayerControlState,
   MineflayerMovementPort,
   MineflayerPlacementPort,
-} from "./types.js";
+} from "../types.js";
 
 export interface FootStepBlockPos {
   readonly x: number;

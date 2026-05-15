@@ -15,7 +15,7 @@ import {
 } from "../../core-ports/skills.js";
 import { createMineBlockFactReader } from "./block-facts.js";
 import { matchesMinecraftItemName, normalizeMinecraftName } from "./naming.js";
-import { navigateTerrainToFoot, vec3LikeToTerrainFoot } from "./terrain-navigation.js";
+import { navigateTerrainToFoot, vec3LikeToTerrainFoot } from "./terrain/index.js";
 import type {
   MineflayerEntityHandle,
   MineflayerEntityPort,

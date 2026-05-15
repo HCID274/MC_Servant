@@ -5,23 +5,10 @@
  */
 
 import { Vec3 } from "vec3";
-import type { SkillExecutionControl } from "../../core-ports/skills.js";
-import type { MineBlockFactReader } from "./block-facts.js";
-import { prepareHandForMineDig } from "./dig-tool-policy.js";
-import {
-  centerOnFoot,
-  dropToFoot,
-  isFootStepBotAtFoot,
-  stepToFoot,
-  waitUntilFootYReachedThenRecover,
-} from "./foot-step.js";
-import { tryLocalPathfinderMoveToFoot } from "./local-move-actuator.js";
-import { waitForPromiseOrCondition } from "./progress-watchdog.js";
-import type { TerrainBlockPos, TerrainRouteAction } from "./terrain-router.js";
-import {
-  forgetSelfPlacedTerrainBlock,
-  recordSelfPlacedTerrainBlock,
-} from "./terrain-self-placed-memory.js";
+import type { SkillExecutionControl } from "../../../core-ports/skills.js";
+import type { MineBlockFactReader } from "../block-facts.js";
+import { prepareHandForMineDig } from "../dig-tool-policy.js";
+import { waitForPromiseOrCondition } from "../progress-watchdog.js";
 import type {
   MineflayerBlockHandle,
   MineflayerInventoryPort,
@@ -32,8 +19,21 @@ import type {
   MineflayerPathfinderModule,
   MineflayerPlacementPort,
   MineflayerRegistryFacts,
-} from "./types.js";
-import { readMineflayerBlockAt } from "./world-reader.js";
+} from "../types.js";
+import { readMineflayerBlockAt } from "../world-reader.js";
+import {
+  centerOnFoot,
+  dropToFoot,
+  isFootStepBotAtFoot,
+  stepToFoot,
+  waitUntilFootYReachedThenRecover,
+} from "./foot-step.js";
+import { tryLocalPathfinderMoveToFoot } from "./local-move-actuator.js";
+import type { TerrainBlockPos, TerrainRouteAction } from "./router.js";
+import {
+  forgetSelfPlacedTerrainBlock,
+  recordSelfPlacedTerrainBlock,
+} from "./self-placed-memory.js";
 
 type TerrainActionBot = MineflayerMovementPort &
   MineflayerMiningPort &

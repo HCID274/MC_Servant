@@ -1,5 +1,5 @@
-import { readMineflayerWorldKey } from "./naming.js";
-import type { MineflayerLifecyclePort } from "./types.js";
+import { readMineflayerWorldKey } from "../naming.js";
+import type { MineflayerLifecyclePort } from "../types.js";
 
 const SELF_PLACED_TERRAIN_BLOCKS = new Set<string>();
 

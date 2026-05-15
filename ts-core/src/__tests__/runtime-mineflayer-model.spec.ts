@@ -49,7 +49,6 @@ import {
 } from "../index.js";
 import { executeMineflayerCraft } from "../runtime/transport/craft.js";
 import { executeMineflayerEquip } from "../runtime/transport/equip.js";
-import { stepToFoot } from "../runtime/transport/foot-step.js";
 // mining 内部白盒测试：这些 import 只用于锁定 planner/executor/facts 的内部行为,不是在线公共 API。
 import { executeMineRouteAction } from "../runtime/transport/mining/executor.js";
 import { createMineBlockFactReader } from "../runtime/transport/mining/facts.js";
@@ -59,15 +58,17 @@ import {
   createProgressWatchdog,
   waitForPromiseOrCondition,
 } from "../runtime/transport/progress-watchdog.js";
+// terrain 内部白盒测试：这些 import 只用于锁定 router/action/memory 的内部行为,不是在线公共 API。
 import {
   executeTerrainRouteAction,
   isTerrainBotAtFoot,
-} from "../runtime/transport/terrain-action-executor.js";
-import { planTerrainRoute } from "../runtime/transport/terrain-router.js";
+} from "../runtime/transport/terrain/action-executor.js";
+import { stepToFoot } from "../runtime/transport/terrain/foot-step.js";
+import { planTerrainRoute } from "../runtime/transport/terrain/router.js";
 import {
   clearSelfPlacedTerrainMemoryForTests,
   recordSelfPlacedTerrainBlock,
-} from "../runtime/transport/terrain-self-placed-memory.js";
+} from "../runtime/transport/terrain/self-placed-memory.js";
 import type {
   CraftingTablePlacementCache,
   MineflayerBlockHandle,

@@ -5,8 +5,11 @@ import {
   createGoToSkillExecutionResult,
 } from "../../core-ports/skills.js";
 import { createMineBlockFactReader } from "./block-facts.js";
-import { navigateTerrainToFoot, vec3LikeToTerrainFoot } from "./terrain-navigation.js";
-import type { TerrainBlockPos } from "./terrain-router.js";
+import {
+  type TerrainBlockPos,
+  navigateTerrainToFoot,
+  vec3LikeToTerrainFoot,
+} from "./terrain/index.js";
 import type {
   MineflayerInventoryPort,
   MineflayerMiningPort,

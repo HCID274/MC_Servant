@@ -7,8 +7,7 @@ import {
   createMineSkillExecutionResult,
 } from "../../../core-ports/skills.js";
 import { waitForPromiseOrCondition } from "../progress-watchdog.js";
-import { navigateTerrainToFoot } from "../terrain-navigation.js";
-import type { TerrainRouteBudget } from "../terrain-router.js";
+import { type TerrainRouteBudget, navigateTerrainToFoot } from "../terrain/index.js";
 import type {
   MineflayerBlockHandle,
   MineflayerInventoryPort,

@@ -297,3 +297,7 @@
 ## T-095 | 2026-05-15 | runtime transport 的 mining 能力目录化
 
 - 摘要: 将挖掘主入口、planner、executor 收入 `runtime/transport/mining/`,共享 block facts/tool policy 上提到 transport 支撑层。; 曾打回 1 次;修复非 mining 模块反向依赖 `mining/index` 和 public index 暴露 tool policy 的边界问题。typecheck、lint、runtime 定向测试、pre_review 全绿。; mining public surface 只保留 `executeMineflayerMine`,白盒测试可直测 planner/executor/facts;不改挖掘行为和 MC 事实来源。冲突: 无。
+
+## T-096 | 2026-05-15 | runtime transport 的 terrain/navigation 能力目录化
+
+- 摘要: 将 terrain route、navigation、action executor、foot-step、自放置记忆收进 `runtime/transport/terrain/`,由 `terrain/index` 提供受控入口。; 通过。新文件为旧 terrain 能力搬迁并调整相对 import,外部 goTo/collect/place/digBlock/mining 只经 terrain 入口使用能力,内部 router/action/self-memory 未被在线路径绕过。typecheck、lint、runtime 定向测试、pre_review 全绿。; terrain 可被 mining 使用,但不反向知道 mining 任务语义;白盒测试可直测内部 planner/executor。冲突: 无。

@@ -6,9 +6,13 @@
 import { Vec3 } from "vec3";
 import type { SkillExecutionControl } from "../../../core-ports/skills.js";
 import { NOOP_SKILL_EXECUTION_CONTROL } from "../../../core-ports/skills.js";
-import { dropToFoot, isFootStepBotAtFoot, stepToFoot } from "../foot-step.js";
-import { tryLocalPathfinderMoveToFoot } from "../local-move-actuator.js";
 import { waitForPromiseOrCondition } from "../progress-watchdog.js";
+import {
+  dropToFoot,
+  isFootStepBotAtFoot,
+  stepToFoot,
+  tryLocalPathfinderMoveToFoot,
+} from "../terrain/index.js";
 import type {
   MineflayerBlockHandle,
   MineflayerInventoryPort,

@@ -1,13 +1,13 @@
-import type { SkillExecutionControl } from "../../core-ports/skills.js";
-import { centerOnFoot } from "./foot-step.js";
-import { createProgressWatchdog } from "./progress-watchdog.js";
+import type { SkillExecutionControl } from "../../../core-ports/skills.js";
+import { createProgressWatchdog } from "../progress-watchdog.js";
 import type {
   MineflayerMovementPort,
   MineflayerPathfinderApi,
   MineflayerPathfinderGoals,
   MineflayerPathfinderModule,
   MineflayerPlacementPort,
-} from "./types.js";
+} from "../types.js";
+import { centerOnFoot } from "./foot-step.js";
 
 export interface LocalMoveFoot {
   readonly x: number;
