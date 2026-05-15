@@ -293,3 +293,7 @@
 ## T-094 | 2026-05-15 | 模块组织与拆分规则文档化
 
 - 摘要: 只改文档,补目录化、平铺、barrel、测试组织规则,让 B 开工和 C 审查有可判定依据。; 通过。工程规范集中细则,架构文档只补口径,WORKFLOW 只补职责点;无代码行为变化,预检全绿。; 规范源集中在 `ENGINEERING_PRINCIPLES.md`,避免三份文档重复维护;目录化采用软门槛。冲突: 无。
+
+## T-095 | 2026-05-15 | runtime transport 的 mining 能力目录化
+
+- 摘要: 将挖掘主入口、planner、executor 收入 `runtime/transport/mining/`,共享 block facts/tool policy 上提到 transport 支撑层。; 曾打回 1 次;修复非 mining 模块反向依赖 `mining/index` 和 public index 暴露 tool policy 的边界问题。typecheck、lint、runtime 定向测试、pre_review 全绿。; mining public surface 只保留 `executeMineflayerMine`,白盒测试可直测 planner/executor/facts;不改挖掘行为和 MC 事实来源。冲突: 无。

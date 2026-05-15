@@ -4,14 +4,11 @@
  * 挖掘使用方块变化心跳，避免还在推进的长动作被固定 wall-clock timeout 误杀。
  */
 import { Vec3 } from "vec3";
-import type { SkillExecutionControl } from "../../core-ports/skills.js";
-import { NOOP_SKILL_EXECUTION_CONTROL } from "../../core-ports/skills.js";
-import { dropToFoot, isFootStepBotAtFoot, stepToFoot } from "./foot-step.js";
-import { tryLocalPathfinderMoveToFoot } from "./local-move-actuator.js";
-import type { MineBlockPos, MineRouteAction } from "./mine-bfs.js";
-import type { MineBlockFactReader } from "./mine-block-facts.js";
-import { prepareHandForMineDig } from "./mine-tool-policy.js";
-import { waitForPromiseOrCondition } from "./progress-watchdog.js";
+import type { SkillExecutionControl } from "../../../core-ports/skills.js";
+import { NOOP_SKILL_EXECUTION_CONTROL } from "../../../core-ports/skills.js";
+import { dropToFoot, isFootStepBotAtFoot, stepToFoot } from "../foot-step.js";
+import { tryLocalPathfinderMoveToFoot } from "../local-move-actuator.js";
+import { waitForPromiseOrCondition } from "../progress-watchdog.js";
 import type {
   MineflayerBlockHandle,
   MineflayerInventoryPort,
@@ -20,8 +17,11 @@ import type {
   MineflayerPathfinderApi,
   MineflayerPathfinderModule,
   MineflayerPlacementPort,
-} from "./types.js";
-import { readMineflayerBlockAt } from "./world-reader.js";
+} from "../types.js";
+import { readMineflayerBlockAt } from "../world-reader.js";
+import type { MineBlockFactReader } from "./facts.js";
+import type { MineBlockPos, MineRouteAction } from "./planner.js";
+import { prepareHandForMineDig } from "./tool-policy.js";
 
 type MineActionBot = MineflayerMovementPort &
   MineflayerMiningPort &

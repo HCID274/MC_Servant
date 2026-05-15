@@ -6,6 +6,8 @@
 
 import { Vec3 } from "vec3";
 import type { SkillExecutionControl } from "../../core-ports/skills.js";
+import type { MineBlockFactReader } from "./block-facts.js";
+import { prepareHandForMineDig } from "./dig-tool-policy.js";
 import {
   centerOnFoot,
   dropToFoot,
@@ -14,8 +16,6 @@ import {
   waitUntilFootYReachedThenRecover,
 } from "./foot-step.js";
 import { tryLocalPathfinderMoveToFoot } from "./local-move-actuator.js";
-import type { MineBlockFactReader } from "./mine-block-facts.js";
-import { prepareHandForMineDig } from "./mine-tool-policy.js";
 import { waitForPromiseOrCondition } from "./progress-watchdog.js";
 import type { TerrainBlockPos, TerrainRouteAction } from "./terrain-router.js";
 import {

@@ -5,19 +5,10 @@ import {
   type MineSkillTargetCandidate,
   type SkillExecutionControl,
   createMineSkillExecutionResult,
-} from "../../core-ports/skills.js";
-import { executeMineRouteAction, isBotAtFoot } from "./mine-action-executor.js";
-import {
-  type MineBlockPos,
-  type MineRouteAction,
-  type MineRouteTarget,
-  planMineRoute,
-} from "./mine-bfs.js";
-import { type MineBlockFactReader, createMineBlockFactReader } from "./mine-block-facts.js";
-import { prepareHandForMineDig } from "./mine-tool-policy.js";
-import { waitForPromiseOrCondition } from "./progress-watchdog.js";
-import { navigateTerrainToFoot } from "./terrain-navigation.js";
-import type { TerrainRouteBudget } from "./terrain-router.js";
+} from "../../../core-ports/skills.js";
+import { waitForPromiseOrCondition } from "../progress-watchdog.js";
+import { navigateTerrainToFoot } from "../terrain-navigation.js";
+import type { TerrainRouteBudget } from "../terrain-router.js";
 import type {
   MineflayerBlockHandle,
   MineflayerInventoryPort,
@@ -27,8 +18,17 @@ import type {
   MineflayerPathfinderModule,
   MineflayerPlacementPort,
   MineflayerVec3Like,
-} from "./types.js";
-import { canReadMineflayerBlockAt, readMineflayerBlockAt } from "./world-reader.js";
+} from "../types.js";
+import { canReadMineflayerBlockAt, readMineflayerBlockAt } from "../world-reader.js";
+import { executeMineRouteAction, isBotAtFoot } from "./executor.js";
+import { type MineBlockFactReader, createMineBlockFactReader } from "./facts.js";
+import {
+  type MineBlockPos,
+  type MineRouteAction,
+  type MineRouteTarget,
+  planMineRoute,
+} from "./planner.js";
+import { prepareHandForMineDig } from "./tool-policy.js";
 
 /** mine（挖掘） 技能需要的 Mineflayer（Minecraft 协议客户端） 能力端口。 */
 export type MineflayerMinePort = MineflayerMovementPort &

@@ -1,3 +1,5 @@
+import type { MineflayerMiningPort } from "../types.js";
+import { readMineflayerBlockAt } from "../world-reader.js";
 /**
  * mine（挖掘） 路径规划：基于真实方块快照与真实 bot 动作集（walk / drop1 / jumpUp /
  * digWalk / digStepDown / digStepUp）的 Dijkstra 搜索。
@@ -7,9 +9,7 @@
  * - 目标函数是"是否能从当前 foot 直接挖到任意候选 stone"，而非"y 下降一格"；
  * - 不做 fill / 垫高，远距离接近由 terrain-router 兜底；本模块只负责挖掘动作附近的可达性。
  */
-import type { MineBlockFactReader } from "./mine-block-facts.js";
-import type { MineflayerMiningPort } from "./types.js";
-import { readMineflayerBlockAt } from "./world-reader.js";
+import type { MineBlockFactReader } from "./facts.js";
 
 export interface MineBlockPos {
   readonly x: number;

@@ -9,7 +9,7 @@
  * - mining profile（采矿模式）会给予更大的挖掘/放置预算，适合在地下复杂矿洞中穿行。
  */
 
-import type { MineBlockFactReader } from "./mine-block-facts.js";
+import type { MineBlockFactReader } from "./block-facts.js";
 import { isSelfPlacedTerrainBlock } from "./terrain-self-placed-memory.js";
 import type {
   MineflayerLifecyclePort,

@@ -1,4 +1,4 @@
-import type { MineBlockFactReader } from "./mine-block-facts.js";
+import type { MineBlockFactReader } from "./block-facts.js";
 import type { MineflayerInventoryPort } from "./types.js";
 
 const MINE_HAND_TIMEOUT_MS = 5_000;

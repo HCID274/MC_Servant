@@ -45,7 +45,7 @@ import {
   stringifyMineflayerError,
   waitForMineflayerSpawn,
 } from "./lifecycle.js";
-import { executeMineflayerMine } from "./mine.js";
+import { executeMineflayerMine } from "./mining/index.js";
 import { readMineflayerWorldKey } from "./naming.js";
 import { createMineflayerPathfinderContext } from "./pathfinder.js";
 import { executeMineflayerPlaceCraftingTable } from "./placement.js";

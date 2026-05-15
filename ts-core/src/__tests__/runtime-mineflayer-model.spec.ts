@@ -50,9 +50,10 @@ import {
 import { executeMineflayerCraft } from "../runtime/transport/craft.js";
 import { executeMineflayerEquip } from "../runtime/transport/equip.js";
 import { stepToFoot } from "../runtime/transport/foot-step.js";
-import { executeMineRouteAction } from "../runtime/transport/mine-action-executor.js";
-import { planMineRoute } from "../runtime/transport/mine-bfs.js";
-import { createMineBlockFactReader } from "../runtime/transport/mine-block-facts.js";
+// mining 内部白盒测试：这些 import 只用于锁定 planner/executor/facts 的内部行为,不是在线公共 API。
+import { executeMineRouteAction } from "../runtime/transport/mining/executor.js";
+import { createMineBlockFactReader } from "../runtime/transport/mining/facts.js";
+import { planMineRoute } from "../runtime/transport/mining/planner.js";
 import { executeMineflayerPlaceCraftingTable } from "../runtime/transport/placement.js";
 import {
   createProgressWatchdog,

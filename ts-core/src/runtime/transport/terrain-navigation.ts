@@ -1,5 +1,5 @@
 import type { SkillExecutionControl } from "../../core-ports/skills.js";
-import type { MineBlockFactReader } from "./mine-block-facts.js";
+import type { MineBlockFactReader } from "./block-facts.js";
 import { executeTerrainRouteAction, isTerrainBotAtFoot } from "./terrain-action-executor.js";
 import {
   type TerrainBlockPos,
