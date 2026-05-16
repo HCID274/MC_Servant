@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createCodeJobForSkill } from "./test-code-job.js";
-import { createTestOnlyProvenMineResult } from "./test-skill-proofs.js";
+import { createCodeJobForSkill } from "./helpers/test-code-job.js";
+import { createTestOnlyProvenMineResult } from "./helpers/test-skill-proofs.js";
 
 import { createSandboxLogRef } from "../diagnostics/index.js";
 import {

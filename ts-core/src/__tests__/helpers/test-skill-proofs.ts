@@ -3,7 +3,7 @@ import {
   type MineSkillParams,
   createCollectSkillExecutionResult,
   createMineSkillExecutionResult,
-} from "../skills/index.js";
+} from "../../skills/index.js";
 
 /**
  * 测试专用 mine 成功 proof 工厂。

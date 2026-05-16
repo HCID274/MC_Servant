@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { createTestOnlyProvenMineResult } from "./test-skill-proofs.js";
+import { createTestOnlyProvenMineResult } from "../helpers/test-skill-proofs.js";
 
 import {
   SKILL_DIRECTORY,
   createCollectSkillExecutionResult,
   createEquipSkillExecutionResult,
   createGoToSkillExecutionResult,
-} from "../skills/index.js";
-import { executeSkillInvocation } from "../skills/legacy/execution.js";
+} from "../../skills/index.js";
+import { executeSkillInvocation } from "../../skills/legacy/execution.js";
 
 describe("legacy/test-only runtime skill invocation 执行入口", () => {
   it("应通过可注入 movement adapter 执行旧 goTo 调用夹具", async () => {

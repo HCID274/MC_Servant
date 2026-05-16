@@ -189,12 +189,7 @@ describe("TS Core 工程骨架", () => {
 
   it("测试主路径不应自然依赖旧 SkillCall / Facade / legacy 执行入口", () => {
     const testsRoot = join(process.cwd(), "src", "__tests__");
-    const allowedLegacyTestFiles = new Set([
-      "sandbox-diagnostics-model.spec.ts",
-      "scaffold.spec.ts",
-      "skills-legacy-model.spec.ts",
-      "runtime-skill-legacy-execution-model.spec.ts",
-    ]);
+    const allowedLegacyTestFiles = new Set(["scaffold.spec.ts"]);
     const legacyPatterns = [
       'from "../skills/' + "legacy/",
       'from "../core-ports/' + "legacy/",
@@ -206,7 +201,7 @@ describe("TS Core 工程骨架", () => {
     const offenders = listTestFiles(testsRoot).flatMap((file) => {
       const source = readFileSync(file, "utf8");
       const relativePath = relative(testsRoot, file);
-      if (allowedLegacyTestFiles.has(relativePath)) {
+      if (relativePath.startsWith("legacy/") || allowedLegacyTestFiles.has(relativePath)) {
         return [];
       }
 
@@ -223,7 +218,7 @@ describe("TS Core 工程骨架", () => {
     const allowedOldApiTestFiles = new Set([
       "conversation-llm-planning-model.spec.ts",
       "report-llm-model.spec.ts",
-      "sandbox-diagnostics-model.spec.ts",
+      "sandbox/security-precheck.spec.ts",
       "scaffold.spec.ts",
     ]);
     const oldApiPatterns = ["api" + ".bot", "api" + ".chat"];
@@ -239,6 +234,42 @@ describe("TS Core 工程骨架", () => {
         .filter((pattern) => source.includes(pattern))
         .map((pattern) => `${relativePath}: ${pattern}`);
     });
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("非 legacy 测试不应继续使用旧 code invocation 任务形态", () => {
+    const testsRoot = join(process.cwd(), "src", "__tests__");
+    const legacyCodeInvocationPattern = "code" + "Invocation";
+
+    const offenders = listTestFiles(testsRoot).flatMap((file) => {
+      const relativePath = relative(testsRoot, file);
+      if (relativePath.startsWith("legacy/")) {
+        return [];
+      }
+
+      const source = readFileSync(file, "utf8");
+      return source.includes(legacyCodeInvocationPattern) ? [relativePath] : [];
+    });
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("测试 fixture 应进入 helpers 或 legacy 目录，不能留在根层伪装主路径", () => {
+    const testsRoot = join(process.cwd(), "src", "__tests__");
+    const rootFixtureNames = new Set([
+      "test-code-job.ts",
+      "test-skill-proofs.ts",
+      "skills-legacy-model.spec.ts",
+      "runtime-skill-legacy-execution-model.spec.ts",
+    ]);
+
+    const offenders = listTestFiles(testsRoot)
+      .map((file) => relative(testsRoot, file))
+      .filter((relativePath) => {
+        const parts = relativePath.split("/");
+        return parts.length === 1 && rootFixtureNames.has(parts[0] ?? "");
+      });
 
     expect(offenders).toEqual([]);
   });

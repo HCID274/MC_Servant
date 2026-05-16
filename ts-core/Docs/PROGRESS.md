@@ -26,6 +26,10 @@
 
 ## 已完成 (新工作流下)
 
+## T-101B | 2026-05-16 | 测试体系按行为场景目录化
+
+- 摘要: 将测试体系按 app/conversation/runtime transport/sandbox/skills/legacy/diagnostics/helpers 等行为边界目录化,主路径默认语义 TS API,legacy 与测试 helper 明确隔离。; 曾打回 2 次;返修后原 app/conversation/runtime/sandbox god spec 已拆成场景文件,`codeInvocation` 旧任务形态清零,scaffold 增加 legacy、旧 API、旧 code invocation 与根层 fixture 静态守门。typecheck、lint、git diff、全量 Vitest 与 pre_review 全绿。; 目录按行为和契约边界组织,严格 proof helper 不默认伪造成功,不改生产代码。冲突: `PROGRESS.md` 已存在旧 T-101 条目,本次以 T-101B 记录避免编号覆盖。
+
 ## T-072/T-073 | 2026-05-07 | eval JSONL 契约与 LLM 阶段离线评测 runner
 
 - 摘要: 定义 eval case/run/attempt/metric JSONL 契约,并用固定样本真实调用 triage/plan/chat/report;不接 PG schema/API/event_log,只落本地 JSONL。; 曾打回 1 次;失败 attempt 的 `input_tokens=0` 未回退估算已修。真实 eval 产出 6 cases/13 JSONL,指标齐全,预检全绿。; A1/D1/D2/D3/E2 只作 metric id,case 用 `case_*`;D3 用 chat 样本做反事实 token 节省估算。冲突: 无。

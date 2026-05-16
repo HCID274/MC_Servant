@@ -1,5 +1,5 @@
-import type { SkillName, SkillParamsByName } from "../core-ports/skills.js";
-import { type CodeJob, type ExecPriority, createCodeJob } from "../core-ports/tasking.js";
+import type { SkillName, SkillParamsByName } from "../../core-ports/skills.js";
+import { type CodeJob, type ExecPriority, createCodeJob } from "../../core-ports/tasking.js";
 
 export function createCodeJobForSkill<TName extends SkillName>(input: {
   readonly message_id: string;

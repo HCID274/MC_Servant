@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createCodeJobForSkill } from "./test-code-job.js";
+import { createCodeJobForSkill } from "./helpers/test-code-job.js";
 
 import {
   ExecPriority,

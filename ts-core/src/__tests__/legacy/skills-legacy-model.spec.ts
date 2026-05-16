@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   type LegacySkillCallInput as TestOnlyLegacySkillCallInput,
   createLegacySkillCall,
-} from "../core-ports/legacy/skill-call.js";
-import { SKILL_DIRECTORY } from "../index.js";
+} from "../../core-ports/legacy/skill-call.js";
+import { SKILL_DIRECTORY } from "../../index.js";
 
 const invalidLegacySkillCallInput: TestOnlyLegacySkillCallInput = {
   skill: SKILL_DIRECTORY.goTo,
