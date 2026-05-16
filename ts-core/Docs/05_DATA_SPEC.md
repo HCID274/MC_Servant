@@ -488,7 +488,7 @@ logs/
 │       └── T-def456.jsonl
 ├── sandbox/
 │   └── 2026-04-12/
-│       ├── T-abc123.jsonl          # 沙箱执行日志（Facade 调用详情）
+│       ├── T-abc123.jsonl          # 沙箱执行日志（host call 详情；phase 名沿用 facade_call）
 │       └── T-abc123.code.ts        # LLM 生成的原始 TS 代码
 └── llm/
     └── 2026-04-12/

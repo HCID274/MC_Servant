@@ -3,9 +3,17 @@
 TypeScript 单核心 Minecraft Bot Agent。一主一 Bot,基础技能 + 轻面板。
 
 主入口 `src/main.ts` 启动 Redis / PostgreSQL / BullMQ / Fastify / Mineflayer,
-ConversationWorker 把 `POST /api/message` 文本回复写入 MC 聊天。
-配置 `LLM_*` 后,闲聊走真实 OpenAI 兼容 `chat.completions`;
+ConversationWorker 消费网页与 `/svs` 消息,闲聊直接回复,任务统一规划为 TS 代码任务后推入 BotWorker 串行执行。
+配置 `LLM_*` 后,闲聊、分诊、规划与可选任务汇报润色走真实 OpenAI 兼容 `chat.completions`;
 配置 `SERVER_BRIDGE_ACCESS_TOKEN` 后,启用 `/ws/server-bridge`(Fabric mod `/svs` → TS Core)。
+
+## 当前执行模型
+
+- 在线 Plan 只产出 `{ "code": "..." }`;简单任务和复杂任务都走同一条 TS 代码沙箱生命周期。
+- 沙箱内只暴露顶层语义 API:`reply`、`runGoal`、`ensure`、`until`、`mine`、`cutTree`、`craft`、`place`、`equip`、`collect`、`goTo`、`report`、`search`、`sleep`、`owner`。
+- 旧 `api.bot` / `api.chat` / `SkillCall` 只允许留在 `legacy` 或负向测试中,不得进入在线主路径。
+- `mine`、`cutTree` 等资源动作必须以真实背包增量或结构化完成证明为准;复杂目标通过 `ensure(action, until.xxx(...))` 做最终条件检查。
+- 运行时传输层按稳定能力目录化:`transport/mining/` 负责采矿规划与执行,`transport/terrain/` 负责地形动作路由,`transport/world/` 负责世界读取、资源刷新与观测输入。
 
 ## 命令
 

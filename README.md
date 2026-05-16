@@ -11,7 +11,7 @@
 
 - 你在 **网页**(`POST /api/message`)或 **游戏内**(`/svs <消息>`)发一句话
 - LLM 判断这是闲聊还是任务,生成回复或 TS 代码片段
-- 代码在 isolated-vm 沙箱里跑,通过 Facade API 让 Bot 在游戏中执行(走路、砍树、挖矿……)
+- 代码在 isolated-vm 沙箱里跑,只调用顶层语义 API,再经 host bridge 交给 BotActor 单写者执行(走路、砍树、挖矿……)
 - 全程双端同步:网页和游戏聊天栏看到的是同一份输出
 
 整个系统是 **单进程、单写者、聊天驱动** 的——任意时刻只有一个 BotActor 拥有操作 Bot 的权力,其他模块只能观察、建议、请求中断。
@@ -30,8 +30,8 @@ MC_WSL_servant/
 │   │   ├── runtime/      # BotActor 状态机 + 中断协议 + Mineflayer 适配
 │   │   ├── conversation/ # 意图分诊 + LLM 客户端 + 回复/规划
 │   │   ├── workers/      # ConversationWorker / BotWorker / BrainWorker
-│   │   ├── sandbox/      # isolated-vm + Facade API + esbuild 转译
-│   │   ├── skills/       # goTo / mine / cutTree / collect / equip
+│   │   ├── sandbox/      # isolated-vm + 顶层语义 API + host bridge + esbuild
+│   │   ├── skills/       # goTo / mine / cutTree / collect / craft / place / equip + ensure
 │   │   ├── observation/  # 环境快照 + 威胁检测(纯读)
 │   │   ├── world-model/  # minecraft-data 确定性查询
 │   │   ├── interfaces/   # Fastify API + Socket.io + game-chat + server-bridge
@@ -86,7 +86,8 @@ MC_WSL_servant/
                            │   │ BotWorker          │
                            │   │ BotActor 状态机     │
                            │   │ isolated-vm 沙箱    │
-                           │   │ Facade API ─► Mineflayer
+                           │   │ 语义 API / host bridge│
+                           │   │        └─► Mineflayer │
                            │   └────────┬───────────┘
                            │            │ 每步 yield
                            │            ▼
@@ -232,7 +233,7 @@ java \
 | 0 | `agent.md` | 新 Agent 入口,先读这个 |
 | 1 | `01_ARCHITECTURE.md` | 七层架构、三队列、不可破坏约束、模块边界 |
 | 2 | `02_RUNTIME_SPEC.md` | BotActor 状态机、中断协议、单写者执行模型 |
-| 3 | `03_SANDBOX_SPEC.md` | isolated-vm 集成、Facade API、安全边界 |
+| 3 | `03_SANDBOX_SPEC.md` | isolated-vm 集成、语义 API、host bridge、安全边界 |
 | 4 | `04_CONVERSATION_SPEC.md` | 意图分类、Prompt 设计、代码生成约束 |
 | 5 | `05_DATA_SPEC.md` | Drizzle schema、JSONL、pgvector、冷热分离 |
 | 6 | `06_AGENTIC_MINE_IRON_SPEC.md` | 挖铁闭环、阶梯 BFS、技能沉淀 |

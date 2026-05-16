@@ -8,7 +8,7 @@
 
 本文档定义 BotActor 的完整行为规格：状态机、中断协议、反射系统、任务执行流、Worker 生命周期。
 
-**本文档不涉及**：沙箱内部实现（见 SANDBOX_SPEC.md）、Facade API 签名（见 SANDBOX_SPEC.md）、具体 skill 行为契约（见 SKILL_CATALOG.md）、LLM 调用与 conversation 逻辑（见 CONVERSATION_SPEC.md）。
+**本文档不涉及**：沙箱内部实现（见 SANDBOX_SPEC.md）、顶层语义 API 与 host bridge 签名（见 SANDBOX_SPEC.md）、具体 skill 行为契约、LLM 调用与 conversation 逻辑（见 CONVERSATION_SPEC.md）。
 
 ---
 
@@ -318,15 +318,16 @@ AbortSignal 必须一路穿透到 Mineflayer 的实际 I/O 操作，不能在中
 
 ```
 BotActor.executeTask(job, signal)
-  └─ sandbox.run(code, facadeAPI, signal)
-       └─ facadeAPI.bot.mine(target, count, signal)
-            └─ skill/mine.execute(target, count, signal)
-                 └─ runtime/transport mine-bfs / terrain-router
-                      ├─ mineflayer.bot.dig(block, signal)
-                      └─ foot-step 控制键脉冲移动
+  └─ sandbox.run(code, semanticApi, signal)
+       └─ mine(target, count)
+            └─ host bridge: bot.mine(target, count, signal)
+                 └─ skill/mine.execute(target, count, signal)
+                      └─ runtime/transport/mining + runtime/transport/terrain
+                           ├─ mineflayer.bot.dig(block, signal)
+                           └─ foot-step 控制键脉冲移动
 ```
 
-每一层的函数签名都必须接受 `signal: AbortSignal` 参数。这是强制约定，SKILL_CATALOG.md 中所有 skill 的签名都将包含此参数。
+每一层的函数签名都必须接受 `signal: AbortSignal` 参数。这是强制约定，底层动作能力以 `core-ports/skills` 与 `skills/` 当前公共契约为准。
 
 ---
 
@@ -524,8 +525,8 @@ BotWorker 取出 job
 ║     ├─ 创建 AbortController           ║
 ║     ├─ transition(EXECUTING)          ║
 ║     ├─ emit task.started              ║
-║     └─ 构造 Facade API 实例           ║
-║         （注入 signal + mineflayer）   ║
+║     └─ 构造沙箱语义 API / host bridge  ║
+║         （注入 signal + 单写者端口）     ║
 ║                                      ║
 ║  3. 执行代码任务                      ║
 ║     └─ job.type === 'code'            ║
@@ -589,11 +590,11 @@ async function* executeSkill(
 // 沙箱路径
 async function* executeSandbox(
   code: string,
-  facadeAPI: FacadeAPI,
+  hostBridge: SandboxHostExecutionAdapter,
   signal: AbortSignal
 ): AsyncGenerator<StepResult> {
   // esbuild 转译 + isolated-vm 执行
-  // 沙箱内每次 Facade API 调用完成后 yield 一个 StepResult
+  // 沙箱内每次语义动作经 host bridge 完成后 yield 一个 StepResult
 }
 ```
 
@@ -950,7 +951,7 @@ LLM 生成的代码有 bug（类型错误、无限循环被超时杀死、访问
 本文档定义了 BotActor 的完整运行时行为。以下文档依赖本文档：
 
 - **SANDBOX_SPEC.md**：依赖第 3.5 节 signal 穿透约定、第 5.3 节 Job 类型定义、第 5.4 节 AsyncGenerator 模型
-- **SKILL_CATALOG.md**：若恢复维护,只能记录底层动作能力与 signal（中断信号） 签名,不得恢复在线 Plan（规划） 的动作直调 Job 结构
+- **core-ports/skills 与 skills/**：底层动作能力必须保留 signal（中断信号） 签名,不得恢复在线 Plan（规划） 的动作直调 Job 结构
 - **CONVERSATION_SPEC.md**：依赖第 5.3 节 ExecJob 类型定义、第 7 节 epoch 行为
 
 ---

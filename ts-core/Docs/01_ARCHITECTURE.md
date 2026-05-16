@@ -95,7 +95,7 @@ Redis 的根本任务是消灭并发冲突，将用户并发指令强制拍平�
 
 **⑤ 执行核心 — BotActor + isolated-vm + Mineflayer**
 
-BotActor 是唯一的 Bot 写操作者。LLM 生成的 TS 代码片段经 `esbuild.transform()` 转成 JS（< 1ms），在 `isolated-vm` V8 隔离沙箱中执行。沙箱内代码通过 Facade API 向 BotActor 发起 RPC 请求，BotActor 审批并驱动 Mineflayer 执行物理动作。
+BotActor 是唯一的 Bot 写操作者。LLM 生成的 TS 代码片段经 `esbuild.transform()` 转成 JS（< 1ms），在 `isolated-vm` V8 隔离沙箱中执行。沙箱内代码只能调用顶层语义 API；语义 API 通过 host bridge 向 BotActor 发起受控请求，BotActor 审批并驱动 Mineflayer 执行物理动作。
 
 沙箱安全防线：isolated-vm 设 `memoryLimit: 128`（MB），超限时 isolate 自行终止，不拖进程下水。进程级兜底由 Docker restart policy（`restart: unless-stopped`）守护，崩溃后自动重启。
 
@@ -345,7 +345,7 @@ BotActor 每次开始执行一个任务时，创建一个新的 AbortController�
 BotActor
   └─ AbortController.signal
        └─ 沙箱执行入口
-            └─ Facade API 每个方法调用
+            └─ 顶层语义 API / host bridge 每个动作调用
                  └─ Mineflayer pathfinder / dig / collect
 ```
 
@@ -441,22 +441,23 @@ async function* executePlan(steps: Step[], signal: AbortSignal) {
 LLM 输出 TS 代码片段
     → esbuild.transform(code, { loader: 'ts' })   // < 1ms
     → isolate.compileScript(jsCode)
-    → script.run(contextWithFacadeAPI, { timeout: 30_000 })
+    → script.run(contextWithSemanticApi, { timeout: 30_000 })
 ```
 
-### 7.3 Facade API 是 BotActor 的代理
+### 7.3 语义 API 与 host bridge 是 BotActor 的代理
 
-TS（TypeScript）代码通过语义化全局函数发起动作,执行器映射到 Facade API（门面接口） 后再交给 BotActor（机器人执行代理） 全权审批：
+TS（TypeScript）代码通过语义化全局函数发起动作,执行器把调用映射到 host bridge 后再交给 BotActor（机器人执行代理） 全权审批。在线沙箱不暴露旧 `api.bot` / `api.chat` 命名空间：
 
 ```
 TS 代码内 mine('stone', 5)
     → 跨 isolate Reference 回调
-    → BotActor.executeFacadeCall('mine', { target: 'stone', count: 5 }, signal)
+    → host bridge: bot.mine({ target: 'stone', count: 5 }, signal)
+    → BotActor 单写者执行
     → Mineflayer 执行
     → 结果返回 TS 代码任务
 ```
 
-安全边界：沙箱内代码无法访问文件系统、网络、进程管理。所有与 Bot 的交互必须通过 Facade API。执行超时自动终止。
+安全边界：沙箱内代码无法访问文件系统、网络、进程管理。所有与 Bot 的交互必须通过顶层语义 API 与 host bridge。执行超时自动终止。
 
 ---
 
@@ -554,7 +555,7 @@ control 快路径只做精确匹配（`Map.get(msg.trim())`），消息多一个
 
 任何 step 执行后（无论成功、失败、中断），observation 模块必须能采集到一致的环境快照。这是重规划的前提——如果系统不知道当前状态，就无法基于当前状态做决策。
 
-每个 Facade API 方法在返回前，必须等待 Mineflayer 状态稳定（背包同步完成、实体位置更新完成）后再返回结果。不允许"动作发出但状态未同步"的中间态泄露到上层。
+每个语义动作在返回前，必须等待 Mineflayer 状态稳定（背包同步完成、实体位置更新完成）并产出真实完成证明后再返回结果。不允许"动作发出但状态未同步"的中间态泄露到上层。
 
 ### 10.2 snapshot_version 校验
 
@@ -665,12 +666,12 @@ Phase 1 全本地部署。
 |------|------|----------|
 | `runtime/` | BotActor 状态机、AbortController、反射规则表 | 唯一允许操作 Bot 的层 |
 | `conversation/` | 意图分析、优先级判定、回复生成、代码规划 | 不直接接触 Bot |
-| `skills/` | goTo、mine、cutTree、collect、equip 的 Facade API 实现 | 通过 BotActor 代理调用 Mineflayer |
+| `skills/` | goTo、mine、cutTree、collect、craft、place、equip 与 toolchain ensure 的语义动作实现 | 通过 BotActor 代理调用 Mineflayer；只依赖所需窄端口 |
 | `observation/` | Mineflayer 事件 + JAR Bridge 推送监听、快照缓存、威胁检测 | **纯读、纯写缓存**，只能向 BotActor 发中断信号 |
 | `world-model/` | minecraft-data 确定性查询、资源画像、cluster 缓存 | query 与 refresh 分离 |
 | `interfaces/` | Fastify 路由、Socket.io 推送、游戏聊天适配器、**server-bridge/** | 不参与 Bot 执行逻辑 |
 | `diagnostics/` | JSONL 日志、LLM transcript、run event | LLM 原始 I/O 必须本地文件可见 |
-| `sandbox/` | isolated-vm 集成、Facade API 类型定义、esbuild 转译 | 沙箱内代码无法逃逸到宿主 |
+| `sandbox/` | isolated-vm 集成、顶层语义 API 注入、host bridge、结果事实聚合、esbuild 转译 | 沙箱内代码无法逃逸到宿主；旧 Facade 只在 legacy/test-only |
 | `workers/` | ConversationWorker、BotWorker、BrainWorker 入口 | 每个 Worker 只消费自己的队列 |
 | `db/` | Drizzle schema、migrations、PG 连接池 | 不承载业务逻辑 |
 | `data/` | resource_profiles、词汇映射、配置 | 不承载 MC 事实真源 |
@@ -685,7 +686,7 @@ Phase 1 全本地部署。
 
 ## 16. 目录结构
 
-> v0.3 修订（2026-04-26）：本节按代码反向审计同步至当前实际目录组织，反映 T-028（`core-ports/` 引入）与 T-029（超大文件拆分）后的两层视图。barrel 入口（如 `runtime/transport.ts` 1 行 re-export `transport/index.js`）仅作向后兼容用途，不在树中重复列出。
+> v0.4 修订（2026-05-16）：本节按 T-083 至 T-102 后的代码组织同步。目录代表稳定抽象边界；barrel 入口只做 re-export，不承载业务逻辑、兼容判断、fallback 或错误转换。
 
 ```
 ts-core/
@@ -708,7 +709,11 @@ ts-core/
 │   ├── core-ports/                   # 横切端口层（v0.3 追认；T-028 引入）
 │   │   ├── foundation.ts             # 基础共享类型
 │   │   ├── runtime.ts                # 运行时端口（BotActor、broadcast、interrupt）
-│   │   ├── skills.ts                 # 技能名 / 技能参数端口
+│   │   ├── skills.ts                 # 技能公共契约兼容 barrel
+│   │   ├── skill-adapters.ts         # 技能执行适配器
+│   │   ├── skill-catalog.ts          # 技能目录
+│   │   ├── skill-results.ts          # 技能结果与完成证明
+│   │   ├── skill-toolchain.ts        # ensure / until / 工具链契约
 │   │   ├── observation.ts            # 观测端口
 │   │   ├── tasking.ts                # exec 任务 / 优先级端口
 │   │   ├── events.ts                 # 跨模块事件端口
@@ -721,14 +726,19 @@ ts-core/
 │   │   ├── events.ts
 │   │   ├── tasking.ts
 │   │   └── transport/                # Mineflayer 适配按职责拆分
+│   │       ├── runtime.ts            # Mineflayer transport 组合根
 │   │       ├── lifecycle.ts
 │   │       ├── pathfinder.ts
 │   │       ├── go-to.ts
-│   │       ├── mine.ts
 │   │       ├── collect.ts
+│   │       ├── craft.ts
+│   │       ├── placement.ts
 │   │       ├── equip.ts
 │   │       ├── naming.ts
-│   │       ├── runtime.ts
+│   │       ├── mining/               # 采矿入口、BFS 规划、执行、方块事实、工具策略
+│   │       ├── terrain/              # 地形路由、动作执行、本地移动、自放置记忆
+│   │       ├── world/                # world_key、资源刷新、观测输入、世界状态重置
+│   │       ├── facts/                # registry / block / toolchain facts
 │   │       └── types.ts
 │   ├── conversation/                 # 意图分析 / 分诊 / 回复 / 规划
 │   │   ├── contracts.ts
@@ -750,19 +760,21 @@ ts-core/
 │   │           ├── triage.ts
 │   │           ├── chat.ts
 │   │           └── plan.ts
-│   ├── skills/                       # goTo / mine / cutTree / collect / equip 参数模型
+│   ├── skills/                       # 语义动作、结果证明、toolchain ensure
+│   │   └── toolchain-ensure/         # 条件检查、恢复规划、能力执行、失败归因
 │   ├── observation/                  # 快照缓存、威胁评估
-│   ├── world-model/                  # MC 常识查询（minecraft-data 集成待 T-037）
+│   ├── world-model/                  # minecraft-data 查询、ResourceService 资源簇、世界模型缓存
 │   ├── interfaces/                   # API / 实时推送 / 游戏聊天 / 服务端桥接
 │   │   ├── api.ts                    # Fastify 路由
-│   │   ├── realtime.ts               # Socket.io 推送契约（实现待 T-034）
+│   │   ├── realtime.ts               # Socket.io 推送契约与广播适配
 │   │   ├── server.ts
 │   │   ├── contracts.ts
 │   │   ├── errors.ts
 │   │   ├── game-chat/                # Mineflayer chat 适配
-│   │   └── server-bridge/            # JAR 插件通信（实际通信待 T-039）
+│   │   └── server-bridge/            # Fabric mod WebSocket 桥接协议与路由
 │   ├── diagnostics/                  # JSONL 日志、LLM transcript、run events
-│   ├── sandbox/                      # isolated-vm + Facade API + esbuild
+│   ├── sandbox/                      # isolated-vm + 语义 API + host bridge + 结果事实
+│   │   └── legacy/                   # 旧 Facade/test-only 兼容入口
 │   ├── workers/                      # ConversationWorker / BotWorker / BrainWorker
 │   │   ├── bot-worker.ts
 │   │   ├── brain-worker.ts           # T-033 引入
@@ -771,9 +783,9 @@ ts-core/
 │   │   ├── contracts.ts
 │   │   └── conversation-worker/
 │   │       ├── runtime.ts
-│   │       ├── helpers.ts
 │   │       ├── events.ts
 │   │       ├── types.ts
+│   │       ├── plan-exec/            # context / continuation / planner / job / dispatch / metrics
 │   │       └── handlers/
 │   │           ├── chat-reply.ts
 │   │           ├── plan-exec.ts
@@ -788,7 +800,7 @@ ts-core/
 │   │       ├── config.ts
 │   │       ├── config-types.ts
 │   │       └── utils.ts
-│   ├── __tests__/                    # 28 个 spec 文件（按模块/契约组织）
+│   ├── __tests__/                    # 按行为场景目录化；legacy/test-only 与主路径分离
 │   ├── index.ts
 │   └── main.ts                       # 进程可执行入口
 ├── logs/                             # JSONL runtime logs (gitignored)
@@ -802,7 +814,7 @@ ts-core/
 
 其中 `domain/`（领域） 与 `core-ports/`（核心端口） 作为横切基础层，只承载可被多模块复用的核心类型、基础校验、只读辅助与跨模块端口契约，不直接承载业务流程、队列装配或外部 I/O（输入输出） 逻辑。`app/`（应用装配） 作为组合根，集中处理依赖装配与生命周期，不承载业务执行。
 
-**barrel 兼容入口约定**：当一级模块文件被拆入子目录后（如 `runtime/transport/`、`conversation/llm/`、`workers/conversation-worker/`、`app/bootstrap/`、`data/contracts/`），保留同名 1 行 `.ts` 文件作为 `export * from "./xxx/index.js"` 的兼容入口，使外部 import 路径不破坏。**新代码应直接 import 子目录入口**，barrel 入口仅用于过渡兼容。barrel 不得放业务逻辑、兼容判断、fallback 或错误转换。
+**barrel 入口约定**：当一级模块文件被拆入子目录后（如 `conversation/llm.ts`、`workers/conversation-worker/index.ts`、`app/bootstrap/index.ts`、`data/contracts/index.ts`），barrel 只能做 `export *` 或类型 re-export。**新代码应优先 import 稳定目录入口**；legacy/test-only 兼容出口必须显式命名并与在线主路径隔离。
 
 ### 16.1 命名约定
 
@@ -836,7 +848,7 @@ TS Core（TypeScript 单核心） 在跨边界数据上固定以下命名规则�
 | 2 | runtime + conversation + interfaces 最小闭环 | 核心三件套 |
 | 3 | BotActor 状态机 + AbortController 中断协议 | runtime |
 | 4 | 三队列模型 + ConversationWorker / BotWorker / BrainWorker | workers |
-| 5 | isolated-vm 沙箱 + Facade API + esbuild 转译 | sandbox |
+| 5 | isolated-vm 沙箱 + 顶层语义 API + host bridge + esbuild 转译 | sandbox |
 | 6 | 最小 skill 闭环（goTo + cutTree + collect + craft/place/equip/mine 最小工具链） | skills |
 | 7 | observation 基础 + 脊髓反射规则表 | observation, runtime |
 | 8 | world-model 基础（minecraft-data 集成） | world-model |
@@ -894,7 +906,7 @@ TS Core（TypeScript 单核心） 在跨边界数据上固定以下命名规则�
 本文档是所有后续设计文档的根依赖。推进顺序：
 
 1. **RUNTIME_SPEC.md** — BotActor 状态机完整定义、中断协议细节、反射规则表扩展策略
-2. **SANDBOX_SPEC.md** — isolated-vm 集成方案、Facade API 完整类型签名、安全边界细则
+2. **SANDBOX_SPEC.md** — isolated-vm 集成方案、顶层语义 API、host bridge、安全边界细则
 
 ---
 

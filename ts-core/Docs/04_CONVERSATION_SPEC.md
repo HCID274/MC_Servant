@@ -8,7 +8,7 @@
 
 本文档定义 ConversationWorker 的完整行为规格：两阶段 LLM 调用模型、意图分类与优先级判定、上下文组装策略、TS（TypeScript）代码产出契约、回复生成、Token 预算管理、记忆检索集成。
 
-**本文档不涉及**：BotActor 状态机（见 RUNTIME_SPEC.md）、沙箱执行细节（见 SANDBOX_SPEC.md）、BrainWorker 摘要压缩算法（见 DATA_SPEC.md）、具体 skill 实现（见 SKILL_CATALOG.md）。
+**本文档不涉及**：BotActor 状态机（见 RUNTIME_SPEC.md）、沙箱执行细节（见 SANDBOX_SPEC.md）、BrainWorker 摘要压缩算法（见 DATA_SPEC.md）、具体 skill 实现（见 `skills/` 与 `core-ports/skills`）。
 
 ---
 
@@ -32,7 +32,7 @@ ConversationWorker 消费 `msg:{botId}` 队列，产出物推入 `bot:{botId}:ex
 
 - 闲聊占比约 60-70%，不需要生成代码，单次调用浪费深度推理的 token
 - 意图判错时，整个深度输出全部作废
-- 无法在分类后做差异化的上下文注入（闲聊不需要 Facade API 类型定义）
+- 无法在分类后做差异化的上下文注入（闲聊不需要沙箱语义 API 规则、世界快照与资源上下文）
 
 两阶段模型：先用轻量 prompt 做分类，再根据分类结果决定是否需要第二次深度调用。
 
@@ -74,7 +74,7 @@ ConversationWorker 消费 `msg:{botId}` 队列，产出物推入 `bot:{botId}:ex
           ║ Stage 2-Plan          ║
           ║                       ║
           ║ 输入：消息 + 快照      ║
-          ║ + Facade API 签名     ║
+          ║ + 语义 API 规则       ║
           ║ + 记忆/RAG 检索结果   ║
           ║ + 任务历史索引        ║
           ║                       ║
@@ -431,7 +431,7 @@ ConversationWorker 的每一次 LLM 调用都有严格的 token 预算。预算�
 ┌───────────────────────────────────────────┐
 │  总预算 3000 tokens                        │
 ├───────────────────────────────────────────┤
-│  System Prompt（含 Facade API 签名）  ~1000 │  ← 固定开销
+│  System Prompt（含语义 API 硬约束）  ~1000 │  ← 固定开销
 │  环境快照（压缩版）                  ~400  │  ← 动态
 │  最近 3 轮原始对话                   ~300  │  ← 动态
 │  任务历史索引                       ~300  │  ← 动态
@@ -566,7 +566,7 @@ Bot：去砍橡木。
 | 可挖语义 | `is_diggable` 表示方块 / 工具 / 世界规则下可挖，不包含 Mineflayer `canDigBlock` 的当前 5.1 格手边距离限制 |
 | 树木选择 | `cutTree(count)` 先找单个 `log_count >= count` 的最近足量簇；没有单簇足量时再按推荐目标距离升序累计多个小簇；每簇默认选最低合法原木作为推荐目标；缓存不足时复用 16→32→64 阶梯刷新 |
 | 砍树完成标准 | 执行层只挖每个选中簇的一个推荐原木，由 plugin 连锁掉落；等待 1 秒后以最低原木位置为中心、半径 8 强制 collect 可见掉落物，collect 失败则任务失败；collect 只清理与 bot 高度差 3 格以内的可见掉落物，避免树冠滞留掉落物拖死任务；随后以 dig+collect 前后的背包原木增量判断是否达到 `count`，不足则继续下一簇 |
-| 挖掘资源路径 | `mine('stone', count)` 不写入 ResourceService，直接由 runtime scan 最近可挖 stone 并用 mine-bfs 执行安全动作路线；`mine('iron_ore'/'deepslate_iron_ore', count)` 先按具体方块名刷新/读取 ResourceService 矿石簇，再由 runtime 执行同一套 mine-bfs 路线 |
+| 挖掘资源路径 | `mine('stone', count)` 不写入 ResourceService，直接由 runtime scan 最近可挖 stone 并用 `runtime/transport/mining` + `runtime/transport/terrain` 执行安全动作路线；`mine('iron_ore'/'deepslate_iron_ore', count)` 先按具体方块名刷新/读取 ResourceService 矿石簇，再由 runtime 执行同一套采矿与地形路由 |
 | 挖掘完成标准 | runtime 根据 registry / Mineflayer 执行结果计算目标掉落物背包增量；增量不足时返回 `drop_not_obtained`，不得假设挖掉方块就等于获得物品 |
 | 资源 key 集合 | Phase 1 锁定 `tree`、`ore` 两个 key，并行刷新 |
 | 资源 key 解析 | `tree` 是 TS Core 公共资源键；runtime/transport 负责把它解析到 Mineflayer / minecraft-data 的原木 tag 事实，refresh 返回仍保留 `resource_keys=["tree"]` |
@@ -1289,11 +1289,11 @@ LLM diagnostics 本地 JSONL 写入必须走 bounded async sink（有界异步�
 本文档定义了 ConversationWorker 的完整行为。以下文档依赖本文档：
 
 - **DATA_SPEC.md**：依赖第 8 节任务索引层级定义、第 10 节 chat_messages 表结构
-- **SKILL_CATALOG.md**：若恢复维护,只能记录底层动作能力,不得恢复在线 Plan（规划） 的旧动作直调输出路径
+- **skills/ 与 core-ports/skills**：只能记录底层动作能力,不得恢复在线 Plan（规划） 的旧动作直调输出路径
 
 本文档依赖的上游文档：
 
-- **SANDBOX_SPEC.md 第 4 节**：Facade API 完整类型定义（精简版基于此裁剪）
+- **SANDBOX_SPEC.md 第 4 节**：顶层语义 API 与内部 host bridge 契约（Plan Prompt 只引用语义 API，不暴露旧命名空间）
 - **SANDBOX_SPEC.md 第 8 节**：LLM 代码生成约束
 - **RUNTIME_SPEC.md 第 5.3 节**：ExecJob 类型定义
 - **RUNTIME_SPEC.md 第 7 节**：intent_epoch 行为

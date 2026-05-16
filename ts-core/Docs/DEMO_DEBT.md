@@ -53,7 +53,7 @@
 当前最小集合：
 
 - 木头不足 → 继续 cutTree（砍树）。
-- 没有工作台 → craft（合成） 并 placeCraftingTable（放置工作台）。
+- 没有工作台 → 由 `ensure(action, until.placed("crafting_table"))` 触发工具链恢复：先 `craft("crafting_table", 1)`,再 `place("crafting_table")`。
 - 没有木镐 → 补齐材料并 craft/equip（合成/装备）。
 - 圆石不足 → 使用 stair BFS mining（阶梯广度优先采矿） 挖 stone（石头）。
 - 没有石镐 → 补圆石并 craft/equip（合成/装备）。
@@ -76,4 +76,3 @@
 - 不得绕开 ResourceService（资源服务）/ currentWorld（当前世界） 处理 `world_key`（世界键）。
 - 不得把经验 skill（经验技能）全文常驻塞进 prompt（提示词）。
 - 不得用 BullMQ retry（队列重试）盲目重跑物理动作。
-
