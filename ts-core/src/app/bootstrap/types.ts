@@ -39,7 +39,6 @@ import type {
   RuntimeScaffold,
 } from "../../runtime/index.js";
 import type { SandboxExecutionResourceLimits } from "../../sandbox/index.js";
-import type { SandboxFacadeContract } from "../../sandbox/legacy/index.js";
 import type {
   WorkerBullmqDependencies,
   WorkerBullmqRuntime,
@@ -145,8 +144,6 @@ export interface AppExternalAuthInitialConfig {
 
 /** 沙箱装配结果，用于声明无真实隔离实例时的可用契约。 */
 export interface AppSandboxContract {
-  /** 旧 Facade API（门面接口） 契约；仅用于 scaffold/迁移诊断，不进入在线执行路径。 */
-  readonly legacy_facade: SandboxFacadeContract;
   /** 默认资源限制。 */
   readonly resource_limits: Readonly<SandboxExecutionResourceLimits>;
 }

@@ -26,6 +26,10 @@
 
 ## 已完成 (新工作流下)
 
+## T-102 | 2026-05-16 | 公共出口与 import 方向静态约束
+
+- 摘要: 为目录化后的 runtime transport、sandbox、skills、legacy/test-only 边界增加轻量静态守门; C 审查通过,确认在线源码不依赖 legacy/test-only,业务源码不能绕过 mining/terrain 公共入口,sandbox 外部不能直接 import host bridge 内部实现,测试 proof helper 不提供默认成功 proof。typecheck、lint、git diff、全量 Vitest 与 pre_review 全绿。; 关键取舍: 规则落在 scaffold 测试并随 pre_review 运行,同时移除 app bootstrap 对 legacy facade 契约的生产依赖;白盒测试仅在 runtime/transport 测试目录内允许触达内部 helper。冲突: 无。
+
 ## T-101B | 2026-05-16 | 测试体系按行为场景目录化
 
 - 摘要: 将测试体系按 app/conversation/runtime transport/sandbox/skills/legacy/diagnostics/helpers 等行为边界目录化,主路径默认语义 TS API,legacy 与测试 helper 明确隔离。; 曾打回 2 次;返修后原 app/conversation/runtime/sandbox god spec 已拆成场景文件,`codeInvocation` 旧任务形态清零,scaffold 增加 legacy、旧 API、旧 code invocation 与根层 fixture 静态守门。typecheck、lint、git diff、全量 Vitest 与 pre_review 全绿。; 目录按行为和契约边界组织,严格 proof helper 不默认伪造成功,不改生产代码。冲突: `PROGRESS.md` 已存在旧 T-101 条目,本次以 T-101B 记录避免编号覆盖。

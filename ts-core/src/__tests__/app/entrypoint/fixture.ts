@@ -47,7 +47,7 @@ import {
   createMineflayerTransportDescriptor,
   createRuntimeReadyGate,
 } from "../../../runtime/index.js";
-import type { MineflayerBotHandle } from "../../../runtime/transport/test-only.js";
+import type { MineflayerBotHandle } from "../../../runtime/transport/types.js";
 import {
   type BotWorkerTask,
   type BrainWorkerTask,

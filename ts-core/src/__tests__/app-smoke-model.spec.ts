@@ -10,7 +10,7 @@ import {
   createAppSmokeAssembly,
 } from "../app/index.js";
 import { ExecPriority, createCodeJob } from "../core-ports/tasking.js";
-import type { MineflayerBotHandle } from "../runtime/transport/test-only.js";
+import type { MineflayerBotHandle } from "../runtime/transport/types.js";
 
 class FakeAppMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username: string;

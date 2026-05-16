@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, normalize, relative } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -294,6 +294,111 @@ describe("TS Core 工程骨架", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("在线源码不应依赖 legacy 或 test-only 出口", () => {
+    const srcRoot = join(process.cwd(), "src");
+    const offenders = collectStaticImports(srcRoot)
+      .filter((edge) => !edge.source.startsWith("__tests__/"))
+      .filter((edge) => !isLegacySourcePath(edge.source))
+      .filter((edge) => {
+        const target = edge.resolvedSourcePath;
+        return target !== null && (isLegacySourcePath(target) || isTestOnlySourcePath(target));
+      })
+      .map(formatImportEdge);
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("测试侧 legacy/test-only 豁免应保持窄边界", () => {
+    const srcRoot = join(process.cwd(), "src");
+    const offenders = collectStaticImports(srcRoot)
+      .filter((edge) => edge.source.startsWith("__tests__/"))
+      .filter((edge) => {
+        const target = edge.resolvedSourcePath;
+        if (target === null) {
+          return false;
+        }
+
+        if (isLegacySourcePath(target)) {
+          return !(
+            edge.source.startsWith("__tests__/legacy/") || edge.source === "__tests__/scaffold.spec"
+          );
+        }
+
+        if (isTestOnlySourcePath(target)) {
+          return !edge.source.startsWith("__tests__/runtime/transport/");
+        }
+
+        return false;
+      })
+      .map(formatImportEdge);
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("业务源码应通过 mining/terrain 公共入口访问地形与采矿能力", () => {
+    const srcRoot = join(process.cwd(), "src");
+    const offenders = collectStaticImports(srcRoot)
+      .filter((edge) => !edge.source.startsWith("__tests__/runtime/transport/"))
+      .filter((edge) => {
+        const target = edge.resolvedSourcePath;
+        if (target === null) {
+          return false;
+        }
+
+        if (isRuntimeTransportMiningInternalPath(target)) {
+          return !edge.source.startsWith("runtime/transport/mining/");
+        }
+
+        if (isRuntimeTransportTerrainInternalPath(target)) {
+          return !edge.source.startsWith("runtime/transport/terrain/");
+        }
+
+        return false;
+      })
+      .map(formatImportEdge);
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("sandbox 外部不应直接 import host bridge 内部实现", () => {
+    const srcRoot = join(process.cwd(), "src");
+    const offenders = collectStaticImports(srcRoot)
+      .filter((edge) => {
+        const target = edge.resolvedSourcePath;
+        if (target === null || !isSandboxHostBridgeInternalPath(target)) {
+          return false;
+        }
+
+        return !edge.source.startsWith("sandbox/");
+      })
+      .map(formatImportEdge);
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("测试 proof helper 不应提供默认成功 proof", () => {
+    const helpersRoot = join(process.cwd(), "src", "__tests__", "helpers");
+    const offenders = listTestFiles(helpersRoot).flatMap((file) => {
+      const relativePath = relative(helpersRoot, file);
+      const source = readFileSync(file, "utf8");
+      const provenFactoryMatches = [
+        ...source.matchAll(/export function (createTestOnlyProven\w+)/gu),
+      ];
+      const missingProofFactories = provenFactoryMatches
+        .filter(
+          (match) => !source.slice(match.index ?? 0, (match.index ?? 0) + 240).includes("proof:"),
+        )
+        .map((match) => `${relativePath}: ${match[1]} missing proof parameter`);
+      const defaultProofFactories = [...source.matchAll(/proof\s*:[\s\S]{0,160}=\s*\{/gu)].map(
+        () => `${relativePath}: proof parameter has a default value`,
+      );
+
+      return [...missingProofFactories, ...defaultProofFactories];
+    });
+
+    expect(offenders).toEqual([]);
+  });
+
   it("应从根入口导出 conversation（对话） 与 workers（工作线程） 契约", () => {
     const triage = createMessageTriage({
       intent: "task",
@@ -406,4 +511,85 @@ function listTestFiles(root: string): string[] {
     }
     return entry.endsWith(".ts") ? [path] : [];
   });
+}
+
+interface StaticImportEdge {
+  readonly source: string;
+  readonly line: number;
+  readonly specifier: string;
+  readonly resolvedSourcePath: string | null;
+}
+
+function collectStaticImports(srcRoot: string): StaticImportEdge[] {
+  return listTestFiles(srcRoot).flatMap((file) => {
+    const source = readFileSync(file, "utf8");
+    const sourcePath = toSourcePath(relative(srcRoot, file));
+
+    return source.split("\n").flatMap((line, index) =>
+      readImportSpecifiersFromLine(line).map((specifier) => ({
+        source: sourcePath,
+        line: index + 1,
+        specifier,
+        resolvedSourcePath: resolveSourceImport(srcRoot, file, specifier),
+      })),
+    );
+  });
+}
+
+function readImportSpecifiersFromLine(line: string): string[] {
+  return [
+    ...line.matchAll(/\bfrom\s+["']([^"']+)["']/gu),
+    ...line.matchAll(/^\s*import\s+["']([^"']+)["']/gu),
+    ...line.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/gu),
+  ].map((match) => String(match[1]));
+}
+
+function resolveSourceImport(
+  srcRoot: string,
+  importerFile: string,
+  specifier: string,
+): string | null {
+  if (!specifier.startsWith(".")) {
+    return null;
+  }
+
+  const resolved = normalize(join(dirname(importerFile), specifier));
+  return toSourcePath(relative(srcRoot, resolved));
+}
+
+function toSourcePath(path: string): string {
+  return path
+    .replaceAll("\\", "/")
+    .replace(/\.(?:ts|tsx|js|jsx)$/u, "")
+    .replace(/\/index$/u, "/index");
+}
+
+function isLegacySourcePath(path: string): boolean {
+  return path.split("/").includes("legacy");
+}
+
+function isTestOnlySourcePath(path: string): boolean {
+  return path.endsWith("/test-only") || path.split("/").includes("test-only");
+}
+
+function isRuntimeTransportMiningInternalPath(path: string): boolean {
+  return path.startsWith("runtime/transport/mining/") && path !== "runtime/transport/mining/index";
+}
+
+function isRuntimeTransportTerrainInternalPath(path: string): boolean {
+  return (
+    path.startsWith("runtime/transport/terrain/") && path !== "runtime/transport/terrain/index"
+  );
+}
+
+function isSandboxHostBridgeInternalPath(path: string): boolean {
+  return (
+    path === "sandbox/host-call" ||
+    path === "sandbox/host-call-params" ||
+    path === "sandbox/host-call-report"
+  );
+}
+
+function formatImportEdge(edge: StaticImportEdge): string {
+  return `${edge.source}:${edge.line} -> ${edge.specifier}`;
 }
