@@ -2,6 +2,7 @@ import type {
   EnsureCondition,
   EnsureDependencyParams,
   ToolchainFailureCode,
+  ToolchainMaterialRequirement,
   ToolchainMaterialSource,
 } from "../../core-ports/skills.js";
 import { countInventoryItem, readInventoryItems } from "./condition-checker.js";
@@ -51,6 +52,10 @@ export type ConditionGapRecoveryPlan =
 
 export type MissingItemRecoveryPlan =
   | Readonly<{ readonly kind: "craft_item"; readonly itemName: string }>
+  | Readonly<{
+      readonly kind: "provide_material_requirement";
+      readonly requirement: ToolchainMaterialRequirement;
+    }>
   | Readonly<{
       readonly kind: "provide_material_source";
       readonly source: ToolchainMaterialSource;
@@ -137,6 +142,15 @@ export function planMissingItemRecovery(
 
   const currentCount = countInventoryItem(readInventoryItems(context), missingItem.itemName);
   const targetCount = currentCount + missingItem.missing;
+  const requirement = context.dependencies.facts.resolveMaterialRequirement({
+    itemName: missingItem.itemName,
+    missing: missingItem.missing,
+    inventory: readInventoryItems(context),
+  });
+  if (requirement !== null) {
+    return { kind: "provide_material_requirement", requirement };
+  }
+
   const source = context.dependencies.facts.resolveMaterialSource({
     itemName: missingItem.itemName,
   });

@@ -1,4 +1,8 @@
-import type { ToolchainActionSummary, ToolchainMaterialSource } from "../../core-ports/skills.js";
+import type {
+  ToolchainActionSummary,
+  ToolchainMaterialRequirement,
+  ToolchainMaterialSource,
+} from "../../core-ports/skills.js";
 import { countInventoryItem, readInventoryItems } from "./condition-checker.js";
 import {
   classifySkillFailure,
@@ -258,6 +262,10 @@ async function recoverMissingItem(
     });
   }
 
+  if (plan.kind === "provide_material_requirement") {
+    return provideMaterialRequirement(context, plan.requirement, actions);
+  }
+
   if (plan.kind === "missing_materials_unresolved") {
     return createEnsureFailure({
       code: "missing_materials",
@@ -273,6 +281,30 @@ async function recoverMissingItem(
   }
 
   return provideMaterialFromSource(context, plan.source, plan.targetCount, actions);
+}
+
+async function provideMaterialRequirement(
+  context: ResolverContext,
+  requirement: ToolchainMaterialRequirement,
+  actions: ToolchainActionSummary[],
+): Promise<EnsureResult> {
+  const before = context.dependencies.facts.evaluateMaterialRequirement({
+    requirement,
+    inventory: readInventoryItems(context),
+  });
+  if (before.ok) {
+    return createEnsureSuccess({
+      itemName: requirement.itemName,
+      completedCount: before.completedCount,
+      targetCount: requirement.targetCount,
+      actions,
+      worldKey: readCurrentWorldKey(context.dependencies),
+    });
+  }
+
+  return provideMaterialFromSource(context, requirement.source, requirement.targetCount, actions, {
+    requirement,
+  });
 }
 
 async function provideMaterial(
@@ -316,6 +348,10 @@ async function provideMaterial(
       : crafted.failure;
   }
 
+  if (plan.kind === "provide_material_requirement") {
+    return provideMaterialFromSource(context, plan.requirement.source, targetCount, actions);
+  }
+
   return provideMaterialFromSource(context, plan.source, targetCount, actions);
 }
 
@@ -324,10 +360,11 @@ async function provideMaterialFromSource(
   source: ToolchainMaterialSource,
   targetCount: number,
   actions: ToolchainActionSummary[],
+  options: Readonly<{ readonly requirement?: ToolchainMaterialRequirement }> = {},
 ): Promise<EnsureResult> {
   return source.action === "mine"
-    ? provideMaterialByMining(context, source, targetCount, actions)
-    : provideMaterialByCutTree(context, source, targetCount, actions);
+    ? provideMaterialByMining(context, source, targetCount, actions, options)
+    : provideMaterialByCutTree(context, source, targetCount, actions, options);
 }
 
 async function provideMaterialByMining(
@@ -335,8 +372,9 @@ async function provideMaterialByMining(
   source: Extract<ToolchainMaterialSource, { readonly action: "mine" }>,
   targetCount: number,
   actions: ToolchainActionSummary[],
+  options: Readonly<{ readonly requirement?: ToolchainMaterialRequirement }> = {},
 ): Promise<EnsureResult> {
-  const before = countInventoryItem(readInventoryItems(context), source.itemName);
+  const before = readMaterialCompletedCount(context, source.itemName, options.requirement);
   const missing = targetCount - before;
   const requiredEquipment = context.dependencies.facts.resolveRequiredEquipment({
     failure: {
@@ -366,7 +404,7 @@ async function provideMaterialByMining(
     return mined.failure;
   }
 
-  const after = countInventoryItem(readInventoryItems(context), source.itemName);
+  const after = readMaterialCompletedCount(context, source.itemName, options.requirement);
   return after >= targetCount
     ? createEnsureSuccess({
         itemName: source.itemName,
@@ -436,8 +474,9 @@ async function provideMaterialByCutTree(
   source: Extract<ToolchainMaterialSource, { readonly action: "cutTree" }>,
   targetCount: number,
   actions: ToolchainActionSummary[],
+  options: Readonly<{ readonly requirement?: ToolchainMaterialRequirement }> = {},
 ): Promise<EnsureResult> {
-  const before = countInventoryItem(readInventoryItems(context), source.itemName);
+  const before = readMaterialCompletedCount(context, source.itemName, options.requirement);
   if (context.dependencies.cutTree === undefined) {
     return createEnsureFailure({
       code: "unsupported_capability",
@@ -472,7 +511,7 @@ async function provideMaterialByCutTree(
     return collected.failure;
   }
 
-  const after = countInventoryItem(readInventoryItems(context), source.itemName);
+  const after = readMaterialCompletedCount(context, source.itemName, options.requirement);
   return after >= targetCount
     ? createEnsureSuccess({
         itemName: source.itemName,
@@ -488,6 +527,21 @@ async function provideMaterialByCutTree(
         actions,
         details: { item_name: source.itemName, target_count: targetCount, completed_count: after },
       });
+}
+
+function readMaterialCompletedCount(
+  context: ResolverContext,
+  itemName: string,
+  requirement: ToolchainMaterialRequirement | undefined,
+): number {
+  if (requirement === undefined) {
+    return countInventoryItem(readInventoryItems(context), itemName);
+  }
+
+  return context.dependencies.facts.evaluateMaterialRequirement({
+    requirement,
+    inventory: readInventoryItems(context),
+  }).completedCount;
 }
 
 async function callToolchain(input: {

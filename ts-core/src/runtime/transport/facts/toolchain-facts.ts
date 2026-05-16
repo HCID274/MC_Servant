@@ -2,6 +2,7 @@ import type { RuntimeResourceBlockSemanticRole } from "../../../core-ports/runti
 import type {
   ToolchainEnsureFacts,
   ToolchainEnsureInventoryItem,
+  ToolchainMaterialRequirement,
   ToolchainMaterialSource,
 } from "../../../core-ports/skills.js";
 import type { MineflayerBotHandle } from "../types.js";
@@ -39,6 +40,24 @@ export function createMineflayerToolchainEnsureFacts(source: {
     resolveMaterialSource(input: Parameters<ToolchainEnsureFacts["resolveMaterialSource"]>[0]) {
       const bot = source.getBot();
       return bot === null ? null : resolveMaterialSourceFromRegistry(bot.registry, input.itemName);
+    },
+    resolveMaterialRequirement(
+      input: Parameters<ToolchainEnsureFacts["resolveMaterialRequirement"]>[0],
+    ) {
+      const bot = source.getBot();
+      return bot === null
+        ? null
+        : resolveMaterialRequirementFromRegistry(
+            bot.registry,
+            input.itemName,
+            input.missing,
+            input.inventory,
+          );
+    },
+    evaluateMaterialRequirement(
+      input: Parameters<ToolchainEnsureFacts["evaluateMaterialRequirement"]>[0],
+    ) {
+      return evaluateMaterialRequirement(input.requirement, input.inventory);
     },
     canCraft(input: Parameters<ToolchainEnsureFacts["canCraft"]>[0]) {
       const bot = source.getBot();
@@ -151,6 +170,83 @@ function resolveMaterialSourceFromRegistry(
         itemName: normalizedItemName,
         blockName: normalizeRegistryName(sourceBlockName),
       });
+}
+
+function resolveMaterialRequirementFromRegistry(
+  registry: unknown,
+  itemName: string,
+  missing: number,
+  _inventory: readonly ToolchainEnsureInventoryItem[],
+): ToolchainMaterialRequirement | null {
+  const normalizedItemName = normalizeRegistryName(itemName);
+  const source = resolveMaterialSourceFromRegistry(registry, normalizedItemName);
+  if (source === null) {
+    return null;
+  }
+
+  const acceptableItems = resolveAcceptableMaterialItemNames(registry, normalizedItemName, source);
+  const completedCount = countInventoryItemsByNames(acceptableItems, _inventory);
+  return Object.freeze({
+    itemName: normalizedItemName,
+    targetCount:
+      source.action === "cutTree" ? Math.max(1, missing) : completedCount + Math.max(1, missing),
+    acceptableItems,
+    source,
+  });
+}
+
+function resolveAcceptableMaterialItemNames(
+  registry: unknown,
+  itemName: string,
+  source: ToolchainMaterialSource,
+): readonly string[] {
+  if (source.action !== "cutTree") {
+    return Object.freeze([normalizeRegistryName(itemName)]);
+  }
+
+  const names = readRegistryBlockFacts(registry)
+    .filter((block) => isCutTreeLogLikeBlockFact(block))
+    .flatMap((block) =>
+      readRegistryBlockDropIds(block)
+        .map((dropId) => readRegistryItemName(registry, dropId))
+        .filter((name): name is string => name !== null),
+    )
+    .map(normalizeRegistryName);
+
+  return names.length === 0
+    ? Object.freeze([normalizeRegistryName(itemName)])
+    : Object.freeze([...new Set([normalizeRegistryName(itemName), ...names])]);
+}
+
+function evaluateMaterialRequirement(
+  requirement: ToolchainMaterialRequirement,
+  inventory: readonly ToolchainEnsureInventoryItem[],
+) {
+  const acceptableItems = new Set(requirement.acceptableItems.map(normalizeRegistryName));
+  const matchedItems = inventory
+    .map((item) =>
+      Object.freeze({ item_name: normalizeRegistryName(item.item_name), count: item.count }),
+    )
+    .filter((item) => acceptableItems.has(item.item_name));
+  const completedCount = matchedItems.reduce((sum, item) => sum + item.count, 0);
+
+  return Object.freeze({
+    ok: completedCount >= requirement.targetCount,
+    completedCount,
+    targetCount: requirement.targetCount,
+    matchedItems: Object.freeze(matchedItems),
+  });
+}
+
+function countInventoryItemsByNames(
+  itemNames: readonly string[],
+  inventory: readonly ToolchainEnsureInventoryItem[],
+): number {
+  const names = new Set(itemNames.map(normalizeRegistryName));
+  return inventory.reduce(
+    (sum, item) => (names.has(normalizeRegistryName(item.item_name)) ? sum + item.count : sum),
+    0,
+  );
 }
 
 function resolveBlockDropItemNamesFromRegistry(

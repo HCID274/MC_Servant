@@ -317,3 +317,7 @@
 ## T-100 | 2026-05-16 | 任务结果 summary/report 模块职责收口
 
 - 摘要: 将任务结果事实提取、完成判断、汇报事实构造和 ReportLLM 输入拆成 `task-result-summary/` 与 `task-report/` 两个职责目录。; 曾打回 1 次;修复 completed sandbox 缺 `report/toolchain/skill` proof 时用 `total_steps` 伪完成、以及 `task-report/index` 非纯 barrel 的问题。typecheck、lint、report/sandbox/bot-worker 定向测试、pre_review 全绿。; summary 只产结构化事实,report facts 不重新判断技能成败,reporter 只做确定性模板与 LLM 润色选择;缺 proof 转 `unknown_completion` 并同步任务终态为 failed。冲突: 无。
+
+## T-089/T-097R | 2026-05-16 | 工具链等价材料需求恢复
+
+- 摘要: 修复工具链恢复把配方候选缺料固定成单一物品的问题,让缺木质材料时由 runtime/minecraft-data facts 解析可接受材料集合。; 通过。新增 `ToolchainMaterialRequirement` 窄端口,恢复层只规划和复查语义需求,砍到 `cherry_log` 等同类原木后可继续合成木镐并回到原挖掘目标。typecheck、lint、runtime/skills 回归、pre_review 全绿。; MC 等价材料事实保留在 `runtime/transport/facts`,skills 不硬编码树种/配方,缺 proof 或缺事实仍走结构化失败。冲突: 无。

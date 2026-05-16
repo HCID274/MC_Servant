@@ -617,6 +617,118 @@ describe("skills 模块契约", () => {
     expect(actions).not.toContain("craft:stone_pickaxe");
   });
 
+  it("ToolchainEnsure（工具链确保） 恢复合成缺料时应接受 facts 解析出的等价原木", async () => {
+    const inventory: { item_name: string; count: number }[] = [];
+    const actions: string[] = [];
+    const ensure = createToolchainEnsureExecutor({
+      facts: createFakeEnsureFacts(),
+      inventory: {
+        readInventoryItems: () => inventory,
+        countLogs: (items) =>
+          items
+            .filter((item) => item.item_name.endsWith("_log"))
+            .reduce((sum, item) => sum + item.count, 0),
+      },
+      async cutTree(params) {
+        actions.push(`cutTree:${params.count}`);
+        addInventory(inventory, "cherry_log", Math.max(1, params.count));
+        return {
+          skill: "cutTree",
+          requested_count: params.count,
+          world_key: "minecraft:overworld",
+          collected_count: Math.max(1, params.count),
+          completed: true,
+          status: "completed",
+          clusters: [],
+          diagnostics: [],
+          total_steps: 1,
+        };
+      },
+      async collect() {
+        actions.push("collect");
+        return {
+          skill: "collect",
+          item_name: null,
+          center: { x: 0, y: 64, z: 0 },
+          radius: 8,
+          collected: [],
+          skipped: [],
+          total_steps: 1,
+        };
+      },
+      async place(params) {
+        actions.push(`place:${params.blockName}`);
+        return {
+          ok: true,
+          data: {
+            block_name: params.blockName,
+            completed_count: 1,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async craft(params) {
+        actions.push(`craft:${params.itemName}`);
+        if (
+          params.itemName === "wooden_pickaxe" &&
+          countInventory(inventory, "oak_log") + countInventory(inventory, "cherry_log") <= 0
+        ) {
+          return createMissingMaterialsFailure("wooden_pickaxe", "oak_log", 1);
+        }
+        addInventory(inventory, params.itemName, params.count);
+        return {
+          ok: true,
+          data: {
+            item_name: params.itemName,
+            completed_count: params.count,
+            world_key: "minecraft:overworld",
+          },
+        };
+      },
+      async equip(params) {
+        actions.push(`equip:${params.itemName}`);
+        if (countInventory(inventory, params.itemName) <= 0) {
+          throw new Error(`missing_item:${params.itemName}`);
+        }
+        return {
+          skill: "equip",
+          item_name: params.itemName,
+          destination: "hand",
+          status: "equipped",
+          total_steps: 1,
+        };
+      },
+      async mine() {
+        throw new Error("dependency resolver should not retry original mine action");
+      },
+    });
+
+    const result = await ensure.ensureDependency({
+      failure: {
+        action: "mine",
+        params: { blockName: "stone", count: 4 },
+        code: "not_equipped",
+        message: "not_equipped:stone:requires_harvest_tool",
+      },
+      condition: { kind: "gainedDropOf", blockName: "stone", count: 4 },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        item_name: "wooden_pickaxe",
+        completed_count: 1,
+      },
+    });
+    expect(actions).toEqual([
+      "craft:wooden_pickaxe",
+      "cutTree:1",
+      "collect",
+      "craft:wooden_pickaxe",
+      "equip:wooden_pickaxe",
+    ]);
+  });
+
   it("ToolchainEnsure（工具链确保） 应在 mine action 前预检并补齐采掘工具", async () => {
     const inventory: { item_name: string; count: number }[] = [{ item_name: "oak_log", count: 4 }];
     const actions: string[] = [];
@@ -1168,6 +1280,43 @@ function createFakeEnsureFacts(): ToolchainEnsureFacts {
         return { action: "cutTree", itemName: "oak_log", blockName: "oak_log" };
       }
       return null;
+    },
+    resolveMaterialRequirement({ itemName, missing, inventory }) {
+      const source =
+        itemName === "cobblestone"
+          ? ({ action: "mine", itemName: "cobblestone", blockName: "stone" } as const)
+          : itemName === "oak_log"
+            ? ({ action: "cutTree", itemName: "oak_log", blockName: "oak_log" } as const)
+            : null;
+      if (source === null) {
+        return null;
+      }
+      const acceptableItems =
+        source.action === "cutTree" ? ["oak_log", "cherry_log", "birch_log"] : [itemName];
+      const completedCount = inventory
+        .filter((item) => acceptableItems.includes(item.item_name))
+        .reduce((sum, item) => sum + item.count, 0);
+      return {
+        itemName,
+        targetCount:
+          source.action === "cutTree"
+            ? Math.max(1, missing)
+            : completedCount + Math.max(1, missing),
+        acceptableItems,
+        source,
+      };
+    },
+    evaluateMaterialRequirement({ requirement, inventory }) {
+      const matchedItems = inventory.filter((item) =>
+        requirement.acceptableItems.includes(item.item_name),
+      );
+      const completedCount = matchedItems.reduce((sum, item) => sum + item.count, 0);
+      return {
+        ok: completedCount >= requirement.targetCount,
+        completedCount,
+        targetCount: requirement.targetCount,
+        matchedItems,
+      };
     },
     canCraft({ itemName }) {
       return ["oak_planks", "stick", "crafting_table", "wooden_pickaxe", "stone_pickaxe"].includes(

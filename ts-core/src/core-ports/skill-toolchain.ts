@@ -67,6 +67,22 @@ export type ToolchainMaterialSource =
       readonly blockName?: string;
     }>;
 
+/** ensure 可恢复缺料的语义材料需求；事实来源必须由 runtime/minecraft-data 解析。 */
+export interface ToolchainMaterialRequirement {
+  readonly itemName: string;
+  readonly targetCount: number;
+  readonly acceptableItems: readonly string[];
+  readonly source: ToolchainMaterialSource;
+}
+
+/** ensure 语义材料需求的真实背包验收结果。 */
+export interface ToolchainMaterialRequirementEvaluation {
+  readonly ok: boolean;
+  readonly completedCount: number;
+  readonly targetCount: number;
+  readonly matchedItems: readonly ToolchainEnsureInventoryItem[];
+}
+
 /** ensure 只读事实端口；实现必须来自 runtime / minecraft-data 事实源。 */
 export interface ToolchainEnsureFacts {
   resolveRequiredEquipment(input: {
@@ -74,6 +90,15 @@ export interface ToolchainEnsureFacts {
     readonly inventory: readonly ToolchainEnsureInventoryItem[];
   }): string | null;
   resolveMaterialSource(input: { readonly itemName: string }): ToolchainMaterialSource | null;
+  resolveMaterialRequirement(input: {
+    readonly itemName: string;
+    readonly missing: number;
+    readonly inventory: readonly ToolchainEnsureInventoryItem[];
+  }): ToolchainMaterialRequirement | null;
+  evaluateMaterialRequirement(input: {
+    readonly requirement: ToolchainMaterialRequirement;
+    readonly inventory: readonly ToolchainEnsureInventoryItem[];
+  }): ToolchainMaterialRequirementEvaluation;
   canCraft(input: { readonly itemName: string }): boolean;
   resolveCraftingTableBlockName(): string | null;
   resolveBlockDropItemNames(input: { readonly blockName: string }): readonly string[];

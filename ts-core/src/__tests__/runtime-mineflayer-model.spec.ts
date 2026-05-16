@@ -1165,6 +1165,76 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     ).toBe(3);
   });
 
+  it("transport facts 应把不同树种原木解析为同一语义材料需求", () => {
+    const registry = {
+      blocksByName: {
+        oak_log: {
+          id: 7,
+          name: "oak_log",
+          diggable: true,
+          drops: [17],
+          material: "mineable/axe",
+          states: [{ name: "axis" }],
+        },
+        cherry_log: {
+          id: 8,
+          name: "cherry_log",
+          diggable: true,
+          drops: [18],
+          material: "mineable/axe",
+          states: [{ name: "axis" }],
+        },
+      },
+      itemsByName: {
+        oak_log: { id: 17, name: "oak_log" },
+        cherry_log: { id: 18, name: "cherry_log" },
+      },
+      items: {
+        17: { id: 17, name: "oak_log" },
+        18: { id: 18, name: "cherry_log" },
+      },
+      tags: {
+        blocks: {
+          logs: [7, 8],
+        },
+      },
+    };
+    const facts = createMineflayerToolchainEnsureFacts({
+      getBot: () =>
+        ({
+          registry,
+          inventory: {
+            items: () => [{ type: 18, name: "cherry_log", count: 1 }],
+          },
+        }) as unknown as MineflayerBotHandle,
+    });
+
+    const requirement = facts.resolveMaterialRequirement({
+      itemName: "oak_log",
+      missing: 1,
+      inventory: [],
+    });
+
+    expect(requirement).toMatchObject({
+      itemName: "oak_log",
+      targetCount: 1,
+      acceptableItems: expect.arrayContaining(["oak_log", "cherry_log"]),
+      source: { action: "cutTree", itemName: "oak_log", blockName: "oak_log" },
+    });
+    expect(
+      requirement === null
+        ? null
+        : facts.evaluateMaterialRequirement({
+            requirement,
+            inventory: [{ item_name: "cherry_log", count: 1 }],
+          }),
+    ).toMatchObject({
+      ok: true,
+      completedCount: 1,
+      matchedItems: [{ item_name: "cherry_log", count: 1 }],
+    });
+  });
+
   it("equip（装备） 已手持目标工具时应返回 already_equipped（已装备） 且不重复调用 Mineflayer", async () => {
     const bot = new FakeMineflayerBot();
     bot.heldItem = { type: 8, name: "stone_pickaxe", count: 1 };
