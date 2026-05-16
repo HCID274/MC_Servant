@@ -32,7 +32,7 @@ import type { ExecQueueName } from "./queues.js";
 import {
   createTaskFailureResultSummary,
   createTaskResultSummaryFromCodeResult,
-} from "./task-result-summary.js";
+} from "./task-result-summary/index.js";
 
 /** BotWorker（机器人工作线程） 处理过程事件。 */
 export type BotWorkerRuntimeEvent =

@@ -54,7 +54,7 @@ import {
   describeFacadeNamespace,
   updateSandboxFacadeHotNamespaceQueue,
 } from "../sandbox/legacy/index.js";
-import { createTaskResultSummaryFromSandboxResult } from "../workers/task-result-summary.js";
+import { createTaskResultSummaryFromSandboxResult } from "../workers/task-result-summary/index.js";
 
 const validBindings: typeof SANDBOX_BOT_SKILL_BINDINGS = SANDBOX_BOT_SKILL_BINDINGS;
 void validBindings;

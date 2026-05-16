@@ -61,7 +61,7 @@ import {
   createTaskFailureResultSummary,
   createTaskResultSummaryFromSandboxResult,
   createTaskResultSummaryFromSkillResult,
-} from "../workers/task-result-summary.js";
+} from "../workers/task-result-summary/index.js";
 import { createResourceService } from "../world-model/index.js";
 
 class FakeEntrypointMineflayerBot extends EventEmitter implements MineflayerBotHandle {
