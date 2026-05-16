@@ -18,7 +18,7 @@ import type {
   MineflayerPlacementPort,
   MineflayerVec3Like,
 } from "../types.js";
-import { canReadMineflayerBlockAt, readMineflayerBlockAt } from "../world-reader.js";
+import { canReadMineflayerBlockAt, readMineflayerBlockAt } from "../world/index.js";
 import { executeMineRouteAction, isBotAtFoot } from "./executor.js";
 import { type MineBlockFactReader, createMineBlockFactReader } from "./facts.js";
 import {

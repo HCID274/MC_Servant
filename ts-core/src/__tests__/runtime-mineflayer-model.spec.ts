@@ -49,6 +49,16 @@ import {
 } from "../index.js";
 import { executeMineflayerCraft } from "../runtime/transport/craft.js";
 import { executeMineflayerEquip } from "../runtime/transport/equip.js";
+import {
+  blockMatchesResourceKey,
+  createMineflayerToolchainEnsureFacts,
+  createRuntimeResourceSemanticRoles,
+  createRuntimeResourceTags,
+  readRegistryBlockDropIds,
+  readRegistryBlockFactByName,
+  readRegistryItemName,
+  registryCanResolveResourceKey,
+} from "../runtime/transport/facts/index.js";
 // mining 内部白盒测试：这些 import 只用于锁定 planner/executor/facts 的内部行为,不是在线公共 API。
 import { executeMineRouteAction } from "../runtime/transport/mining/executor.js";
 import { createMineBlockFactReader } from "../runtime/transport/mining/facts.js";
@@ -78,7 +88,7 @@ import type {
   MineflayerItemHandle,
   MineflayerRecipeHandle,
 } from "../runtime/transport/test-only.js";
-import { readMineflayerBlockAt } from "../runtime/transport/world-reader.js";
+import { readMineflayerBlockAt } from "../runtime/transport/world/index.js";
 
 class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   readonly username = "bot-mc";
@@ -1095,6 +1105,64 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
     expect(facts.isDiggableBlock({ name: "pink_petals", diggable: true })).toBe(true);
     expect(facts.isDiggableBlock({ name: "air", diggable: false })).toBe(false);
     expect(facts.isDiggableBlock({ name: "bedrock", diggable: true })).toBe(false);
+  });
+
+  it("transport facts 应让资源刷新与工具链 ensure 使用同一套 logs/drop/tag 事实", () => {
+    const registry = {
+      blocksByName: {
+        oak_log: {
+          id: 7,
+          name: "oak_log",
+          diggable: true,
+          drops: [17],
+          material: "mineable/axe",
+          states: [{ name: "axis" }],
+        },
+      },
+      itemsByName: {
+        oak_log: { id: 17, name: "oak_log" },
+      },
+      items: {
+        17: { id: 17, name: "oak_log" },
+      },
+      tags: {
+        blocks: {
+          logs: [7],
+        },
+      },
+    };
+    const logBlock: MineflayerBlockHandle = {
+      name: "oak_log",
+      type: 7,
+      tags: ["logs"],
+      diggable: true,
+    };
+    const facts = createMineflayerToolchainEnsureFacts({
+      getBot: () =>
+        ({
+          registry,
+          inventory: {
+            items: () => [{ type: 17, name: "oak_log", count: 3 }],
+          },
+        }) as unknown as MineflayerBotHandle,
+    });
+
+    expect(blockMatchesResourceKey(registry, logBlock, "tree")).toBe(true);
+    expect(registryCanResolveResourceKey(registry, "tree")).toBe(true);
+    expect(createRuntimeResourceTags(registry, logBlock)).toContain("logs");
+    expect(createRuntimeResourceSemanticRoles(registry, logBlock)).toEqual(["cut_tree_log"]);
+    expect(
+      readRegistryBlockDropIds(readRegistryBlockFactByName(registry, "oak_log") ?? {}).map(
+        (dropId) => readRegistryItemName(registry, dropId),
+      ),
+    ).toEqual(["oak_log"]);
+    expect(facts.resolveBlockDropItemNames({ blockName: "oak_log" })).toEqual(["oak_log"]);
+    expect(
+      facts.countInventoryItemsByTag({
+        tagName: "logs",
+        inventory: [{ item_name: "oak_log", count: 3 }],
+      }),
+    ).toBe(3);
   });
 
   it("equip（装备） 已手持目标工具时应返回 already_equipped（已装备） 且不重复调用 Mineflayer", async () => {

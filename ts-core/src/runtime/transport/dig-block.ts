@@ -1,5 +1,5 @@
 import type { SkillExecutionControl } from "../../core-ports/skills.js";
-import { createMineBlockFactReader } from "./block-facts.js";
+import { createMineBlockFactReader } from "./facts/index.js";
 import { navigateTerrainToFoot } from "./terrain/index.js";
 import type {
   MineflayerBlockHandle,
@@ -11,7 +11,7 @@ import type {
   MineflayerPlacementPort,
   MineflayerVec3Like,
 } from "./types.js";
-import { canReadMineflayerBlockAt, readMineflayerBlockAt } from "./world-reader.js";
+import { canReadMineflayerBlockAt, readMineflayerBlockAt } from "./world/index.js";
 
 /** 坐标挖掘需要的 Mineflayer（Minecraft 协议客户端） 能力端口。 */
 export type MineflayerDigBlockAtPort = MineflayerMovementPort &

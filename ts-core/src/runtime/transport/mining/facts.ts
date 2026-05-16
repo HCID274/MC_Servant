@@ -1,2 +1,2 @@
-export { createMineBlockFactReader } from "../block-facts.js";
-export type { MineBlockFactReader } from "../block-facts.js";
+export { createMineBlockFactReader } from "../facts/index.js";
+export type { MineBlockFactReader } from "../facts/index.js";

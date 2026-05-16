@@ -6,8 +6,8 @@
 
 import { Vec3 } from "vec3";
 import type { SkillExecutionControl } from "../../../core-ports/skills.js";
-import type { MineBlockFactReader } from "../block-facts.js";
 import { prepareHandForMineDig } from "../dig-tool-policy.js";
+import type { MineBlockFactReader } from "../facts/index.js";
 import { waitForPromiseOrCondition } from "../progress-watchdog.js";
 import type {
   MineflayerBlockHandle,
@@ -20,7 +20,7 @@ import type {
   MineflayerPlacementPort,
   MineflayerRegistryFacts,
 } from "../types.js";
-import { readMineflayerBlockAt } from "../world-reader.js";
+import { readMineflayerBlockAt } from "../world/index.js";
 import {
   centerOnFoot,
   dropToFoot,

@@ -13,7 +13,7 @@ import {
   type SkillExecutionControl,
   createCollectSkillExecutionResult,
 } from "../../core-ports/skills.js";
-import { createMineBlockFactReader } from "./block-facts.js";
+import { createMineBlockFactReader } from "./facts/index.js";
 import { matchesMinecraftItemName, normalizeMinecraftName } from "./naming.js";
 import { navigateTerrainToFoot, vec3LikeToTerrainFoot } from "./terrain/index.js";
 import type {

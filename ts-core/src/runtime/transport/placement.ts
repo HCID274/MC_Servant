@@ -13,8 +13,8 @@ import type {
   ToolchainFailureCode,
 } from "../../core-ports/skills.js";
 import { NOOP_SKILL_EXECUTION_CONTROL } from "../../core-ports/skills.js";
-import { createMineBlockFactReader } from "./block-facts.js";
 import { type CraftingTablePlacementCache, isCraftingTableBlock } from "./crafting-table.js";
+import { createMineBlockFactReader } from "./facts/index.js";
 import {
   type TerrainBlockPos,
   navigateTerrainToFoot,
@@ -29,7 +29,7 @@ import type {
   MineflayerRegistryFacts,
   MineflayerVec3Like,
 } from "./types.js";
-import { readMineflayerBlockAt } from "./world-reader.js";
+import { readMineflayerBlockAt } from "./world/index.js";
 
 const PLACEMENT_SEARCH_RADIUS = 3;
 const PLACEMENT_CANDIDATE_LIMIT = 3;

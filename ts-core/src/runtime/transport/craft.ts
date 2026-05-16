@@ -19,7 +19,7 @@ import type {
   MineflayerRecipeHandle,
   MineflayerRegistryFacts,
 } from "./types.js";
-import { readMineflayerBlockAt } from "./world-reader.js";
+import { readMineflayerBlockAt } from "./world/index.js";
 
 const CRAFTING_TABLE_SEARCH_RADIUS = 6;
 const CRAFT_RECURSION_LIMIT = 5;

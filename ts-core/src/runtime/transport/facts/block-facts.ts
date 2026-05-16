@@ -1,9 +1,9 @@
-import { normalizeMinecraftName as normalizeMineflayerName } from "./naming.js";
-import type {
-  MineflayerBlockHandle,
-  MineflayerItemHandle,
-  MineflayerRegistryFacts,
-} from "./types.js";
+import type { MineflayerBlockHandle, MineflayerItemHandle } from "../types.js";
+import {
+  normalizeOptionalRegistryName,
+  readRegistryBlockFactByName,
+  readRegistryItemName,
+} from "./registry-facts.js";
 
 /** mine（挖掘） 对方块事实的只读适配，事实优先来自 Mineflayer（Minecraft 协议客户端） registry（注册表）。 */
 export interface MineBlockFactReader {
@@ -60,12 +60,12 @@ function isLiteralAirBlock(block: MineflayerBlockHandle): boolean {
 
 function isAirBlock(registry: unknown, block: MineflayerBlockHandle): boolean {
   const blockName = normalizeName(block.name);
-  return isAirBlockFact(blockName, readRegistryBlockFact(registry, blockName));
+  return isAirBlockFact(blockName, readRegistryMiningBlockFact(registry, blockName));
 }
 
 function isHazardBlock(registry: unknown, block: MineflayerBlockHandle): boolean {
   const blockName = normalizeName(block.name);
-  return isHazardBlockFact(blockName, readRegistryBlockFact(registry, blockName));
+  return isHazardBlockFact(blockName, readRegistryMiningBlockFact(registry, blockName));
 }
 
 function isSupportBlock(registry: unknown, block: MineflayerBlockHandle): boolean {
@@ -74,7 +74,7 @@ function isSupportBlock(registry: unknown, block: MineflayerBlockHandle): boolea
 
 function isDiggableBlock(registry: unknown, block: MineflayerBlockHandle): boolean {
   const blockName = normalizeName(block.name);
-  const fact = readRegistryBlockFact(registry, blockName);
+  const fact = readRegistryMiningBlockFact(registry, blockName);
   if (block.diggable === false) return false;
   if (isLiteralAirBlock(block)) return false;
   if (isHazardBlockFact(blockName, fact)) return false;
@@ -83,7 +83,7 @@ function isDiggableBlock(registry: unknown, block: MineflayerBlockHandle): boole
 }
 
 function resolveExpectedDropName(registry: unknown, blockName: string): string {
-  const fact = readRegistryBlockFact(registry, blockName);
+  const fact = readRegistryMiningBlockFact(registry, blockName);
   const firstDrop = fact?.drops?.find((drop): drop is number => Number.isInteger(drop));
   if (firstDrop === undefined) {
     return blockName;
@@ -93,7 +93,7 @@ function resolveExpectedDropName(registry: unknown, blockName: string): string {
 }
 
 function readRequiredHarvestToolIds(registry: unknown, blockName: string): readonly number[] {
-  const harvestTools = readRegistryBlockFact(registry, blockName)?.harvestTools;
+  const harvestTools = readRegistryMiningBlockFact(registry, blockName)?.harvestTools;
   if (harvestTools === undefined || harvestTools === null || typeof harvestTools !== "object") {
     return Object.freeze([]);
   }
@@ -105,22 +105,13 @@ function readRequiredHarvestToolIds(registry: unknown, blockName: string): reado
   );
 }
 
-function readRegistryBlockFact(
+function readRegistryMiningBlockFact(
   registry: unknown,
   blockName: string,
 ): MineflayerRegistryBlockFactWithMining | undefined {
-  const registryRecord = asRecord(registry) as MineflayerRegistryFacts | undefined;
-  return registryRecord?.blocksByName?.[blockName] as
+  return readRegistryBlockFactByName(registry, blockName) as
     | MineflayerRegistryBlockFactWithMining
     | undefined;
-}
-
-function readRegistryItemName(registry: unknown, itemId: number): string | undefined {
-  const registryRecord = asRecord(registry) as MineflayerRegistryFacts | undefined;
-  const item = registryRecord?.items?.[String(itemId)] ?? registryRecord?.items?.[itemId];
-  return typeof item?.name === "string" && item.name.length > 0
-    ? normalizeName(item.name)
-    : undefined;
 }
 
 function isAirBlockFact(
@@ -149,14 +140,7 @@ function isUnbreakableBlockFact(
 }
 
 function normalizeName(value: string | undefined): string {
-  const normalized = normalizeMineflayerName(value);
-  return normalized.startsWith("minecraft:") ? normalized.slice("minecraft:".length) : normalized;
-}
-
-function asRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
-  return typeof value === "object" && value !== null
-    ? (value as Readonly<Record<string, unknown>>)
-    : undefined;
+  return normalizeOptionalRegistryName(value);
 }
 
 interface MineflayerRegistryBlockFactWithMining {

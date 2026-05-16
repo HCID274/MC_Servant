@@ -22,7 +22,7 @@ import type {
   MineflayerPathfinderModule,
   MineflayerPlacementPort,
 } from "../types.js";
-import { readMineflayerBlockAt } from "../world-reader.js";
+import { readMineflayerBlockAt } from "../world/index.js";
 import type { MineBlockFactReader } from "./facts.js";
 import type { MineBlockPos, MineRouteAction } from "./planner.js";
 import { prepareHandForMineDig } from "./tool-policy.js";

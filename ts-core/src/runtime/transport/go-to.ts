@@ -4,7 +4,7 @@ import {
   type SkillExecutionControl,
   createGoToSkillExecutionResult,
 } from "../../core-ports/skills.js";
-import { createMineBlockFactReader } from "./block-facts.js";
+import { createMineBlockFactReader } from "./facts/index.js";
 import {
   type TerrainBlockPos,
   navigateTerrainToFoot,

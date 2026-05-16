@@ -1,5 +1,5 @@
 import type { SkillExecutionControl } from "../../../core-ports/skills.js";
-import type { MineBlockFactReader } from "../block-facts.js";
+import type { MineBlockFactReader } from "../facts/index.js";
 import type {
   MineflayerInventoryPort,
   MineflayerMiningPort,

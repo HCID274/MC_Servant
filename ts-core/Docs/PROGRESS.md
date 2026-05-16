@@ -309,3 +309,7 @@
 ## T-098 | 2026-05-15 | sandbox 执行链路内部职责再收口
 
 - 摘要: 将 sandbox 内部 API 注入、host bridge、动作 proof 规范化、goal summary/report 事实记录拆成清晰边界。; 曾打回 1 次;修复 `semantic-action-result` 混入 goal 聚合、`report(task)` 接受空成功摘要的问题,新增 `result-facts`/`goal-summary` 并校验成功 GoalResult 必须有有限 `completed_count`。typecheck、lint、sandbox 定向测试、pre_review 全绿。; 在线只暴露语义函数,`__sandbox*` 仍为闭包内部桥接且静态禁用;host bridge 不生成用户话术,结果规范化不补默认成功。冲突: 无。
+
+## T-099 | 2026-05-16 | runtime transport 总装配根收瘦
+
+- 摘要: 收瘦 runtime transport 总装配根,让其只负责连接、生命周期、能力组合和状态暴露。; 曾打回 1 次;修复仅搬出代码但复制 registry/tag/drop/log 事实逻辑的问题,新增 `runtime/transport/facts/` 与 `runtime/transport/world/`,移除旧平铺 `block-facts`/`world-reader`/`world-state-reset` 入口。typecheck、lint、runtime 定向测试、pre_review 全绿。; 根装配只经 `facts/index`、`world/index` 组合能力,resource refresh 与 toolchain ensure 共用同一事实口径并有回归测试防漂移。冲突: 无。

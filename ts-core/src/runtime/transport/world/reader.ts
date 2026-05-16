@@ -1,5 +1,5 @@
 import { Vec3 } from "vec3";
-import type { MineflayerBlockHandle, MineflayerMiningPort, MineflayerVec3Like } from "./types.js";
+import type { MineflayerBlockHandle, MineflayerMiningPort, MineflayerVec3Like } from "../types.js";
 
 /** transport（传输层） 内唯一的 Mineflayer（Minecraft 协议客户端） 单点方块读取入口。 */
 export function canReadMineflayerBlockAt(bot: MineflayerMiningPort): bot is MineflayerMiningPort & {

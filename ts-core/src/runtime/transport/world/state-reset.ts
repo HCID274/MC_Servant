@@ -1,5 +1,5 @@
-import { readMineflayerWorldKey } from "./naming.js";
-import type { MineflayerBotHandle, MineflayerEntityHandle } from "./types.js";
+import { readMineflayerWorldKey } from "../naming.js";
+import type { MineflayerBotHandle, MineflayerEntityHandle } from "../types.js";
 
 interface RespawnWorldPacket {
   readonly dimension?: string;

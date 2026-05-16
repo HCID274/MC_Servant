@@ -1,5 +1,5 @@
 import type { MineflayerMiningPort } from "../types.js";
-import { readMineflayerBlockAt } from "../world-reader.js";
+import { readMineflayerBlockAt } from "../world/index.js";
 /**
  * mine（挖掘） 路径规划：基于真实方块快照与真实 bot 动作集（walk / drop1 / jumpUp /
  * digWalk / digStepDown / digStepUp）的 Dijkstra 搜索。
