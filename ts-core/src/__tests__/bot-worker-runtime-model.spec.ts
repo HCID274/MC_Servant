@@ -179,6 +179,92 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
     });
   });
 
+  it("sandbox 正常结束但缺完成证明时应记录为 failed 而不是 completed", async () => {
+    let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
+    const actions: BotWorkerAction[] = [];
+    const runtime = createBotWorkerRuntime({
+      queue: {
+        name: "bot:bot-worker:exec",
+        connection: {},
+      },
+      dependencies: {
+        actor: {
+          async executeCode(job) {
+            return {
+              result: createCompletedCodeResult({
+                message_id: job.message_id,
+                action: "code",
+                result: { ok: true },
+              }),
+              snapshot: {} as never,
+            };
+          },
+        },
+        actionSink: async (action) => {
+          actions.push(action);
+        },
+        createWorker: ({ processor: capturedProcessor }) => {
+          processor = capturedProcessor;
+
+          return {
+            close: async () => undefined,
+          };
+        },
+      },
+    });
+    const task = createBotWorkerTask({
+      bot_id: "bot-worker",
+      exec_job: createCodeJob({
+        message_id: "msg-worker-unknown-completion",
+        intent_epoch: 1,
+        snapshot_ts: 101,
+        priority: ExecPriority.Normal,
+        code: "await sleep(1)",
+      }),
+    });
+
+    await runtime.start();
+    await expect(processor?.({ data: task })).rejects.toThrow(
+      "sandbox result lacks completion proof",
+    );
+
+    expect(runtime.getEvents()).toContainEqual({
+      type: "task.failed",
+      bot_id: "bot-worker",
+      message_id: "msg-worker-unknown-completion",
+      status: TaskHistoryStatus.Failed,
+      error: expect.objectContaining({
+        error_code: "unknown_completion",
+      }),
+    });
+    expect(runtime.getEvents()).not.toContainEqual(
+      expect.objectContaining({
+        type: "task.completed",
+        message_id: "msg-worker-unknown-completion",
+      }),
+    );
+    const terminalBrainAction = actions.find(
+      (action) => action.type === "enqueue_brain" && !("kind" in action.task.payload),
+    );
+    expect(terminalBrainAction).toMatchObject({
+      task: {
+        payload: {
+          task_card: {
+            result: {
+              status: TaskHistoryStatus.Failed,
+              result_summary: {
+                status: "failed",
+                failure: {
+                  failure_code: "unknown_completion",
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+  });
+
   it("应把 BotActor（机器人执行代理） 中断错误记录为 interrupted（已中断） 而不是 failed（已失败）", async () => {
     let processor: ((job: { readonly data: unknown }) => Promise<void>) | undefined;
     const actions: BotWorkerAction[] = [];
@@ -546,7 +632,36 @@ describe("BotWorker（机器人工作线程） 真实运行时", () => {
                     ms: 12,
                   },
                 ],
-                step_results: [],
+                step_results: [
+                  {
+                    action: "report",
+                    status: "ok",
+                    params: {
+                      goal_result: {
+                        kind: "goal_result",
+                        ok: true,
+                        name: "code",
+                        duration_ms: 12,
+                        summary: {
+                          target: "hello",
+                          completed_count: 1,
+                        },
+                      },
+                    },
+                    result: {
+                      goal_result: {
+                        kind: "goal_result",
+                        ok: true,
+                        name: "code",
+                        duration_ms: 12,
+                        summary: {
+                          target: "hello",
+                          completed_count: 1,
+                        },
+                      },
+                    },
+                  },
+                ],
                 summary: {
                   terminal_status: TaskHistoryStatus.Completed,
                   total_steps: 1,

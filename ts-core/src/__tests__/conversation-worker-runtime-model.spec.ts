@@ -1688,7 +1688,36 @@ describe("ConversationWorker（对话工作线程） 真实运行时", () => {
                 intent_epoch: job.intent_epoch,
                 log_ref: "sandbox/2026-05-04/msg-sandbox.jsonl",
                 phase_logs: [],
-                step_results: [],
+                step_results: [
+                  {
+                    action: "report",
+                    status: "ok",
+                    params: {
+                      goal_result: {
+                        kind: "goal_result",
+                        ok: true,
+                        name: "goTo",
+                        duration_ms: 42,
+                        summary: {
+                          target: "日月川",
+                          completed_count: 1,
+                        },
+                      },
+                    },
+                    result: {
+                      goal_result: {
+                        kind: "goal_result",
+                        ok: true,
+                        name: "goTo",
+                        duration_ms: 42,
+                        summary: {
+                          target: "日月川",
+                          completed_count: 1,
+                        },
+                      },
+                    },
+                  },
+                ],
                 summary: {
                   terminal_status: TaskHistoryStatus.Completed,
                   total_steps: 1,

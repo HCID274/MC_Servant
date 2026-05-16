@@ -1301,6 +1301,44 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     });
   });
 
+  it("sandbox code 正常结束但没有 report/toolchain/skill proof 时不得包装成完成", () => {
+    const sandboxJob = createCodeJob({
+      message_id: "T-100-summary-no-completion-proof",
+      intent_epoch: 1,
+      snapshot_ts: 1,
+      priority: ExecPriority.Normal,
+      code: "await sleep(1)",
+    });
+    const result = {
+      status: TaskHistoryStatus.Completed,
+      summary: { total_steps: 1, duration_ms: 1 },
+      step_results: [
+        {
+          action: "sleep",
+          status: "ok",
+          params: {},
+          result: { ok: true },
+        },
+      ],
+    } as unknown as Parameters<typeof createTaskResultSummaryFromSandboxResult>[1];
+
+    expect(createTaskResultSummaryFromSandboxResult(sandboxJob, result)).toMatchObject({
+      status: "failed",
+      operation: "sleep",
+      completed_count: 0,
+      failure: {
+        failure_code: "unknown_completion",
+        failure_stage: "sleep",
+        message: "sandbox result lacks completion proof",
+        recoverable: false,
+      },
+      details: {
+        reason: "completed sandbox result lacks report/toolchain/skill completion proof",
+        total_steps: 1,
+      },
+    });
+  });
+
   it("sandbox terminal failure 缺显式 recoverable 时应使用统一失败分类口径", () => {
     const sandboxJob = createCodeJob({
       message_id: "T-093-terminal-recoverable",

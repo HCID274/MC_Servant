@@ -9,7 +9,7 @@ import {
 import { ExecutionTaskKind } from "../core-ports/foundation.js";
 import { ExecPriority, TaskHistoryStatus, createCodeJob } from "../core-ports/tasking.js";
 import { createBotWorkerActions, createBotWorkerTask } from "../workers/contracts.js";
-import { createTaskResultReporter } from "../workers/index.js";
+import { createTaskReportRenderInput, createTaskResultReporter } from "../workers/index.js";
 
 describe("ReportLLM 终态润色", () => {
   it("TaskResultReporter 应先生成模板，再用受限事实输入调用 ReportLLM", async () => {
@@ -281,6 +281,105 @@ describe("ReportLLM 终态润色", () => {
           "任务失败：mine 失败码 not_equipped，阶段 mine，可恢复，世界 unknown，已停止喵~",
       },
     });
+  });
+
+  it("TaskReportFacts 不为缺库存事实的完成摘要发明库存变化", () => {
+    const actions = createBotWorkerActions({
+      task: createBotWorkerTask({
+        bot_id: "bot-report",
+        exec_job: createCodeJob({
+          message_id: "msg-report-no-inventory",
+          intent_epoch: 1,
+          snapshot_ts: 1,
+          priority: ExecPriority.Normal,
+        }),
+        owner_text: "回到我这里",
+      }),
+      phase: "terminal",
+      status: TaskHistoryStatus.Completed,
+      total_steps: 3,
+      duration_ms: 1_200,
+      result_summary: {
+        task_type: ExecutionTaskKind.Code,
+        operation: "goToOwner",
+        completed_count: 1,
+        world_key: "multiworld:resource",
+      },
+    });
+
+    const renderInput = createTaskReportRenderInput(actions[1].task.payload.task_card);
+
+    expect(renderInput.facts.inventory_delta).toEqual([]);
+    expect(renderInput.facts.required_facts).not.toContain("goToOwner x1");
+    expect(renderInput.deterministic_report).toContain("任务完成：goToOwner 已完成");
+  });
+
+  it("unknown_completion 必须保持失败汇报事实，不得在 report 阶段润色成完成", async () => {
+    const reportInputs: ConversationLlmReportInput[] = [];
+    const reporter = createTaskResultReporter({
+      reportLlm: {
+        generateReport: async (input) => {
+          reportInputs.push(input);
+          return {
+            reply:
+              "任务失败啦，mine 缺少完成证明，失败码 unknown_completion，阶段 mine，不能确认已经完成喵~",
+            diagnostics: createFakeDiagnostic("ok"),
+          };
+        },
+      },
+    });
+    const actions = createBotWorkerActions({
+      task: createBotWorkerTask({
+        bot_id: "bot-report",
+        exec_job: createCodeJob({
+          message_id: "msg-report-unknown-proof",
+          intent_epoch: 1,
+          snapshot_ts: 1,
+          priority: ExecPriority.Normal,
+        }),
+        owner_text: "挖5个石头",
+      }),
+      phase: "terminal",
+      status: TaskHistoryStatus.Failed,
+      total_steps: 1,
+      duration_ms: 900,
+      error: {
+        name: "SkillCompletionProofError",
+        message: "unknown_completion:mine result lacks completion proof",
+        error_code: "unknown_completion",
+        details: {
+          failure_stage: "mine",
+        },
+      },
+      result_summary: {
+        task_type: ExecutionTaskKind.Code,
+        operation: "mine",
+        status: "failed",
+        target: "stone",
+        requested_count: 5,
+        completed_count: 0,
+        failure: {
+          failure_code: "unknown_completion",
+          failure_stage: "mine",
+          message: "mine result lacks completion proof",
+          recoverable: false,
+        },
+      },
+      last_step: "mine",
+    });
+
+    const reply = await reporter.consume(actions[1]);
+
+    expect(reply?.content).toContain("任务失败啦");
+    expect(reportInputs[0]).toMatchObject({
+      status: "failed",
+      required_facts: ["失败", "unknown_completion", "mine", "不可自动恢复"],
+    });
+    expect(reportInputs[0]?.deterministic_report).toContain(
+      "任务失败：mine 失败码 unknown_completion",
+    );
+    expect(reportInputs[0]?.fact_summary).toContain("状态=任务失败");
+    expect(reportInputs[0]?.fact_summary).not.toContain("状态=任务完成");
   });
 });
 

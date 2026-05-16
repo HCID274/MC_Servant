@@ -313,3 +313,7 @@
 ## T-099 | 2026-05-16 | runtime transport 总装配根收瘦
 
 - 摘要: 收瘦 runtime transport 总装配根,让其只负责连接、生命周期、能力组合和状态暴露。; 曾打回 1 次;修复仅搬出代码但复制 registry/tag/drop/log 事实逻辑的问题,新增 `runtime/transport/facts/` 与 `runtime/transport/world/`,移除旧平铺 `block-facts`/`world-reader`/`world-state-reset` 入口。typecheck、lint、runtime 定向测试、pre_review 全绿。; 根装配只经 `facts/index`、`world/index` 组合能力,resource refresh 与 toolchain ensure 共用同一事实口径并有回归测试防漂移。冲突: 无。
+
+## T-100 | 2026-05-16 | 任务结果 summary/report 模块职责收口
+
+- 摘要: 将任务结果事实提取、完成判断、汇报事实构造和 ReportLLM 输入拆成 `task-result-summary/` 与 `task-report/` 两个职责目录。; 曾打回 1 次;修复 completed sandbox 缺 `report/toolchain/skill` proof 时用 `total_steps` 伪完成、以及 `task-report/index` 非纯 barrel 的问题。typecheck、lint、report/sandbox/bot-worker 定向测试、pre_review 全绿。; summary 只产结构化事实,report facts 不重新判断技能成败,reporter 只做确定性模板与 LLM 润色选择;缺 proof 转 `unknown_completion` 并同步任务终态为 failed。冲突: 无。

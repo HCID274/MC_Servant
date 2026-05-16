@@ -10,6 +10,7 @@ import { Worker, type WorkerOptions } from "bullmq";
 import type { TaskFailedErrorSnapshot } from "../core-ports/events.js";
 import type { InterruptSignal } from "../core-ports/runtime.js";
 import type { SandboxSearchAdapter } from "../core-ports/sandbox.js";
+import type { TaskResultSummary } from "../core-ports/task-result.js";
 import {
   type CodeJob,
   type ExecJob,
@@ -231,6 +232,25 @@ function createErrorSnapshot(error: unknown): TaskFailedErrorSnapshot {
   });
 }
 
+function createErrorSnapshotFromTaskResultSummary(
+  summary: TaskResultSummary,
+): TaskFailedErrorSnapshot {
+  const failure = summary.failure;
+  const details = Object.freeze({
+    ...(summary.details ?? {}),
+    ...(failure?.target_progress === undefined || failure.target_progress === null
+      ? {}
+      : { target_progress: failure.target_progress }),
+  });
+  return Object.freeze({
+    name: "TaskResultSummaryError",
+    message:
+      failure?.message ?? `${failure?.failure_code ?? "unknown_completion"}:${summary.operation}`,
+    error_code: failure?.failure_code ?? "unknown_completion",
+    details,
+  });
+}
+
 function readStructuredErrorFields(error: Error): {
   readonly error_code?: string;
   readonly details?: Readonly<Record<string, unknown>>;
@@ -434,6 +454,42 @@ export function createBotWorkerRuntime(input: {
         return;
       }
 
+      const resultSummary = createTaskResultSummaryFromCodeResult(task.exec_job, executionResult, {
+        durationMs,
+      });
+      if (resultSummary.status !== "completed") {
+        const errorSnapshot = createErrorSnapshotFromTaskResultSummary(resultSummary);
+        await emitActions(
+          createBotWorkerActions({
+            task,
+            phase: "terminal",
+            status: TaskHistoryStatus.Failed,
+            total_steps: executionResult.summary.total_steps,
+            duration_ms: durationMs,
+            error: errorSnapshot,
+            last_step: executionResult.step_results.at(-1)?.action ?? "executeCode",
+            result_summary: resultSummary,
+            code_result: Object.freeze({
+              ...getSandboxResultRefs(executionResult),
+              error: errorSnapshot,
+            }),
+          }),
+        );
+        events.push(
+          Object.freeze({
+            type: "task.failed" as const,
+            bot_id: task.bot_id,
+            message_id: task.exec_job.message_id,
+            status: TaskHistoryStatus.Failed,
+            error: errorSnapshot,
+          }),
+        );
+        terminalFailureHandled = true;
+        throw Object.assign(new Error(errorSnapshot.message), {
+          name: errorSnapshot.name,
+        });
+      }
+
       await emitActions(
         createBotWorkerActions({
           task,
@@ -441,9 +497,7 @@ export function createBotWorkerRuntime(input: {
           status: TaskHistoryStatus.Completed,
           total_steps: executionResult.summary.total_steps,
           duration_ms: durationMs,
-          result_summary: createTaskResultSummaryFromCodeResult(task.exec_job, executionResult, {
-            durationMs,
-          }),
+          result_summary: resultSummary,
           code_result: getSandboxResultRefs(executionResult),
         }),
       );
