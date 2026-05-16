@@ -24,6 +24,7 @@ export async function executeMineflayerResourceRefresh(input: {
   readonly bot: MineflayerBotHandle;
   readonly resourceKey: string;
   readonly radius: ResourceRefreshRadius;
+  readonly shouldExcludeBlock?: (block: MineflayerBlockHandle) => boolean;
 }): Promise<RuntimeResourceRefreshResult> {
   const origin = input.bot.entity?.position;
   const worldKey = readMineflayerWorldKey(input.bot);
@@ -84,6 +85,7 @@ export async function executeMineflayerResourceRefresh(input: {
     .map((position) => readMineflayerBlockAt(input.bot, position))
     .filter((block): block is MineflayerBlockHandle => block !== null && block !== undefined)
     .filter((block) => blockMatchesResourceKey(input.bot.registry, block, input.resourceKey))
+    .filter((block) => input.shouldExcludeBlock?.(block) !== true)
     .map((block) =>
       createRuntimeResourceBlockSummary({
         bot: input.bot,

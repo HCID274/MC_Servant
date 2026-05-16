@@ -243,6 +243,26 @@ describe("TS Core 工程骨架", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("transport 根装配不应直接依赖 terrain 内部 self-placed memory", () => {
+    const srcRoot = join(process.cwd(), "src");
+    const forbiddenPattern = "terrain/" + "self-placed-memory";
+
+    const offenders = listTestFiles(srcRoot).flatMap((file) => {
+      const relativePath = relative(srcRoot, file);
+      if (
+        relativePath.startsWith("__tests__/") ||
+        relativePath.startsWith("runtime/transport/terrain/")
+      ) {
+        return [];
+      }
+
+      const source = readFileSync(file, "utf8");
+      return source.includes(forbiddenPattern) ? [relativePath] : [];
+    });
+
+    expect(offenders).toEqual([]);
+  });
+
   it("应从根入口导出 conversation（对话） 与 workers（工作线程） 契约", () => {
     const triage = createMessageTriage({
       intent: "task",

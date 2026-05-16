@@ -321,3 +321,7 @@
 ## T-089/T-097R | 2026-05-16 | 工具链等价材料需求恢复
 
 - 摘要: 修复工具链恢复把配方候选缺料固定成单一物品的问题,让缺木质材料时由 runtime/minecraft-data facts 解析可接受材料集合。; 通过。新增 `ToolchainMaterialRequirement` 窄端口,恢复层只规划和复查语义需求,砍到 `cherry_log` 等同类原木后可继续合成木镐并回到原挖掘目标。typecheck、lint、runtime/skills 回归、pre_review 全绿。; MC 等价材料事实保留在 `runtime/transport/facts`,skills 不硬编码树种/配方,缺 proof 或缺事实仍走结构化失败。冲突: 无。
+
+## T-101 | 2026-05-16 | ensure 失败阻断与资源刷新边界返修
+
+- 摘要: 修复 ensure 条件未满足仍继续执行后续动作、Toolchain cutTree 恢复后重复 collect、自放置临时方块污染 tree 资源刷新和工作台搜索半径不足等问题。; 曾打回 1 次;返修后 `runtime.ts` 不再直接依赖 terrain 内部 self-placed memory,改经 `terrain/index` 的 `shouldExcludeTerrainResourceBlock` 窄出口,并补静态边界测试。typecheck、lint、git diff、定向测试、pre_review 全绿。; 保持 sandbox 条件 proof 为最终裁决,资源刷新只通过 terrain 语义出口排除临时脚手架,不新增 MC 事实硬编码或多层兜底。冲突: 无。

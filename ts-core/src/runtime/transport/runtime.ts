@@ -38,6 +38,7 @@ import { executeMineflayerMine } from "./mining/index.js";
 import { readMineflayerWorldKey } from "./naming.js";
 import { createMineflayerPathfinderContext } from "./pathfinder.js";
 import { executeMineflayerPlaceCraftingTable } from "./placement.js";
+import { shouldExcludeTerrainResourceBlock } from "./terrain/index.js";
 import type {
   MineflayerBotHandle,
   MineflayerEventSource,
@@ -307,6 +308,10 @@ export function createMineflayerRuntimeTransport<TBotId extends string>(
         bot: currentBot,
         resourceKey,
         radius,
+        shouldExcludeBlock: (block) =>
+          block.position === undefined
+            ? false
+            : shouldExcludeTerrainResourceBlock(currentBot, block.position),
       });
     },
     getCurrentWorldKey(): string {

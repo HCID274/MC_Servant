@@ -500,6 +500,17 @@ async function provideMaterialByCutTree(
     return cut.failure;
   }
 
+  const afterCut = readMaterialCompletedCount(context, source.itemName, options.requirement);
+  if (afterCut >= targetCount) {
+    return createEnsureSuccess({
+      itemName: source.itemName,
+      completedCount: afterCut,
+      targetCount,
+      actions,
+      worldKey: readWorldKeyFromActions(actions) ?? readCurrentWorldKey(context.dependencies),
+    });
+  }
+
   const collected = await callSkill({
     action: "collect",
     target: source.itemName,

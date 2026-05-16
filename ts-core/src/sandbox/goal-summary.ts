@@ -86,23 +86,23 @@ export function createSandboxGoalSummaryScript(): string {
         .filter((entry) => Number(entry.ensure_depth ?? 0) <= 0)
         .map((entry) => __readActionSummary(entry, undefined));
       const conditionSummaries = conditionEvaluations.map((evaluation) => __readConditionEvaluationSummary(evaluation));
-      const directInventoryDelta = __mergeInventoryDelta(directActionSummaries.flatMap((entry) => entry.inventory_delta ?? []));
-      const effectiveCondition = conditionEvaluations.length === 1 && !directInventoryDelta
-        ? conditionEvaluations[0].condition
-        : condition;
-      const mergedInventoryDelta = __mergeInventoryDelta([
-        ...(directInventoryDelta ?? []),
-        ...conditionSummaries.flatMap((entry) => entry.inventory_delta ?? [])
-      ]);
-      const completedCount = mergedInventoryDelta
-        ? mergedInventoryDelta.reduce((sum, delta) => sum + delta.count, 0)
-        : __readCompletedCount(data, effectiveCondition);
-      const target = mergedInventoryDelta && mergedInventoryDelta.length > 1
-        ? undefined
-        : conditionSummaries[0]?.target ?? __readTarget(data, effectiveCondition);
-      const requestedCount = effectiveCondition
-        ? __readRequestedCount(effectiveCondition, completedCount)
-        : undefined;
+	      const directInventoryDelta = __mergeInventoryDelta(directActionSummaries.flatMap((entry) => entry.inventory_delta ?? []));
+	      const proofInventoryDelta = __mergeInventoryDelta(conditionSummaries.flatMap((entry) => entry.inventory_delta ?? []));
+	      const hasSingleProof = conditionEvaluations.length === 1;
+	      const effectiveCondition = hasSingleProof ? conditionEvaluations[0].condition : condition;
+	      const mergedInventoryDelta = __mergeInventoryDelta([
+	        ...(directInventoryDelta ?? []),
+	        ...(proofInventoryDelta ?? [])
+	      ]);
+	      const completedCount = mergedInventoryDelta
+	        ? mergedInventoryDelta.reduce((sum, delta) => sum + delta.count, 0)
+	        : __readCompletedCount(data, effectiveCondition);
+	      const target = mergedInventoryDelta && mergedInventoryDelta.length > 1
+	        ? undefined
+	        : conditionSummaries[0]?.target ?? __readTarget(data, effectiveCondition);
+	      const requestedCount = effectiveCondition && (!directInventoryDelta || !hasSingleProof)
+	        ? __readRequestedCount(effectiveCondition, completedCount)
+	        : undefined;
       const inventoryDelta = mergedInventoryDelta ?? __createInventoryDelta(target, completedCount, effectiveCondition);
       const worldKey = [...actionSummaries].reverse().find((entry) => "world_key" in entry)?.world_key ?? __readWorldKey(data);
       return __deepFreeze({

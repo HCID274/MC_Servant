@@ -1634,6 +1634,81 @@ describe("sandbox（沙箱） 与 diagnostics（诊断） 契约", () => {
     });
   });
 
+  it("ensure 未满足资源条件时不得继续执行后续 goTo 并伪装完成", async () => {
+    const skillCalls: string[] = [];
+    const result = await executeCodeRequest({
+      request: createRuntimeSandboxRequest({
+        code: `
+	          const task = await runGoal('挖 5 个石头并返回主人身边', async () => {
+	            await ensure(async () => { await mine('stone', 5); }, until.gainedDropOf('stone', 5));
+	            await goTo(owner.position.x, owner.position.y, owner.position.z);
+	          });
+	          await report(task);
+	        `,
+        messageId: "T-101-ensure-failure-stops-goto",
+      }),
+      task: {
+        id: "T-101-ensure-failure-stops-goto",
+        userMessage: "挖5个石头然后回来",
+        intent: "code",
+        owner: {
+          online: true,
+          position: { x: 8, y: 64, z: 2 },
+        },
+      },
+      hostBridge: {
+        captureConditionState: createSatisfiedConditionFacade().captureConditionState,
+        evaluateCondition(input) {
+          return createTestConditionEvaluation(input, 1, 5);
+        },
+        async executeBotSkill(skill, params) {
+          skillCalls.push(skill);
+          if (skill === "mine") {
+            return {
+              skill: "mine",
+              block_name: "stone",
+              collected_item_name: "cobblestone",
+              collected_count: 1,
+              requested_count: params.count,
+              world_key: "minecraft:overworld",
+            };
+          }
+          if (skill === "goTo") {
+            return {
+              skill: "goTo",
+              reached: true,
+              world_key: "minecraft:overworld",
+            };
+          }
+          throw new Error(`unexpected skill ${skill}`);
+        },
+        async executeToolchainCapability() {
+          return {
+            ok: true,
+            data: { completed_count: 1, world_key: "minecraft:overworld", actions: [] },
+          };
+        },
+        async writeChat() {
+          throw new Error("goal report should not chat");
+        },
+      },
+    });
+
+    expect(skillCalls).toEqual(["mine", "mine", "mine"]);
+    expect(result.status).toBe(TaskHistoryStatus.Failed);
+    expect(result.step_results.at(-1)).toMatchObject({
+      action: "report",
+      params: {
+        goal_result: {
+          ok: false,
+          failure: {
+            failure_code: "condition_not_met",
+          },
+        },
+      },
+    });
+  });
+
   it("ensure（确保） 应在恢复后仍不满足 condition 时保留 condition_not_met 失败", async () => {
     const result = await executeCodeRequest({
       request: createRuntimeSandboxRequest({

@@ -15,6 +15,7 @@ export {
   waitUntilFootYReachedThenRecover,
 } from "./foot-step.js";
 export { tryLocalPathfinderMoveToFoot } from "./local-move-actuator.js";
+export { shouldExcludeTerrainResourceBlock } from "./resource-filter.js";
 export type {
   TerrainBlockPos,
   TerrainRouteBudget,

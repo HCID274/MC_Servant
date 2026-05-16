@@ -60,30 +60,38 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
     };
     const __owner = __deepFreeze(${ownerJson});
     let __ensureDepth = 0;
-    let __lastActionResult = null;
-    let __lastEnsureCondition = null;
-    let __ensureResults = [];
-    const __goalFrames = [];
-    ${resultFactsScript}
-    ${semanticActionResultScript}
-    ${goalSummaryScript}
-    ${goalResultScript}
-    const __semanticCall = (method, args) =>
-      (__ensureDepth > 0 ? __sandboxTryCall(method, args) : __sandboxCall(method, args)).then((result) => {
-        const normalizedResult =
-          __ensureDepth > 0 ? result : __normalizeSemanticActionCompletion(method, args, result);
+	    let __lastActionResult = null;
+	    let __lastEnsureCondition = null;
+	    let __ensureResults = [];
+	    const __goalFrames = [];
+	    ${resultFactsScript}
+	    ${semanticActionResultScript}
+	    ${goalSummaryScript}
+	    ${goalResultScript}
+	    const __throwSandboxFailure = (result) => {
+	      __lastActionResult = result;
+	      const failure = result?.error ?? {
+	        code: "semantic_action_failed",
+	        message: "semantic action failed"
+	      };
+	      const error = new Error(failure.message ?? failure.code ?? "semantic action failed");
+	      error.__sandboxFailure = failure;
+	      throw error;
+	    };
+	    const __semanticCall = (method, args) =>
+	      (__ensureDepth > 0 ? __sandboxTryCall(method, args) : __sandboxCall(method, args)).then((result) => {
+	        const normalizedResult =
+	          __ensureDepth > 0 ? result : __normalizeSemanticActionCompletion(method, args, result);
         __lastActionResult = normalizedResult;
         const frame = __goalFrames[__goalFrames.length - 1];
         if (frame) {
           frame.results.push({ method, args, result: normalizedResult, ensure_depth: __ensureDepth });
         }
-        if (__isFailedResult(normalizedResult) && __ensureDepth <= 0) {
-          const error = new Error(normalizedResult.error?.message ?? normalizedResult.error?.code ?? "semantic action failed");
-          error.__sandboxFailure = normalizedResult.error;
-          throw error;
-        }
-        return normalizedResult;
-      });
+	        if (__isFailedResult(normalizedResult) && __ensureDepth <= 0) {
+	          __throwSandboxFailure(normalizedResult);
+	        }
+	        return normalizedResult;
+	      });
     const __normalizeEnsureCondition = (condition) => {
       if (condition === null || typeof condition !== "object") {
         throw new Error("ensure condition must be an until.* condition");
@@ -233,11 +241,10 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
       }
       const normalizedCondition = __normalizeEnsureCondition(condition);
       __lastEnsureCondition = normalizedCondition;
-      const preflight = await __runEnsurePreflight(normalizedCondition);
-      if (__isFailedResult(preflight)) {
-        __lastActionResult = preflight;
-        return preflight;
-      }
+	      const preflight = await __runEnsurePreflight(normalizedCondition);
+	      if (__isFailedResult(preflight)) {
+	        __throwSandboxFailure(preflight);
+	      }
       const baseline = await __captureConditionState();
       let lastResult = null;
       for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -263,14 +270,13 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
           lastResult = { ok: false, error: __createConditionFailure(normalizedCondition, evaluation) };
           __lastActionResult = lastResult;
         }
-        const recovered = await __sandboxTryCall("bot.ensure", [{
-          failure: lastResult.error,
-          condition: normalizedCondition
-        }]);
-        if (__isFailedResult(recovered)) {
-          __lastActionResult = recovered;
-          return recovered;
-        }
+	        const recovered = await __sandboxTryCall("bot.ensure", [{
+	          failure: lastResult.error,
+	          condition: normalizedCondition
+	        }]);
+	        if (__isFailedResult(recovered)) {
+	          __throwSandboxFailure(recovered);
+	        }
         const current = await __captureConditionState();
         const evaluation = await __evaluateCondition(normalizedCondition, baseline, current);
         if (evaluation.ok === true) {
@@ -290,10 +296,10 @@ export function createSandboxBootstrapScript(task: SandboxExecutionTaskContext):
           world_key: null,
           details: { last_result: lastResult, condition: normalizedCondition }
         }
-      };
-      __lastActionResult = lastResult;
-      return lastResult;
-    };
+	      };
+	      __lastActionResult = lastResult;
+	      __throwSandboxFailure(lastResult);
+	    };
     const runGoal = async (goal, fn) => {
       const startedAt = Date.now();
       const name = typeof goal === "string" && goal.trim().length > 0 ? goal.trim() : "code";

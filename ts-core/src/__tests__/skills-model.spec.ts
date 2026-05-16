@@ -617,7 +617,7 @@ describe("skills 模块契约", () => {
     expect(actions).not.toContain("craft:stone_pickaxe");
   });
 
-  it("ToolchainEnsure（工具链确保） 恢复合成缺料时应接受 facts 解析出的等价原木", async () => {
+  it("ToolchainEnsure（工具链确保） 恢复合成缺料时应接受 facts 解析出的等价原木且不重复 collect", async () => {
     const inventory: { item_name: string; count: number }[] = [];
     const actions: string[] = [];
     const ensure = createToolchainEnsureExecutor({
@@ -645,16 +645,9 @@ describe("skills 模块契约", () => {
         };
       },
       async collect() {
-        actions.push("collect");
-        return {
-          skill: "collect",
-          item_name: null,
-          center: { x: 0, y: 64, z: 0 },
-          radius: 8,
-          collected: [],
-          skipped: [],
-          total_steps: 1,
-        };
+        throw new Error(
+          "cutTree success already proves material recovery; collect must not repeat",
+        );
       },
       async place(params) {
         actions.push(`place:${params.blockName}`);
@@ -723,7 +716,6 @@ describe("skills 模块契约", () => {
     expect(actions).toEqual([
       "craft:wooden_pickaxe",
       "cutTree:1",
-      "collect",
       "craft:wooden_pickaxe",
       "equip:wooden_pickaxe",
     ]);

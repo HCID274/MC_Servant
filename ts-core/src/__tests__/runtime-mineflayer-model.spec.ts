@@ -306,6 +306,10 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   clearedControlStates = 0;
   pathfinderStops = 0;
   findBlocksCalls = 0;
+  readonly findBlocksRequests: Readonly<{
+    readonly count: number;
+    readonly maxDistance?: number;
+  }>[] = [];
   heldItem: MineflayerItemHandle | null = null;
   onGoto?: (goal?: unknown) => void | Promise<void>;
   onAfterStep?: () => void;
@@ -346,8 +350,10 @@ class FakeMineflayerBot extends EventEmitter implements MineflayerBotHandle {
   findBlocks(input: {
     matching: (block: MineflayerBlockHandle) => boolean;
     count: number;
+    maxDistance?: number;
   }): readonly { readonly x: number; readonly y: number; readonly z: number }[] {
     this.findBlocksCalls += 1;
+    this.findBlocksRequests.push({ count: input.count, maxDistance: input.maxDistance });
     return this.resourceBlocks
       .filter(input.matching)
       .map((block) => block.position)
@@ -1466,6 +1472,45 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
         item_name: "wooden_pickaxe",
       },
     });
+    expect(bot.craftCalls).toEqual([{ recipe, count: 1, table: tableBlock }]);
+  });
+
+  it("craft（合成） 应在 12 格内扫描并复用附近 crafting table（工作台）", async () => {
+    const bot = new FakeMineflayerBot();
+    const recipe: MineflayerRecipeHandle = {
+      result: { id: 2, count: 1 },
+      delta: [
+        { id: 4, count: -3 },
+        { id: 6, count: -2 },
+        { id: 2, count: 1 },
+      ],
+      requiresTable: true,
+    };
+    const tableBlock: MineflayerBlockHandle = {
+      type: 7,
+      name: "crafting_table",
+      position: { x: 11, y: 64, z: 0 },
+    };
+    bot.resourceBlocks.push(tableBlock);
+    bot.inventoryItems.push(
+      { type: 4, name: "birch_planks", count: 3 },
+      { type: 6, name: "stick", count: 2 },
+    );
+    bot.craftRecipes.set(2, [recipe]);
+
+    await expect(
+      executeMineflayerCraft({
+        bot,
+        params: { itemName: "wooden_pickaxe", count: 1 },
+        worldKey: "minecraft:overworld",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        item_name: "wooden_pickaxe",
+      },
+    });
+    expect(bot.findBlocksRequests).toContainEqual({ count: 1, maxDistance: 12 });
     expect(bot.craftCalls).toEqual([{ recipe, count: 1, table: tableBlock }]);
   });
 
@@ -4585,6 +4630,64 @@ describe("runtime Mineflayer（Minecraft 协议客户端） 最小闭环", () =>
           is_diggable: true,
           is_reachable: true,
           target_diagnostics: [],
+        },
+      ],
+    });
+
+    await transport.disconnect("test shutdown");
+  });
+
+  it("资源刷新不应把 Bot 自己放置的临时原木纳入 tree 资源簇快照", async () => {
+    const createdBots: FakeMineflayerBot[] = [];
+    const transport = createMineflayerRuntimeTransport(
+      createMineflayerTransportDescriptor({
+        botId: "bot-resource-self-placed-log",
+      }),
+      {
+        createBot: () => {
+          const bot = new FakeMineflayerBot();
+          bot.entity.position = { x: 0, y: 64, z: 0 };
+          Object.assign(bot.registry, {
+            blockTags: {
+              logs: [7],
+            },
+          });
+          bot.resourceBlocks.push(
+            {
+              name: "cherry_log",
+              type: 7,
+              position: { x: 1, y: 64, z: 0 },
+              tags: ["logs"],
+              diggable: true,
+            },
+            {
+              name: "oak_log",
+              type: 7,
+              position: { x: 3, y: 64, z: 0 },
+              tags: ["logs"],
+              diggable: true,
+            },
+          );
+          recordSelfPlacedTerrainBlock(bot, { x: 1, y: 64, z: 0 });
+          createdBots.push(bot);
+
+          return bot;
+        },
+      },
+    );
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    createdBots[0]?.emit("spawn");
+    await connectPromise;
+
+    await expect(transport.refreshAroundBot("tree", 16)).resolves.toMatchObject({
+      status: "found",
+      resource_key: "tree",
+      blocks: [
+        {
+          block_name: "oak_log",
+          semantic_roles: ["cut_tree_log"],
         },
       ],
     });
